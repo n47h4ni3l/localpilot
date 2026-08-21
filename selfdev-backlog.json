@@ -2,13 +2,17 @@
   "tasks": [
     {
       "id": "operator-foundation",
-      "title": "Design the guarded Windows operator foundation",
+      "title": "Implement the guarded Windows operator foundation",
       "status": "todo",
       "acceptance": [
-        "Add a command runner abstraction that never invokes shell=True",
-        "Separate ordinary, reversible and destructive operations",
-        "Add tests proving commands cannot bypass the policy layer",
-        "Do not enable destructive actions automatically"
+        "Create localpilot/operator.py with an OperationRisk enum containing READ_ONLY, REVERSIBLE, and DESTRUCTIVE",
+        "Create a CommandSpec dataclass that stores argv as a list of strings, the operation risk, and a timeout; do not accept shell command strings",
+        "Create a CommandRunner that invokes subprocess.run with the argv list and shell=False, captures stdout/stderr, applies the timeout, and returns a structured result",
+        "Destructive operations must be denied unless an explicit approval callback returns true; no approval callback means destructive operations are denied",
+        "Read-only and reversible operations may run through the same policy layer without destructive approval",
+        "Create tests/test_operator.py proving shell metacharacters remain literal arguments and cannot become a second command, destructive commands are refused without approval, and a harmless approved command can run",
+        "Keep this task to the operator foundation only; do not yet wire command execution into the main agent",
+        "Do not weaken the existing stable/developer/candidate separation or autonomous-editing path protections"
       ]
     },
     {

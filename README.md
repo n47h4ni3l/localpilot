@@ -1,72 +1,51 @@
-# LocalPilot v0.1
+# LocalPilot
 
-LocalPilot is a private, local-first Windows agent intended to grow into a capable computer operator while using GitHub as its engineering and rollback layer.
+LocalPilot is a private, local-first Windows agent designed to become more capable without allowing an experimental build to overwrite the stable agent.
 
-The end goal is simple:
+When the owner is using the PC, the everyday agent works for the owner. When the machine has spare idle capacity, a separate developer model can research and implement one backlog task in an isolated candidate.
 
-> When the owner is using the PC, LocalPilot works for the owner. When the PC is idle, LocalPilot can work on LocalPilot.
+## Model roles
 
-v0.1 is the bootstrap stage. It already contains the architecture needed to begin that process, but it deliberately does **not** give the first untested build unrestricted system-write access.
+- `[model].name` is the everyday PC agent (`gpt-oss:20b` by default).
+- `[selfdev].developer_model` is the engineering model (`qwen2.5:32b` by default).
+- The developer preference is used when installed in Ollama; otherwise that cycle falls back to the everyday model.
 
-## What v0.1 does
+This separation lets routine work stay responsive while self-development can use the stronger existing local model.
 
-- Runs a local Ollama model (`gpt-oss:20b` by default).
-- Lets the agent inspect Windows, processes, disks, startup entries, power state, Defender and device problems.
-- Loads real settings from `localpilot.toml`.
-- Writes an audit log to `localpilot-data/audit.jsonl`.
-- Detects whether the PC is active or idle and keeps background development gated by CPU/memory/idle thresholds.
-- Integrates with local Git and a GitHub remote.
-- Maintains **stable / developer / candidate** separation.
-- Can run one autonomous self-development cycle against `selfdev-backlog.json`.
-- Confines autonomous source edits to an isolated candidate workspace.
-- Runs non-executing local static checks, then can commit/push a candidate branch for full testing in GitHub Actions.
-- Does not automatically promote an experimental candidate over stable.
+## Safe evolution
 
-There is no pricing or credit subsystem and no cloud-model dependency in this starter.
+One `localpilot evolve` cycle:
 
-## 1. Extract it
+1. enforces the existing idle/CPU/memory resource gate;
+2. reconciles prior candidate PR and GitHub Actions state;
+3. selects the first backlog task that is neither completed nor awaiting validation;
+4. creates an isolated Git worktree (or copied candidate before Git is connected);
+5. runs a read-only research stage;
+6. runs a candidate-only implementation stage;
+7. if direct editing stalls, requests a strict structured change plan and applies every item through the same confined `CandidateTools.write_project_file` method;
+8. runs non-executing static checks locally;
+9. commits and pushes only the candidate files that were written; and
+10. waits for GitHub Actions and a human-reviewed PR merge.
 
-Extract the ZIP somewhere you intend to keep it, for example:
+A task does not advance merely because files were written, static checks passed, or a branch was pushed. It advances only after GitHub reports both passing validation and a merged PR. Automatic promotion is forbidden even if a local config attempts to enable it.
 
-```text
-C:\LocalPilot
-```
+## Learning memory
 
-Do not run it directly from inside the ZIP.
+Successful, failed, paused, and no-change cycles are recorded in `localpilot-data/learning.sqlite3`. Later cycles receive a small set of concise reusable lessons. The database stores outcomes and reviewable summaries only—not prompts, transcripts, hidden reasoning, or chain-of-thought—and remains excluded from Git.
 
-## 2. Prerequisites
+## Setup
 
-Install:
-
-- Python 3.11 or newer
-- Ollama for Windows
-- Git for Windows
-- GitHub CLI (`gh`) is optional initially
-
-You do **not** need administrator PowerShell for the v0.1 bootstrap.
-
-## 3. Bootstrap
-
-Open PowerShell in the LocalPilot directory:
+Requirements are Python 3.11+, Ollama for Windows, and Git for Windows. GitHub CLI is needed for automatic PR/check reconciliation.
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\bootstrap.ps1
-```
-
-The script creates `.venv`, installs LocalPilot and copies `config.example.toml` to `localpilot.toml`.
-
-If the configured Ollama model is missing, the script asks before starting the large model download. It does not silently pull it.
-
-Then:
-
-```powershell
 .\.venv\Scripts\Activate.ps1
 localpilot doctor
 localpilot
 ```
 
-Useful interactive commands:
+Useful commands:
 
 ```text
 /status
@@ -75,62 +54,13 @@ Useful interactive commands:
 /quit
 ```
 
-`/evolve` waits for the configured idle/resource conditions. For a deliberate manual test you can run:
+For a deliberate manual self-development test:
 
 ```powershell
 localpilot evolve --force
 ```
 
-That bypasses only the idle gate for that cycle; candidate path confinement and stable/candidate separation still apply.
+`--force` bypasses only the initial idle gate for that manual cycle. Candidate path confinement, no local candidate execution, GitHub validation, manual merge, and stable/candidate isolation remain in force.
 
-## GitHub connection
+See `ARCHITECTURE.md`, `ROADMAP.md`, and `SECURITY.md` for the broader design and safety policy.
 
-Create a **private, empty** GitHub repository named `localpilot`, then from the extracted project:
-
-```powershell
-.\scripts\connect-github.ps1 -RepoUrl "https://github.com/YOUR-USER/localpilot.git"
-```
-
-The script configures the remote but intentionally does not push without you reviewing the initial project. Then:
-
-```powershell
-git add .
-git commit -m "Initial LocalPilot v0.1"
-git push -u origin main
-```
-
-After that, candidate self-development cycles can use Git worktrees/branches instead of plain copied workspaces. By default, statically valid candidates are pushed automatically so GitHub Actions can execute the test suite away from your workstation. GitHub Actions runs on `main`, PRs and `localpilot/**` branches.
-
-## Resource behaviour
-
-Defaults in `localpilot.toml`:
-
-- LocalPilot uses below-normal process priority while the PC is active.
-- Background self-development requires 10 minutes of keyboard/mouse idle time.
-- It defers background work when CPU is above 65% or memory usage is above 82%.
-
-These values are deliberately editable. The next development phase should add GPU and foreground-application awareness so gaming, CAD and other demanding work cause an even faster yield.
-
-## Self-development model
-
-`selfdev-backlog.json` contains seed tasks for LocalPilot to work toward. One `localpilot evolve` cycle:
-
-1. checks idle/load conditions;
-2. selects the next todo task;
-3. creates an isolated candidate workspace;
-4. gives the local model candidate-only file tools;
-5. lets it inspect and modify a limited number of source files;
-6. runs non-executing syntax/config checks locally;
-7. if Git is connected, commits and pushes a passing candidate branch;
-8. GitHub Actions runs the executable test suite away from the workstation;
-9. leaves stable untouched.
-
-Automatic candidate promotion is disabled. Candidate code is also not executed locally by the autonomous self-development loop in v0.1; GitHub Actions is the executable test sandbox. That is intentional until a stronger local sandbox/rollback layer exists.
-
-## Why PC control starts read-only
-
-The intended LocalPilot is not a permanently restricted support bot. It is meant to gain broad operating freedom. The first build itself, however, has not yet earned permission to change Windows indiscriminately.
-
-The first backlog item is the guarded Windows operator foundation. Once that layer has tests, rollback hooks and command confinement, we can start adding real reversible PC actions without turning every harmless task into a confirmation-dialog exercise.
-
-See `ARCHITECTURE.md`, `ROADMAP.md` and `SECURITY.md` for the design.

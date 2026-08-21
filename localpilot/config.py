@@ -16,6 +16,8 @@ class AgentConfig:
 
 @dataclass(slots=True)
 class ModelConfig:
+    """The everyday operator model. Self-development has its own model."""
+
     provider: str = "ollama"
     name: str = "gpt-oss:20b"
     think: bool = True
@@ -49,11 +51,17 @@ class GitHubConfig:
 @dataclass(slots=True)
 class SelfDevConfig:
     enabled: bool = True
+    # This is deliberately distinct from model.name. If it is unavailable,
+    # LocalPilot falls back to the everyday model for that cycle.
+    developer_model: str = "qwen2.5:32b"
     auto_promote: bool = False
+    research_tool_rounds: int = 6
     max_tool_rounds: int = 14
     max_files_per_cycle: int = 8
     run_static_checks: bool = True
     allow_local_candidate_execution: bool = False
+    learning_database: str = "learning.sqlite3"
+    lesson_limit: int = 6
 
 
 @dataclass(slots=True)
@@ -77,17 +85,19 @@ def _apply(instance: Any, values: dict[str, Any]) -> Any:
 def load_config(path: str | Path | None = None) -> Config:
     cfg = Config()
     chosen = Path(path) if path else Path(os.environ.get("LOCALPILOT_CONFIG", "localpilot.toml"))
-    if not chosen.exists():
-        return cfg
+    if chosen.exists():
+        with chosen.open("rb") as handle:
+            raw = tomllib.load(handle)
+        _apply(cfg.agent, raw.get("agent", {}))
+        _apply(cfg.model, raw.get("model", {}))
+        _apply(cfg.resource, raw.get("resource", {}))
+        _apply(cfg.safety, raw.get("safety", {}))
+        _apply(cfg.github, raw.get("github", {}))
+        _apply(cfg.selfdev, raw.get("selfdev", {}))
+        cfg.source_path = chosen.resolve()
 
-    with chosen.open("rb") as handle:
-        raw = tomllib.load(handle)
-
-    _apply(cfg.agent, raw.get("agent", {}))
-    _apply(cfg.model, raw.get("model", {}))
-    _apply(cfg.resource, raw.get("resource", {}))
-    _apply(cfg.safety, raw.get("safety", {}))
-    _apply(cfg.github, raw.get("github", {}))
-    _apply(cfg.selfdev, raw.get("selfdev", {}))
-    cfg.source_path = chosen.resolve()
+    # Promotion is a human/repository action, never an autonomous config knob.
+    if cfg.selfdev.auto_promote:
+        raise ValueError("selfdev.auto_promote cannot be enabled; candidates require review and merge")
     return cfg
+

@@ -1,38 +1,48 @@
 # LocalPilot architecture
 
-LocalPilot is intentionally split into three roles:
+LocalPilot has three isolated roles and two model responsibilities:
 
-1. **Stable** — the installed agent that interacts with the PC.
-2. **Developer** — an idle-time agent allowed to modify an isolated candidate workspace.
-3. **Candidate** — an experimental build that must pass tests before it can ever be considered for promotion.
+1. **Stable operator** — the installed everyday agent. It uses `[model].name` and may interact with the PC only through the normal safety policy.
+2. **Developer** — an idle-time engineering process. It prefers `[selfdev].developer_model` (`qwen2.5:32b` by default) when that model is installed, otherwise it explicitly falls back to the everyday model.
+3. **Candidate** — an isolated Git worktree or copied workspace. Autonomous source writes are possible only through `CandidateTools.write_project_file` inside this boundary.
 
-The stable runtime must never rewrite itself in place.
+Stable is never rewritten in place, candidate code is not executed locally by the autonomous loop, and there is no automatic promotion path.
 
-## Runtime layers
+## Self-development cycle
 
-- **Agent**: local Ollama model and tool loop.
-- **PC tools**: Windows-native observations first; operator tools are added behind risk policy later.
-- **Resource governor**: keeps LocalPilot low priority while the owner is active and permits heavier work only after an idle threshold and load checks.
-- **Local data**: audit logs, candidate workspaces and future machine memory live under `localpilot-data/` and are ignored by Git.
-- **GitHub**: source, issues, branches, CI, review and rollback history. Machine-private state does not belong in GitHub.
-- **Self-development**: creates a Git worktree when possible, or a copied candidate workspace before Git is connected. Candidate tools are path-confined. Local validation is non-executing; full candidate tests run in GitHub Actions.
+```text
+resource gate
+    -> reconcile earlier candidate PR/check state
+    -> select first eligible backlog task
+    -> create isolated candidate
+    -> research stage (list/read tools only)
+    -> implementation stage (candidate tools)
+    -> structured JSON change-plan fallback, if direct editing stalls
+    -> non-executing local static checks
+    -> candidate commit/push
+    -> GitHub Actions
+    -> human-reviewed PR merge
+    -> task becomes complete in local learning state
+```
 
-## Autonomy philosophy
+The fallback is data, not a privileged editing channel. Its paths and complete file contents are parsed into a `ChangePlan`, and every item is applied by calling `CandidateTools.write_project_file`. It therefore keeps the same path confinement, protected-directory rules, file limits, type allow-list, and size limit as ordinary candidate tool calls.
 
-The target is **autonomy + observability + rollback**, not a confirmation dialog for every harmless action.
+GitHub validation and merge are separate facts. A passing local static check or a pushed branch does not complete a task. The next backlog item is eligible only after the current candidate's GitHub checks pass and its PR is merged. LocalPilot can observe that state; it has no method that merges or promotes.
 
-- Read-only observations: automatic.
-- Reversible operations: intended to be automatic once implemented and tested.
-- Destructive/irreversible operations: explicit confirmation.
-- Self-development: automatic only inside a candidate workspace and only while resources permit.
-- Promotion to stable: manual in v0.1 and remains a separate gate until the candidate system is mature.
+## Local learning memory
 
-## PC responsiveness
+`localpilot-data/learning.sqlite3` stores durable, machine-local development facts:
 
-A background evolution cycle is eligible only when:
+- task, candidate branch, everyday/developer model names;
+- cycle outcome, static-check result, push/PR/merge state;
+- concise implementation summary; and
+- a short reusable lesson for later cycles.
 
-- the keyboard/mouse idle timer exceeds the configured threshold;
-- CPU utilisation is below the configured ceiling; and
-- memory pressure is below the configured ceiling.
+The schema deliberately has no prompts, transcripts, messages, thinking, or chain-of-thought fields. Research and model scratch work are transient. Machine-private learning data remains under the already ignored `localpilot-data/` directory and is never committed to GitHub.
 
-LocalPilot also lowers its own Windows process priority while the owner is active. Future versions should add GPU/foreground-app awareness and resumable inference.
+## Resource and process safety
+
+The existing `ResourceGovernor` remains in charge of self-development eligibility. LocalPilot checks user idle time, CPU, and memory before the cycle and between every model/tool round, lowering its own Windows priority and pausing promptly when the owner returns.
+
+All Git/GitHub/static-check process calls use argument arrays with `shell=False`. Full executable tests remain in GitHub Actions. Stable, developer, and candidate boundaries do not depend on model cooperation: the tool surface enforces them.
+

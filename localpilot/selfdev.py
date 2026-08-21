@@ -6,11 +6,12 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from localpilot.audit import AuditLog
 from localpilot.config import Config
 from localpilot.github_integration import GitHubIntegration
+from localpilot.learning import LearningMemory
 from localpilot.resource import ResourceGovernor
 
 _IGNORE_NAMES = {".git", ".github", ".venv", "__pycache__", ".pytest_cache", "localpilot-data"}
@@ -26,10 +27,116 @@ class EvolutionResult:
     tests_passed: bool | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class PlannedChange:
+    path: str
+    content: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChangePlan:
+    summary: str
+    reusable_lesson: str
+    changes: tuple[PlannedChange, ...]
+
+
+class CyclePaused(RuntimeError):
+    pass
+
+
 def classify_candidate_result(files_written: int, checks_passed: bool | None) -> str:
     if files_written == 0:
         return "no_changes"
     return "candidate_ready" if checks_passed else "candidate_needs_work"
+
+
+def choose_next_task(
+    tasks: Iterable[dict[str, Any]],
+    completed_task_ids: set[str],
+    pending_task_ids: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Advance sequentially only after the current task passes CI and merges."""
+    pending = pending_task_ids or set()
+    for task in tasks:
+        if task.get("status", "todo") != "todo":
+            continue
+        task_id = str(task.get("id"))
+        if task_id in completed_task_ids:
+            continue
+        if task_id in pending:
+            return None
+        return task
+    return None
+
+
+def select_developer_model(preferred: str, everyday: str, available: Iterable[str]) -> str:
+    installed = {str(name).strip() for name in available}
+    return preferred if preferred in installed else everyday
+
+
+def available_ollama_models() -> set[str]:
+    """Read model names through the Ollama SDK without invoking a shell."""
+    try:
+        from ollama import list as list_models
+
+        response = list_models()
+    except Exception:
+        return set()
+    models = getattr(response, "models", None)
+    if models is None and isinstance(response, dict):
+        models = response.get("models", [])
+    names: set[str] = set()
+    for model in models or []:
+        if isinstance(model, dict):
+            name = model.get("model") or model.get("name")
+        else:
+            name = getattr(model, "model", None) or getattr(model, "name", None)
+        if name:
+            names.add(str(name))
+    return names
+
+
+def _json_object(text: str) -> dict[str, Any]:
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        candidate = "\n".join(lines[1:-1]).strip()
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("Model response did not contain a JSON object.")
+    value = json.loads(candidate[start : end + 1])
+    if not isinstance(value, dict):
+        raise ValueError("Change plan must be a JSON object.")
+    return value
+
+
+def parse_change_plan(text: str, max_files: int = 8) -> ChangePlan:
+    value = _json_object(text)
+    changes = value.get("changes")
+    if not isinstance(changes, list) or not changes:
+        raise ValueError("Change plan must contain at least one change.")
+    if len(changes) > max_files:
+        raise ValueError("Change plan exceeds the candidate file limit.")
+    parsed: list[PlannedChange] = []
+    for item in changes:
+        if not isinstance(item, dict):
+            raise ValueError("Each planned change must be an object.")
+        path, content = item.get("path"), item.get("content")
+        if not isinstance(path, str) or not path.strip() or not isinstance(content, str):
+            raise ValueError("Each planned change requires string path and content fields.")
+        parsed.append(PlannedChange(path.strip(), content, str(item.get("reason") or "")))
+    return ChangePlan(
+        str(value.get("summary") or "Structured fallback plan applied."),
+        str(value.get("reusable_lesson") or "Use a structured write plan when direct tool editing stalls."),
+        tuple(parsed),
+    )
+
+
+def apply_change_plan(plan: ChangePlan, tools: "CandidateTools") -> list[str]:
+    """The sole fallback application path: every change passes CandidateTools."""
+    return [tools.write_project_file(change.path, change.content) for change in plan.changes]
 
 
 class CandidateTools:
@@ -116,8 +223,13 @@ class CandidateTools:
 
     def show_candidate_diff(self) -> str:
         completed = subprocess.run(
-            ["git", "diff", "--", "."], cwd=str(self.workspace), capture_output=True,
-            text=True, timeout=30, check=False,
+            ["git", "diff", "--", "."],
+            cwd=str(self.workspace),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            shell=False,
         )
         if completed.returncode != 0:
             return completed.stderr.strip() or "git diff unavailable"
@@ -125,7 +237,7 @@ class CandidateTools:
 
 
 class SelfDeveloper:
-    """Creates isolated candidate builds; it never overwrites stable directly."""
+    """Researches and edits isolated candidates; it never promotes them."""
 
     def __init__(
         self,
@@ -134,10 +246,13 @@ class SelfDeveloper:
         progress: Callable[[str], None] | None = None,
     ) -> None:
         self.config = config
+        if config.selfdev.auto_promote:
+            raise ValueError("Automatic promotion is forbidden.")
         self.root = Path(project_root).resolve()
         self.data_dir = (self.root / config.agent.data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
+        self.memory = LearningMemory(self.data_dir / config.selfdev.learning_database)
         self.governor = ResourceGovernor(config.resource)
         self.github = GitHubIntegration(self.root, config.github)
         self.progress = progress or (lambda _message: None)
@@ -146,12 +261,26 @@ class SelfDeveloper:
         self.progress(message)
         self.audit.write("selfdev_progress", message=message)
 
+    def _reconcile_candidates(self) -> None:
+        for candidate in self.memory.pending_candidates():
+            lifecycle = self.github.candidate_lifecycle(candidate.branch)
+            self.memory.update_candidate_review(
+                candidate.cycle_id,
+                validation_state=lifecycle.validation_state,
+                merged=lifecycle.merged,
+                pull_request_url=lifecycle.pull_request_url,
+            )
+
     def _load_next_task(self) -> dict[str, Any] | None:
         path = self.root / "selfdev-backlog.json"
         if not path.exists():
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
-        return next((item for item in data.get("tasks", []) if item.get("status", "todo") == "todo"), None)
+        return choose_next_task(
+            data.get("tasks", []),
+            self.memory.completed_task_ids(),
+            self.memory.pending_task_ids(),
+        )
 
     def _candidate_workspace(self, branch: str) -> tuple[Path, bool]:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -168,6 +297,93 @@ class SelfDeveloper:
         shutil.copytree(self.root, destination, ignore=ignore)
         return destination, False
 
+    def _check_resources(self, force: bool, branch: str) -> None:
+        current = self.governor.sample(interval=0.05)
+        if not force and not current.background_allowed:
+            self.governor.apply_process_priority(idle=False)
+            self.audit.write("selfdev_paused", branch=branch, reason=current.reason)
+            raise CyclePaused(current.reason)
+
+    @staticmethod
+    def _content(response: Any) -> str:
+        message = getattr(response, "message", response)
+        if isinstance(message, dict):
+            return str(message.get("content") or "")
+        return str(getattr(message, "content", "") or "")
+
+    @staticmethod
+    def _calls(response: Any) -> list[Any]:
+        message = getattr(response, "message", response)
+        if isinstance(message, dict):
+            return list(message.get("tool_calls") or [])
+        return list(getattr(message, "tool_calls", None) or [])
+
+    @staticmethod
+    def _call_parts(call: Any) -> tuple[str, dict[str, Any]]:
+        function = call.get("function", {}) if isinstance(call, dict) else getattr(call, "function", None)
+        if isinstance(function, dict):
+            return str(function.get("name") or ""), dict(function.get("arguments") or {})
+        return str(getattr(function, "name", "")), dict(getattr(function, "arguments", None) or {})
+
+    def _tool_stage(
+        self,
+        *,
+        chat: Callable[..., Any],
+        model: str,
+        messages: list[dict[str, Any]],
+        functions: list[Callable[..., Any]],
+        rounds: int,
+        force: bool,
+        branch: str,
+        stage: str,
+    ) -> str:
+        by_name = {fn.__name__: fn for fn in functions}
+        for round_no in range(rounds):
+            self._check_resources(force, branch)
+            self._emit(f"{stage} round {round_no + 1}/{rounds}")
+            response = chat(
+                model=model,
+                messages=messages,
+                tools=functions,
+                think=self.config.model.think,
+                options={"temperature": self.config.model.temperature},
+            )
+            message = getattr(response, "message", response)
+            messages.append(message)
+            calls = self._calls(response)
+            if not calls:
+                return self._content(response)
+            for call in calls:
+                name, args = self._call_parts(call)
+                fn = by_name.get(name)
+                self.audit.write(
+                    "selfdev_tool",
+                    branch=branch,
+                    stage=stage,
+                    tool=name,
+                    args={key: ("<content>" if key == "content" else value) for key, value in args.items()},
+                )
+                if fn is None:
+                    result = f"Unknown candidate tool: {name}"
+                else:
+                    try:
+                        result = fn(**args)
+                    except Exception as exc:
+                        result = f"Tool error: {type(exc).__name__}: {exc}"
+                messages.append({"role": "tool", "tool_name": name, "content": str(result)})
+        return f"{stage} stopped at its tool-call limit."
+
+    @staticmethod
+    def _outcome(text: str, default_lesson: str) -> tuple[str, str]:
+        try:
+            value = _json_object(text)
+        except (ValueError, json.JSONDecodeError):
+            return (text.strip() or "Candidate cycle completed.")[:4000], default_lesson
+        return (
+            str(value.get("summary") or "Candidate cycle completed.")[:4000],
+            str(value.get("reusable_lesson") or default_lesson)[:2000],
+        )
+
     def run_once(self, *, force: bool = False) -> EvolutionResult:
         if not self.config.selfdev.enabled:
             return EvolutionResult("disabled", None, None, "Self-development is disabled in config.")
@@ -178,116 +394,212 @@ class SelfDeveloper:
             return EvolutionResult("deferred", None, None, f"PC is in use or busy: {state.reason}")
         self.governor.apply_process_priority(idle=True)
 
+        self._reconcile_candidates()
         task = self._load_next_task()
         if not task:
-            return EvolutionResult("idle", None, None, "No todo item exists in selfdev-backlog.json.")
+            return EvolutionResult("idle", None, None, "No eligible todo item remains. Merged, validated tasks are skipped.")
 
-        slug = "".join(c if c.isalnum() else "-" for c in task["id"].lower()).strip("-")[:40]
+        available = available_ollama_models()
+        developer_model = select_developer_model(
+            self.config.selfdev.developer_model,
+            self.config.model.name,
+            available,
+        )
+        slug = "".join(char if char.isalnum() else "-" for char in task["id"].lower()).strip("-")[:40]
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         branch = f"localpilot/candidate-{slug}-{stamp}"
         self._emit(f"Creating candidate for: {task['title']}")
         workspace, is_worktree = self._candidate_workspace(branch)
         tools = CandidateTools(workspace, self.config.selfdev.max_files_per_cycle)
-        self.audit.write("selfdev_start", task=task, branch=branch, workspace=str(workspace))
+        cycle_id = self.memory.start_cycle(
+            task_id=str(task["id"]),
+            branch=branch,
+            everyday_model=self.config.model.name,
+            developer_model=developer_model,
+        )
+        self.audit.write(
+            "selfdev_start",
+            task_id=task["id"],
+            branch=branch,
+            workspace=str(workspace),
+            developer_model=developer_model,
+        )
 
         try:
             from ollama import chat
         except ImportError as exc:
+            self.memory.finish_cycle(
+                cycle_id,
+                status="failed",
+                summary="Ollama Python package is not installed.",
+                reusable_lesson="Verify local model dependencies before starting a development cycle.",
+                checks_passed=None,
+                pushed=False,
+            )
             raise RuntimeError("Ollama Python package is not installed. Run scripts/bootstrap.ps1.") from exc
 
-        self._emit(f"Loading model {self.config.model.name} via Ollama")
-        system = f"""You are the developer instance of LocalPilot. Improve ONE candidate build, never the stable installation.
-Task: {task['title']}
-Acceptance criteria: {task.get('acceptance', [])}
-Use the provided file tools and keep changes focused and Windows-compatible.
-You MUST make at least one concrete code or test change with write_project_file unless the task is genuinely impossible. Do not spend the whole cycle only reading or analysing. Once you have enough context, edit the candidate, inspect the diff, and run static checks.
-Full executable tests run in GitHub Actions after the candidate branch is pushed. Never weaken path confinement, audit logging, stable/developer/candidate separation, or the resource governor.
-Do not add cloud pricing or payment machinery. GitHub remains the source-control/CI layer.
-When finished, return a concise implementation summary and any remaining risks.
-"""
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": "Implement the task now. Make a real candidate change rather than only analysing it."},
+        lessons = self.memory.reusable_lessons(self.config.selfdev.lesson_limit)
+        acceptance = json.dumps(task.get("acceptance", []), ensure_ascii=False)
+        research_messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are LocalPilot's research-stage developer. Inspect the isolated candidate only. "
+                    "Gather concrete repository evidence for the single task below. You cannot write in this stage. "
+                    "Return a concise implementation brief with relevant files, constraints, tests, and risks. "
+                    "Do not provide or request hidden chain-of-thought.\n"
+                    f"Task: {task['title']}\nAcceptance: {acceptance}"
+                ),
+            },
+            {"role": "user", "content": "Research the candidate and return the evidence-based brief."},
         ]
-        functions = [
-            tools.list_project_files,
-            tools.read_project_file,
-            tools.write_project_file,
-            tools.run_candidate_static_checks,
-            tools.show_candidate_diff,
-        ]
-
-        final_text = ""
-        for round_no in range(self.config.selfdev.max_tool_rounds):
-            current = self.governor.sample(interval=0.05)
-            if not force and not current.background_allowed:
-                self.governor.apply_process_priority(idle=False)
-                self.audit.write("selfdev_paused", branch=branch, reason=current.reason)
-                self._emit(f"Paused: {current.reason}")
-                return EvolutionResult("paused", branch, workspace, f"User returned or PC became busy: {current.reason}")
-
-            self._emit(
-                f"Tool round {round_no + 1}/{self.config.selfdev.max_tool_rounds} — "
-                f"read {len(tools.files_read)}, wrote {len(tools.files_written)} file(s)"
+        try:
+            research = self._tool_stage(
+                chat=chat,
+                model=developer_model,
+                messages=research_messages,
+                functions=[tools.list_project_files, tools.read_project_file],
+                rounds=self.config.selfdev.research_tool_rounds,
+                force=force,
+                branch=branch,
+                stage="research",
             )
-            response = chat(
-                model=self.config.model.name,
-                messages=messages,
-                tools=functions,
-                think=self.config.model.think,
-                options={"temperature": self.config.model.temperature},
-            )
-            messages.append(response.message)
-            calls = response.message.tool_calls or []
-            if not calls:
-                final_text = response.message.content or "Candidate cycle completed."
-                break
 
-            by_name = {fn.__name__: fn for fn in functions}
-            for call in calls:
-                name = call.function.name
-                fn = by_name.get(name)
-                args = call.function.arguments or {}
-                self.audit.write(
-                    "selfdev_tool", branch=branch, tool=name,
-                    args={k: ("<content>" if k == "content" else v) for k, v in args.items()},
+            implementation_messages: list[dict[str, Any]] = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are LocalPilot's implementation-stage developer. Modify only the isolated candidate "
+                        "through the supplied file tools. Implement one focused task, add/update tests, inspect the "
+                        "diff, and run static checks. Never edit stable, execute candidate code locally, promote, "
+                        "weaken confinement, bypass the resource governor, or use shell command strings. "
+                        "Finish with JSON containing only summary and reusable_lesson; do not expose hidden reasoning.\n"
+                        f"Task: {task['title']}\nAcceptance: {acceptance}\n"
+                        f"Research brief:\n{research[:12000]}\n"
+                        f"Reusable lessons from earlier cycles:\n{json.dumps(lessons, ensure_ascii=False)}"
+                    ),
+                },
+                {"role": "user", "content": "Implement the task now and make concrete candidate changes."},
+            ]
+            final_text = self._tool_stage(
+                chat=chat,
+                model=developer_model,
+                messages=implementation_messages,
+                functions=[
+                    tools.list_project_files,
+                    tools.read_project_file,
+                    tools.write_project_file,
+                    tools.run_candidate_static_checks,
+                    tools.show_candidate_diff,
+                ],
+                rounds=self.config.selfdev.max_tool_rounds,
+                force=force,
+                branch=branch,
+                stage="implementation",
+            )
+
+            fallback_plan: ChangePlan | None = None
+            if not tools.files_written:
+                self._check_resources(force, branch)
+                self._emit("Direct editing stalled; requesting structured fallback change plan")
+                response = chat(
+                    model=developer_model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Return one strict JSON object with summary, reusable_lesson, and changes. "
+                                "changes must be a non-empty list of objects containing path, complete content, and reason. "
+                                "Only propose files needed for the task. No markdown and no hidden reasoning. "
+                                "The caller will validate every path and apply every change through write_project_file.\n"
+                                f"Task: {task['title']}\nAcceptance: {acceptance}\nResearch:\n{research[:12000]}"
+                            ),
+                        },
+                        {"role": "user", "content": "Produce the candidate change plan now."},
+                    ],
+                    think=False,
+                    options={"temperature": 0.0},
                 )
-                if fn is None:
-                    result = f"Unknown candidate tool: {name}"
-                else:
-                    try:
-                        result = fn(**args)
-                    except Exception as exc:
-                        result = f"Tool error: {type(exc).__name__}: {exc}"
-                messages.append({"role": "tool", "tool_name": name, "content": str(result)})
-        else:
-            final_text = "Candidate stopped at the self-development tool-call limit."
+                fallback_plan = parse_change_plan(self._content(response), tools.max_files)
+                apply_change_plan(fallback_plan, tools)
+                final_text = json.dumps(
+                    {"summary": fallback_plan.summary, "reusable_lesson": fallback_plan.reusable_lesson}
+                )
 
-        checks_passed: bool | None = None
-        if self.config.selfdev.run_static_checks:
-            self._emit("Running final static checks")
-            check_result = tools.run_candidate_static_checks()
-            checks_passed = check_result.startswith("static_checks=passed")
-            final_text += f"\n\nFinal static check:\n{check_result}"
+            checks_passed: bool | None = None
+            check_result = "static checks disabled"
+            if self.config.selfdev.run_static_checks:
+                self._emit("Running final non-executing static checks")
+                check_result = tools.run_candidate_static_checks()
+                checks_passed = check_result.startswith("static_checks=passed")
 
-        if not tools.files_written:
-            final_text += "\n\nNo candidate files were changed; this cycle is classified as no_changes."
-            self._emit("No files changed; candidate will not be committed or pushed")
-        elif is_worktree and checks_passed:
-            self._emit(f"Committing {len(tools.files_written)} changed file(s)")
-            commit = self.github.commit_all(workspace, f"candidate: {task['title']}")
-            if commit.ok and self.config.github.auto_push_candidates:
-                self._emit(f"Pushing candidate branch {branch}")
-                push = self.github.push_branch(workspace, branch)
-                final_text += f"\n\nGit push: {'ok — GitHub Actions will validate the branch' if push.ok else push.stderr}"
-            elif not commit.ok:
-                final_text += f"\n\nGit commit failed: {commit.stderr or commit.stdout}"
+            status = classify_candidate_result(len(tools.files_written), checks_passed)
+            pushed = False
+            delivery = ""
+            if tools.files_written and is_worktree and checks_passed:
+                relative_paths = [path.relative_to(workspace).as_posix() for path in tools.files_written]
+                commit = self.github.commit_paths(workspace, f"candidate: {task['title']}", relative_paths)
+                if commit.ok and self.config.github.auto_push_candidates:
+                    push = self.github.push_branch(workspace, branch)
+                    pushed = push.ok
+                    if pushed:
+                        status = "candidate_pending_validation"
+                        delivery = "Candidate pushed; it remains pending until CI passes and its PR is merged."
+                    else:
+                        status = "candidate_needs_work"
+                        delivery = f"Candidate push failed: {push.stderr or push.stdout}"
+                elif not commit.ok:
+                    status = "candidate_needs_work"
+                    delivery = f"Candidate commit failed: {commit.stderr or commit.stdout}"
 
-        status = classify_candidate_result(len(tools.files_written), checks_passed)
-        self.audit.write(
-            "selfdev_end", branch=branch, checks_passed=checks_passed,
-            files_read=len(tools.files_read), files_written=len(tools.files_written),
-            status=status, summary=final_text[:2000],
-        )
-        self._emit(f"Finished: {status} — read {len(tools.files_read)}, wrote {len(tools.files_written)} file(s)")
-        return EvolutionResult(status, branch, workspace, final_text, checks_passed)
+            summary, lesson = self._outcome(
+                final_text,
+                "Use repository evidence and candidate-only tools before validating a self-development change.",
+            )
+            summary = f"{summary}\n\n{check_result}"
+            if delivery:
+                summary += f"\n\n{delivery}"
+            self.memory.finish_cycle(
+                cycle_id,
+                status=status,
+                summary=summary,
+                reusable_lesson=lesson,
+                checks_passed=checks_passed,
+                pushed=pushed,
+            )
+            self.audit.write(
+                "selfdev_end",
+                branch=branch,
+                task_id=task["id"],
+                checks_passed=checks_passed,
+                files_read=len(tools.files_read),
+                files_written=len(tools.files_written),
+                status=status,
+                summary=summary[:2000],
+            )
+            self._emit(f"Finished: {status} — wrote {len(tools.files_written)} candidate file(s)")
+            return EvolutionResult(status, branch, workspace, summary, checks_passed)
+        except CyclePaused as exc:
+            summary = f"User returned or PC became busy: {exc}"
+            self.memory.finish_cycle(
+                cycle_id,
+                status="paused",
+                summary=summary,
+                reusable_lesson="Re-check the resource governor between every model/tool round and resume later.",
+                checks_passed=None,
+                pushed=False,
+            )
+            return EvolutionResult("paused", branch, workspace, summary)
+        except Exception as exc:
+            summary = f"Cycle failed: {type(exc).__name__}: {exc}"
+            self.memory.finish_cycle(
+                cycle_id,
+                status="failed",
+                summary=summary,
+                reusable_lesson=f"Handle {type(exc).__name__} before retrying this task.",
+                checks_passed=None,
+                pushed=False,
+            )
+            self.audit.write("selfdev_end", branch=branch, task_id=task["id"], status="failed", summary=summary)
+            return EvolutionResult("failed", branch, workspace, summary)
+

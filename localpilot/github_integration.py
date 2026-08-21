@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -16,8 +17,29 @@ class CommandResult:
     returncode: int
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateLifecycle:
+    validation_state: str
+    merged: bool
+    pull_request_url: str | None = None
+
+
+def classify_check_rollup(checks: list[dict]) -> str:
+    """Return a conservative aggregate for GitHub statusCheckRollup."""
+    if not checks:
+        return "pending"
+    conclusions = {str(item.get("conclusion") or "").upper() for item in checks}
+    statuses = {str(item.get("status") or "").upper() for item in checks}
+    if conclusions & {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}:
+        return "failed"
+    if statuses & {"QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"}:
+        return "pending"
+    terminal_ok = {"SUCCESS", "SKIPPED", "NEUTRAL"}
+    return "passed" if conclusions and conclusions <= terminal_ok else "pending"
+
+
 class GitHubIntegration:
-    """Git/GitHub adapter. `git` is required; `gh` is optional."""
+    """Git/GitHub adapter. Every process uses argv and shell=False."""
 
     def __init__(self, project_root: str | Path, config: GitHubConfig) -> None:
         self.root = Path(project_root).resolve()
@@ -31,6 +53,7 @@ class GitHubIntegration:
             text=True,
             timeout=timeout,
             check=False,
+            shell=False,
         )
         return CommandResult(completed.returncode == 0, completed.stdout.strip(), completed.stderr.strip(), completed.returncode)
 
@@ -41,9 +64,7 @@ class GitHubIntegration:
         return shutil.which("gh") is not None
 
     def is_git_repo(self) -> bool:
-        if not self.git_available():
-            return False
-        return self._run(["git", "rev-parse", "--is-inside-work-tree"]).ok
+        return self.git_available() and self._run(["git", "rev-parse", "--is-inside-work-tree"]).ok
 
     def status(self) -> str:
         if not self.is_git_repo():
@@ -61,8 +82,10 @@ class GitHubIntegration:
         destination.parent.mkdir(parents=True, exist_ok=True)
         return self._run(["git", "worktree", "add", "-b", branch, str(destination), "HEAD"])
 
-    def commit_all(self, worktree: Path, message: str) -> CommandResult:
-        add = self._run(["git", "add", "-A"], cwd=worktree)
+    def commit_paths(self, worktree: Path, message: str, relative_paths: list[str]) -> CommandResult:
+        if not relative_paths:
+            return CommandResult(False, "", "No candidate paths supplied.", 2)
+        add = self._run(["git", "add", "--", *sorted(set(relative_paths))], cwd=worktree)
         if not add.ok:
             return add
         return self._run(["git", "commit", "-m", message], cwd=worktree)
@@ -74,3 +97,30 @@ class GitHubIntegration:
         if not self.gh_available():
             return CommandResult(False, "", "GitHub CLI (gh) is not installed.", 127)
         return self._run(["gh", "issue", "create", "--title", title, "--body", body], timeout=60)
+
+    def candidate_lifecycle(self, branch: str) -> CandidateLifecycle:
+        """Observe PR/check state. This method never merges or promotes."""
+        if not self.gh_available():
+            return CandidateLifecycle("awaiting_pr", False)
+        result = self._run(
+            [
+                "gh", "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
+                "--json", "url,mergedAt,statusCheckRollup",
+            ],
+            timeout=60,
+        )
+        if not result.ok:
+            return CandidateLifecycle("awaiting_pr", False)
+        try:
+            rows = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return CandidateLifecycle("awaiting_pr", False)
+        if not rows:
+            return CandidateLifecycle("awaiting_pr", False)
+        pr = rows[0]
+        return CandidateLifecycle(
+            classify_check_rollup(pr.get("statusCheckRollup") or []),
+            bool(pr.get("mergedAt")),
+            pr.get("url"),
+        )
+

@@ -1,4 +1,4 @@
-# LocalPilot v0.1
+# LocalPilot v0.2
 
 LocalPilot is a private, local-first Windows agent intended to grow into a capable computer operator while using GitHub as its engineering and rollback layer.
 
@@ -134,3 +134,17 @@ The intended LocalPilot is not a permanently restricted support bot. It is meant
 The first backlog item is the guarded Windows operator foundation. Once that layer has tests, rollback hooks and command confinement, we can start adding real reversible PC actions without turning every harmless task into a confirmation-dialog exercise.
 
 See `ARCHITECTURE.md`, `ROADMAP.md` and `SECURITY.md` for the design.
+
+
+## Learning and evolution architecture
+
+Everyday operation and self-development now use separate model roles:
+
+- `[model].name` remains the everyday PC agent (`gpt-oss:20b` by default).
+- `[selfdev].developer_model` prefers the existing local `qwen2.5:32b` for engineering cycles and falls back to the everyday model when it is unavailable.
+
+Evolution is staged: a read-only research pass produces an evidence brief, then an implementation pass edits only the isolated candidate. If direct tool editing stalls, the developer must return a strict structured change plan; every proposed file is still validated and applied through `CandidateTools.write_project_file`, so it cannot bypass candidate path or file limits.
+
+Cycle outcomes and short reusable lessons are stored locally in `localpilot-data/learning.sqlite3`. The schema intentionally excludes prompts, transcripts, model thinking, and hidden reasoning. Failed and paused cycles are useful learning records too.
+
+A pushed branch does not complete a backlog task. LocalPilot holds the current task while its candidate awaits a PR, records GitHub Actions status, and advances only after checks pass **and** the PR is merged. There is no automatic promotion path, even if a configuration file attempts to enable one.

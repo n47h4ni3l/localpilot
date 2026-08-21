@@ -49,6 +49,10 @@ def _show_doctor(console: Console, config, root: Path) -> int:
     return 1 if failures else 0
 
 
+def _progress(console: Console):
+    return lambda message: console.print(f"[dim]{message}[/dim]")
+
+
 def _chat(console: Console, config, root: Path) -> None:
     console.print(f"[bold]{config.agent.name} 0.1[/bold] — local-first Windows agent")
     console.print(f"Model: {config.model.name} via Ollama. Commands: /status /doctor /evolve /quit\n")
@@ -71,7 +75,7 @@ def _chat(console: Console, config, root: Path) -> None:
             _show_doctor(console, config, root)
             continue
         if command == "/evolve":
-            result = SelfDeveloper(config, root).run_once(force=False)
+            result = SelfDeveloper(config, root, progress=_progress(console)).run_once(force=False)
             console.print(f"[bold]{result.status}[/bold]\n{result.summary}")
             if result.workspace:
                 console.print(f"Candidate: {result.workspace}")
@@ -104,7 +108,7 @@ def main() -> None:
     elif args.command == "status":
         _show_status(console, config, root)
     elif args.command == "evolve":
-        result = SelfDeveloper(config, root).run_once(force=args.force)
+        result = SelfDeveloper(config, root, progress=_progress(console)).run_once(force=args.force)
         console.print(f"[bold]{result.status}[/bold]\n{result.summary}")
         if result.workspace:
             console.print(f"Candidate workspace: {result.workspace}")

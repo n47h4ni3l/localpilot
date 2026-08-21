@@ -1,0 +1,39 @@
+[agent]
+name = "LocalPilot"
+data_dir = "localpilot-data"
+max_tool_rounds = 12
+
+[model]
+provider = "ollama"
+name = "gpt-oss:20b"
+think = true
+temperature = 0.1
+
+[resource]
+# LocalPilot remains light while you are using the PC.
+active_priority = "below_normal"
+idle_priority = "normal"
+background_idle_seconds = 600
+max_cpu_percent_for_background = 65.0
+max_memory_percent_for_background = 82.0
+
+[safety]
+# System-changing PC tools are not enabled in v0.1 yet. These defaults define
+# the policy that later operator tools must follow.
+auto_allow_read_only = true
+auto_allow_reversible = true
+require_confirmation_for_destructive = true
+
+[github]
+enabled = true
+remote = "origin"
+main_branch = "main"
+auto_push_candidates = true
+
+[selfdev]
+enabled = true
+auto_promote = false
+max_tool_rounds = 14
+max_files_per_cycle = 8
+run_static_checks = true
+allow_local_candidate_execution = false

@@ -1,0 +1,45 @@
+{
+  "tasks": [
+    {
+      "id": "operator-foundation",
+      "title": "Design the guarded Windows operator foundation",
+      "status": "todo",
+      "acceptance": [
+        "Add a command runner abstraction that never invokes shell=True",
+        "Separate ordinary, reversible and destructive operations",
+        "Add tests proving commands cannot bypass the policy layer",
+        "Do not enable destructive actions automatically"
+      ]
+    },
+    {
+      "id": "persistent-machine-memory",
+      "title": "Add SQLite-backed machine knowledge and change history",
+      "status": "todo",
+      "acceptance": [
+        "Store structured machine facts locally",
+        "Record observed changes with timestamps and sources",
+        "Never commit machine-private data to GitHub"
+      ]
+    },
+    {
+      "id": "idle-supervisor",
+      "title": "Add a resumable idle self-development supervisor",
+      "status": "todo",
+      "acceptance": [
+        "Pause promptly when user activity returns",
+        "Resume candidate work later",
+        "Never promote a candidate automatically"
+      ]
+    },
+    {
+      "id": "desktop-observer",
+      "title": "Add screenshot and foreground-window observation",
+      "status": "todo",
+      "acceptance": [
+        "Keep capture local by default",
+        "Avoid continuous recording",
+        "Expose observation through explicit tools"
+      ]
+    }
+  ]
+}

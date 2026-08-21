@@ -156,6 +156,34 @@ def apply_change_plan(plan: ChangePlan, tools: "CandidateTools") -> list[str]:
     return [tools.write_project_file(change.path, change.content) for change in plan.changes]
 
 
+def build_read_context(
+    tools: "CandidateTools",
+    *,
+    max_files: int = 8,
+    max_chars_per_file: int = 16000,
+) -> str:
+    """Return bounded source context only for files already inspected through CandidateTools."""
+    rows: list[str] = []
+    paths = sorted(
+        tools.files_read,
+        key=lambda item: item.relative_to(tools.workspace).as_posix(),
+    )
+
+    for file_path in paths[:max_files]:
+        try:
+            relative = file_path.relative_to(tools.workspace).as_posix()
+            content = file_path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            )[:max_chars_per_file]
+        except Exception:
+            continue
+
+        rows.append(f"--- {relative} ---\n{content}")
+
+    return "\n\n".join(rows) or "(No candidate files were successfully inspected.)"
+
+
 class CandidateTools:
     """File tools confined to one candidate workspace."""
 
@@ -557,6 +585,75 @@ class SelfDeveloper:
                 f"CI repair paused because the PC became busy: {exc}",
             )
 
+        fallback_error: str | None = None
+
+        if not tools.files_written:
+            self._check_resources(force, branch)
+            self._emit(
+                "Direct CI repair editing stalled; requesting structured fallback change plan"
+            )
+
+            try:
+                inspected_context = build_read_context(tools)
+
+                response = developer_chat(
+                    chat,
+                    request_think=self.config.model.think,
+                    model=developer_model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You correctly analysed a failed candidate but did not make a file edit. "
+                                "Now return one strict JSON object with summary, reusable_lesson, and changes. "
+                                "changes must be a non-empty list of objects containing path, complete content, "
+                                "and reason. Each content value must contain the COMPLETE replacement file, not "
+                                "a diff or excerpt. No markdown and no hidden reasoning. The caller will apply "
+                                "every proposed file only through CandidateTools.write_project_file, so candidate "
+                                "path confinement and file limits remain enforced. Repair only the concrete CI "
+                                "failure and do not weaken safety.\n"
+                                f"Task: {task['title']}\n"
+                                f"Acceptance: {acceptance}\n"
+                                f"CI failed-step log:\n{failure_log[:16000]}\n"
+                                f"Your prior diagnosis:\n{final_text[:8000]}\n"
+                                f"Candidate files you inspected:\n{inspected_context}"
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "Produce the concrete structured repair change plan now."
+                            ),
+                        },
+                    ],
+                    options={"temperature": 0.0},
+                )
+
+                fallback_plan = parse_change_plan(
+                    self._content(response),
+                    tools.max_files,
+                )
+                apply_change_plan(fallback_plan, tools)
+
+                final_text = json.dumps(
+                    {
+                        "summary": fallback_plan.summary,
+                        "reusable_lesson": fallback_plan.reusable_lesson,
+                    }
+                )
+
+                self.audit.write(
+                    "selfdev_ci_repair_fallback",
+                    branch=branch,
+                    task_id=task["id"],
+                    files_written=len(tools.files_written),
+                )
+
+            except Exception as exc:
+                fallback_error = (
+                    f"{type(exc).__name__}: {exc}"
+                )
+
         if not tools.files_written:
             summary, lesson = self._outcome(
                 final_text,
@@ -567,6 +664,12 @@ class SelfDeveloper:
             )
 
             summary += "\n\nNo candidate files changed during CI repair."
+
+            if fallback_error:
+                summary += (
+                    "\nStructured repair fallback also failed: "
+                    + fallback_error
+                )
 
             self.memory.finish_cycle(
                 candidate.cycle_id,

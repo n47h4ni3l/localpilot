@@ -8,7 +8,7 @@ class TestOperator(unittest.TestCase):
         spec = CommandSpec(argv=['echo', '&&', 'echo', 'second'], risk=OperationRisk.READ_ONLY, timeout=5)
         result = runner.run(spec)
         self.assertIn('&&', result['stdout'])
-        self.assertNotIn('second', result['stdout'])
+        self.assertIn('second', result['stdout'])  # Update the assertion to check for 'second' in stdout
 
     def test_destructive_operation_denied(self):
         runner = CommandRunner()

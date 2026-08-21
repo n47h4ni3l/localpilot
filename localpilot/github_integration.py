@@ -38,6 +38,28 @@ def classify_check_rollup(checks: list[dict]) -> str:
     return "passed" if conclusions and conclusions <= terminal_ok else "pending"
 
 
+def classify_workflow_run(status: str | None, conclusion: str | None) -> str:
+    status_name = str(status or "").upper()
+    conclusion_name = str(conclusion or "").upper()
+
+    if status_name != "COMPLETED":
+        return "pending"
+
+    if conclusion_name in {"SUCCESS", "SKIPPED", "NEUTRAL"}:
+        return "passed"
+
+    if conclusion_name in {
+        "FAILURE",
+        "CANCELLED",
+        "TIMED_OUT",
+        "ACTION_REQUIRED",
+        "STARTUP_FAILURE",
+    }:
+        return "failed"
+
+    return "pending"
+
+
 class GitHubIntegration:
     """Git/GitHub adapter. Every process uses argv and shell=False."""
 
@@ -98,28 +120,163 @@ class GitHubIntegration:
             return CommandResult(False, "", "GitHub CLI (gh) is not installed.", 127)
         return self._run(["gh", "issue", "create", "--title", title, "--body", body], timeout=60)
 
+    def branch_workflow_state(self, branch: str) -> CandidateLifecycle:
+        """Observe the newest GitHub Actions run for a candidate branch."""
+        if not self.gh_available():
+            return CandidateLifecycle("awaiting_pr", False)
+
+        result = self._run(
+            [
+                "gh", "run", "list",
+                "--branch", branch,
+                "--workflow", "tests",
+                "--limit", "1",
+                "--json", "databaseId,status,conclusion,url",
+            ],
+            timeout=60,
+        )
+
+        if not result.ok:
+            return CandidateLifecycle("pending", False)
+
+        try:
+            rows = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return CandidateLifecycle("pending", False)
+
+        if not rows:
+            return CandidateLifecycle("pending", False)
+
+        row = rows[0]
+        return CandidateLifecycle(
+            classify_workflow_run(row.get("status"), row.get("conclusion")),
+            False,
+        )
+
+    def failed_workflow_log(self, branch: str, max_chars: int = 16000) -> str:
+        """Return a bounded failed-step log for the newest failed branch run."""
+        if not self.gh_available():
+            return "GitHub CLI is unavailable; CI failure details could not be retrieved."
+
+        result = self._run(
+            [
+                "gh", "run", "list",
+                "--branch", branch,
+                "--workflow", "tests",
+                "--limit", "1",
+                "--json", "databaseId,status,conclusion",
+            ],
+            timeout=60,
+        )
+
+        if not result.ok:
+            return result.stderr or result.stdout or "Could not query GitHub Actions."
+
+        try:
+            rows = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return "GitHub Actions returned invalid JSON."
+
+        if not rows:
+            return "No GitHub Actions run was found for this candidate branch."
+
+        row = rows[0]
+
+        if classify_workflow_run(row.get("status"), row.get("conclusion")) != "failed":
+            return "The newest GitHub Actions run is not failed."
+
+        run_id = str(row.get("databaseId") or "")
+        if not run_id:
+            return "Failed workflow run did not include a run id."
+
+        logs = self._run(
+            ["gh", "run", "view", run_id, "--log-failed"],
+            timeout=120,
+        )
+
+        log_text = logs.stdout if logs.ok else (logs.stderr or logs.stdout)
+        limit = max(1000, min(int(max_chars), 50000))
+        return (log_text or "No failed-step log was returned.")[-limit:]
+
+    def worktree_for_branch(self, branch: str) -> Path | None:
+        result = self._run(["git", "worktree", "list", "--porcelain"])
+        if not result.ok:
+            return None
+
+        current: Path | None = None
+        wanted = f"branch refs/heads/{branch}"
+
+        for line in result.stdout.splitlines():
+            if line.startswith("worktree "):
+                current = Path(line[len("worktree "):])
+            elif line == wanted and current is not None and current.exists():
+                return current.resolve()
+
+        return None
+
+    def checkout_existing_branch_worktree(
+        self,
+        branch: str,
+        destination: Path,
+    ) -> CommandResult:
+        """Restore an existing candidate branch without creating a new branch."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self._run(["git", "worktree", "prune"])
+
+        verify = self._run(
+            ["git", "show-ref", "--verify", f"refs/heads/{branch}"]
+        )
+
+        if not verify.ok:
+            fetched = self._run(
+                ["git", "fetch", self.config.remote, f"{branch}:{branch}"],
+                timeout=120,
+            )
+            if not fetched.ok:
+                return fetched
+
+        return self._run(
+            ["git", "worktree", "add", str(destination), branch]
+        )
+
     def candidate_lifecycle(self, branch: str) -> CandidateLifecycle:
         """Observe PR/check state. This method never merges or promotes."""
         if not self.gh_available():
             return CandidateLifecycle("awaiting_pr", False)
+
         result = self._run(
             [
-                "gh", "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
+                "gh", "pr", "list",
+                "--head", branch,
+                "--state", "all",
+                "--limit", "1",
                 "--json", "url,mergedAt,statusCheckRollup",
             ],
             timeout=60,
         )
+
         if not result.ok:
-            return CandidateLifecycle("awaiting_pr", False)
+            return self.branch_workflow_state(branch)
+
         try:
             rows = json.loads(result.stdout)
         except json.JSONDecodeError:
-            return CandidateLifecycle("awaiting_pr", False)
+            return self.branch_workflow_state(branch)
+
         if not rows:
-            return CandidateLifecycle("awaiting_pr", False)
+            return self.branch_workflow_state(branch)
+
         pr = rows[0]
+        checks = pr.get("statusCheckRollup") or []
+
+        state = (
+            classify_check_rollup(checks)
+            if checks
+            else self.branch_workflow_state(branch).validation_state
+        )
+
         return CandidateLifecycle(
-            classify_check_rollup(pr.get("statusCheckRollup") or []),
+            state,
             bool(pr.get("mergedAt")),
             pr.get("url"),
         )

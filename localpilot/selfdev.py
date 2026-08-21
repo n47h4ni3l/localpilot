@@ -288,13 +288,23 @@ class SelfDeveloper:
                 pull_request_url=lifecycle.pull_request_url,
             )
 
-    def _load_next_task(self) -> dict[str, Any] | None:
+    def _backlog_tasks(self) -> list[dict[str, Any]]:
         path = self.root / "selfdev-backlog.json"
         if not path.exists():
-            return None
+            return []
+
         data = json.loads(path.read_text(encoding="utf-8"))
+        return list(data.get("tasks", []))
+
+    def _load_task_by_id(self, task_id: str) -> dict[str, Any] | None:
+        for task in self._backlog_tasks():
+            if str(task.get("id")) == str(task_id):
+                return task
+        return None
+
+    def _load_next_task(self) -> dict[str, Any] | None:
         return choose_next_task(
-            data.get("tasks", []),
+            self._backlog_tasks(),
             self.memory.completed_task_ids(),
             self.memory.pending_task_ids(),
         )
@@ -402,6 +412,309 @@ class SelfDeveloper:
             str(value.get("reusable_lesson") or default_lesson)[:2000],
         )
 
+    def _repair_failed_candidate(
+        self,
+        *,
+        force: bool,
+    ) -> EvolutionResult | None:
+        failed = self.memory.failed_candidates()
+        if not failed:
+            return None
+
+        candidate = failed[0]
+        task = self._load_task_by_id(candidate.task_id)
+
+        if task is None:
+            summary = (
+                "Cannot repair failed candidate: backlog task "
+                f"{candidate.task_id!r} no longer exists."
+            )
+            return EvolutionResult(
+                "failed",
+                candidate.branch,
+                None,
+                summary,
+                False,
+            )
+
+        branch = candidate.branch
+        workspace = self.github.worktree_for_branch(branch)
+
+        if workspace is None:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            workspace = (
+                self.data_dir
+                / "repairs"
+                / f"{stamp}-{branch.split('/')[-1]}"
+            )
+
+            restored = self.github.checkout_existing_branch_worktree(
+                branch,
+                workspace,
+            )
+
+            if not restored.ok:
+                summary = (
+                    "Could not restore failed candidate worktree: "
+                    f"{restored.stderr or restored.stdout}"
+                )
+                return EvolutionResult(
+                    "failed",
+                    branch,
+                    workspace,
+                    summary,
+                    False,
+                )
+
+        available = available_ollama_models()
+        developer_model = select_developer_model(
+            self.config.selfdev.developer_model,
+            self.config.model.name,
+            available,
+        )
+
+        tools = CandidateTools(
+            workspace,
+            self.config.selfdev.max_files_per_cycle,
+        )
+
+        failure_log = self.github.failed_workflow_log(branch)
+        acceptance = json.dumps(
+            task.get("acceptance", []),
+            ensure_ascii=False,
+        )
+        lessons = self.memory.reusable_lessons(
+            self.config.selfdev.lesson_limit
+        )
+
+        try:
+            from ollama import chat
+        except ImportError:
+            return EvolutionResult(
+                "failed",
+                branch,
+                workspace,
+                "Ollama Python package is not installed.",
+                False,
+            )
+
+        self._emit(
+            f"CI failed for {branch}; starting autonomous repair"
+        )
+
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are LocalPilot's CI-repair developer. A candidate "
+                    "you previously wrote failed GitHub Actions. Diagnose the "
+                    "concrete failure from the supplied CI log, inspect the "
+                    "candidate files, and repair only the isolated candidate "
+                    "using the supplied tools. Do not touch stable, do not "
+                    "weaken safety, do not execute candidate code locally, "
+                    "and do not use shell command strings. Update tests when "
+                    "the failure reveals a bad test. Finish with JSON containing "
+                    "only summary and reusable_lesson; do not expose hidden "
+                    "reasoning.\n"
+                    f"Task: {task['title']}\n"
+                    f"Acceptance: {acceptance}\n"
+                    f"CI failed-step log:\n{failure_log[:16000]}\n"
+                    "Reusable lessons:\n"
+                    f"{json.dumps(lessons, ensure_ascii=False)}"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Repair the failed candidate now. Inspect the relevant "
+                    "files before editing."
+                ),
+            },
+        ]
+
+        try:
+            final_text = self._tool_stage(
+                chat=chat,
+                model=developer_model,
+                messages=messages,
+                functions=[
+                    tools.list_project_files,
+                    tools.read_project_file,
+                    tools.write_project_file,
+                    tools.run_candidate_static_checks,
+                    tools.show_candidate_diff,
+                ],
+                rounds=self.config.selfdev.max_tool_rounds,
+                force=force,
+                branch=branch,
+                stage="ci_repair",
+            )
+        except CyclePaused as exc:
+            return EvolutionResult(
+                "paused",
+                branch,
+                workspace,
+                f"CI repair paused because the PC became busy: {exc}",
+            )
+
+        if not tools.files_written:
+            summary, lesson = self._outcome(
+                final_text,
+                (
+                    "A failed CI run must produce a concrete candidate "
+                    "repair before retrying validation."
+                ),
+            )
+
+            summary += "\n\nNo candidate files changed during CI repair."
+
+            self.memory.finish_cycle(
+                candidate.cycle_id,
+                status="failed",
+                summary=summary,
+                reusable_lesson=lesson,
+                checks_passed=False,
+                pushed=True,
+            )
+
+            return EvolutionResult(
+                "failed",
+                branch,
+                workspace,
+                summary,
+                False,
+            )
+
+        check_result = tools.run_candidate_static_checks()
+        checks_passed = check_result.startswith(
+            "static_checks=passed"
+        )
+
+        if not checks_passed:
+            summary, lesson = self._outcome(
+                final_text,
+                (
+                    "Repair candidates must pass static checks before "
+                    "being pushed."
+                ),
+            )
+
+            summary += f"\n\n{check_result}"
+
+            self.memory.finish_cycle(
+                candidate.cycle_id,
+                status="candidate_needs_work",
+                summary=summary,
+                reusable_lesson=lesson,
+                checks_passed=False,
+                pushed=True,
+            )
+
+            return EvolutionResult(
+                "candidate_needs_work",
+                branch,
+                workspace,
+                summary,
+                False,
+            )
+
+        relative_paths = [
+            path.relative_to(workspace).as_posix()
+            for path in tools.files_written
+        ]
+
+        commit = self.github.commit_paths(
+            workspace,
+            f"repair: {task['title']}",
+            relative_paths,
+        )
+
+        if not commit.ok:
+            summary = (
+                "Candidate repair commit failed: "
+                f"{commit.stderr or commit.stdout}"
+            )
+
+            self.memory.finish_cycle(
+                candidate.cycle_id,
+                status="failed",
+                summary=summary,
+                reusable_lesson=(
+                    "A repair must create a real diff before committing."
+                ),
+                checks_passed=True,
+                pushed=True,
+            )
+
+            return EvolutionResult(
+                "failed",
+                branch,
+                workspace,
+                summary,
+                True,
+            )
+
+        push = self.github.push_branch(
+            workspace,
+            branch,
+        )
+
+        summary, lesson = self._outcome(
+            final_text,
+            (
+                "Use GitHub CI failures as concrete feedback and repair "
+                "the same isolated candidate."
+            ),
+        )
+
+        summary += f"\n\n{check_result}"
+
+        if push.ok:
+            summary += (
+                "\n\nRepair pushed; waiting for GitHub CI to validate "
+                "the new candidate commit."
+            )
+            status = "candidate_pending_validation"
+        else:
+            summary += (
+                "\n\nRepair push failed: "
+                f"{push.stderr or push.stdout}"
+            )
+            status = "candidate_needs_work"
+
+        # The original candidate branch already exists remotely, so keep
+        # the cycle attached to it even if this particular push fails.
+        self.memory.finish_cycle(
+            candidate.cycle_id,
+            status=status,
+            summary=summary,
+            reusable_lesson=lesson,
+            checks_passed=True,
+            pushed=True,
+        )
+
+        self.audit.write(
+            "selfdev_ci_repair",
+            branch=branch,
+            task_id=task["id"],
+            files_written=len(tools.files_written),
+            pushed=push.ok,
+            summary=summary[:2000],
+        )
+
+        self._emit(
+            f"CI repair finished: {status} — "
+            f"wrote {len(tools.files_written)} file(s)"
+        )
+
+        return EvolutionResult(
+            status,
+            branch,
+            workspace,
+            summary,
+            True,
+        )
+
     def run_once(self, *, force: bool = False) -> EvolutionResult:
         if not self.config.selfdev.enabled:
             return EvolutionResult("disabled", None, None, "Self-development is disabled in config.")
@@ -413,6 +726,11 @@ class SelfDeveloper:
         self.governor.apply_process_priority(idle=True)
 
         self._reconcile_candidates()
+
+        repair = self._repair_failed_candidate(force=force)
+        if repair is not None:
+            return repair
+
         task = self._load_next_task()
         if not task:
             return EvolutionResult("idle", None, None, "No eligible todo item remains. Merged, validated tasks are skipped.")

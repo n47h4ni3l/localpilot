@@ -16,6 +16,19 @@
       ]
     },
     {
+      "id": "self-review-repair",
+      "title": "Add deliberate pre-CI self-review and repair stages",
+      "status": "todo",
+      "acceptance": [
+        "Review the candidate diff against acceptance criteria before push",
+        "Return concise engineering findings and a pass-or-repair verdict without hidden reasoning",
+        "If repair is required, edit only through CandidateTools and inspect the resulting diff",
+        "Re-run non-executing static checks after repair",
+        "Never auto-promote, never execute candidate code locally, and never weaken candidate confinement",
+        "Record reusable review lessons in the existing learning database"
+      ]
+    },
+    {
       "id": "persistent-machine-memory",
       "title": "Add SQLite-backed machine knowledge and change history",
       "status": "todo",
@@ -43,6 +56,21 @@
         "Keep capture local by default",
         "Avoid continuous recording",
         "Expose observation through explicit tools"
+      ]
+    },
+    {
+      "id": "model-adaptation-lab",
+      "title": "Build a guarded local model adaptation and weight-improvement lab",
+      "status": "todo",
+      "acceptance": [
+        "Keep the active base model immutable and train candidate adapters or weights separately",
+        "Build curated training and evaluation datasets only from explicitly approved non-secret LocalPilot outcomes",
+        "Start with LoRA or other parameter-efficient adaptation before attempting full-weight training",
+        "Benchmark every candidate against the current model on held-out coding, tool-use, safety, and regression tasks",
+        "Reject candidates that regress safety, reliability, or task performance",
+        "Require explicit human approval before changing the active developer or everyday model",
+        "Keep rollback artifacts and provenance for every promoted model candidate",
+        "Design later full-weight retraining as a separate hardware-gated stage rather than silently overwriting a running model"
       ]
     }
   ]

@@ -123,6 +123,27 @@ class LearningMemory:
             ).fetchall()
         return [PendingCandidate(int(row["id"]), row["task_id"], row["branch"]) for row in rows]
 
+    def failed_candidates(self) -> list[PendingCandidate]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, task_id, branch FROM development_cycles
+                WHERE pushed = 1
+                  AND validation_state = 'failed'
+                  AND merged = 0
+                ORDER BY id
+                """
+            ).fetchall()
+
+        return [
+            PendingCandidate(
+                int(row["id"]),
+                row["task_id"],
+                row["branch"],
+            )
+            for row in rows
+        ]
+
     def update_candidate_review(
         self,
         cycle_id: int,

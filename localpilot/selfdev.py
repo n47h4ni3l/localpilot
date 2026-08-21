@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from localpilot.audit import AuditLog
 from localpilot.config import Config
@@ -30,6 +28,13 @@ class EvolutionResult:
     tests_passed: bool | None = None
 
 
+def classify_candidate_result(files_written: int, checks_passed: bool | None) -> str:
+    """Return a truthful result state for a self-development cycle."""
+    if files_written == 0:
+        return "no_changes"
+    return "candidate_ready" if checks_passed else "candidate_needs_work"
+
+
 class CandidateTools:
     """File and test tools confined to one candidate workspace."""
 
@@ -37,6 +42,7 @@ class CandidateTools:
         self.workspace = workspace.resolve()
         self.max_files = max_files
         self.files_written: set[Path] = set()
+        self.files_read: set[Path] = set()
 
     def _resolve(self, relative_path: str) -> Path:
         raw = Path(relative_path)
@@ -70,6 +76,7 @@ class CandidateTools:
         max_chars = max(1000, min(int(max_chars), 100000))
         if not path.is_file():
             return f"File not found: {relative_path}"
+        self.files_read.add(path)
         return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
 
     def write_project_file(self, relative_path: str, content: str) -> str:
@@ -77,7 +84,7 @@ class CandidateTools:
         path = self._resolve(relative_path)
         suffix = path.suffix.lower() if path.name != ".gitignore" else ".gitignore"
         if suffix not in _ALLOWED_SUFFIXES:
-            raise ValueError(f"File type is not allowed for autonomous editing: {suffix or '(none)'}")
+            raise ValueError(f"File type is not allowed for autonomous editing: {suffix or '(none)'})")
         if len(content.encode("utf-8")) > 1_000_000:
             raise ValueError("Candidate file exceeds 1 MB safety limit.")
         if path not in self.files_written and len(self.files_written) >= self.max_files:
@@ -133,7 +140,12 @@ class CandidateTools:
 class SelfDeveloper:
     """Creates isolated candidate builds; it never overwrites stable directly."""
 
-    def __init__(self, config: Config, project_root: str | Path) -> None:
+    def __init__(
+        self,
+        config: Config,
+        project_root: str | Path,
+        progress: Callable[[str], None] | None = None,
+    ) -> None:
         self.config = config
         self.root = Path(project_root).resolve()
         self.data_dir = (self.root / config.agent.data_dir).resolve()
@@ -141,6 +153,11 @@ class SelfDeveloper:
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
         self.governor = ResourceGovernor(config.resource)
         self.github = GitHubIntegration(self.root, config.github)
+        self.progress = progress or (lambda _message: None)
+
+    def _emit(self, message: str) -> None:
+        self.progress(message)
+        self.audit.write("selfdev_progress", message=message)
 
     def _load_next_task(self) -> dict[str, Any] | None:
         path = self.root / "selfdev-backlog.json"
@@ -183,6 +200,7 @@ class SelfDeveloper:
         slug = "".join(c if c.isalnum() else "-" for c in task["id"].lower()).strip("-")[:40]
         branch_stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         branch = f"localpilot/candidate-{slug}-{branch_stamp}"
+        self._emit(f"Creating candidate for: {task['title']}")
         workspace, is_worktree = self._candidate_workspace(branch)
         tools = CandidateTools(workspace, self.config.selfdev.max_files_per_cycle)
         self.audit.write("selfdev_start", task=task, branch=branch, workspace=str(workspace))
@@ -192,15 +210,20 @@ class SelfDeveloper:
         except ImportError as exc:
             raise RuntimeError("Ollama Python package is not installed. Run scripts/bootstrap.ps1.") from exc
 
+        self._emit(f"Loading model {self.config.model.name} via Ollama")
         system = f"""You are the developer instance of LocalPilot. Improve ONE candidate build, never the stable installation.
 Task: {task['title']}
 Acceptance criteria: {task.get('acceptance', [])}
 The candidate workspace is isolated. Use the provided file tools. Keep changes focused and maintain Windows compatibility.
-Run candidate static checks before finishing. Full executable tests run in GitHub Actions after a candidate branch is pushed. Never weaken path confinement, audit logging, stable/developer/candidate separation, or the resource governor.
+You MUST implement at least one concrete code or test change with write_project_file unless the task is genuinely impossible. Do not spend the whole cycle only reading or analysing. After gathering enough context, edit the candidate, inspect the diff, and run static checks.
+Full executable tests run in GitHub Actions after a candidate branch is pushed. Never weaken path confinement, audit logging, stable/developer/candidate separation, or the resource governor.
 Do not add cloud pricing or payment machinery. GitHub remains the source-control/CI layer.
 When finished, return a concise implementation summary and any remaining risks.
 """
-        messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": "Implement the task now."}]
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": "Implement the task now. Make a real candidate change rather than only analysing it."},
+        ]
         functions = [
             tools.list_project_files,
             tools.read_project_file,
@@ -214,7 +237,13 @@ When finished, return a concise implementation summary and any remaining risks.
             if not force and not current.background_allowed:
                 self.governor.apply_process_priority(idle=False)
                 self.audit.write("selfdev_paused", branch=branch, reason=current.reason)
+                self._emit(f"Paused: {current.reason}")
                 return EvolutionResult("paused", branch, workspace, f"User returned or PC became busy: {current.reason}")
+
+            self._emit(
+                f"Tool round {round_no + 1}/{self.config.selfdev.max_tool_rounds} — "
+                f"read {len(tools.files_read)}, wrote {len(tools.files_written)} file(s)"
+            )
             response = chat(
                 model=self.config.model.name,
                 messages=messages,
@@ -234,7 +263,12 @@ When finished, return a concise implementation summary and any remaining risks.
                     result = f"Unknown candidate tool: {name}"
                 else:
                     args = call.function.arguments or {}
-                    self.audit.write("selfdev_tool", branch=branch, tool=name, args={k: ("<content>" if k == "content" else v) for k, v in args.items()})
+                    self.audit.write(
+                        "selfdev_tool",
+                        branch=branch,
+                        tool=name,
+                        args={k: ("<content>" if k == "content" else v) for k, v in args.items()},
+                    )
                     try:
                         result = fn(**args)
                     except Exception as exc:
@@ -245,17 +279,36 @@ When finished, return a concise implementation summary and any remaining risks.
 
         checks_passed: bool | None = None
         if self.config.selfdev.run_static_checks:
+            self._emit("Running final static checks")
             check_result = tools.run_candidate_static_checks()
             checks_passed = check_result.startswith("static_checks=passed")
             final_text += f"\n\nFinal static check:\n{check_result}"
 
-        if is_worktree and tools.files_written and checks_passed:
+        if not tools.files_written:
+            final_text += (
+                "\n\nNo candidate files were changed. This cycle is classified as no_changes, "
+                "not candidate_ready."
+            )
+            self._emit("No files changed; candidate will not be committed or pushed")
+        elif is_worktree and checks_passed:
+            self._emit(f"Committing {len(tools.files_written)} changed file(s)")
             commit = self.github.commit_all(workspace, f"candidate: {task['title']}")
             if commit.ok and self.config.github.auto_push_candidates:
+                self._emit(f"Pushing candidate branch {branch}")
                 push = self.github.push_branch(workspace, branch)
                 final_text += f"\n\nGit push: {'ok — GitHub Actions will validate the branch' if push.ok else push.stderr}"
             elif not commit.ok:
                 final_text += f"\n\nGit commit failed: {commit.stderr or commit.stdout}"
 
-        self.audit.write("selfdev_end", branch=branch, checks_passed=checks_passed, summary=final_text[:2000])
-        return EvolutionResult("candidate_ready" if checks_passed else "candidate_needs_work", branch, workspace, final_text, checks_passed)
+        status = classify_candidate_result(len(tools.files_written), checks_passed)
+        self.audit.write(
+            "selfdev_end",
+            branch=branch,
+            checks_passed=checks_passed,
+            files_read=len(tools.files_read),
+            files_written=len(tools.files_written),
+            status=status,
+            summary=final_text[:2000],
+        )
+        self._emit(f"Finished: {status} — read {len(tools.files_read)}, wrote {len(tools.files_written)} file(s)")
+        return EvolutionResult(status, branch, workspace, final_text, checks_passed)

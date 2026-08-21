@@ -97,6 +97,23 @@ def available_ollama_models() -> set[str]:
     return names
 
 
+def developer_chat(
+    chat: Callable[..., Any],
+    *,
+    request_think: bool,
+    **kwargs: Any,
+) -> Any:
+    """Use Ollama thinking when supported; retry without it when unsupported."""
+    if request_think:
+        try:
+            return chat(think=True, **kwargs)
+        except Exception as exc:
+            message = str(exc).lower()
+            if "does not support thinking" not in message:
+                raise
+    return chat(**kwargs)
+
+
 def _json_object(text: str) -> dict[str, Any]:
     candidate = text.strip()
     if candidate.startswith("```"):
@@ -341,11 +358,12 @@ class SelfDeveloper:
         for round_no in range(rounds):
             self._check_resources(force, branch)
             self._emit(f"{stage} round {round_no + 1}/{rounds}")
-            response = chat(
+            response = developer_chat(
+                chat,
+                request_think=self.config.model.think,
                 model=model,
                 messages=messages,
                 tools=functions,
-                think=self.config.model.think,
                 options={"temperature": self.config.model.temperature},
             )
             message = getattr(response, "message", response)
@@ -502,7 +520,9 @@ class SelfDeveloper:
             if not tools.files_written:
                 self._check_resources(force, branch)
                 self._emit("Direct editing stalled; requesting structured fallback change plan")
-                response = chat(
+                response = developer_chat(
+                    chat,
+                    request_think=self.config.model.think,
                     model=developer_model,
                     messages=[
                         {
@@ -517,7 +537,6 @@ class SelfDeveloper:
                         },
                         {"role": "user", "content": "Produce the candidate change plan now."},
                     ],
-                    think=False,
                     options={"temperature": 0.0},
                 )
                 fallback_plan = parse_change_plan(self._content(response), tools.max_files)

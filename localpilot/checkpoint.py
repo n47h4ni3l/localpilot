@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 _SENSITIVE = re.compile(
     r"(?i)(password|passwd|token|secret|api[_-]?key|credential|authorization|bearer)"
 )
@@ -67,6 +67,10 @@ class EvolutionCheckpoint:
     objective: str
     acceptance_criteria: tuple[str, ...]
     task_fingerprint: str
+    evolution_class: str
+    capability_target: str
+    hypothesis: str
+    evaluation_plan: str
     milestone: str
     files_inspected: tuple[str, ...]
     files_changed: tuple[str, ...]
@@ -117,6 +121,13 @@ class EvolutionCheckpoint:
             objective=_safe_text(task.get("title"), 1000),
             acceptance_criteria=_safe_items(task.get("acceptance") or (), count=30, limit=1000),
             task_fingerprint=task_fingerprint(task),
+            evolution_class=_safe_text(task.get("evolution_class") or "repair", 80),
+            capability_target=_safe_text(task.get("capability_target") or task.get("title"), 1000),
+            hypothesis=_safe_text(task.get("hypothesis"), 2000),
+            evaluation_plan=_safe_text(
+                json.dumps(task.get("evaluation") or {}, ensure_ascii=False, sort_keys=True),
+                3000,
+            ),
             milestone=_safe_text(milestone, 100),
             files_inspected=_safe_items(files_inspected, count=100, limit=500),
             files_changed=_safe_items(files_changed, count=100, limit=500),
@@ -136,6 +147,17 @@ class EvolutionCheckpoint:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "EvolutionCheckpoint":
+        if value.get("version") == 1:
+            value = dict(value)
+            value.update(
+                {
+                    "version": CHECKPOINT_VERSION,
+                    "evolution_class": "repair",
+                    "capability_target": str(value.get("objective") or ""),
+                    "hypothesis": "",
+                    "evaluation_plan": "{}",
+                }
+            )
         required = {field.name for field in fields(cls)}
         if set(value) != required:
             missing = sorted(required - set(value))

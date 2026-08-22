@@ -246,6 +246,49 @@ class GitHubIntegration:
     def push_branch(self, worktree: Path, branch: str) -> CommandResult:
         return self._run(["git", "push", "-u", self.config.remote, branch], cwd=worktree, timeout=120)
 
+    def create_candidate_pull_request(
+        self,
+        worktree: Path,
+        *,
+        branch: str,
+        title: str,
+        body: str,
+    ) -> CommandResult:
+        """Present a candidate for review; this never merges or promotes it."""
+        if not self.gh_available():
+            return CommandResult(False, "", "GitHub CLI (gh) is not installed.", 127)
+        if not _SAFE_BRANCH_NAME.fullmatch(branch):
+            return CommandResult(False, "", "Candidate branch name is unsafe.", 2)
+        return self._run(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--head",
+                branch,
+                "--base",
+                self.config.main_branch,
+                "--title",
+                title[:240],
+                "--body",
+                body[:20_000],
+            ],
+            cwd=worktree,
+            timeout=120,
+        )
+
+    def tracked_project_paths(self) -> set[str]:
+        """Return only committed paths suitable for read-only discovery."""
+        result = self._run(["git", "ls-files", "-z"])
+        if not result.ok:
+            return set()
+        paths: set[str] = set()
+        for raw in result.stdout.split("\0"):
+            relative = Path(raw).as_posix()
+            if relative and not Path(relative).is_absolute() and ".." not in Path(relative).parts:
+                paths.add(relative)
+        return paths
+
     def candidate_changed_paths(self, worktree: Path) -> list[str]:
         """Return tracked and untracked candidate paths without executing code."""
         tracked = self._run(

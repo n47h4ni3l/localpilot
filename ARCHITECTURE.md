@@ -16,28 +16,41 @@ guarded fetch/fast-forward of the clean trusted main checkout
     -> resource gate
     -> reconcile earlier candidate PR/check state
     -> resume an unfinished local candidate, when present
-    -> select first eligible backlog task
+    -> enforce the one-outstanding-candidate gate
+    -> select an eligible seed task, or discover a capability-growth question
+    -> classify Repair / Extend / Improve Cognition / Explore
+    -> record limitation, alternatives, falsifiable hypothesis and measured baseline
     -> create isolated candidate
-    -> save versioned candidate/task checkpoint
+    -> save versioned candidate/task/capability checkpoint
     -> research stage (list/read tools only)
     -> checkpoint concise findings and exact next action
     -> implementation stage (candidate tools)
     -> structured JSON change-plan fallback, if direct editing stalls
     -> non-executing local static checks
     -> bounded same-worktree static-repair/recheck loop, if needed
+    -> reject regressed or unmeasured complexity
     -> candidate commit/push
+    -> focused human-review PR presentation
     -> GitHub Actions
     -> human-reviewed PR merge
-    -> task becomes complete in local learning state
+    -> validated experiment outcome updates local capability memory
 ```
 
-On a later invocation, an active checkpoint is considered only after guarded main sync, the resource gate and candidate reconciliation. Resume fails closed unless its version, cycle/task/branch/worktree identity, backlog contract fingerprint, Git HEAD, changed-path set and candidate content digest all match current state. A rejected checkpoint is deleted; LocalPilot may then rebuild a handoff from the independently validated learning and Git state, but never trusts stale findings or decisions.
+On a later invocation, an active checkpoint is considered only after guarded main sync, the resource gate and candidate reconciliation. Resume fails closed unless its version, cycle/task/branch/worktree identity, seed-or-experiment contract fingerprint, capability target/hypothesis, Git HEAD, changed-path set and candidate content digest all match current state. A rejected checkpoint is deleted; LocalPilot may then rebuild a handoff from the independently validated learning and Git state, but never trusts stale findings or decisions.
 
 The self-sync gate acts only on the repository root while it is checked out on the configured main branch. It never switches branches, resets changes, merges divergent history, or enters a candidate worktree. Git operations use argument vectors with `shell=False`. A successful fast-forward ends the current invocation so no evolution work continues in a process that loaded the previous build.
 
 The fallback is data, not a privileged editing channel. Its paths and complete file contents are parsed into a `ChangePlan`, and every item is applied by calling `CandidateTools.write_project_file`. It therefore keeps the same path confinement, protected-directory rules, file limits, type allow-list, and size limit as ordinary candidate tool calls.
 
 GitHub validation and merge are separate facts. A passing local static check or a pushed branch does not complete a task. The next backlog item is eligible only after the current candidate's GitHub checks pass and its PR is merged. An unfinished unpushed Git candidate is pending too: its exact branch and worktree are reused on the next invocation, its existing changes are revalidated against path, type, size, reviewer-test and file-count protections, and it is never committed or pushed until static checks pass. LocalPilot can observe promotion state; it has no method that merges or promotes.
+
+## Capability-growth mandate
+
+The scheduler does not treat “nothing is broken” as a terminal state. When no seed task or outstanding candidate blocks new work, the discovery planner asks what highest-leverage change could increase LocalPilot's future capability. It chooses from evidence in committed architecture, prior runs, failures, CI outcomes, resource constraints, benchmarks and recorded capability gaps—not from a hard-coded feature wishlist.
+
+Every proposal belongs to one of four first-class classes: **Repair** for defects/reliability/resources, **Extend** for new tools or abilities, **Improve Cognition** for planning/memory/retrieval/evaluation/routing/context/learning, and **Explore** for bounded high-upside architectural hypotheses. A proposal is ineligible without a falsifiable hypothesis, alternatives, metric, baseline, success criterion and measurement method. Complexity is penalized during selection, and a capability candidate cannot be delivered when its evaluation is regressed or unmeasured.
+
+Exploration remains candidate-only, resource bounded and human controlled. GitHub CI is the executable evaluation boundary; LocalPilot may open a PR for review but has no merge or promotion method.
 
 ## Local learning memory
 
@@ -46,12 +59,14 @@ GitHub validation and merge are separate facts. A passing local static check or 
 - task, candidate branch, everyday/developer model names;
 - cycle outcome, static-check result, push/PR/merge state;
 - candidate worktree and durable bounded local-repair attempt count;
-- concise implementation summary; and
-- a short reusable lesson for later cycles.
+- concise implementation summary;
+- a short reusable lesson for later cycles;
+- capability names and known limitations; and
+- experiment class/target/question, alternatives, hypothesis, baseline, evaluation evidence and outcome.
 
 The schema deliberately has no prompts, transcripts, messages, thinking, or chain-of-thought fields. Research and model scratch work are transient. Machine-private learning data remains under the already ignored `localpilot-data/` directory and is never committed to GitHub.
 
-`localpilot-data/evolution-checkpoint.json` complements the cycle database while work is active. It stores bounded, scrubbed engineering facts: checkpoint version/time, task objective and acceptance criteria, cycle/branch/worktree, inspected and changed path names, concise research findings and decisions, Git/diff/static-check/test status and failure markers, unresolved questions, exact next action and reusable lessons. It stores no file bodies, prompts, messages, transcripts, raw token streams, hidden reasoning or known secret-bearing text. Saves use atomic replacement after meaningful tool/milestone progress and immediately before a resource pause or unhandled exit. Terminal completion removes the checkpoint.
+`localpilot-data/evolution-checkpoint.json` complements the cycle database while work is active. It stores bounded, scrubbed engineering facts: checkpoint version/time, task objective and acceptance criteria, evolution class, capability target, hypothesis, evaluation plan, cycle/branch/worktree, inspected and changed path names, concise research findings and decisions, Git/diff/static-check/test status and failure markers, unresolved questions, exact next action and reusable lessons. It stores no file bodies, prompts, messages, transcripts, raw token streams, hidden reasoning or known secret-bearing text. Saves use atomic replacement after meaningful tool/milestone progress and immediately before a resource pause or unhandled exit. Version-1 checkpoints migrate to the current reviewable schema, and terminal completion removes the checkpoint.
 
 ## Resource and process safety
 

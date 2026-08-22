@@ -1,24 +1,6 @@
-"""
-Regression test for the PR #19 failure mode.
+"""Fail-closed regression coverage for the structurally incomplete PR #19."""
 
-PR #19 ("self-review-repair") was rejected because the candidate referenced
-scripts/pre_ci_review.sh, which write_project_file structurally cannot
-create (.sh is not in _ALLOWED_SUFFIXES). Two gaps let that happen silently:
-
-1. Developer-stage prompts never told the model which file types were
-   actually writable, so it could plan a .sh file with no way to know that
-   plan was doomed before trying it.
-2. apply_change_plan() wrote each planned file one at a time with no
-   upfront validation, so a plan with N changes could partially apply
-   (e.g. write a workflow file that references a script) and then raise
-   on the disallowed file, leaving a dangling reference on disk.
-
-This test locks in the fix for (2): a change plan containing any
-disallowed suffix must be rejected in full, before any file is written,
-so the workspace never ends up in that half-applied state again.
-
-Place this file under tests/ alongside the existing suite.
-"""
+from pathlib import Path
 
 import pytest
 
@@ -28,79 +10,139 @@ from localpilot.selfdev import (
     PlannedChange,
     _ALLOWED_SUFFIXES,
     apply_change_plan,
+    candidate_write_integrity_failure,
 )
 
 
-def _tools(tmp_path):
+def _tools(tmp_path: Path, **kwargs) -> CandidateTools:
     workspace = tmp_path / "candidate"
     workspace.mkdir()
-    return CandidateTools(workspace, max_files=8)
+    return CandidateTools(workspace, **kwargs)
 
 
-def test_plan_with_disallowed_suffix_is_rejected_before_any_write(tmp_path):
-    tools = _tools(tmp_path)
-    plan = ChangePlan(
-        summary="Add a pre-CI review hook",
-        reusable_lesson="",
-        changes=(
-            # This file is allowed and would normally be written first.
-            PlannedChange(
-                path=".github/workflows/pre_ci_review.yml",
-                content="on: [pull_request]\n",
-                reason="Wire the hook into CI",
-            ),
-            # This one is not — .sh is outside _ALLOWED_SUFFIXES.
-            PlannedChange(
-                path="scripts/pre_ci_review.sh",
-                content="#!/usr/bin/env bash\necho ok\n",
-                reason="The actual review script",
-            ),
-        ),
+def _plan(*changes: PlannedChange) -> ChangePlan:
+    return ChangePlan(
+        summary="candidate plan",
+        reusable_lesson="validate before writing",
+        changes=tuple(changes),
     )
 
-    with pytest.raises(ValueError, match=r"disallowed file type"):
+
+def _change(path: str, content: str = "x") -> PlannedChange:
+    return PlannedChange(path=path, content=content, reason="regression test")
+
+
+def test_pr19_plan_is_rejected_before_precommit_config_is_written(tmp_path: Path):
+    """Reproduce PR #19 with its real first file, not a protected .github path."""
+    tools = _tools(tmp_path)
+    plan = _plan(
+        _change(
+            ".pre-commit-config.yaml",
+            "repos:\n  - repo: local\n    hooks:\n      - entry: scripts/pre_ci_review.sh\n",
+        ),
+        _change("scripts/pre_ci_review.sh", "#!/usr/bin/env bash\necho ok\n"),
+    )
+
+    with pytest.raises(ValueError, match=r"autonomous editing: \.sh"):
         apply_change_plan(plan, tools)
 
-    # The critical assertion: nothing from the plan should have landed on
-    # disk. Before this fix, the .yml file above would have been written
-    # successfully and only the .sh write would have raised, leaving a
-    # workflow file that references a script that was never created —
-    # exactly the structurally-incomplete candidate PR #19 shipped.
-    assert not (tools.workspace / ".github/workflows/pre_ci_review.yml").exists()
+    assert not (tools.workspace / ".pre-commit-config.yaml").exists()
     assert not (tools.workspace / "scripts/pre_ci_review.sh").exists()
     assert tools.files_written == set()
 
 
-def test_plan_within_allowed_suffixes_still_applies_normally(tmp_path):
-    tools = _tools(tmp_path)
-    plan = ChangePlan(
-        summary="Add a pre-CI review hook using an allowed script type",
-        reusable_lesson="",
-        changes=(
-            PlannedChange(
-                path="scripts/pre_ci_review.ps1",
-                content="Write-Host 'ok'\n",
-                reason="Windows-native equivalent of the .sh attempt",
-            ),
-        ),
+@pytest.mark.parametrize(
+    ("invalid_change", "protected_paths", "message"),
+    [
+        (_change("../escape.py"), (), "escapes candidate workspace"),
+        (_change(".github/workflows/test.yml"), (), "Protected candidate path"),
+        (_change("tests/reviewer.py"), ("tests/reviewer.py",), "read-only"),
+        (_change("large.md", "x" * 1_000_001), (), "1 MB safety limit"),
+    ],
+)
+def test_every_write_rule_is_preflighted_before_any_plan_write(
+    tmp_path: Path,
+    invalid_change: PlannedChange,
+    protected_paths: tuple[str, ...],
+    message: str,
+):
+    tools = _tools(tmp_path, protected_paths=protected_paths)
+    plan = _plan(_change("README.md", "candidate\n"), invalid_change)
+
+    with pytest.raises((PermissionError, ValueError), match=message):
+        apply_change_plan(plan, tools)
+
+    assert not (tools.workspace / "README.md").exists()
+    assert tools.files_written == set()
+
+
+def test_plan_preflight_accounts_for_existing_file_budget(tmp_path: Path):
+    tools = _tools(tmp_path, max_files=2)
+    tools.write_project_file("existing.py", "VALUE = 1\n")
+    plan = _plan(
+        _change("first.py", "VALUE = 2\n"),
+        _change("second.py", "VALUE = 3\n"),
     )
 
-    results = apply_change_plan(plan, tools)
+    with pytest.raises(RuntimeError, match="file-write limit"):
+        apply_change_plan(plan, tools)
 
-    assert len(results) == 1
-    assert (tools.workspace / "scripts/pre_ci_review.ps1").exists()
+    assert (tools.workspace / "existing.py").exists()
+    assert not (tools.workspace / "first.py").exists()
+    assert not (tools.workspace / "second.py").exists()
 
 
-@pytest.mark.parametrize("suffix", sorted(_ALLOWED_SUFFIXES - {".gitignore"}))
-def test_every_currently_allowed_suffix_still_applies(tmp_path, suffix):
-    """Guards against future edits to _ALLOWED_SUFFIXES silently breaking
-    apply_change_plan's validation logic for suffixes it's supposed to
-    permit."""
+def test_rejected_direct_write_is_durable_for_the_cycle(tmp_path: Path):
     tools = _tools(tmp_path)
-    plan = ChangePlan(
-        summary="s",
-        reusable_lesson="",
-        changes=(PlannedChange(path=f"generated/file{suffix}", content="x", reason="r"),),
+    tools.write_project_file(
+        ".pre-commit-config.yaml",
+        "repos:\n  - repo: local\n    hooks:\n      - entry: scripts/pre_ci_review.sh\n",
     )
-    apply_change_plan(plan, tools)
-    assert (tools.workspace / f"generated/file{suffix}").exists()
+
+    with pytest.raises(ValueError, match=r"autonomous editing: \.sh"):
+        tools.write_project_file("scripts/pre_ci_review.sh", "echo ok\n")
+
+    tools.write_project_file("scripts/pre_ci_review.ps1", "Write-Host 'ok'\n")
+    failure = candidate_write_integrity_failure(tools)
+    assert failure is not None
+    assert "scripts/pre_ci_review.sh" in failure
+    assert "Candidate delivery blocked" in failure
+
+
+def test_static_checks_reject_missing_precommit_entry(tmp_path: Path):
+    tools = _tools(tmp_path)
+    tools.write_project_file(
+        ".pre-commit-config.yaml",
+        "repos:\n  - repo: local\n    hooks:\n      - entry: scripts/pre_ci_review.sh\n",
+    )
+
+    result = tools.run_candidate_static_checks()
+
+    assert result.startswith("static_checks=failed")
+    assert "hook entry references a missing file: scripts/pre_ci_review.sh" in result
+
+
+def test_static_checks_accept_existing_human_owned_hook_script(tmp_path: Path):
+    tools = _tools(tmp_path)
+    script = tools.workspace / "scripts" / "pre_ci_review.sh"
+    script.parent.mkdir()
+    script.write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+    tools.write_project_file(
+        ".pre-commit-config.yaml",
+        "repos:\n  - repo: local\n    hooks:\n      - entry: scripts/pre_ci_review.sh\n",
+    )
+
+    assert tools.run_candidate_static_checks().startswith("static_checks=passed")
+
+
+def test_allowed_suffixes_still_apply(tmp_path: Path):
+    tools = _tools(tmp_path, max_files=len(_ALLOWED_SUFFIXES))
+    changes = tuple(
+        _change(f"generated/file{suffix}")
+        for suffix in sorted(_ALLOWED_SUFFIXES - {".gitignore"})
+    ) + (_change("generated/.gitignore"),)
+
+    apply_change_plan(_plan(*changes), tools)
+
+    assert len(tools.files_written) == len(_ALLOWED_SUFFIXES)
+    assert candidate_write_integrity_failure(tools) is None

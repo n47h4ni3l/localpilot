@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -15,6 +16,13 @@ class CommandResult:
     stdout: str
     stderr: str
     returncode: int
+
+
+@dataclass(frozen=True, slots=True)
+class MainSyncResult:
+    ok: bool
+    updated: bool
+    summary: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +70,8 @@ def classify_workflow_run(status: str | None, conclusion: str | None) -> str:
 
 _AUTONOMOUS_COMMIT_PREFIXES = ("candidate: ", "repair: ")
 _REVIEW_COMMIT_MARKER = "@@LOCALPILOT_COMMIT@@"
+_SAFE_REMOTE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SAFE_BRANCH_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
 
 def parse_reviewer_modified_test_paths(log_text: str) -> set[str]:
@@ -127,6 +137,90 @@ class GitHubIntegration:
 
     def clean_worktree(self) -> bool:
         return self.is_git_repo() and self._run(["git", "status", "--porcelain"]).stdout == ""
+
+    def sync_trusted_main(self) -> MainSyncResult:
+        """Fast-forward a clean, trusted main checkout without touching candidates."""
+        remote = self.config.remote
+        main_branch = self.config.main_branch
+        if not _SAFE_REMOTE_NAME.fullmatch(remote):
+            return MainSyncResult(False, False, "Configured Git remote name is unsafe.")
+        if not _SAFE_BRANCH_NAME.fullmatch(main_branch):
+            return MainSyncResult(False, False, "Configured main branch name is unsafe.")
+
+        if not self.is_git_repo():
+            return MainSyncResult(False, False, "Project root is not a Git checkout.")
+
+        top_level = self._run(["git", "rev-parse", "--show-toplevel"])
+        if not top_level.ok or Path(top_level.stdout).resolve() != self.root:
+            return MainSyncResult(False, False, "Project root is not the Git checkout root.")
+
+        branch = self._run(["git", "branch", "--show-current"])
+        if not branch.ok or branch.stdout != main_branch:
+            current = branch.stdout or "detached HEAD"
+            return MainSyncResult(
+                False,
+                False,
+                f"Refusing self-sync from {current}; trusted branch is {main_branch}.",
+            )
+
+        status = self._run(["git", "status", "--porcelain", "--untracked-files=all"])
+        if not status.ok:
+            return MainSyncResult(False, False, status.stderr or "Could not inspect the main checkout.")
+        if status.stdout:
+            return MainSyncResult(False, False, "Main checkout has uncommitted work; nothing was changed.")
+
+        configured_remote = self._run(["git", "remote", "get-url", remote])
+        if not configured_remote.ok:
+            return MainSyncResult(False, False, f"Configured Git remote {remote} is unavailable.")
+
+        remote_ref = f"refs/remotes/{remote}/{main_branch}"
+        fetched = self._run(
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "--prune",
+                remote,
+                f"+refs/heads/{main_branch}:{remote_ref}",
+            ],
+            timeout=120,
+        )
+        if not fetched.ok:
+            detail = fetched.stderr or fetched.stdout or "unknown fetch error"
+            return MainSyncResult(False, False, f"Could not refresh trusted main: {detail}")
+
+        head = self._run(["git", "rev-parse", "--verify", "HEAD^{commit}"])
+        target = self._run(["git", "rev-parse", "--verify", f"{remote_ref}^{{commit}}"])
+        if not head.ok or not target.ok:
+            return MainSyncResult(False, False, "Could not resolve local and remote main commits.")
+        if head.stdout == target.stdout:
+            return MainSyncResult(True, False, f"Trusted {main_branch} is already current at {head.stdout}.")
+
+        ancestor = self._run(["git", "merge-base", "--is-ancestor", head.stdout, target.stdout])
+        if not ancestor.ok:
+            return MainSyncResult(
+                False,
+                False,
+                "Local main is ahead of or diverged from the remote; automatic sync was refused.",
+            )
+
+        still_clean = self._run(["git", "status", "--porcelain", "--untracked-files=all"])
+        if not still_clean.ok or still_clean.stdout:
+            return MainSyncResult(False, False, "Main checkout changed during sync; fast-forward was refused.")
+
+        merged = self._run(["git", "merge", "--ff-only", "--no-edit", target.stdout], timeout=120)
+        if not merged.ok:
+            detail = merged.stderr or merged.stdout or "unknown fast-forward error"
+            return MainSyncResult(False, False, f"Trusted main could not be fast-forwarded: {detail}")
+
+        verified = self._run(["git", "rev-parse", "--verify", "HEAD^{commit}"])
+        if not verified.ok or verified.stdout != target.stdout:
+            return MainSyncResult(False, False, "Fast-forward verification failed; evolve was stopped.")
+        return MainSyncResult(
+            True,
+            True,
+            f"Trusted {main_branch} fast-forwarded from {head.stdout} to {target.stdout}.",
+        )
 
     def create_candidate_worktree(self, branch: str, destination: Path) -> CommandResult:
         destination.parent.mkdir(parents=True, exist_ok=True)

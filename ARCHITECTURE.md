@@ -11,7 +11,9 @@ Stable is never rewritten in place, candidate code is not executed locally by th
 ## Self-development cycle
 
 ```text
-resource gate
+guarded fetch/fast-forward of the clean trusted main checkout
+    -> stop and reload on update, or fail closed when sync is unsafe
+    -> resource gate
     -> reconcile earlier candidate PR/check state
     -> resume an unfinished local candidate, when present
     -> select first eligible backlog task
@@ -26,6 +28,8 @@ resource gate
     -> human-reviewed PR merge
     -> task becomes complete in local learning state
 ```
+
+The self-sync gate acts only on the repository root while it is checked out on the configured main branch. It never switches branches, resets changes, merges divergent history, or enters a candidate worktree. Git operations use argument vectors with `shell=False`. A successful fast-forward ends the current invocation so no evolution work continues in a process that loaded the previous build.
 
 The fallback is data, not a privileged editing channel. Its paths and complete file contents are parsed into a `ChangePlan`, and every item is applied by calling `CandidateTools.write_project_file`. It therefore keeps the same path confinement, protected-directory rules, file limits, type allow-list, and size limit as ordinary candidate tool calls.
 

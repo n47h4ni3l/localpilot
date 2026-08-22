@@ -10,6 +10,7 @@ from rich.table import Table
 
 from localpilot.agent import LocalPilotAgent
 from localpilot.audit import AuditLog
+from localpilot.checkpoint import CheckpointStore
 from localpilot.config import load_config
 from localpilot.doctor import doctor
 from localpilot.github_integration import GitHubIntegration
@@ -41,7 +42,8 @@ def _show_status(console: Console, config, root: Path) -> None:
     table.add_row("CPU", f"{state.cpu_percent:.1f}%")
     table.add_row("Memory", f"{state.memory_percent:.1f}%")
     table.add_row("Background self-dev", "available" if state.background_allowed else f"deferred — {state.reason}")
-    last_evolve = AuditLog(root / config.agent.data_dir / "audit.jsonl").latest("evolve_run_end")
+    audit = AuditLog(root / config.agent.data_dir / "audit.jsonl")
+    last_evolve = audit.latest("evolve_run_end")
     if last_evolve:
         timestamp = str(last_evolve.get("timestamp") or "")
         try:
@@ -59,6 +61,31 @@ def _show_status(console: Console, config, root: Path) -> None:
         table.add_row("Last evolve", detail)
     else:
         table.add_row("Last evolve", "No completed invocation has been recorded yet.")
+    checkpoint_store = CheckpointStore(root / config.agent.data_dir / "evolution-checkpoint.json")
+    try:
+        checkpoint = checkpoint_store.load()
+    except Exception as exc:
+        table.add_row("Checkpoint", f"Invalid — {type(exc).__name__}: {exc}"[:300])
+    else:
+        latest_resume = audit.latest("selfdev_checkpoint_resume")
+        if checkpoint:
+            detail = (
+                f"v{checkpoint.version} {checkpoint.milestone} at {checkpoint.updated_at}\n"
+                f"branch: {checkpoint.branch}\n"
+                f"task: {checkpoint.task_id} — {checkpoint.objective}\n"
+                f"next: {checkpoint.next_action}"
+            )
+            if latest_resume and latest_resume.get("branch") == checkpoint.branch:
+                detail += f"\nlast resume: {latest_resume.get('status', 'unknown')}"
+            table.add_row("Checkpoint", detail[:1200])
+        elif latest_resume:
+            table.add_row(
+                "Checkpoint",
+                f"None active; last resume {latest_resume.get('status', 'unknown')}: "
+                f"{str(latest_resume.get('reason') or '')[:240]}",
+            )
+        else:
+            table.add_row("Checkpoint", "No active evolution checkpoint.")
     table.add_row("Git", gh.status())
     console.print(table)
 

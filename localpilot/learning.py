@@ -15,6 +15,9 @@ class PendingCandidate:
     cycle_id: int
     task_id: str
     branch: str
+    workspace: str | None = None
+    local_repair_attempts: int = 0
+    status: str = ""
 
 
 class LearningMemory:
@@ -53,6 +56,9 @@ class LearningMemory:
                     pull_request_url TEXT,
                     validation_state TEXT NOT NULL DEFAULT 'not_started',
                     merged INTEGER NOT NULL DEFAULT 0,
+                    workspace TEXT,
+                    is_worktree INTEGER NOT NULL DEFAULT 0,
+                    local_repair_attempts INTEGER NOT NULL DEFAULT 0,
                     started_at TEXT NOT NULL,
                     finished_at TEXT
                 );
@@ -62,6 +68,26 @@ class LearningMemory:
                     ON development_cycles(merged, validation_state, pushed);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(development_cycles)"
+                ).fetchall()
+            }
+            migrations = {
+                "workspace": "ALTER TABLE development_cycles ADD COLUMN workspace TEXT",
+                "is_worktree": (
+                    "ALTER TABLE development_cycles ADD COLUMN "
+                    "is_worktree INTEGER NOT NULL DEFAULT 0"
+                ),
+                "local_repair_attempts": (
+                    "ALTER TABLE development_cycles ADD COLUMN "
+                    "local_repair_attempts INTEGER NOT NULL DEFAULT 0"
+                ),
+            }
+            for name, statement in migrations.items():
+                if name not in columns:
+                    connection.execute(statement)
 
     def start_cycle(
         self,
@@ -70,17 +96,63 @@ class LearningMemory:
         branch: str,
         everyday_model: str,
         developer_model: str,
+        workspace: str | Path | None = None,
+        is_worktree: bool = False,
     ) -> int:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO development_cycles (
-                    task_id, branch, everyday_model, developer_model, status, started_at
-                ) VALUES (?, ?, ?, ?, 'running', ?)
+                    task_id, branch, everyday_model, developer_model, status,
+                    workspace, is_worktree, started_at
+                ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?)
                 """,
-                (task_id, branch, everyday_model, developer_model, _now()),
+                (
+                    task_id,
+                    branch,
+                    everyday_model,
+                    developer_model,
+                    str(Path(workspace).resolve()) if workspace is not None else None,
+                    int(is_worktree),
+                    _now(),
+                ),
             )
             return int(cursor.lastrowid)
+
+    def update_candidate_workspace(self, cycle_id: int, workspace: str | Path) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE development_cycles SET workspace = ? WHERE id = ?",
+                (str(Path(workspace).resolve()), cycle_id),
+            )
+
+    def record_local_repair_attempt(
+        self,
+        cycle_id: int,
+        *,
+        check_result: str,
+    ) -> int:
+        """Durably count a model repair before it starts.
+
+        Recording first makes a crash or power loss consume an attempt instead
+        of silently creating an unbounded retry loop on the next invocation.
+        """
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE development_cycles
+                SET local_repair_attempts = local_repair_attempts + 1,
+                    status = 'candidate_needs_work', checks_passed = 0,
+                    summary = ?, finished_at = ?
+                WHERE id = ?
+                """,
+                (check_result[:4000], _now(), cycle_id),
+            )
+            row = connection.execute(
+                "SELECT local_repair_attempts FROM development_cycles WHERE id = ?",
+                (cycle_id,),
+            ).fetchone()
+        return int(row["local_repair_attempts"]) if row is not None else 0
 
     def finish_cycle(
         self,
@@ -91,7 +163,11 @@ class LearningMemory:
         reusable_lesson: str,
         checks_passed: bool | None,
         pushed: bool,
+        validation_state: str | None = None,
     ) -> None:
+        next_validation_state = validation_state or (
+            "awaiting_pr" if pushed else "not_started"
+        )
         with self._connect() as connection:
             connection.execute(
                 """
@@ -106,7 +182,7 @@ class LearningMemory:
                     reusable_lesson[:2000],
                     None if checks_passed is None else int(checks_passed),
                     int(pushed),
-                    "awaiting_pr" if pushed else "not_started",
+                    next_validation_state,
                     _now(),
                     cycle_id,
                 ),
@@ -123,11 +199,40 @@ class LearningMemory:
             ).fetchall()
         return [PendingCandidate(int(row["id"]), row["task_id"], row["branch"]) for row in rows]
 
+    def local_candidates(self) -> list[PendingCandidate]:
+        """Return unfinished, unpushed Git candidates that still own a worktree."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, task_id, branch, workspace,
+                       local_repair_attempts, status
+                FROM development_cycles
+                WHERE pushed = 0
+                  AND merged = 0
+                  AND is_worktree = 1
+                  AND status IN ('running', 'paused', 'candidate_needs_work')
+                ORDER BY id
+                """
+            ).fetchall()
+        return [
+            PendingCandidate(
+                int(row["id"]),
+                str(row["task_id"]),
+                str(row["branch"]),
+                str(row["workspace"]) if row["workspace"] else None,
+                int(row["local_repair_attempts"]),
+                str(row["status"]),
+            )
+            for row in rows
+        ]
+
     def failed_candidates(self) -> list[PendingCandidate]:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, task_id, branch FROM development_cycles
+                SELECT id, task_id, branch, workspace,
+                       local_repair_attempts, status
+                FROM development_cycles
                 WHERE pushed = 1
                   AND validation_state = 'failed'
                   AND merged = 0
@@ -138,8 +243,11 @@ class LearningMemory:
         return [
             PendingCandidate(
                 int(row["id"]),
-                row["task_id"],
-                row["branch"],
+                str(row["task_id"]),
+                str(row["branch"]),
+                str(row["workspace"]) if row["workspace"] else None,
+                int(row["local_repair_attempts"]),
+                str(row["status"]),
             )
             for row in rows
         ]
@@ -181,7 +289,17 @@ class LearningMemory:
             rows = connection.execute(
                 """
                 SELECT DISTINCT task_id FROM development_cycles
-                WHERE pushed = 1 AND NOT (merged = 1 AND validation_state = 'passed')
+                WHERE (
+                    pushed = 1
+                    AND NOT (merged = 1 AND validation_state = 'passed')
+                ) OR (
+                    pushed = 0
+                    AND is_worktree = 1
+                    AND status IN (
+                        'running', 'paused', 'candidate_ready',
+                        'candidate_needs_work'
+                    )
+                )
                 """
             ).fetchall()
         return {str(row["task_id"]) for row in rows}

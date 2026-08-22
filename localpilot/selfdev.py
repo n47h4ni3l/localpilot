@@ -41,6 +41,14 @@ class ChangePlan:
     changes: tuple[PlannedChange, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class StaticRepairResult:
+    check_result: str
+    passed: bool
+    final_text: str
+    attempts_used: int
+
+
 class CyclePaused(RuntimeError):
     pass
 
@@ -184,6 +192,33 @@ def build_read_context(
     return "\n\n".join(rows) or "(No candidate files were successfully inspected.)"
 
 
+def build_static_repair_context(
+    tools: "CandidateTools",
+    check_result: str,
+    *,
+    max_files: int = 8,
+    max_chars_per_file: int = 5000,
+) -> str:
+    """Build bounded failure, diff, and changed-file feedback for a repair."""
+    rows: list[str] = []
+    paths = sorted(
+        tools.files_written,
+        key=lambda item: item.relative_to(tools.workspace).as_posix(),
+    )
+    for file_path in paths[:max_files]:
+        relative = file_path.relative_to(tools.workspace).as_posix()
+        content = tools.read_project_file(relative, max_chars=max_chars_per_file)
+        rows.append(f"--- {relative} ---\n{content}")
+
+    changed_files = "\n\n".join(rows) or "(No changed file content is available.)"
+    candidate_diff = tools.show_candidate_diff()[-16000:]
+    return (
+        f"Static-check failure:\n{check_result[:8000]}\n\n"
+        f"Candidate diff:\n{candidate_diff}\n\n"
+        f"Changed candidate files:\n{changed_files}"
+    )
+
+
 class CandidateTools:
     """File tools confined to one candidate workspace."""
 
@@ -192,6 +227,7 @@ class CandidateTools:
         workspace: Path,
         max_files: int = 8,
         protected_paths: Iterable[str] | None = None,
+        existing_changed_paths: Iterable[str] | None = None,
     ) -> None:
         self.workspace = workspace.resolve()
         self.max_files = max_files
@@ -199,8 +235,39 @@ class CandidateTools:
             Path(item).as_posix()
             for item in (protected_paths or ())
         }
-        self.files_written: set[Path] = set()
+        existing = {
+            self._resolve(item)
+            for item in (existing_changed_paths or ())
+        }
+        if len(existing) > self.max_files:
+            raise RuntimeError(
+                "Recovered candidate exceeds the file-write limit."
+            )
+        for path in existing:
+            relative = path.relative_to(self.workspace).as_posix()
+            if relative in self.protected_paths:
+                raise PermissionError(
+                    "Reviewer-controlled regression contract has local changes: "
+                    f"{relative}"
+                )
+            suffix = path.suffix.lower() if path.name != ".gitignore" else ".gitignore"
+            if suffix not in _ALLOWED_SUFFIXES:
+                raise ValueError(
+                    "Recovered candidate contains a disallowed file type: "
+                    f"{suffix or '(none)'}"
+                )
+            if not path.is_file():
+                raise ValueError(
+                    "Recovered candidate contains a deletion or missing file: "
+                    f"{relative}"
+                )
+            if path.stat().st_size > 1_000_000:
+                raise ValueError(
+                    f"Recovered candidate file exceeds 1 MB: {relative}"
+                )
+        self.files_written = existing
         self.files_read: set[Path] = set()
+        self.write_count = 0
 
     def _resolve(self, relative_path: str) -> Path:
         raw = Path(relative_path)
@@ -255,6 +322,7 @@ class CandidateTools:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         self.files_written.add(path)
+        self.write_count += 1
         return f"Wrote {path.relative_to(self.workspace).as_posix()} ({len(content)} chars)."
 
     def run_candidate_static_checks(self) -> str:
@@ -457,6 +525,397 @@ class SelfDeveloper:
             str(value.get("reusable_lesson") or default_lesson)[:2000],
         )
 
+    def _repair_static_failures(
+        self,
+        *,
+        chat: Callable[..., Any],
+        model: str,
+        tools: CandidateTools,
+        task: dict[str, Any],
+        branch: str,
+        cycle_id: int,
+        check_result: str,
+        attempts_used: int,
+        protected_paths: Iterable[str] = (),
+        force: bool,
+    ) -> StaticRepairResult:
+        """Feed static failures back into the same candidate, within limits."""
+        limit = max(0, int(self.config.selfdev.max_local_repair_attempts))
+        rounds = max(1, int(self.config.selfdev.local_repair_tool_rounds))
+        final_text = ""
+        protected_note = json.dumps(sorted(protected_paths), ensure_ascii=False)
+        acceptance = json.dumps(task.get("acceptance", []), ensure_ascii=False)
+
+        while (
+            not check_result.startswith("static_checks=passed")
+            and attempts_used < limit
+        ):
+            attempt = self.memory.record_local_repair_attempt(
+                cycle_id,
+                check_result=check_result,
+            )
+            attempts_used = max(attempts_used + 1, attempt)
+            self._check_resources(force, branch)
+            self._emit(
+                f"Repairing local static failure for {branch} "
+                f"(attempt {attempts_used}/{limit})"
+            )
+            context = build_static_repair_context(tools, check_result)
+            writes_before = tools.write_count
+            messages: list[dict[str, Any]] = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are LocalPilot's pre-push static-repair developer. "
+                        "Repair the existing isolated candidate in place using only "
+                        "the supplied candidate tools. The non-executing static "
+                        "checks failed; use the exact failure, diff, and changed-file "
+                        "context below. Inspect relevant files before editing, make "
+                        "the smallest concrete correction, and rerun static checks. "
+                        "Never edit stable, execute candidate code locally, weaken "
+                        "safety, bypass the resource governor, promote, or use shell "
+                        "command strings. Reviewer-controlled tests are immutable. "
+                        "Finish with JSON containing only summary and reusable_lesson; "
+                        "do not expose hidden reasoning.\n"
+                        f"Reviewer-protected paths: {protected_note}\n"
+                        f"Task: {task['title']}\nAcceptance: {acceptance}\n"
+                        f"{context}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": "Repair this same candidate's static-check failure now.",
+                },
+            ]
+            final_text = self._tool_stage(
+                chat=chat,
+                model=model,
+                messages=messages,
+                functions=[
+                    tools.list_project_files,
+                    tools.read_project_file,
+                    tools.write_project_file,
+                    tools.run_candidate_static_checks,
+                    tools.show_candidate_diff,
+                ],
+                rounds=rounds,
+                force=force,
+                branch=branch,
+                stage="local_static_repair",
+            )
+
+            if tools.write_count == writes_before:
+                self._check_resources(force, branch)
+                try:
+                    response = developer_chat(
+                        chat,
+                        request_think=self.config.model.think,
+                        model=model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Return one strict JSON object with summary, "
+                                    "reusable_lesson, and a non-empty changes list. "
+                                    "Each change requires path, complete replacement "
+                                    "content, and reason. No markdown or hidden reasoning. "
+                                    "The caller applies every file only through the "
+                                    "confined candidate write tool. Do not include a "
+                                    "reviewer-protected path.\n"
+                                    f"Reviewer-protected paths: {protected_note}\n"
+                                    f"Task: {task['title']}\n{context}\n"
+                                    f"Prior repair response: {final_text[:4000]}"
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": "Produce the concrete static-repair plan now.",
+                            },
+                        ],
+                        options={"temperature": 0.0},
+                    )
+                    plan = parse_change_plan(self._content(response), tools.max_files)
+                    apply_change_plan(plan, tools)
+                    final_text = json.dumps(
+                        {
+                            "summary": plan.summary,
+                            "reusable_lesson": plan.reusable_lesson,
+                        }
+                    )
+                except Exception as exc:
+                    final_text = (
+                        f"{final_text}\nStructured static repair failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    ).strip()
+
+            check_result = tools.run_candidate_static_checks()
+            passed = check_result.startswith("static_checks=passed")
+            self.audit.write(
+                "selfdev_local_static_repair",
+                branch=branch,
+                task_id=task["id"],
+                attempt=attempts_used,
+                checks_passed=passed,
+                files_written=len(tools.files_written),
+            )
+
+        return StaticRepairResult(
+            check_result,
+            check_result.startswith("static_checks=passed"),
+            final_text,
+            attempts_used,
+        )
+
+    def _repair_local_candidate(
+        self,
+        *,
+        force: bool,
+    ) -> EvolutionResult | None:
+        candidates = self.memory.local_candidates()
+        if not candidates:
+            return None
+
+        candidate = candidates[0]
+        branch = candidate.branch
+        task = self._load_task_by_id(candidate.task_id)
+        if task is None:
+            summary = (
+                "Cannot recover local candidate: backlog task "
+                f"{candidate.task_id!r} no longer exists."
+            )
+            self.memory.finish_cycle(
+                candidate.cycle_id,
+                status="failed",
+                summary=summary,
+                reusable_lesson="Keep candidate tasks available until their local workspace is resolved.",
+                checks_passed=False,
+                pushed=False,
+            )
+            return EvolutionResult(
+                "failed",
+                branch,
+                None,
+                summary,
+                False,
+            )
+
+        workspace = self.github.worktree_for_branch(branch)
+        stored_workspace = Path(candidate.workspace) if candidate.workspace else None
+        if workspace is None and stored_workspace is not None and stored_workspace.exists():
+            summary = (
+                "Stored candidate workspace exists but is no longer registered as "
+                f"the worktree for {branch}: {stored_workspace}"
+            )
+            return EvolutionResult("failed", branch, stored_workspace, summary, False)
+
+        if workspace is None:
+            workspace = stored_workspace or (
+                self.data_dir / "recoveries" / branch.split("/")[-1]
+            )
+            restored = self.github.checkout_existing_branch_worktree(branch, workspace)
+            if not restored.ok:
+                summary = (
+                    "Could not restore unpushed candidate worktree: "
+                    f"{restored.stderr or restored.stdout}"
+                )
+                return EvolutionResult("failed", branch, workspace, summary, False)
+            self.memory.update_candidate_workspace(candidate.cycle_id, workspace)
+
+        changed_paths = self.github.candidate_changed_paths(workspace)
+        has_commit = self.github.branch_has_candidate_commit(workspace)
+        if not changed_paths and not has_commit:
+            summary = "The recoverable candidate has no local changes or candidate commit."
+            self.memory.finish_cycle(
+                candidate.cycle_id,
+                status="failed",
+                summary=summary,
+                reusable_lesson="Only retain a local candidate when it has a recoverable diff.",
+                checks_passed=None,
+                pushed=False,
+            )
+            return EvolutionResult("failed", branch, workspace, summary)
+
+        try:
+            protected_paths = self.github.reviewer_modified_test_paths(
+                workspace,
+                refresh=False,
+            )
+        except RuntimeError as exc:
+            summary = f"Local repair stopped because reviewer protection could not be established: {exc}"
+            return EvolutionResult("failed", branch, workspace, summary, False)
+
+        try:
+            tools = CandidateTools(
+                workspace,
+                self.config.selfdev.max_files_per_cycle,
+                protected_paths=protected_paths,
+                existing_changed_paths=changed_paths,
+            )
+        except (PermissionError, RuntimeError, ValueError) as exc:
+            summary = f"Recovered candidate failed safety validation: {exc}"
+            self.memory.finish_cycle(
+                candidate.cycle_id,
+                status="candidate_needs_work",
+                summary=summary,
+                reusable_lesson="Revalidate every stale candidate against current file protections.",
+                checks_passed=False,
+                pushed=False,
+            )
+            return EvolutionResult(
+                "candidate_needs_work",
+                branch,
+                workspace,
+                summary,
+                False,
+            )
+        check_result = tools.run_candidate_static_checks()
+        repair_text = ""
+
+        if not check_result.startswith("static_checks=passed"):
+            if candidate.local_repair_attempts >= max(
+                0,
+                int(self.config.selfdev.max_local_repair_attempts),
+            ):
+                summary = (
+                    f"Local static repair attempt limit reached for {branch}.\n\n"
+                    f"{check_result}"
+                )
+                self.memory.finish_cycle(
+                    candidate.cycle_id,
+                    status="candidate_needs_work",
+                    summary=summary,
+                    reusable_lesson="Bound autonomous repair attempts and preserve the candidate for human review.",
+                    checks_passed=False,
+                    pushed=False,
+                )
+                return EvolutionResult(
+                    "candidate_needs_work",
+                    branch,
+                    workspace,
+                    summary,
+                    False,
+                )
+
+            try:
+                from ollama import chat
+            except ImportError:
+                return EvolutionResult(
+                    "failed",
+                    branch,
+                    workspace,
+                    "Ollama Python package is not installed.",
+                    False,
+                )
+            model = select_developer_model(
+                self.config.selfdev.developer_model,
+                self.config.model.name,
+                available_ollama_models(),
+            )
+            try:
+                repaired = self._repair_static_failures(
+                    chat=chat,
+                    model=model,
+                    tools=tools,
+                    task=task,
+                    branch=branch,
+                    cycle_id=candidate.cycle_id,
+                    check_result=check_result,
+                    attempts_used=candidate.local_repair_attempts,
+                    protected_paths=protected_paths,
+                    force=force,
+                )
+            except CyclePaused as exc:
+                summary = f"Local candidate repair paused because the PC became busy: {exc}"
+                self.memory.finish_cycle(
+                    candidate.cycle_id,
+                    status="paused",
+                    summary=summary,
+                    reusable_lesson="Resume the same local candidate after the resource gate clears.",
+                    checks_passed=False,
+                    pushed=False,
+                )
+                return EvolutionResult("paused", branch, workspace, summary, False)
+            check_result = repaired.check_result
+            repair_text = repaired.final_text
+
+        checks_passed = check_result.startswith("static_checks=passed")
+        if not checks_passed:
+            summary, lesson = self._outcome(
+                repair_text,
+                "Use bounded static-check feedback to repair the same local candidate.",
+            )
+            summary += f"\n\n{check_result}"
+            self.memory.finish_cycle(
+                candidate.cycle_id,
+                status="candidate_needs_work",
+                summary=summary,
+                reusable_lesson=lesson,
+                checks_passed=False,
+                pushed=False,
+            )
+            return EvolutionResult(
+                "candidate_needs_work",
+                branch,
+                workspace,
+                summary,
+                False,
+            )
+
+        changed_paths = self.github.candidate_changed_paths(workspace)
+        if changed_paths:
+            commit = self.github.commit_paths(
+                workspace,
+                f"candidate: {task['title']}",
+                changed_paths,
+            )
+            if not commit.ok:
+                summary = f"Candidate commit failed: {commit.stderr or commit.stdout}"
+                self.memory.finish_cycle(
+                    candidate.cycle_id,
+                    status="candidate_needs_work",
+                    summary=summary,
+                    reusable_lesson="Keep a green local candidate recoverable when delivery fails.",
+                    checks_passed=True,
+                    pushed=False,
+                )
+                return EvolutionResult("candidate_needs_work", branch, workspace, summary, True)
+
+        pushed = False
+        delivery = "Candidate is locally green and committed; automatic push is disabled."
+        status = "candidate_ready"
+        if self.config.github.auto_push_candidates:
+            push = self.github.push_branch(workspace, branch)
+            pushed = push.ok
+            if pushed:
+                status = "candidate_pending_validation"
+                delivery = "Candidate pushed; it remains pending until CI passes and its PR is merged."
+            else:
+                status = "candidate_needs_work"
+                delivery = f"Candidate push failed: {push.stderr or push.stdout}"
+
+        summary, lesson = self._outcome(
+            repair_text,
+            "Repair and recheck the same isolated candidate before committing or pushing.",
+        )
+        summary = f"{summary}\n\n{check_result}\n\n{delivery}"
+        self.memory.finish_cycle(
+            candidate.cycle_id,
+            status=status,
+            summary=summary,
+            reusable_lesson=lesson,
+            checks_passed=True,
+            pushed=pushed,
+        )
+        self.audit.write(
+            "selfdev_local_recovery",
+            branch=branch,
+            task_id=task["id"],
+            checks_passed=True,
+            pushed=pushed,
+            status=status,
+        )
+        return EvolutionResult(status, branch, workspace, summary, True)
+
     def _repair_failed_candidate(
         self,
         *,
@@ -533,11 +992,17 @@ class SelfDeveloper:
                 False,
             )
 
-        tools = CandidateTools(
-            workspace,
-            self.config.selfdev.max_files_per_cycle,
-            protected_paths=protected_paths,
-        )
+        existing_changed_paths = self.github.candidate_changed_paths(workspace)
+        try:
+            tools = CandidateTools(
+                workspace,
+                self.config.selfdev.max_files_per_cycle,
+                protected_paths=protected_paths,
+                existing_changed_paths=existing_changed_paths,
+            )
+        except (PermissionError, RuntimeError, ValueError) as exc:
+            summary = f"CI repair candidate failed safety validation: {exc}"
+            return EvolutionResult("failed", branch, workspace, summary, False)
 
         failure_log = self.github.failed_workflow_log(branch)
         acceptance = json.dumps(
@@ -722,6 +1187,7 @@ class SelfDeveloper:
                 reusable_lesson=lesson,
                 checks_passed=False,
                 pushed=True,
+                validation_state="failed",
             )
 
             return EvolutionResult(
@@ -736,6 +1202,24 @@ class SelfDeveloper:
         checks_passed = check_result.startswith(
             "static_checks=passed"
         )
+
+        if not checks_passed:
+            repaired = self._repair_static_failures(
+                chat=chat,
+                model=developer_model,
+                tools=tools,
+                task=task,
+                branch=branch,
+                cycle_id=candidate.cycle_id,
+                check_result=check_result,
+                attempts_used=candidate.local_repair_attempts,
+                protected_paths=protected_paths,
+                force=force,
+            )
+            check_result = repaired.check_result
+            checks_passed = repaired.passed
+            if repaired.final_text:
+                final_text = repaired.final_text
 
         if not checks_passed:
             summary, lesson = self._outcome(
@@ -755,6 +1239,7 @@ class SelfDeveloper:
                 reusable_lesson=lesson,
                 checks_passed=False,
                 pushed=True,
+                validation_state="failed",
             )
 
             return EvolutionResult(
@@ -791,6 +1276,7 @@ class SelfDeveloper:
                 ),
                 checks_passed=True,
                 pushed=True,
+                validation_state="failed",
             )
 
             return EvolutionResult(
@@ -838,6 +1324,7 @@ class SelfDeveloper:
             reusable_lesson=lesson,
             checks_passed=True,
             pushed=True,
+            validation_state=None if push.ok else "failed",
         )
 
         self.audit.write(
@@ -874,6 +1361,10 @@ class SelfDeveloper:
 
         self._reconcile_candidates()
 
+        local_repair = self._repair_local_candidate(force=force)
+        if local_repair is not None:
+            return local_repair
+
         repair = self._repair_failed_candidate(force=force)
         if repair is not None:
             return repair
@@ -899,6 +1390,8 @@ class SelfDeveloper:
             branch=branch,
             everyday_model=self.config.model.name,
             developer_model=developer_model,
+            workspace=workspace,
+            is_worktree=is_worktree,
         )
         self.audit.write(
             "selfdev_start",
@@ -1016,6 +1509,22 @@ class SelfDeveloper:
                 self._emit("Running final non-executing static checks")
                 check_result = tools.run_candidate_static_checks()
                 checks_passed = check_result.startswith("static_checks=passed")
+                if tools.files_written and not checks_passed:
+                    repaired = self._repair_static_failures(
+                        chat=chat,
+                        model=developer_model,
+                        tools=tools,
+                        task=task,
+                        branch=branch,
+                        cycle_id=cycle_id,
+                        check_result=check_result,
+                        attempts_used=0,
+                        force=force,
+                    )
+                    check_result = repaired.check_result
+                    checks_passed = repaired.passed
+                    if repaired.final_text:
+                        final_text = repaired.final_text
 
             status = classify_candidate_result(len(tools.files_written), checks_passed)
             pushed = False
@@ -1076,14 +1585,26 @@ class SelfDeveloper:
             return EvolutionResult("paused", branch, workspace, summary)
         except Exception as exc:
             summary = f"Cycle failed: {type(exc).__name__}: {exc}"
+            recoverable = False
+            if is_worktree:
+                try:
+                    recoverable = bool(
+                        self.github.candidate_changed_paths(workspace)
+                        or self.github.branch_has_candidate_commit(workspace)
+                    )
+                except Exception:
+                    recoverable = False
+            status = "candidate_needs_work" if recoverable else "failed"
+            if recoverable:
+                summary += " The existing local candidate was retained for the next evolve invocation."
             self.memory.finish_cycle(
                 cycle_id,
-                status="failed",
+                status=status,
                 summary=summary,
                 reusable_lesson=f"Handle {type(exc).__name__} before retrying this task.",
                 checks_passed=None,
                 pushed=False,
             )
-            self.audit.write("selfdev_end", branch=branch, task_id=task["id"], status="failed", summary=summary)
-            return EvolutionResult("failed", branch, workspace, summary)
+            self.audit.write("selfdev_end", branch=branch, task_id=task["id"], status=status, summary=summary)
+            return EvolutionResult(status, branch, workspace, summary)
 

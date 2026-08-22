@@ -121,9 +121,10 @@ These values are deliberately editable. The next development phase should add GP
 4. gives the local model candidate-only file tools;
 5. lets it inspect and modify a limited number of source files;
 6. runs non-executing syntax/config checks locally;
-7. if Git is connected, commits and pushes a passing candidate branch;
-8. GitHub Actions runs the executable test suite away from the workstation;
-9. leaves stable untouched.
+7. feeds a static-check failure, the candidate diff and changed files back to the developer for a bounded repair loop in the same worktree;
+8. if Git is connected, commits and pushes only a passing candidate branch;
+9. GitHub Actions runs the executable test suite away from the workstation;
+10. leaves stable untouched.
 
 Automatic candidate promotion is disabled. Candidate code is also not executed locally by the autonomous self-development loop in v0.1; GitHub Actions is the executable test sandbox. That is intentional until a stronger local sandbox/rollback layer exists.
 
@@ -145,6 +146,6 @@ Everyday operation and self-development now use separate model roles:
 
 Evolution is staged: a read-only research pass produces an evidence brief, then an implementation pass edits only the isolated candidate. If direct tool editing stalls, the developer must return a strict structured change plan; every proposed file is still validated and applied through `CandidateTools.write_project_file`, so it cannot bypass candidate path or file limits.
 
-Cycle outcomes and short reusable lessons are stored locally in `localpilot-data/learning.sqlite3`. The schema intentionally excludes prompts, transcripts, model thinking, and hidden reasoning. Failed and paused cycles are useful learning records too.
+Cycle outcomes and short reusable lessons are stored locally in `localpilot-data/learning.sqlite3`. The schema intentionally excludes prompts, transcripts, model thinking, and hidden reasoning. Failed and paused cycles are useful learning records too. Unpushed Git candidates also retain their branch, worktree and durable repair-attempt count, so a later `evolve` invocation resumes the existing candidate instead of silently starting a replacement. The attempt limit prevents an endless repair loop; an exhausted candidate remains held for human review or a manual correction.
 
 A pushed branch does not complete a backlog task. LocalPilot holds the current task while its candidate awaits a PR, records GitHub Actions status, and advances only after checks pass **and** the PR is merged. There is no automatic promotion path, even if a configuration file attempts to enable one.

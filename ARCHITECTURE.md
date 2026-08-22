@@ -18,7 +18,9 @@ guarded fetch/fast-forward of the clean trusted main checkout
     -> resume an unfinished local candidate, when present
     -> select first eligible backlog task
     -> create isolated candidate
+    -> save versioned candidate/task checkpoint
     -> research stage (list/read tools only)
+    -> checkpoint concise findings and exact next action
     -> implementation stage (candidate tools)
     -> structured JSON change-plan fallback, if direct editing stalls
     -> non-executing local static checks
@@ -28,6 +30,8 @@ guarded fetch/fast-forward of the clean trusted main checkout
     -> human-reviewed PR merge
     -> task becomes complete in local learning state
 ```
+
+On a later invocation, an active checkpoint is considered only after guarded main sync, the resource gate and candidate reconciliation. Resume fails closed unless its version, cycle/task/branch/worktree identity, backlog contract fingerprint, Git HEAD, changed-path set and candidate content digest all match current state. A rejected checkpoint is deleted; LocalPilot may then rebuild a handoff from the independently validated learning and Git state, but never trusts stale findings or decisions.
 
 The self-sync gate acts only on the repository root while it is checked out on the configured main branch. It never switches branches, resets changes, merges divergent history, or enters a candidate worktree. Git operations use argument vectors with `shell=False`. A successful fast-forward ends the current invocation so no evolution work continues in a process that loaded the previous build.
 
@@ -46,6 +50,8 @@ GitHub validation and merge are separate facts. A passing local static check or 
 - a short reusable lesson for later cycles.
 
 The schema deliberately has no prompts, transcripts, messages, thinking, or chain-of-thought fields. Research and model scratch work are transient. Machine-private learning data remains under the already ignored `localpilot-data/` directory and is never committed to GitHub.
+
+`localpilot-data/evolution-checkpoint.json` complements the cycle database while work is active. It stores bounded, scrubbed engineering facts: checkpoint version/time, task objective and acceptance criteria, cycle/branch/worktree, inspected and changed path names, concise research findings and decisions, Git/diff/static-check/test status and failure markers, unresolved questions, exact next action and reusable lessons. It stores no file bodies, prompts, messages, transcripts, raw token streams, hidden reasoning or known secret-bearing text. Saves use atomic replacement after meaningful tool/milestone progress and immediately before a resource pause or unhandled exit. Terminal completion removes the checkpoint.
 
 ## Resource and process safety
 

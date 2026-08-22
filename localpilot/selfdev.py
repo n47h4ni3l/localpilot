@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterable
 import psutil
 
 from localpilot.audit import AuditLog
+from localpilot.checkpoint import CheckpointStore, EvolutionCheckpoint, task_fingerprint
 from localpilot.config import Config
 from localpilot.github_integration import GitHubIntegration
 from localpilot.learning import LearningMemory
@@ -503,14 +504,140 @@ class SelfDeveloper:
         self.data_dir = (self.root / config.agent.data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
+        self.checkpoints = CheckpointStore(self.data_dir / "evolution-checkpoint.json")
         self.memory = LearningMemory(self.data_dir / config.selfdev.learning_database)
         self.governor = ResourceGovernor(config.resource)
         self.github = GitHubIntegration(self.root, config.github)
         self.progress = progress or (lambda _message: None)
+        self._active_checkpoint: dict[str, Any] | None = None
 
     def _emit(self, message: str) -> None:
         self.progress(message)
         self.audit.write("selfdev_progress", message=message)
+
+    @staticmethod
+    def _checkpoint_paths(tools: CandidateTools, paths: Iterable[Path]) -> list[str]:
+        return sorted(path.relative_to(tools.workspace).as_posix() for path in paths)
+
+    @staticmethod
+    def _check_summary(check_result: str) -> tuple[str, list[str]]:
+        lines = [line.strip() for line in str(check_result).splitlines() if line.strip()]
+        if not lines:
+            return "not run", []
+        first = lines[0].lower()
+        if first.startswith("static_checks=passed"):
+            return "passed", []
+        if first.startswith("static_checks=failed"):
+            return "failed", lines[1:31]
+        if "disabled" in first:
+            return "disabled", []
+        return first[:100], lines[1:31]
+
+    def _activate_checkpoint(
+        self,
+        *,
+        cycle_id: int,
+        task: dict[str, Any],
+        branch: str,
+        workspace: Path,
+        tools: CandidateTools,
+        milestone: str,
+        research_findings: Iterable[str] = (),
+        decisions: Iterable[str] = (),
+        next_action: str,
+        reusable_lessons: Iterable[str] = (),
+        test_status: str = "not run locally; GitHub CI required",
+        test_failures: Iterable[str] = (),
+    ) -> None:
+        self._active_checkpoint = {
+            "cycle_id": cycle_id,
+            "task": task,
+            "branch": branch,
+            "workspace": workspace,
+            "tools": tools,
+            "milestone": milestone,
+            "research_findings": list(research_findings),
+            "decisions": list(decisions),
+            "check_result": "not run",
+            "unresolved_questions": [],
+            "next_action": next_action,
+            "reusable_lessons": list(reusable_lessons),
+            "test_status": test_status,
+            "test_failures": list(test_failures),
+        }
+        self._persist_active_checkpoint()
+
+    def _checkpoint_milestone(self, milestone: str, **updates: Any) -> None:
+        if self._active_checkpoint is None:
+            return
+        self._active_checkpoint["milestone"] = milestone
+        self._active_checkpoint.update(updates)
+        self._persist_active_checkpoint()
+
+    def _persist_active_checkpoint(self) -> None:
+        context = self._active_checkpoint
+        if context is None:
+            return
+        tools: CandidateTools = context["tools"]
+        try:
+            snapshot = self.github.candidate_snapshot(context["workspace"])
+            check_status, check_failures = self._check_summary(context.get("check_result", ""))
+            checkpoint = EvolutionCheckpoint.create(
+                cycle_id=context["cycle_id"],
+                task=context["task"],
+                branch=context["branch"],
+                workspace=context["workspace"],
+                milestone=context["milestone"],
+                files_inspected=self._checkpoint_paths(tools, tools.files_read),
+                files_changed=snapshot.changed_paths,
+                research_findings=context.get("research_findings", ()),
+                decisions=context.get("decisions", ()),
+                git_head=snapshot.head,
+                git_state_digest=snapshot.state_digest,
+                diff_status=(
+                    f"{len(snapshot.changed_paths)} changed path(s): "
+                    f"{', '.join(snapshot.changed_paths[:20]) or '(clean)'}"
+                ),
+                static_check_status=check_status,
+                static_check_failures=check_failures,
+                test_status=context.get(
+                    "test_status",
+                    "not run locally; GitHub CI required",
+                ),
+                test_failures=context.get("test_failures", ()),
+                unresolved_questions=context.get("unresolved_questions", ()),
+                next_action=context.get("next_action", "Validate and continue."),
+                reusable_lessons=context.get("reusable_lessons", ()),
+            )
+            self.checkpoints.save(checkpoint)
+            self.audit.write(
+                "selfdev_checkpoint_saved",
+                version=checkpoint.version,
+                cycle_id=checkpoint.cycle_id,
+                task_id=checkpoint.task_id,
+                branch=checkpoint.branch,
+                milestone=checkpoint.milestone,
+                files_changed=len(checkpoint.files_changed),
+                next_action=checkpoint.next_action,
+            )
+        except Exception as exc:
+            self.audit.write(
+                "selfdev_checkpoint_save_failed",
+                branch=context.get("branch"),
+                milestone=context.get("milestone"),
+                error=f"{type(exc).__name__}: {exc}"[:1000],
+            )
+
+    def _clear_checkpoint(self, reason: str) -> None:
+        cleared = self.checkpoints.clear()
+        context = self._active_checkpoint
+        self._active_checkpoint = None
+        if cleared:
+            self.audit.write(
+                "selfdev_checkpoint_cleared",
+                reason=reason,
+                branch=context.get("branch") if context else None,
+            )
 
     def _reconcile_candidates(self) -> None:
         for candidate in self.memory.pending_candidates():
@@ -542,6 +669,82 @@ class SelfDeveloper:
             self.memory.completed_task_ids(),
             self.memory.pending_task_ids(),
         )
+
+    def _reject_checkpoint(self, reason: str) -> None:
+        self.checkpoints.clear()
+        self._active_checkpoint = None
+        self.audit.write(
+            "selfdev_checkpoint_resume",
+            status="rejected",
+            reason=reason[:2000],
+        )
+
+    def _validated_checkpoint(
+        self,
+    ) -> tuple[EvolutionCheckpoint, Any, dict[str, Any], Path] | None:
+        try:
+            checkpoint = self.checkpoints.load()
+        except Exception as exc:
+            self._reject_checkpoint(f"Unreadable checkpoint: {type(exc).__name__}: {exc}")
+            return None
+        if checkpoint is None:
+            return None
+
+        candidates = self.memory.local_candidates() + self.memory.failed_candidates()
+        candidate = next(
+            (item for item in candidates if item.cycle_id == checkpoint.cycle_id),
+            None,
+        )
+        if candidate is None:
+            self._reject_checkpoint("No active learning cycle matches the checkpoint cycle id.")
+            return None
+        if candidate.task_id != checkpoint.task_id or candidate.branch != checkpoint.branch:
+            self._reject_checkpoint("Checkpoint task or branch disagrees with durable learning state.")
+            return None
+
+        task = self._load_task_by_id(checkpoint.task_id)
+        if task is None or task_fingerprint(task) != checkpoint.task_fingerprint:
+            self._reject_checkpoint("The backlog task contract is missing or has changed.")
+            return None
+
+        workspace = Path(checkpoint.workspace).resolve()
+        if candidate.workspace and Path(candidate.workspace).resolve() != workspace:
+            self._reject_checkpoint("Checkpoint worktree disagrees with durable learning state.")
+            return None
+        registered = self.github.worktree_for_branch(checkpoint.branch)
+        if registered is None or registered.resolve() != workspace or not workspace.is_dir():
+            self._reject_checkpoint("Checkpoint worktree is missing or no longer registered for its branch.")
+            return None
+
+        try:
+            snapshot = self.github.candidate_snapshot(workspace)
+        except RuntimeError as exc:
+            self._reject_checkpoint(f"Candidate Git state is invalid: {exc}")
+            return None
+        if snapshot.branch != checkpoint.branch:
+            self._reject_checkpoint("Candidate worktree is attached to a different branch.")
+            return None
+        if snapshot.head != checkpoint.git_head:
+            self._reject_checkpoint("Candidate HEAD changed after the checkpoint was saved.")
+            return None
+        if snapshot.state_digest != checkpoint.git_state_digest:
+            self._reject_checkpoint("Candidate files changed after the checkpoint was saved.")
+            return None
+        if snapshot.changed_paths != checkpoint.files_changed:
+            self._reject_checkpoint("Candidate changed-path set disagrees with the checkpoint.")
+            return None
+
+        self.audit.write(
+            "selfdev_checkpoint_resume",
+            status="succeeded",
+            version=checkpoint.version,
+            cycle_id=checkpoint.cycle_id,
+            task_id=checkpoint.task_id,
+            branch=checkpoint.branch,
+            milestone=checkpoint.milestone,
+            next_action=checkpoint.next_action,
+        )
+        return checkpoint, candidate, task, workspace
 
     def _candidate_workspace(self, branch: str) -> tuple[Path, bool]:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -582,6 +785,12 @@ class SelfDeveloper:
             reason = current.blocking_reason(ignore_idle=force)
         if not allowed:
             self.governor.apply_process_priority(idle=False)
+            if self._active_checkpoint is not None:
+                self._active_checkpoint["next_action"] = (
+                    "Revalidate the checkpoint after the resource gate clears, then resume "
+                    f"the {self._active_checkpoint['milestone']} milestone."
+                )
+                self._persist_active_checkpoint()
             self.audit.write("selfdev_paused", branch=branch, reason=reason)
             raise CyclePaused(reason)
 
@@ -687,6 +896,7 @@ class SelfDeveloper:
             messages.append(message)
             calls = self._calls(response)
             if not calls:
+                self._persist_active_checkpoint()
                 return self._content(response)
             for call in calls:
                 name, args = self._call_parts(call)
@@ -706,6 +916,7 @@ class SelfDeveloper:
                     except Exception as exc:
                         result = f"Tool error: {type(exc).__name__}: {exc}"
                 messages.append({"role": "tool", "tool_name": name, "content": str(result)})
+                self._persist_active_checkpoint()
         return f"{stage} stopped at its tool-call limit."
 
     @staticmethod
@@ -717,6 +928,52 @@ class SelfDeveloper:
         return (
             str(value.get("summary") or "Candidate cycle completed.")[:4000],
             str(value.get("reusable_lesson") or default_lesson)[:2000],
+        )
+
+    @staticmethod
+    def _research_handoff(
+        text: str,
+    ) -> tuple[list[str], list[str], list[str], str]:
+        """Accept only explicit reviewable facts for durable research context."""
+        try:
+            value = _json_object(text)
+        except (ValueError, json.JSONDecodeError):
+            return (
+                ["Read-only repository research completed; use the recorded inspected paths."],
+                [],
+                ["The research response was not a valid structured handoff."],
+                "Re-inspect the recorded paths before implementation if more detail is needed.",
+            )
+
+        def strings(name: str, limit: int = 20) -> list[str]:
+            items = value.get(name)
+            if not isinstance(items, list):
+                return []
+            return [str(item)[:1000] for item in items[:limit] if isinstance(item, str) and item.strip()]
+
+        findings = strings("findings") or [
+            "Read-only repository research completed; use the recorded inspected paths."
+        ]
+        return (
+            findings,
+            strings("decisions"),
+            strings("unresolved_questions"),
+            str(value.get("next_action") or "Implement the focused task.")[:1000],
+        )
+
+    @staticmethod
+    def _checkpoint_outcome(text: str, default_lesson: str) -> tuple[str, str]:
+        """Never place an unstructured model response in the durable checkpoint."""
+        try:
+            value = _json_object(text)
+        except (ValueError, json.JSONDecodeError):
+            return (
+                "Implementation stage completed; inspect the verified candidate diff.",
+                default_lesson,
+            )
+        return (
+            str(value.get("summary") or "Implementation stage completed.")[:1000],
+            str(value.get("reusable_lesson") or default_lesson)[:1000],
         )
 
     def _repair_static_failures(
@@ -861,6 +1118,411 @@ class SelfDeveloper:
             attempts_used,
         )
 
+    def _continue_candidate(
+        self,
+        *,
+        force: bool,
+        cycle_id: int,
+        task: dict[str, Any],
+        branch: str,
+        workspace: Path,
+        is_worktree: bool,
+        developer_model: str,
+        tools: CandidateTools,
+        checkpoint: EvolutionCheckpoint | None = None,
+        local_repair_attempts: int = 0,
+    ) -> EvolutionResult:
+        """Run or resume a candidate from a compact, validated handoff."""
+        initial_milestone = checkpoint.milestone if checkpoint else "candidate_created"
+        self._activate_checkpoint(
+            cycle_id=cycle_id,
+            task=task,
+            branch=branch,
+            workspace=workspace,
+            tools=tools,
+            milestone=initial_milestone,
+            research_findings=checkpoint.research_findings if checkpoint else (),
+            decisions=checkpoint.decisions if checkpoint else (),
+            next_action=(
+                checkpoint.next_action
+                if checkpoint
+                else "Begin bounded read-only research in the isolated candidate."
+            ),
+            reusable_lessons=checkpoint.reusable_lessons if checkpoint else (),
+        )
+
+        try:
+            from ollama import chat
+        except ImportError:
+            summary = "Ollama Python package is not installed."
+            self.memory.finish_cycle(
+                cycle_id,
+                status="failed",
+                summary=summary,
+                reusable_lesson="Verify local model dependencies before starting a development cycle.",
+                checks_passed=None,
+                pushed=False,
+            )
+            return EvolutionResult("failed", branch, workspace, summary)
+
+        lessons = self.memory.reusable_lessons(self.config.selfdev.lesson_limit)
+        acceptance = json.dumps(task.get("acceptance", []), ensure_ascii=False)
+        milestone = checkpoint.milestone if checkpoint else "candidate_created"
+        research_findings = list(checkpoint.research_findings) if checkpoint else []
+        decisions = list(checkpoint.decisions) if checkpoint else []
+
+        try:
+            if milestone in {"candidate_created", "research"} or not research_findings:
+                self._checkpoint_milestone(
+                    "research",
+                    next_action="Inspect relevant candidate files and produce a concise evidence brief.",
+                )
+                research_messages: list[dict[str, Any]] = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are LocalPilot's research-stage developer. Inspect the isolated candidate only. "
+                            "Gather concrete repository evidence for the single task below. You cannot write in this stage. "
+                            "Finish with strict JSON containing only findings (a list of concise repository facts), "
+                            "decisions, unresolved_questions, and next_action. Do not include file contents, secrets, "
+                            "messages, or hidden chain-of-thought. A resumed run may include a compact "
+                            "engineering handoff, never a transcript.\n"
+                            f"Task: {task['title']}\nAcceptance: {acceptance}\n"
+                            f"Resume handoff: {checkpoint.next_action if checkpoint else 'new candidate'}\n"
+                            f"Previously inspected paths: {json.dumps(list(checkpoint.files_inspected) if checkpoint else [])}"
+                        ),
+                    },
+                    {"role": "user", "content": "Research the candidate and return the evidence-based brief."},
+                ]
+                research = self._tool_stage(
+                    chat=chat,
+                    model=developer_model,
+                    messages=research_messages,
+                    functions=[tools.list_project_files, tools.read_project_file],
+                    rounds=self.config.selfdev.research_tool_rounds,
+                    force=force,
+                    branch=branch,
+                    stage="research",
+                )
+                (
+                    research_findings,
+                    research_decisions,
+                    research_questions,
+                    research_next_action,
+                ) = self._research_handoff(research)
+                decisions = research_decisions
+                self._checkpoint_milestone(
+                    "research_complete",
+                    research_findings=research_findings,
+                    decisions=research_decisions,
+                    unresolved_questions=research_questions,
+                    next_action=research_next_action,
+                )
+            else:
+                research = "\n".join(research_findings)
+
+            run_implementation = milestone not in {
+                "implementation_complete",
+                "static_checks",
+                "local_static_repair",
+                "delivery",
+            }
+            final_text = json.dumps(
+                {
+                    "summary": decisions[0] if decisions else "Resume the verified candidate.",
+                    "reusable_lesson": (
+                        checkpoint.reusable_lessons[0]
+                        if checkpoint and checkpoint.reusable_lessons
+                        else "Use a compact verified handoff across invocations."
+                    ),
+                }
+            )
+            fallback_plan: ChangePlan | None = None
+
+            if run_implementation:
+                self._checkpoint_milestone(
+                    "implementation",
+                    research_findings=research_findings,
+                    next_action="Continue the focused implementation and inspect its diff.",
+                )
+                implementation_messages: list[dict[str, Any]] = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are LocalPilot's implementation-stage developer. Modify only the isolated candidate "
+                            "through the supplied file tools. Implement one focused task, add/update tests, inspect the "
+                            "diff, and run static checks. Never edit stable, execute candidate code locally, promote, "
+                            "weaken confinement, bypass the resource governor, or use shell command strings. "
+                            "Finish with JSON containing only summary and reusable_lesson; do not expose hidden reasoning.\n"
+                            f"Task: {task['title']}\nAcceptance: {acceptance}\n"
+                            f"Research brief:\n{research[:12000]}\n"
+                            f"Reusable lessons from earlier cycles:\n{json.dumps(lessons, ensure_ascii=False)}\n"
+                            f"Resume next action: {checkpoint.next_action if checkpoint else 'begin implementation'}\n"
+                            f"Verified changed paths: {json.dumps(list(checkpoint.files_changed) if checkpoint else [])}\n"
+                            f"Prior concise decisions: {json.dumps(decisions, ensure_ascii=False)}"
+                        ),
+                    },
+                    {"role": "user", "content": "Implement the task now and make concrete candidate changes."},
+                ]
+                final_text = self._tool_stage(
+                    chat=chat,
+                    model=developer_model,
+                    messages=implementation_messages,
+                    functions=[
+                        tools.list_project_files,
+                        tools.read_project_file,
+                        tools.write_project_file,
+                        tools.run_candidate_static_checks,
+                        tools.show_candidate_diff,
+                    ],
+                    rounds=self.config.selfdev.max_tool_rounds,
+                    force=force,
+                    branch=branch,
+                    stage="implementation",
+                )
+
+                if not tools.files_written:
+                    self._check_resources(force, branch)
+                    self._emit("Direct editing stalled; requesting structured fallback change plan")
+                    response = self._developer_chat(
+                        chat,
+                        force=force,
+                        branch=branch,
+                        model=developer_model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Return one strict JSON object with summary, reusable_lesson, and changes. "
+                                    "changes must be a non-empty list of objects containing path, complete content, and reason. "
+                                    "Only propose files needed for the task. No markdown and no hidden reasoning. "
+                                    "The caller will validate every path and apply every change through write_project_file.\n"
+                                    f"Task: {task['title']}\nAcceptance: {acceptance}\nResearch:\n{research[:12000]}"
+                                ),
+                            },
+                            {"role": "user", "content": "Produce the candidate change plan now."},
+                        ],
+                        options={"temperature": 0.0},
+                    )
+                    fallback_plan = parse_change_plan(self._content(response), tools.max_files)
+                    apply_change_plan(fallback_plan, tools)
+                    final_text = json.dumps(
+                        {"summary": fallback_plan.summary, "reusable_lesson": fallback_plan.reusable_lesson}
+                    )
+
+                outcome_summary, outcome_lesson = self._checkpoint_outcome(
+                    final_text,
+                    "Use repository evidence and candidate-only tools before validating a self-development change.",
+                )
+                decisions = [outcome_summary]
+                self._checkpoint_milestone(
+                    "implementation_complete",
+                    decisions=decisions,
+                    reusable_lessons=[outcome_lesson],
+                    next_action="Run fresh non-executing static checks on the candidate.",
+                )
+
+            checks_passed: bool | None = None
+            check_result = "static checks disabled"
+            if self.config.selfdev.run_static_checks:
+                self._emit("Running final non-executing static checks")
+                check_result = tools.run_candidate_static_checks()
+                self._checkpoint_milestone(
+                    "static_checks",
+                    check_result=check_result,
+                    next_action="Repair failures if present; otherwise commit and deliver the candidate.",
+                )
+                checks_passed = check_result.startswith("static_checks=passed")
+                if tools.files_written and not checks_passed:
+                    self._checkpoint_milestone(
+                        "local_static_repair",
+                        check_result=check_result,
+                        next_action="Use the recorded static failures to repair the same candidate.",
+                    )
+                    repaired = self._repair_static_failures(
+                        chat=chat,
+                        model=developer_model,
+                        tools=tools,
+                        task=task,
+                        branch=branch,
+                        cycle_id=cycle_id,
+                        check_result=check_result,
+                        attempts_used=local_repair_attempts,
+                        force=force,
+                    )
+                    check_result = repaired.check_result
+                    checks_passed = repaired.passed
+                    if repaired.final_text:
+                        final_text = repaired.final_text
+                    self._checkpoint_milestone(
+                        "static_checks",
+                        check_result=check_result,
+                        next_action="Commit and deliver if checks pass; otherwise retain for review.",
+                    )
+
+            status = classify_candidate_result(len(tools.files_written), checks_passed)
+            pushed = False
+            delivery = ""
+            if tools.files_written and is_worktree and checks_passed:
+                self._checkpoint_milestone(
+                    "delivery",
+                    check_result=check_result,
+                    next_action="Commit the verified changed paths and push only if configured.",
+                )
+                relative_paths = [path.relative_to(workspace).as_posix() for path in tools.files_written]
+                commit = self.github.commit_paths(workspace, f"candidate: {task['title']}", relative_paths)
+                if commit.ok and self.config.github.auto_push_candidates:
+                    push = self.github.push_branch(workspace, branch)
+                    pushed = push.ok
+                    if pushed:
+                        status = "candidate_pending_validation"
+                        delivery = "Candidate pushed; it remains pending until CI passes and its PR is merged."
+                    else:
+                        status = "candidate_needs_work"
+                        delivery = f"Candidate push failed: {push.stderr or push.stdout}"
+                elif not commit.ok:
+                    status = "candidate_needs_work"
+                    delivery = f"Candidate commit failed: {commit.stderr or commit.stdout}"
+
+            summary, lesson = self._outcome(
+                final_text,
+                "Use repository evidence and candidate-only tools before validating a self-development change.",
+            )
+            summary = f"{summary}\n\n{check_result}"
+            if delivery:
+                summary += f"\n\n{delivery}"
+            self.memory.finish_cycle(
+                cycle_id,
+                status=status,
+                summary=summary,
+                reusable_lesson=lesson,
+                checks_passed=checks_passed,
+                pushed=pushed,
+            )
+            self.audit.write(
+                "selfdev_end",
+                branch=branch,
+                task_id=task["id"],
+                checks_passed=checks_passed,
+                files_read=len(tools.files_read),
+                files_written=len(tools.files_written),
+                status=status,
+                summary=summary[:2000],
+            )
+            self._emit(f"Finished: {status} — wrote {len(tools.files_written)} candidate file(s)")
+            return EvolutionResult(status, branch, workspace, summary, checks_passed)
+        except CyclePaused as exc:
+            summary = f"User returned or PC became busy: {exc}"
+            self.memory.finish_cycle(
+                cycle_id,
+                status="paused",
+                summary=summary,
+                reusable_lesson="Resume from a validated compact checkpoint after the resource gate clears.",
+                checks_passed=None,
+                pushed=False,
+            )
+            self._persist_active_checkpoint()
+            return EvolutionResult("paused", branch, workspace, summary)
+        except Exception as exc:
+            summary = f"Cycle failed: {type(exc).__name__}: {exc}"
+            recoverable = False
+            if is_worktree:
+                try:
+                    recoverable = bool(
+                        self.github.candidate_changed_paths(workspace)
+                        or self.github.branch_has_candidate_commit(workspace)
+                    )
+                except Exception:
+                    recoverable = False
+            status = "candidate_needs_work" if recoverable else "failed"
+            if recoverable:
+                summary += " The existing local candidate was retained for the next evolve invocation."
+                self._checkpoint_milestone(
+                    "recovery",
+                    decisions=[summary[:1000]],
+                    unresolved_questions=[f"Resolve {type(exc).__name__} before retrying."],
+                    next_action="Revalidate the candidate and resolve the recorded failure before delivery.",
+                )
+            self.memory.finish_cycle(
+                cycle_id,
+                status=status,
+                summary=summary,
+                reusable_lesson=f"Handle {type(exc).__name__} before retrying this task.",
+                checks_passed=None,
+                pushed=False,
+            )
+            self.audit.write("selfdev_end", branch=branch, task_id=task["id"], status=status, summary=summary)
+            return EvolutionResult(status, branch, workspace, summary)
+
+    def _resume_checkpoint_candidate(
+        self,
+        validated: tuple[EvolutionCheckpoint, Any, dict[str, Any], Path],
+        *,
+        force: bool,
+    ) -> EvolutionResult:
+        checkpoint, candidate, task, workspace = validated
+        if checkpoint.milestone.startswith("ci_"):
+            return self._repair_failed_candidate(force=force) or EvolutionResult(
+                "failed",
+                checkpoint.branch,
+                workspace,
+                "Checkpointed CI repair candidate could not be recovered.",
+                False,
+            )
+        if checkpoint.milestone == "delivery" and not checkpoint.files_changed:
+            return self._repair_local_candidate(force=force) or EvolutionResult(
+                "failed",
+                checkpoint.branch,
+                workspace,
+                "Checkpointed committed candidate could not be delivered.",
+                False,
+            )
+
+        selection = self._select_developer_model()
+        if selection.model is None:
+            return EvolutionResult(
+                "deferred",
+                checkpoint.branch,
+                workspace,
+                selection.reason,
+                False,
+            )
+        try:
+            protected_paths = self.github.reviewer_modified_test_paths(
+                workspace,
+                refresh=False,
+            )
+            tools = CandidateTools(
+                workspace,
+                self.config.selfdev.max_files_per_cycle,
+                protected_paths=protected_paths,
+                existing_changed_paths=checkpoint.files_changed,
+            )
+            for relative in checkpoint.files_inspected:
+                tools.read_project_file(relative, max_chars=1000)
+        except (PermissionError, RuntimeError, ValueError) as exc:
+            self._reject_checkpoint(f"Resumed candidate failed current safety validation: {exc}")
+            return self._repair_local_candidate(force=force) or EvolutionResult(
+                "failed",
+                checkpoint.branch,
+                workspace,
+                "Candidate could not be rebuilt after checkpoint rejection.",
+                False,
+            )
+
+        return self._continue_candidate(
+            force=force,
+            cycle_id=candidate.cycle_id,
+            task=task,
+            branch=checkpoint.branch,
+            workspace=workspace,
+            is_worktree=True,
+            developer_model=selection.model,
+            tools=tools,
+            checkpoint=checkpoint,
+            local_repair_attempts=candidate.local_repair_attempts,
+        )
+
     def _repair_local_candidate(
         self,
         *,
@@ -963,7 +1625,22 @@ class SelfDeveloper:
                 summary,
                 False,
             )
+        self._activate_checkpoint(
+            cycle_id=candidate.cycle_id,
+            task=task,
+            branch=branch,
+            workspace=workspace,
+            tools=tools,
+            milestone="local_recovery",
+            decisions=[candidate.status] if candidate.status else (),
+            next_action="Revalidate static checks and repair the retained local candidate if needed.",
+        )
         check_result = tools.run_candidate_static_checks()
+        self._checkpoint_milestone(
+            "static_checks",
+            check_result=check_result,
+            next_action="Repair failures if present; otherwise commit and deliver the retained candidate.",
+        )
         repair_text = ""
 
         if not check_result.startswith("static_checks=passed"):
@@ -990,7 +1667,6 @@ class SelfDeveloper:
                     summary,
                     False,
                 )
-
             try:
                 from ollama import chat
             except ImportError:
@@ -1012,6 +1688,11 @@ class SelfDeveloper:
                 )
             model = selection.model
             try:
+                self._checkpoint_milestone(
+                    "local_static_repair",
+                    check_result=check_result,
+                    next_action="Use the recorded failures to repair the same candidate within the attempt limit.",
+                )
                 repaired = self._repair_static_failures(
                     chat=chat,
                     model=model,
@@ -1169,6 +1850,7 @@ class SelfDeveloper:
                     summary,
                     False,
                 )
+            self.memory.update_candidate_workspace(candidate.cycle_id, workspace)
 
         selection = self._select_developer_model()
         if selection.model is None:
@@ -1209,6 +1891,20 @@ class SelfDeveloper:
             return EvolutionResult("failed", branch, workspace, summary, False)
 
         failure_log = self.github.failed_workflow_log(branch)
+        self._activate_checkpoint(
+            cycle_id=candidate.cycle_id,
+            task=task,
+            branch=branch,
+            workspace=workspace,
+            tools=tools,
+            milestone="ci_repair",
+            research_findings=[
+                "GitHub CI failed for this branch; retrieve the current failed-step log before repair."
+            ],
+            next_action="Repair the recorded CI failure without changing reviewer-protected tests.",
+            test_status="GitHub CI failed; bounded candidate repair is in progress.",
+            test_failures=["Latest failed-step log will be retrieved fresh on resume."],
+        )
         acceptance = json.dumps(
             task.get("acceptance", []),
             ensure_ascii=False,
@@ -1564,6 +2260,11 @@ class SelfDeveloper:
         try:
             result = self._run_once(force=force)
         except Exception as exc:
+            if self._active_checkpoint is not None:
+                self._active_checkpoint["next_action"] = (
+                    f"Revalidate the candidate and recover from {type(exc).__name__}."
+                )
+                self._persist_active_checkpoint()
             self.audit.write(
                 "evolve_run_end",
                 invocation_id=invocation_id,
@@ -1571,6 +2272,11 @@ class SelfDeveloper:
                 summary=f"Unhandled {type(exc).__name__}: {exc}"[:2000],
             )
             raise
+        if self._active_checkpoint is not None:
+            if result.status in {"paused", "deferred", "candidate_needs_work"}:
+                self._persist_active_checkpoint()
+            else:
+                self._clear_checkpoint(f"terminal evolve status: {result.status}")
         self.audit.write(
             "evolve_run_end",
             invocation_id=invocation_id,
@@ -1612,6 +2318,10 @@ class SelfDeveloper:
 
         self._reconcile_candidates()
 
+        checkpoint = self._validated_checkpoint()
+        if checkpoint is not None:
+            return self._resume_checkpoint_candidate(checkpoint, force=force)
+
         local_repair = self._repair_local_candidate(force=force)
         if local_repair is not None:
             return local_repair
@@ -1650,211 +2360,14 @@ class SelfDeveloper:
             developer_model=developer_model,
         )
 
-        try:
-            from ollama import chat
-        except ImportError as exc:
-            self.memory.finish_cycle(
-                cycle_id,
-                status="failed",
-                summary="Ollama Python package is not installed.",
-                reusable_lesson="Verify local model dependencies before starting a development cycle.",
-                checks_passed=None,
-                pushed=False,
-            )
-            raise RuntimeError("Ollama Python package is not installed. Run scripts/bootstrap.ps1.") from exc
-
-        lessons = self.memory.reusable_lessons(self.config.selfdev.lesson_limit)
-        acceptance = json.dumps(task.get("acceptance", []), ensure_ascii=False)
-        research_messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": (
-                    "You are LocalPilot's research-stage developer. Inspect the isolated candidate only. "
-                    "Gather concrete repository evidence for the single task below. You cannot write in this stage. "
-                    "Return a concise implementation brief with relevant files, constraints, tests, and risks. "
-                    "Do not provide or request hidden chain-of-thought.\n"
-                    f"Task: {task['title']}\nAcceptance: {acceptance}"
-                ),
-            },
-            {"role": "user", "content": "Research the candidate and return the evidence-based brief."},
-        ]
-        try:
-            research = self._tool_stage(
-                chat=chat,
-                model=developer_model,
-                messages=research_messages,
-                functions=[tools.list_project_files, tools.read_project_file],
-                rounds=self.config.selfdev.research_tool_rounds,
-                force=force,
-                branch=branch,
-                stage="research",
-            )
-
-            implementation_messages: list[dict[str, Any]] = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are LocalPilot's implementation-stage developer. Modify only the isolated candidate "
-                        "through the supplied file tools. Implement one focused task, add/update tests, inspect the "
-                        "diff, and run static checks. Never edit stable, execute candidate code locally, promote, "
-                        "weaken confinement, bypass the resource governor, or use shell command strings. "
-                        "Finish with JSON containing only summary and reusable_lesson; do not expose hidden reasoning.\n"
-                        f"Task: {task['title']}\nAcceptance: {acceptance}\n"
-                        f"Research brief:\n{research[:12000]}\n"
-                        f"Reusable lessons from earlier cycles:\n{json.dumps(lessons, ensure_ascii=False)}"
-                    ),
-                },
-                {"role": "user", "content": "Implement the task now and make concrete candidate changes."},
-            ]
-            final_text = self._tool_stage(
-                chat=chat,
-                model=developer_model,
-                messages=implementation_messages,
-                functions=[
-                    tools.list_project_files,
-                    tools.read_project_file,
-                    tools.write_project_file,
-                    tools.run_candidate_static_checks,
-                    tools.show_candidate_diff,
-                ],
-                rounds=self.config.selfdev.max_tool_rounds,
-                force=force,
-                branch=branch,
-                stage="implementation",
-            )
-
-            fallback_plan: ChangePlan | None = None
-            if not tools.files_written:
-                self._check_resources(force, branch)
-                self._emit("Direct editing stalled; requesting structured fallback change plan")
-                response = self._developer_chat(
-                    chat,
-                    force=force,
-                    branch=branch,
-                    model=developer_model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "Return one strict JSON object with summary, reusable_lesson, and changes. "
-                                "changes must be a non-empty list of objects containing path, complete content, and reason. "
-                                "Only propose files needed for the task. No markdown and no hidden reasoning. "
-                                "The caller will validate every path and apply every change through write_project_file.\n"
-                                f"Task: {task['title']}\nAcceptance: {acceptance}\nResearch:\n{research[:12000]}"
-                            ),
-                        },
-                        {"role": "user", "content": "Produce the candidate change plan now."},
-                    ],
-                    options={"temperature": 0.0},
-                )
-                fallback_plan = parse_change_plan(self._content(response), tools.max_files)
-                apply_change_plan(fallback_plan, tools)
-                final_text = json.dumps(
-                    {"summary": fallback_plan.summary, "reusable_lesson": fallback_plan.reusable_lesson}
-                )
-
-            checks_passed: bool | None = None
-            check_result = "static checks disabled"
-            if self.config.selfdev.run_static_checks:
-                self._emit("Running final non-executing static checks")
-                check_result = tools.run_candidate_static_checks()
-                checks_passed = check_result.startswith("static_checks=passed")
-                if tools.files_written and not checks_passed:
-                    repaired = self._repair_static_failures(
-                        chat=chat,
-                        model=developer_model,
-                        tools=tools,
-                        task=task,
-                        branch=branch,
-                        cycle_id=cycle_id,
-                        check_result=check_result,
-                        attempts_used=0,
-                        force=force,
-                    )
-                    check_result = repaired.check_result
-                    checks_passed = repaired.passed
-                    if repaired.final_text:
-                        final_text = repaired.final_text
-
-            status = classify_candidate_result(len(tools.files_written), checks_passed)
-            pushed = False
-            delivery = ""
-            if tools.files_written and is_worktree and checks_passed:
-                relative_paths = [path.relative_to(workspace).as_posix() for path in tools.files_written]
-                commit = self.github.commit_paths(workspace, f"candidate: {task['title']}", relative_paths)
-                if commit.ok and self.config.github.auto_push_candidates:
-                    push = self.github.push_branch(workspace, branch)
-                    pushed = push.ok
-                    if pushed:
-                        status = "candidate_pending_validation"
-                        delivery = "Candidate pushed; it remains pending until CI passes and its PR is merged."
-                    else:
-                        status = "candidate_needs_work"
-                        delivery = f"Candidate push failed: {push.stderr or push.stdout}"
-                elif not commit.ok:
-                    status = "candidate_needs_work"
-                    delivery = f"Candidate commit failed: {commit.stderr or commit.stdout}"
-
-            summary, lesson = self._outcome(
-                final_text,
-                "Use repository evidence and candidate-only tools before validating a self-development change.",
-            )
-            summary = f"{summary}\n\n{check_result}"
-            if delivery:
-                summary += f"\n\n{delivery}"
-            self.memory.finish_cycle(
-                cycle_id,
-                status=status,
-                summary=summary,
-                reusable_lesson=lesson,
-                checks_passed=checks_passed,
-                pushed=pushed,
-            )
-            self.audit.write(
-                "selfdev_end",
-                branch=branch,
-                task_id=task["id"],
-                checks_passed=checks_passed,
-                files_read=len(tools.files_read),
-                files_written=len(tools.files_written),
-                status=status,
-                summary=summary[:2000],
-            )
-            self._emit(f"Finished: {status} — wrote {len(tools.files_written)} candidate file(s)")
-            return EvolutionResult(status, branch, workspace, summary, checks_passed)
-        except CyclePaused as exc:
-            summary = f"User returned or PC became busy: {exc}"
-            self.memory.finish_cycle(
-                cycle_id,
-                status="paused",
-                summary=summary,
-                reusable_lesson="Re-check the resource governor between every model/tool round and resume later.",
-                checks_passed=None,
-                pushed=False,
-            )
-            return EvolutionResult("paused", branch, workspace, summary)
-        except Exception as exc:
-            summary = f"Cycle failed: {type(exc).__name__}: {exc}"
-            recoverable = False
-            if is_worktree:
-                try:
-                    recoverable = bool(
-                        self.github.candidate_changed_paths(workspace)
-                        or self.github.branch_has_candidate_commit(workspace)
-                    )
-                except Exception:
-                    recoverable = False
-            status = "candidate_needs_work" if recoverable else "failed"
-            if recoverable:
-                summary += " The existing local candidate was retained for the next evolve invocation."
-            self.memory.finish_cycle(
-                cycle_id,
-                status=status,
-                summary=summary,
-                reusable_lesson=f"Handle {type(exc).__name__} before retrying this task.",
-                checks_passed=None,
-                pushed=False,
-            )
-            self.audit.write("selfdev_end", branch=branch, task_id=task["id"], status=status, summary=summary)
-            return EvolutionResult(status, branch, workspace, summary)
+        return self._continue_candidate(
+            force=force,
+            cycle_id=cycle_id,
+            task=task,
+            branch=branch,
+            workspace=workspace,
+            is_worktree=is_worktree,
+            developer_model=developer_model,
+            tools=tools,
+        )
 

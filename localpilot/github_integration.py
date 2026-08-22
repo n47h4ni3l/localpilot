@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -30,6 +31,14 @@ class CandidateLifecycle:
     validation_state: str
     merged: bool
     pull_request_url: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateSnapshot:
+    branch: str
+    head: str
+    changed_paths: tuple[str, ...]
+    state_digest: str
 
 
 def classify_check_rollup(checks: list[dict]) -> str:
@@ -260,6 +269,42 @@ class GitHubIntegration:
                     continue
                 paths.add(relative)
         return sorted(paths)
+
+    def candidate_snapshot(self, worktree: Path) -> CandidateSnapshot:
+        """Describe candidate identity and content without executing candidate code."""
+        resolved = Path(worktree).resolve()
+        top_level = self._run(["git", "rev-parse", "--show-toplevel"], cwd=resolved)
+        branch = self._run(["git", "branch", "--show-current"], cwd=resolved)
+        head = self._run(["git", "rev-parse", "--verify", "HEAD^{commit}"], cwd=resolved)
+        if not top_level.ok or Path(top_level.stdout).resolve() != resolved:
+            raise RuntimeError("Candidate workspace is not its Git worktree root.")
+        if not branch.ok or not branch.stdout:
+            raise RuntimeError("Candidate workspace has no attached branch.")
+        if not head.ok or not head.stdout:
+            raise RuntimeError("Candidate workspace HEAD could not be resolved.")
+
+        changed_paths = self.candidate_changed_paths(resolved)
+        digest = hashlib.sha256()
+        digest.update(branch.stdout.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(head.stdout.encode("ascii", errors="replace"))
+        for relative in changed_paths:
+            digest.update(b"\0")
+            digest.update(relative.encode("utf-8"))
+            path = (resolved / relative).resolve()
+            if path == resolved or resolved not in path.parents or not path.is_file():
+                digest.update(b"<missing>")
+                continue
+            with path.open("rb") as handle:
+                while chunk := handle.read(65536):
+                    digest.update(chunk)
+
+        return CandidateSnapshot(
+            branch.stdout,
+            head.stdout,
+            tuple(changed_paths),
+            digest.hexdigest(),
+        )
 
     def branch_has_candidate_commit(self, worktree: Path) -> bool:
         result = self._run(

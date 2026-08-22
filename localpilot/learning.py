@@ -86,6 +86,64 @@ class MissionFrontier:
     updated_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class KnowledgeFact:
+    stage: str
+    fact_key: str
+    fact_type: str
+    subject: str
+    summary: str
+    source_uri: str
+    source_kind: str
+    source_digest: str
+    confidence: float
+    last_verified_at: str
+    relationships: tuple[str, ...]
+    stale: bool
+
+
+@dataclass(frozen=True, slots=True)
+class StudyRun:
+    id: int
+    stage: str
+    phase: str
+    benchmark_version: str
+    question_set_digest: str
+    score: float
+    correct: int
+    total: int
+    latency_ms: int
+    resource_cost: dict
+    errors: tuple[str, ...]
+    transferable_lessons: tuple[str, ...]
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class CurriculumStageState:
+    stage: str
+    status: str
+    baseline_score: float | None
+    latest_score: float | None
+    known_weak_areas: tuple[str, ...]
+    next_lesson: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class PeerModelComparison:
+    id: int
+    subject_model: str
+    peer_model: str
+    subject_score: float
+    peer_score: float
+    subject_latency_ms: int
+    peer_latency_ms: int
+    resource_cost: dict
+    transferable_lessons: tuple[str, ...]
+    created_at: str
+
+
 class LearningMemory:
     """Durable cycle outcomes and reusable lessons.
 
@@ -184,6 +242,63 @@ class LearningMemory:
                 );
                 CREATE INDEX IF NOT EXISTS mission_frontiers_updated_idx
                     ON mission_frontiers(updated_at DESC);
+                CREATE TABLE IF NOT EXISTS knowledge_facts (
+                    stage TEXT NOT NULL,
+                    fact_key TEXT NOT NULL,
+                    fact_type TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    source_uri TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_digest TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    last_verified_at TEXT NOT NULL,
+                    relationships_json TEXT NOT NULL DEFAULT '[]',
+                    stale INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(stage, fact_key)
+                );
+                CREATE INDEX IF NOT EXISTS knowledge_source_idx
+                    ON knowledge_facts(source_uri, stale);
+                CREATE INDEX IF NOT EXISTS knowledge_stage_idx
+                    ON knowledge_facts(stage, stale, fact_type);
+                CREATE TABLE IF NOT EXISTS study_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stage TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    benchmark_version TEXT NOT NULL,
+                    question_set_digest TEXT NOT NULL,
+                    score REAL NOT NULL,
+                    correct INTEGER NOT NULL,
+                    total INTEGER NOT NULL,
+                    latency_ms INTEGER NOT NULL,
+                    resource_cost_json TEXT NOT NULL DEFAULT '{}',
+                    errors_json TEXT NOT NULL DEFAULT '[]',
+                    transferable_lessons_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS study_runs_stage_idx
+                    ON study_runs(stage, id DESC);
+                CREATE TABLE IF NOT EXISTS curriculum_stage_state (
+                    stage TEXT PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'not_started',
+                    baseline_run_id INTEGER,
+                    latest_run_id INTEGER,
+                    known_weak_areas_json TEXT NOT NULL DEFAULT '[]',
+                    next_lesson TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS peer_model_comparisons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subject_model TEXT NOT NULL,
+                    peer_model TEXT NOT NULL,
+                    subject_score REAL NOT NULL,
+                    peer_score REAL NOT NULL,
+                    subject_latency_ms INTEGER NOT NULL,
+                    peer_latency_ms INTEGER NOT NULL,
+                    resource_cost_json TEXT NOT NULL DEFAULT '{}',
+                    transferable_lessons_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             columns = {
@@ -1031,6 +1146,402 @@ class LearningMemory:
             ).fetchall()
         return [str(row["reusable_lesson"]) for row in rows]
 
+    @staticmethod
+    def _knowledge_fact(row: sqlite3.Row) -> KnowledgeFact:
+        return KnowledgeFact(
+            stage=str(row["stage"]),
+            fact_key=str(row["fact_key"]),
+            fact_type=str(row["fact_type"]),
+            subject=str(row["subject"]),
+            summary=str(row["summary"]),
+            source_uri=str(row["source_uri"]),
+            source_kind=str(row["source_kind"]),
+            source_digest=str(row["source_digest"]),
+            confidence=float(row["confidence"]),
+            last_verified_at=str(row["last_verified_at"]),
+            relationships=tuple(json.loads(row["relationships_json"] or "[]")),
+            stale=bool(row["stale"]),
+        )
+
+    def upsert_knowledge_fact(
+        self,
+        *,
+        stage: str,
+        fact_key: str,
+        fact_type: str,
+        subject: str,
+        summary: str,
+        source_uri: str,
+        source_kind: str,
+        source_digest: str,
+        confidence: float,
+        relationships: list[str] | tuple[str, ...] = (),
+    ) -> None:
+        """Persist one concise, attributable fact, never source bodies or reasoning."""
+        self.upsert_knowledge_facts(
+            [
+                {
+                    "stage": stage,
+                    "fact_key": fact_key,
+                    "fact_type": fact_type,
+                    "subject": subject,
+                    "summary": summary,
+                    "source_uri": source_uri,
+                    "source_kind": source_kind,
+                    "source_digest": source_digest,
+                    "confidence": confidence,
+                    "relationships": relationships,
+                }
+            ]
+        )
+
+    def upsert_knowledge_facts(self, facts: list[dict]) -> None:
+        """Batch concise facts into one transaction for bounded study overhead."""
+        if not facts:
+            return
+        with self._connect() as connection:
+            for fact in facts:
+                confidence = max(0.0, min(float(fact["confidence"]), 1.0))
+                relationships = tuple(fact.get("relationships") or ())
+                connection.execute(
+                    """
+                    UPDATE knowledge_facts SET stale = 1
+                    WHERE source_uri = ? AND source_digest != ? AND stale = 0
+                    """,
+                    (str(fact["source_uri"]), str(fact["source_digest"])),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO knowledge_facts (
+                        stage, fact_key, fact_type, subject, summary, source_uri,
+                        source_kind, source_digest, confidence, last_verified_at,
+                        relationships_json, stale
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                    ON CONFLICT(stage, fact_key) DO UPDATE SET
+                        fact_type = excluded.fact_type,
+                        subject = excluded.subject,
+                        summary = excluded.summary,
+                        source_uri = excluded.source_uri,
+                        source_kind = excluded.source_kind,
+                        source_digest = excluded.source_digest,
+                        confidence = excluded.confidence,
+                        last_verified_at = excluded.last_verified_at,
+                        relationships_json = excluded.relationships_json,
+                        stale = 0
+                    """,
+                    (
+                        str(fact["stage"])[:40],
+                        str(fact["fact_key"])[:500],
+                        str(fact["fact_type"])[:80],
+                        str(fact["subject"])[:500],
+                        str(fact["summary"])[:1200],
+                        str(fact["source_uri"])[:1000],
+                        str(fact["source_kind"])[:80],
+                        str(fact["source_digest"])[:128],
+                        confidence,
+                        _now(),
+                        json.dumps(
+                            [str(item)[:500] for item in relationships[:30]]
+                        ),
+                    ),
+                )
+
+    def invalidate_knowledge_source(
+        self, source_uri: str, current_digest: str
+    ) -> int:
+        """Mark facts stale when their authoritative source content changed."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE knowledge_facts SET stale = 1
+                WHERE source_uri = ? AND source_digest != ? AND stale = 0
+                """,
+                (source_uri, current_digest),
+            )
+            return int(cursor.rowcount)
+
+    def knowledge_facts(
+        self,
+        *,
+        stage: str | None = None,
+        fact_type: str | None = None,
+        include_stale: bool = False,
+    ) -> list[KnowledgeFact]:
+        clauses: list[str] = []
+        values: list[object] = []
+        if stage is not None:
+            clauses.append("stage = ?")
+            values.append(stage)
+        if fact_type is not None:
+            clauses.append("fact_type = ?")
+            values.append(fact_type)
+        if not include_stale:
+            clauses.append("stale = 0")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM knowledge_facts {where} ORDER BY stage, fact_key",
+                values,
+            ).fetchall()
+        return [self._knowledge_fact(row) for row in rows]
+
+    def knowledge_fact(self, stage: str, fact_key: str) -> KnowledgeFact | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM knowledge_facts WHERE stage = ? AND fact_key = ?",
+                (stage, fact_key),
+            ).fetchone()
+        return self._knowledge_fact(row) if row is not None else None
+
+    @staticmethod
+    def _study_run(row: sqlite3.Row | None) -> StudyRun | None:
+        if row is None:
+            return None
+        return StudyRun(
+            id=int(row["id"]),
+            stage=str(row["stage"]),
+            phase=str(row["phase"]),
+            benchmark_version=str(row["benchmark_version"]),
+            question_set_digest=str(row["question_set_digest"]),
+            score=float(row["score"]),
+            correct=int(row["correct"]),
+            total=int(row["total"]),
+            latency_ms=int(row["latency_ms"]),
+            resource_cost=dict(json.loads(row["resource_cost_json"] or "{}")),
+            errors=tuple(json.loads(row["errors_json"] or "[]")),
+            transferable_lessons=tuple(
+                json.loads(row["transferable_lessons_json"] or "[]")
+            ),
+            created_at=str(row["created_at"]),
+        )
+
+    def record_study_run(
+        self,
+        *,
+        stage: str,
+        phase: str,
+        benchmark_version: str,
+        question_set_digest: str,
+        score: float,
+        correct: int,
+        total: int,
+        latency_ms: int,
+        resource_cost: dict,
+        errors: list[str] | tuple[str, ...],
+        transferable_lessons: list[str] | tuple[str, ...] = (),
+    ) -> StudyRun:
+        if phase not in {"baseline", "post_study"}:
+            raise ValueError(f"Unsupported study phase: {phase}")
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO study_runs (
+                    stage, phase, benchmark_version, question_set_digest,
+                    score, correct, total, latency_ms, resource_cost_json,
+                    errors_json, transferable_lessons_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stage,
+                    phase,
+                    benchmark_version,
+                    question_set_digest,
+                    float(score),
+                    int(correct),
+                    int(total),
+                    max(0, int(latency_ms)),
+                    json.dumps(resource_cost, sort_keys=True),
+                    json.dumps(list(errors)[:100]),
+                    json.dumps(list(transferable_lessons)[:30]),
+                    _now(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM study_runs WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+        result = self._study_run(row)
+        assert result is not None
+        return result
+
+    def latest_study_run(
+        self, stage: str, phase: str | None = None
+    ) -> StudyRun | None:
+        clause = "AND phase = ?" if phase else ""
+        values: tuple[object, ...] = (stage, phase) if phase else (stage,)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT * FROM study_runs WHERE stage = ? {clause} ORDER BY id DESC LIMIT 1",
+                values,
+            ).fetchone()
+        return self._study_run(row)
+
+    def update_curriculum_state(
+        self,
+        *,
+        stage: str,
+        status: str,
+        baseline_run_id: int | None,
+        latest_run_id: int | None,
+        known_weak_areas: list[str] | tuple[str, ...],
+        next_lesson: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO curriculum_stage_state (
+                    stage, status, baseline_run_id, latest_run_id,
+                    known_weak_areas_json, next_lesson, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(stage) DO UPDATE SET
+                    status = excluded.status,
+                    baseline_run_id = COALESCE(excluded.baseline_run_id, curriculum_stage_state.baseline_run_id),
+                    latest_run_id = COALESCE(excluded.latest_run_id, curriculum_stage_state.latest_run_id),
+                    known_weak_areas_json = excluded.known_weak_areas_json,
+                    next_lesson = excluded.next_lesson,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    stage,
+                    status,
+                    baseline_run_id,
+                    latest_run_id,
+                    json.dumps(list(known_weak_areas)[:30]),
+                    next_lesson[:1000],
+                    _now(),
+                ),
+            )
+
+    def curriculum_state(self, stage: str) -> CurriculumStageState:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT s.*,
+                       baseline.score AS baseline_score,
+                       latest.score AS latest_score
+                FROM curriculum_stage_state AS s
+                LEFT JOIN study_runs AS baseline ON baseline.id = s.baseline_run_id
+                LEFT JOIN study_runs AS latest ON latest.id = s.latest_run_id
+                WHERE s.stage = ?
+                """,
+                (stage,),
+            ).fetchone()
+        if row is None:
+            return CurriculumStageState(stage, "not_started", None, None, (), "", "")
+        return CurriculumStageState(
+            stage=str(row["stage"]),
+            status=str(row["status"]),
+            baseline_score=(
+                float(row["baseline_score"])
+                if row["baseline_score"] is not None
+                else None
+            ),
+            latest_score=(
+                float(row["latest_score"])
+                if row["latest_score"] is not None
+                else None
+            ),
+            known_weak_areas=tuple(json.loads(row["known_weak_areas_json"] or "[]")),
+            next_lesson=str(row["next_lesson"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def curriculum_context(self) -> dict:
+        """Bounded study evidence for capability discovery and status output."""
+        stages = [self.curriculum_state(name) for name in ("self", "qwen", "python")]
+        facts = self.knowledge_facts()
+        return {
+            "stages": [
+                {
+                    "stage": item.stage,
+                    "status": item.status,
+                    "baseline_score": item.baseline_score,
+                    "latest_score": item.latest_score,
+                    "known_weak_areas": list(item.known_weak_areas[:8]),
+                    "next_lesson": item.next_lesson,
+                }
+                for item in stages
+            ],
+            "verified_fact_counts": {
+                name: sum(1 for fact in facts if fact.stage == name)
+                for name in ("self", "qwen", "python")
+            },
+        }
+
+    def record_peer_model_comparison(
+        self,
+        *,
+        subject_model: str,
+        peer_model: str,
+        subject_score: float,
+        peer_score: float,
+        subject_latency_ms: int,
+        peer_latency_ms: int,
+        resource_cost: dict,
+        transferable_lessons: list[str] | tuple[str, ...],
+    ) -> PeerModelComparison:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO peer_model_comparisons (
+                    subject_model, peer_model, subject_score, peer_score,
+                    subject_latency_ms, peer_latency_ms, resource_cost_json,
+                    transferable_lessons_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    subject_model[:300],
+                    peer_model[:300],
+                    float(subject_score),
+                    float(peer_score),
+                    max(0, int(subject_latency_ms)),
+                    max(0, int(peer_latency_ms)),
+                    json.dumps(resource_cost, sort_keys=True),
+                    json.dumps(list(transferable_lessons)[:30]),
+                    _now(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM peer_model_comparisons WHERE id = ?",
+                (cursor.lastrowid,),
+            ).fetchone()
+        assert row is not None
+        return PeerModelComparison(
+            id=int(row["id"]),
+            subject_model=str(row["subject_model"]),
+            peer_model=str(row["peer_model"]),
+            subject_score=float(row["subject_score"]),
+            peer_score=float(row["peer_score"]),
+            subject_latency_ms=int(row["subject_latency_ms"]),
+            peer_latency_ms=int(row["peer_latency_ms"]),
+            resource_cost=dict(json.loads(row["resource_cost_json"] or "{}")),
+            transferable_lessons=tuple(
+                json.loads(row["transferable_lessons_json"] or "[]")
+            ),
+            created_at=str(row["created_at"]),
+        )
+
+    def latest_peer_model_comparison(self) -> PeerModelComparison | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM peer_model_comparisons ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return PeerModelComparison(
+            id=int(row["id"]),
+            subject_model=str(row["subject_model"]),
+            peer_model=str(row["peer_model"]),
+            subject_score=float(row["subject_score"]),
+            peer_score=float(row["peer_score"]),
+            subject_latency_ms=int(row["subject_latency_ms"]),
+            peer_latency_ms=int(row["peer_latency_ms"]),
+            resource_cost=dict(json.loads(row["resource_cost_json"] or "{}")),
+            transferable_lessons=tuple(
+                json.loads(row["transferable_lessons_json"] or "[]")
+            ),
+            created_at=str(row["created_at"]),
+        )
+
     def schema_columns(self) -> set[str]:
         """Exposed for diagnostics/tests that enforce the no-reasoning contract."""
         with self._connect() as connection:
@@ -1040,6 +1551,10 @@ class LearningMemory:
                 "capability_map",
                 "capability_experiments",
                 "mission_frontiers",
+                "knowledge_facts",
+                "study_runs",
+                "curriculum_stage_state",
+                "peer_model_comparisons",
             ):
                 rows.extend(connection.execute(f"PRAGMA table_info({table})").fetchall())
         return {str(row["name"]) for row in rows}

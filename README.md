@@ -18,6 +18,7 @@ In practical terms: when the owner is using the PC, LocalPilot works for the own
 - Mission-directed capability discovery with four evolution classes, falsifiable hypotheses, baselines, and evaluation plans.
 - Durable cycle, capability, experiment, frontier, and review records in local SQLite memory.
 - Compact checkpoints for safely resuming interrupted research, implementation, and repair work.
+- A staged, benchmarked self-study curriculum for repository, Qwen/Ollama, and Python mastery.
 - Guarded trusted-`main` self-sync and an optional per-user Windows idle scheduler.
 
 LocalPilot has no cloud-model or pricing subsystem. GitHub is used for source control, review, and candidate test execution; local model inference and machine-private learning data stay on the workstation.
@@ -103,6 +104,62 @@ Machine-private state lives under the Git-ignored `localpilot-data/` directory:
 - `learning.sqlite3` stores development cycles, candidate/PR/CI/merge state, bounded repair counts, experiment contracts and outcomes, a capability map, mission frontiers, and short reusable lessons.
 - `evolution-checkpoint.json` stores the active resumable engineering handoff.
 
+The same SQLite database stores a reviewable curriculum knowledge graph: concise facts, source
+URIs and digests, confidence, verification time, relationships, held-out benchmark scores,
+latency/resource cost, weak areas, and next lessons. It never stores source file bodies, web
+pages, model responses, prompts, transcripts, or hidden reasoning. Source-digest changes mark
+facts stale before they can support a benchmark or proposal.
+
+## Benchmarked self-study (not weight training)
+
+`localpilot study` improves retrieval and durable repository grounding before any fine-tuning or
+distillation is considered. The enforced order is:
+
+1. **self** — map committed files, Python symbols/imports/calls, configuration fields, scripts,
+   test contracts, capability owners, safety invariants, and current Git history;
+2. **qwen** — combine installed Ollama model metadata with official Qwen/Ollama documentation and
+   LocalPilot's actual developer-model serving behavior; and
+3. **python** — connect authoritative Python/pytest semantics to the modules that use `subprocess`,
+   `pathlib`, `sqlite3`, dataclasses, typing, JSON, pytest, and TOML.
+
+Each stage records a held-out baseline before reading its study sources, retests on the same
+question-set digest, and records score, errors, latency, resource cost, and transferable lessons.
+A stage advances only after measured gain. Equal or lower performance becomes
+`needs_adaptation`; it is never reported as completion.
+
+```powershell
+# Inspect scores, weak areas, and the next lesson
+localpilot study status
+
+# Optional explicit baseline; `run` creates it first when absent
+localpilot study baseline self
+
+# Local/read-only study
+localpilot study run self
+
+# Verify authoritative Qwen/Ollama or Python/pytest HTTPS sources while studying
+localpilot study run qwen --allow-web
+
+# Continue in order and stop at the first stage that fails to improve
+localpilot study all --allow-web
+
+# Optional model-to-model transfer comparison; size is not used as the quality proxy
+localpilot study compare qwen3-coder:30b
+
+# Inspect a broader public HTTPS source transiently; no page body or claim is promoted
+localpilot study research https://example.org/relevant-paper
+```
+
+Peer comparison runs the configured developer model and another installed Ollama model on the
+same transfer scenarios. It stores only scores, latency/resource cost, and concise corrections;
+raw answers and hidden reasoning are discarded. Comparison cannot merge, promote, execute
+candidate code, or change the configured model automatically.
+
+Permanent high-confidence web knowledge is limited to locally verified metadata and official
+Qwen, Ollama, Python, and pytest sources. Broader public-HTTPS research is permitted as a bounded,
+read-only, transient input, but uncorroborated web claims do not satisfy held-out benchmarks or
+become established capability.
+
 Only an experiment that passes CI **and** is merged by a human updates the capability map as validated. Failed and paused runs remain useful evidence, but unvalidated lessons are not promoted as established capability.
 
 `localpilot status` reports the stable mission, resources, latest evolve outcome, active checkpoint/resume state, current experiment, capability frontier, and Git status. Handled failure states return a nonzero exit code so scripts and Task Scheduler can distinguish failure from an ordinary deferral.
@@ -174,6 +231,10 @@ localpilot doctor
 
 # Show resources, mission/frontier, evolution/checkpoint, audit, and Git state
 localpilot status
+
+# Show or run benchmarked self-study (retrieval/memory, not model weight training)
+localpilot study status
+localpilot study run self
 
 # Reject a managed candidate while retaining its evidence and GitHub history
 localpilot reject 19 --reason "Candidate references a missing required script."

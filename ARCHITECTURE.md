@@ -96,3 +96,34 @@ capability unlocked -> next frontier
 
 Code volume, complexity, autonomy, and resource consumption are not treated as intelligence.
 Human review and merge remain the promotion boundary.
+
+## Staged repository-grounded study
+
+The curriculum is a separate, read-only learning path, not an autonomous candidate and not model
+weight training:
+
+```text
+held-out baseline -> read-only study -> concise sourced fact graph -> held-out retest
+    -> measured gain: unlock next stage
+    -> no gain: retain errors and adapt current stage
+```
+
+Stages are locked in the order `self -> qwen -> python`. Facts record only bounded summaries,
+source/provenance, confidence, last verification time, source digest, and relationships. Repository
+source changes invalidate prior facts. Benchmark question identifiers and evaluators are held
+separately from study facts so indexing cannot simply persist the answer set.
+
+The self map is extracted from committed structure and Python ASTs. It supports explicit checks for
+invented APIs/config fields, duplicate subsystem proposals, disconnected code, missing files or
+commands, wrong integration points, call-graph mismatches, and missing test contracts. Capability
+discovery receives only bounded curriculum status and verified fact counts; its prompt requires
+current repository evidence for these claims.
+
+Qwen study prefers the local Ollama `show` metadata for the artifact actually installed. Optional
+web verification is HTTPS/read-only and restricted to official Qwen/Ollama/Python/pytest sources
+for high-confidence durable facts. Python study ties authoritative library semantics back to the
+project paths importing those APIs.
+
+Optional peer-model comparison runs identical transfer scenarios through two installed Ollama
+models and records scores, latency/resource cost, and concise lessons. Model size is not a scoring
+input, raw responses are not retained, and no comparison changes configuration or promotion state.

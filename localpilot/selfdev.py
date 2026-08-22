@@ -187,9 +187,18 @@ def build_read_context(
 class CandidateTools:
     """File tools confined to one candidate workspace."""
 
-    def __init__(self, workspace: Path, max_files: int = 8) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        max_files: int = 8,
+        protected_paths: Iterable[str] | None = None,
+    ) -> None:
         self.workspace = workspace.resolve()
         self.max_files = max_files
+        self.protected_paths = {
+            Path(item).as_posix()
+            for item in (protected_paths or ())
+        }
         self.files_written: set[Path] = set()
         self.files_read: set[Path] = set()
 
@@ -228,6 +237,14 @@ class CandidateTools:
 
     def write_project_file(self, relative_path: str, content: str) -> str:
         path = self._resolve(relative_path)
+        relative = path.relative_to(self.workspace).as_posix()
+
+        if relative in self.protected_paths:
+            raise PermissionError(
+                "Reviewer-controlled regression contract is read-only during "
+                f"autonomous repair: {relative}"
+            )
+
         suffix = path.suffix.lower() if path.name != ".gitignore" else ".gitignore"
         if suffix not in _ALLOWED_SUFFIXES:
             raise ValueError(f"File type is not allowed for autonomous editing: {suffix or '(none)'}")
@@ -501,9 +518,25 @@ class SelfDeveloper:
             available,
         )
 
+        try:
+            protected_paths = self.github.reviewer_modified_test_paths(workspace)
+        except RuntimeError as exc:
+            summary = (
+                "CI repair stopped because reviewer regression protection "
+                f"could not be established safely: {exc}"
+            )
+            return EvolutionResult(
+                "failed",
+                branch,
+                workspace,
+                summary,
+                False,
+            )
+
         tools = CandidateTools(
             workspace,
             self.config.selfdev.max_files_per_cycle,
+            protected_paths=protected_paths,
         )
 
         failure_log = self.github.failed_workflow_log(branch)
@@ -513,6 +546,10 @@ class SelfDeveloper:
         )
         lessons = self.memory.reusable_lessons(
             self.config.selfdev.lesson_limit
+        )
+        protected_note = json.dumps(
+            sorted(protected_paths),
+            ensure_ascii=False,
         )
 
         try:
@@ -540,10 +577,15 @@ class SelfDeveloper:
                     "candidate files, and repair only the isolated candidate "
                     "using the supplied tools. Do not touch stable, do not "
                     "weaken safety, do not execute candidate code locally, "
-                    "and do not use shell command strings. Update tests when "
-                    "the failure reveals a bad test. Finish with JSON containing "
-                    "only summary and reusable_lesson; do not expose hidden "
-                    "reasoning.\n"
+                    "and do not use shell command strings. Reviewer-controlled "
+                    "regression tests listed below are immutable contracts: you "
+                    "may inspect them, but you must not edit them, weaken their "
+                    "assertions, or work around them. Repair the implementation "
+                    "so it satisfies those tests. Other tests may only be changed "
+                    "when they are not reviewer-protected and the failure proves "
+                    "the test itself is invalid. Finish with JSON containing only "
+                    "summary and reusable_lesson; do not expose hidden reasoning.\n"
+                    f"Reviewer-protected paths: {protected_note}\n"
                     f"Task: {task['title']}\n"
                     f"Acceptance: {acceptance}\n"
                     f"CI failed-step log:\n{failure_log[:16000]}\n"
@@ -610,8 +652,10 @@ class SelfDeveloper:
                                 "and reason. Each content value must contain the COMPLETE replacement file, not "
                                 "a diff or excerpt. No markdown and no hidden reasoning. The caller will apply "
                                 "every proposed file only through CandidateTools.write_project_file, so candidate "
-                                "path confinement and file limits remain enforced. Repair only the concrete CI "
-                                "failure and do not weaken safety.\n"
+                                "path confinement and file limits remain enforced. Reviewer-controlled "
+                                "regression tests are read-only and must not appear in the change plan. "
+                                "Repair only the concrete CI failure and do not weaken safety.\n"
+                                f"Reviewer-protected paths: {protected_note}\n"
                                 f"Task: {task['title']}\n"
                                 f"Acceptance: {acceptance}\n"
                                 f"CI failed-step log:\n{failure_log[:16000]}\n"

@@ -60,6 +60,34 @@ def classify_workflow_run(status: str | None, conclusion: str | None) -> str:
     return "pending"
 
 
+_AUTONOMOUS_COMMIT_PREFIXES = ("candidate: ", "repair: ")
+_REVIEW_COMMIT_MARKER = "@@LOCALPILOT_COMMIT@@"
+
+
+def parse_reviewer_modified_test_paths(log_text: str) -> set[str]:
+    """Find tests changed by non-LocalPilot commits on a candidate branch."""
+    protected: set[str] = set()
+    reviewer_commit = False
+
+    for raw_line in log_text.splitlines():
+        line = raw_line.strip()
+
+        if line.startswith(_REVIEW_COMMIT_MARKER):
+            subject = line[len(_REVIEW_COMMIT_MARKER):].strip()
+            reviewer_commit = not subject.startswith(_AUTONOMOUS_COMMIT_PREFIXES)
+            continue
+
+        if not reviewer_commit or not line:
+            continue
+
+        relative = Path(line).as_posix()
+
+        if relative.startswith("tests/") and relative.endswith(".py"):
+            protected.add(relative)
+
+    return protected
+
+
 class GitHubIntegration:
     """Git/GitHub adapter. Every process uses argv and shell=False."""
 
@@ -197,6 +225,43 @@ class GitHubIntegration:
         log_text = logs.stdout if logs.ok else (logs.stderr or logs.stdout)
         limit = max(1000, min(int(max_chars), 50000))
         return (log_text or "No failed-step log was returned.")[-limit:]
+
+    def reviewer_modified_test_paths(self, worktree: Path) -> set[str]:
+        """Return reviewer-controlled test paths unique to this candidate branch."""
+        fetched = self._run(
+            ["git", "fetch", self.config.remote, "--prune"],
+            cwd=worktree,
+            timeout=120,
+        )
+
+        if not fetched.ok:
+            raise RuntimeError(
+                "Could not refresh Git history before determining protected "
+                f"review tests: {fetched.stderr or fetched.stdout}"
+            )
+
+        base_ref = f"{self.config.remote}/{self.config.main_branch}"
+
+        result = self._run(
+            [
+                "git",
+                "log",
+                f"{base_ref}..HEAD",
+                f"--format={_REVIEW_COMMIT_MARKER}%s",
+                "--name-only",
+                "--no-renames",
+            ],
+            cwd=worktree,
+            timeout=60,
+        )
+
+        if not result.ok:
+            raise RuntimeError(
+                "Could not inspect candidate history for reviewer tests: "
+                f"{result.stderr or result.stdout}"
+            )
+
+        return parse_reviewer_modified_test_paths(result.stdout)
 
     def worktree_for_branch(self, branch: str) -> Path | None:
         result = self._run(["git", "worktree", "list", "--porcelain"])

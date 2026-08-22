@@ -37,6 +37,10 @@ developer_model = "qwen2.5:32b"
 auto_promote = false
 research_tool_rounds = 6
 max_tool_rounds = 14
+# Static-check failures are fed back into the same candidate, with both a
+# per-repair tool limit and a durable total-attempt limit.
+local_repair_tool_rounds = 6
+max_local_repair_attempts = 3
 max_files_per_cycle = 8
 run_static_checks = true
 allow_local_candidate_execution = false

@@ -57,6 +57,8 @@ class SelfDevConfig:
     auto_promote: bool = False
     research_tool_rounds: int = 6
     max_tool_rounds: int = 14
+    local_repair_tool_rounds: int = 6
+    max_local_repair_attempts: int = 3
     max_files_per_cycle: int = 8
     run_static_checks: bool = True
     allow_local_candidate_execution: bool = False

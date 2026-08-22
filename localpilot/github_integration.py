@@ -143,6 +143,42 @@ class GitHubIntegration:
     def push_branch(self, worktree: Path, branch: str) -> CommandResult:
         return self._run(["git", "push", "-u", self.config.remote, branch], cwd=worktree, timeout=120)
 
+    def candidate_changed_paths(self, worktree: Path) -> list[str]:
+        """Return tracked and untracked candidate paths without executing code."""
+        tracked = self._run(
+            ["git", "diff", "--name-only", "-z", "HEAD", "--", "."],
+            cwd=worktree,
+        )
+        untracked = self._run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=worktree,
+        )
+        if not tracked.ok or not untracked.ok:
+            return []
+
+        paths: set[str] = set()
+        for value in (tracked.stdout, untracked.stdout):
+            for raw in value.split("\0"):
+                if not raw:
+                    continue
+                relative = Path(raw).as_posix()
+                if Path(relative).is_absolute() or ".." in Path(relative).parts:
+                    continue
+                paths.add(relative)
+        return sorted(paths)
+
+    def branch_has_candidate_commit(self, worktree: Path) -> bool:
+        result = self._run(
+            [
+                "git",
+                "rev-list",
+                "--count",
+                f"{self.config.main_branch}..HEAD",
+            ],
+            cwd=worktree,
+        )
+        return result.ok and result.stdout.isdigit() and int(result.stdout) > 0
+
     def create_issue(self, title: str, body: str) -> CommandResult:
         if not self.gh_available():
             return CommandResult(False, "", "GitHub CLI (gh) is not installed.", 127)
@@ -226,21 +262,31 @@ class GitHubIntegration:
         limit = max(1000, min(int(max_chars), 50000))
         return (log_text or "No failed-step log was returned.")[-limit:]
 
-    def reviewer_modified_test_paths(self, worktree: Path) -> set[str]:
+    def reviewer_modified_test_paths(
+        self,
+        worktree: Path,
+        *,
+        refresh: bool = True,
+    ) -> set[str]:
         """Return reviewer-controlled test paths unique to this candidate branch."""
-        fetched = self._run(
-            ["git", "fetch", self.config.remote, "--prune"],
-            cwd=worktree,
-            timeout=120,
-        )
-
-        if not fetched.ok:
-            raise RuntimeError(
-                "Could not refresh Git history before determining protected "
-                f"review tests: {fetched.stderr or fetched.stdout}"
+        if refresh:
+            fetched = self._run(
+                ["git", "fetch", self.config.remote, "--prune"],
+                cwd=worktree,
+                timeout=120,
             )
 
-        base_ref = f"{self.config.remote}/{self.config.main_branch}"
+            if not fetched.ok:
+                raise RuntimeError(
+                    "Could not refresh Git history before determining protected "
+                    f"review tests: {fetched.stderr or fetched.stdout}"
+                )
+
+        base_ref = (
+            f"{self.config.remote}/{self.config.main_branch}"
+            if refresh
+            else self.config.main_branch
+        )
 
         result = self._run(
             [

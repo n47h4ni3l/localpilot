@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
+import subprocess
 
 
 class OperationRisk(Enum):
@@ -15,8 +16,6 @@ class CommandSpec:
     timeout: int
 
 
-import subprocess
-
 
 class CommandRunner:
     def __init__(self, approval_callback=None):
@@ -31,4 +30,4 @@ class CommandRunner:
             result = subprocess.run(command_spec.argv, timeout=command_spec.timeout, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
             return {'stdout': result.stdout.decode(), 'stderr': result.stderr.decode(), 'returncode': result.returncode}
         except subprocess.TimeoutExpired as e:
-            return {'stdout': e.stdout.decode() if e.stdout else '', 'stderr': e.stderr.decode() if e.stderr else '', 'returncode': -1}
+            return {'stdout': e.stdout.decode() if e.stdout else '', 'stderr': e.stderr.decode() if e.stderr else '', 'returncode': None}

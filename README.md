@@ -107,6 +107,14 @@ Only an experiment that passes CI **and** is merged by a human updates the capab
 
 `localpilot status` reports the stable mission, resources, latest evolve outcome, active checkpoint/resume state, current experiment, capability frontier, and Git status. Handled failure states return a nonzero exit code so scripts and Task Scheduler can distinguish failure from an ordinary deferral.
 
+Human reviewers can explicitly reject an autonomous candidate without merging it or erasing its history:
+
+```powershell
+localpilot reject 19 --reason "Green CI was insufficient: the candidate referenced missing scripts/pre_ci_review.sh. Validate structural completeness."
+```
+
+The command resolves the PR through GitHub, refuses branches that are not both `localpilot/candidate-*` and owned by durable LocalPilot cycle memory, and records `rejected_by_human` before any local cleanup. It retains the prior CI state, PR, branch, task, experiment evidence, and rejection reason as reusable discovery context. The rejection clears the one-candidate gate and removes only a matching checkpoint and clean registered candidate worktree. It does not merge, promote, close the PR, delete the branch, or remove GitHub history. Running the same rejection again is safe and preserves the original reason.
+
 ## Resource-aware local models
 
 Before self-development inference, LocalPilot estimates the resident cost of each configured installed model using its Ollama size metadata plus `[selfdev].model_memory_overhead_gb`. It selects the first candidate that remains under `[resource].max_memory_percent_for_background`; if none fits, the cycle defers.
@@ -166,6 +174,9 @@ localpilot doctor
 
 # Show resources, mission/frontier, evolution/checkpoint, audit, and Git state
 localpilot status
+
+# Reject a managed candidate while retaining its evidence and GitHub history
+localpilot reject 19 --reason "Candidate references a missing required script."
 
 # Run one normal gated evolution invocation
 localpilot evolve

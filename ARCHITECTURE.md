@@ -44,6 +44,8 @@ The fallback is data, not a privileged editing channel. Its paths and complete f
 
 GitHub validation and merge are separate facts. A passing local static check or a pushed branch does not complete a task. The next backlog item is eligible only after the current candidate's GitHub checks pass and its PR is merged. An unfinished unpushed Git candidate is pending too: its exact branch and worktree are reused on the next invocation, its existing changes are revalidated against path, type, size, reviewer-test and file-count protections, and it is never committed or pushed until static checks pass. LocalPilot can observe promotion state; it has no method that merges or promotes.
 
+Explicit human rejection is a separate terminal outcome, never inferred from an arbitrary closed PR. `localpilot reject <PR> --reason <text>` resolves the PR to a `localpilot/candidate-*` branch and requires that exact branch to be owned by durable cycle memory. The database transaction records `rejected_by_human`, the prior validation state, PR identity, reason, and experiment lesson before the outstanding-candidate gate can clear. Later lifecycle reconciliation cannot overwrite that state. Only afterward may LocalPilot clear the matching checkpoint and remove a clean, registered matching worktree; it never deletes the branch or GitHub history.
+
 ## Capability-growth mandate
 
 The scheduler does not treat “nothing is broken” as a terminal state. When no seed task or outstanding candidate blocks new work, the discovery planner asks what highest-leverage change could increase LocalPilot's future capability. It chooses from evidence in committed architecture, prior runs, failures, CI outcomes, resource constraints, benchmarks and recorded capability gaps—not from a hard-coded feature wishlist.
@@ -57,7 +59,7 @@ Exploration remains candidate-only, resource bounded and human controlled. GitHu
 `localpilot-data/learning.sqlite3` stores durable, machine-local development facts:
 
 - task, candidate branch, everyday/developer model names;
-- cycle outcome, static-check result, push/PR/merge state;
+- cycle outcome, static-check result, push/PR/merge/rejection state and prior CI evidence;
 - candidate worktree and durable bounded local-repair attempt count;
 - concise implementation summary;
 - a short reusable lesson for later cycles;

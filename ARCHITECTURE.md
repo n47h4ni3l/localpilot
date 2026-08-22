@@ -74,3 +74,23 @@ The existing `ResourceGovernor` remains in charge of self-development eligibilit
 
 All Git/GitHub/static-check process calls use argument arrays with `shell=False`. Full executable tests remain in GitHub Actions. Stable, developer, and candidate boundaries do not depend on model cooperation: the tool surface enforces them.
 
+
+
+## Mission-directed capability frontier
+
+LocalPilot's self-development is directed by a stable mission rather than by defect repair alone.
+The mission is to become an increasingly capable general-purpose personal intelligence that expands
+what its user can understand, create, and accomplish while remaining reliable, transparent,
+resource-aware, interruptible, and under human control.
+
+The mission is stable; the capability frontier is not. During idle capability discovery LocalPilot
+must identify its current frontier, the limiting capability, why overcoming it has high transferable
+leverage, the capability expected to be unlocked, and the next frontier that could become reachable.
+
+Capability growth is therefore evaluated as:
+
+current frontier -> limiting capability -> hypothesis -> measurable experiment -> evidence ->
+capability unlocked -> next frontier
+
+Code volume, complexity, autonomy, and resource consumption are not treated as intelligence.
+Human review and merge remain the promotion boundary.

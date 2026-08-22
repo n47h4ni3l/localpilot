@@ -26,6 +26,7 @@ from localpilot.evolution import (
 )
 from localpilot.github_integration import GitHubIntegration
 from localpilot.learning import LearningMemory
+from localpilot.mission import mission_context
 from localpilot.resource import ResourceGovernor
 
 _IGNORE_NAMES = {".git", ".github", ".venv", "__pycache__", ".pytest_cache", "localpilot-data"}
@@ -704,6 +705,11 @@ class SelfDeveloper:
             {
                 "evolution_class": normalized["evolution_class"],
                 "capability_target": normalized["capability_target"],
+                "mission_alignment": normalized["mission_alignment"],
+                "current_frontier": normalized["current_frontier"],
+                "why_high_leverage": normalized["why_high_leverage"],
+                "capability_unlocked": normalized["capability_unlocked"],
+                "next_frontier": normalized["next_frontier"],
                 "question": normalized["question"],
                 "observed_limitation": normalized["observed_limitation"],
                 "evidence": normalized.get("evidence", []),
@@ -735,6 +741,7 @@ class SelfDeveloper:
             readable_paths=readable,
         )
         evidence_context = {
+            "mission": mission_context(),
             "durable_memory": self.memory.discovery_context(),
             "resource_constraints": {
                 "everyday_model": self.config.model.name,
@@ -755,6 +762,7 @@ class SelfDeveloper:
         schema = (
             "Return strict JSON with a proposals list (one to three objects). Every object must contain "
             "evolution_class (repair, extend, improve_cognition, or explore), title, capability_target, "
+            "mission_alignment, current_frontier, why_high_leverage, capability_unlocked, next_frontier, "
             "question, observed_limitation, evidence (repository facts), alternatives (at least two), "
             "hypothesis (falsifiable), expected_complexity (low, medium, or high), and evaluation with "
             "metric, baseline, success_criterion, and measurement_method."
@@ -763,8 +771,12 @@ class SelfDeveloper:
             {
                 "role": "system",
                 "content": (
-                    "You are LocalPilot's autonomous capability-discovery planner. Nothing being broken is not "
-                    "a terminal condition. Ask: "
+                    "You are LocalPilot's autonomous capability-discovery planner. The mission, evolution "
+                    "objective, capability priorities, and non-goals in Current evidence are stable constraints. "
+                    "Use the moving capability frontier to decide what progress means. Prefer improvements that "
+                    "transfer across many future tasks or improve the ability to acquire further capabilities. "
+                    "Do not confuse added complexity, code volume, resource use, or autonomy with intelligence. "
+                    "Nothing being broken is not a terminal condition. Ask: "
                     f"{CORE_CAPABILITY_QUESTION} Inspect only committed project files through the read-only tools, "
                     "and choose questions from evidence in the architecture, prior cycle outcomes, failures, "
                     "benchmarks, resource constraints, and observed capability gaps. Do not follow a static wishlist. "

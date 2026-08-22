@@ -81,7 +81,7 @@ Useful interactive commands:
 localpilot evolve --force
 ```
 
-That bypasses only the idle gate for that cycle; candidate path confinement, stable/candidate separation, and the guarded main-branch sync still apply. LocalPilot does not automatically install its scheduler. An external scheduler may invoke `localpilot evolve`, but the checkout must be the clean configured `main` branch. Each invocation fetches only that branch from the configured remote and permits only a fast-forward. Dirty, wrong-branch, ahead, divergent, or unreachable checkouts stop before candidate work. If a fast-forward occurs, that invocation exits so the next scheduled run starts with the newly loaded code.
+That bypasses only the keyboard/mouse idle wait for that cycle. CPU and memory ceilings remain authoritative, as do candidate path confinement, stable/candidate separation, and the guarded main-branch sync. LocalPilot does not automatically install its scheduler. An external scheduler may invoke `localpilot evolve`, but the checkout must be the clean configured `main` branch. Each invocation fetches only that branch from the configured remote and permits only a fast-forward. Dirty, wrong-branch, ahead, divergent, or unreachable checkouts stop before candidate work. If a fast-forward occurs, that invocation exits so the next scheduled run starts with the newly loaded code.
 
 To let LocalPilot poll dynamically and begin work only when its own idle/resource gate permits it, register the included per-user Windows task from a clean `main` checkout after bootstrap:
 
@@ -90,6 +90,8 @@ To let LocalPilot poll dynamically and begin work only when its own idle/resourc
 ```
 
 The task invokes `localpilot evolve` every five minutes while you are signed in, ignores overlapping invocations, and never passes `--force`. Polling is only a wake-up mechanism: returning to the PC or exceeding a resource limit still defers or pauses model/tool work.
+
+Every invocation now writes paired `evolve_run_start` / `evolve_run_end` rows to `localpilot-data/audit.jsonl`, including early deferrals, idle/no-task outcomes, handled failures, and candidate delivery. `localpilot status` shows the newest terminal outcome. Handled failure states return a nonzero process exit so Task Scheduler's `LastTaskResult` no longer reports success for an internally failed cycle.
 
 ## GitHub connection
 
@@ -116,6 +118,8 @@ Defaults in `localpilot.toml`:
 - LocalPilot uses below-normal process priority while the PC is active.
 - Background self-development requires 10 minutes of keyboard/mouse idle time.
 - It defers background work when CPU is above 65% or memory usage is above 82%.
+- Before loading Ollama, it estimates each configured developer model's resident footprint and selects the first model that stays under the same memory ceiling. On a constrained machine this can choose the everyday or configured fallback model instead of starting an oversized preferred model.
+- Developer responses are streamed so user activity or new hardware pressure can cancel a long inference promptly. Ollama receives `keep_alive = 0` by default for self-development, returning model RAM/VRAM after each response.
 
 These values are deliberately editable. The next development phase should add GPU and foreground-application awareness so gaming, CAD and other demanding work cause an even faster yield.
 

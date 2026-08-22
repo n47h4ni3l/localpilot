@@ -54,6 +54,15 @@ class SelfDevConfig:
     # This is deliberately distinct from model.name. If it is unavailable,
     # LocalPilot falls back to the everyday model for that cycle.
     developer_model: str = "qwen2.5:32b"
+    # Ordered fallbacks are considered only when the preferred/everyday model
+    # would exceed the background memory ceiling on the current machine.
+    developer_model_fallbacks: list[str] = field(default_factory=lambda: ["qwen2.5:14b"])
+    # Model file size is a useful lower-bound estimate for resident memory.
+    # Reserve additional space for context/KV cache before starting inference.
+    model_memory_overhead_gb: float = 1.0
+    # Do not leave a self-development model resident after a response. This
+    # lets a paused cycle return RAM/VRAM to the owner immediately.
+    ollama_keep_alive: float | str = 0
     auto_promote: bool = False
     research_tool_rounds: int = 6
     max_tool_rounds: int = 14

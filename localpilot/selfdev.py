@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
+
+import psutil
 
 from localpilot.audit import AuditLog
 from localpilot.config import Config
@@ -49,6 +53,19 @@ class StaticRepairResult:
     attempts_used: int
 
 
+@dataclass(frozen=True, slots=True)
+class DeveloperModelSelection:
+    model: str | None
+    size_bytes: int | None
+    projected_memory_percent: float | None
+    reason: str
+
+
+@dataclass(slots=True)
+class StreamedChatResponse:
+    message: dict[str, Any]
+
+
 class CyclePaused(RuntimeError):
     pass
 
@@ -85,6 +102,11 @@ def select_developer_model(preferred: str, everyday: str, available: Iterable[st
 
 def available_ollama_models() -> set[str]:
     """Read model names through the Ollama SDK without invoking a shell."""
+    return set(installed_ollama_models())
+
+
+def installed_ollama_models() -> dict[str, int | None]:
+    """Return installed Ollama model names and their on-disk byte sizes."""
     try:
         from ollama import list as list_models
 
@@ -94,32 +116,131 @@ def available_ollama_models() -> set[str]:
     models = getattr(response, "models", None)
     if models is None and isinstance(response, dict):
         models = response.get("models", [])
-    names: set[str] = set()
+    installed: dict[str, int | None] = {}
     for model in models or []:
         if isinstance(model, dict):
             name = model.get("model") or model.get("name")
+            size = model.get("size")
         else:
             name = getattr(model, "model", None) or getattr(model, "name", None)
+            size = getattr(model, "size", None)
         if name:
-            names.add(str(name))
-    return names
+            try:
+                size_bytes = int(size) if size is not None else None
+            except (TypeError, ValueError):
+                size_bytes = None
+            installed[str(name)] = size_bytes
+    return installed
+
+
+def select_resource_aware_developer_model(
+    preferred: str,
+    everyday: str,
+    fallbacks: Iterable[str],
+    installed: dict[str, int | None],
+    *,
+    total_memory_bytes: int,
+    available_memory_bytes: int,
+    max_memory_percent: float,
+    overhead_bytes: int = 0,
+) -> DeveloperModelSelection:
+    """Select the first configured model that preserves the memory ceiling."""
+    candidates: list[str] = []
+    for name in (preferred, everyday, *fallbacks):
+        normalized = str(name).strip()
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+
+    total = max(1, int(total_memory_bytes))
+    available = max(0, int(available_memory_bytes))
+    used = max(0, total - available)
+    ceiling = total * max(0.0, min(float(max_memory_percent), 100.0)) / 100.0
+    rejected: list[str] = []
+
+    for name in candidates:
+        if name not in installed:
+            rejected.append(f"{name} is not installed")
+            continue
+        size = installed[name]
+        if size is None:
+            rejected.append(f"{name} has no usable size metadata")
+            continue
+        projected = used + max(0, int(size)) + max(0, int(overhead_bytes))
+        projected_percent = projected * 100.0 / total
+        if projected <= ceiling:
+            skipped = f"Skipped {'; '.join(rejected)}. " if rejected else ""
+            return DeveloperModelSelection(
+                name,
+                size,
+                projected_percent,
+                f"{skipped}Selected {name}; projected memory {projected_percent:.1f}% "
+                f"within the {max_memory_percent:.1f}% background ceiling.",
+            )
+        rejected.append(
+            f"{name} would project memory to {projected_percent:.1f}% "
+            f"> {max_memory_percent:.1f}%"
+        )
+
+    detail = "; ".join(rejected) or "no configured model candidates were provided"
+    return DeveloperModelSelection(
+        None,
+        None,
+        None,
+        f"No installed developer model fits the background memory budget: {detail}.",
+    )
 
 
 def developer_chat(
     chat: Callable[..., Any],
     *,
     request_think: bool,
+    keep_alive: float | str | None = None,
+    stream_guard: Callable[[], None] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Use Ollama thinking when supported; retry without it when unsupported."""
+    """Use thinking when supported and permit prompt cancellation while streaming."""
+
+    def invoke(*, think: bool) -> Any:
+        call_kwargs = dict(kwargs)
+        if think:
+            call_kwargs["think"] = True
+        if keep_alive is not None:
+            call_kwargs["keep_alive"] = keep_alive
+        if stream_guard is None:
+            return chat(**call_kwargs)
+
+        call_kwargs["stream"] = True
+        response_stream = chat(**call_kwargs)
+        content: list[str] = []
+        tool_calls: list[Any] = []
+        try:
+            for chunk in response_stream:
+                stream_guard()
+                message = getattr(chunk, "message", chunk)
+                if isinstance(message, dict) and isinstance(message.get("message"), dict):
+                    message = message["message"]
+                if isinstance(message, dict):
+                    content.append(str(message.get("content") or ""))
+                    tool_calls.extend(list(message.get("tool_calls") or []))
+                else:
+                    content.append(str(getattr(message, "content", "") or ""))
+                    tool_calls.extend(list(getattr(message, "tool_calls", None) or []))
+        finally:
+            close = getattr(response_stream, "close", None)
+            if callable(close):
+                close()
+        return StreamedChatResponse(
+            {"role": "assistant", "content": "".join(content), "tool_calls": tool_calls}
+        )
+
     if request_think:
         try:
-            return chat(think=True, **kwargs)
+            return invoke(think=True)
         except Exception as exc:
             message = str(exc).lower()
             if "does not support thinking" not in message:
                 raise
-    return chat(**kwargs)
+    return invoke(think=False)
 
 
 def _json_object(text: str) -> dict[str, Any]:
@@ -437,12 +558,84 @@ class SelfDeveloper:
         shutil.copytree(self.root, destination, ignore=ignore)
         return destination, False
 
-    def _check_resources(self, force: bool, branch: str) -> None:
+    def _check_resources(
+        self,
+        force: bool,
+        branch: str,
+        *,
+        during_inference: bool = False,
+    ) -> None:
         current = self.governor.sample(interval=0.05)
-        if not force and not current.background_allowed:
+        if during_inference:
+            reasons: list[str] = []
+            if not force and not current.idle_allowed:
+                reasons.append(current.idle_reason)
+            if current.memory_percent > self.config.resource.max_memory_percent_for_background:
+                reasons.append(
+                    f"memory {current.memory_percent:.0f}% > "
+                    f"{self.config.resource.max_memory_percent_for_background:.0f}%"
+                )
+            allowed = not reasons
+            reason = "; ".join(reasons) or "idle capacity available"
+        else:
+            allowed = current.allows_selfdev(ignore_idle=force)
+            reason = current.blocking_reason(ignore_idle=force)
+        if not allowed:
             self.governor.apply_process_priority(idle=False)
-            self.audit.write("selfdev_paused", branch=branch, reason=current.reason)
-            raise CyclePaused(current.reason)
+            self.audit.write("selfdev_paused", branch=branch, reason=reason)
+            raise CyclePaused(reason)
+
+    def _select_developer_model(self) -> DeveloperModelSelection:
+        memory = psutil.virtual_memory()
+        overhead_bytes = int(
+            max(0.0, float(self.config.selfdev.model_memory_overhead_gb))
+            * 1024**3
+        )
+        selection = select_resource_aware_developer_model(
+            self.config.selfdev.developer_model,
+            self.config.model.name,
+            self.config.selfdev.developer_model_fallbacks,
+            installed_ollama_models(),
+            total_memory_bytes=int(memory.total),
+            available_memory_bytes=int(memory.available),
+            max_memory_percent=self.config.resource.max_memory_percent_for_background,
+            overhead_bytes=overhead_bytes,
+        )
+        self.audit.write(
+            "selfdev_model_selection",
+            model=selection.model,
+            model_size_bytes=selection.size_bytes,
+            projected_memory_percent=selection.projected_memory_percent,
+            reason=selection.reason,
+        )
+        return selection
+
+    def _developer_chat(
+        self,
+        chat: Callable[..., Any],
+        *,
+        force: bool,
+        branch: str,
+        **kwargs: Any,
+    ) -> Any:
+        last_check = 0.0
+
+        def stream_guard() -> None:
+            nonlocal last_check
+            now = time.monotonic()
+            if now - last_check >= 1.0:
+                # CPU load from Ollama is expected while it is generating.
+                # User input and emergency memory pressure remain stop signals.
+                self._check_resources(force, branch, during_inference=True)
+                last_check = now
+
+        return developer_chat(
+            chat,
+            request_think=self.config.model.think,
+            keep_alive=self.config.selfdev.ollama_keep_alive,
+            stream_guard=stream_guard,
+            **kwargs,
+        )
 
     @staticmethod
     def _content(response: Any) -> str:
@@ -481,9 +674,10 @@ class SelfDeveloper:
         for round_no in range(rounds):
             self._check_resources(force, branch)
             self._emit(f"{stage} round {round_no + 1}/{rounds}")
-            response = developer_chat(
+            response = self._developer_chat(
                 chat,
-                request_think=self.config.model.think,
+                force=force,
+                branch=branch,
                 model=model,
                 messages=messages,
                 tools=functions,
@@ -607,9 +801,10 @@ class SelfDeveloper:
             if tools.write_count == writes_before:
                 self._check_resources(force, branch)
                 try:
-                    response = developer_chat(
+                    response = self._developer_chat(
                         chat,
-                        request_think=self.config.model.think,
+                        force=force,
+                        branch=branch,
                         model=model,
                         messages=[
                             {
@@ -806,11 +1001,16 @@ class SelfDeveloper:
                     "Ollama Python package is not installed.",
                     False,
                 )
-            model = select_developer_model(
-                self.config.selfdev.developer_model,
-                self.config.model.name,
-                available_ollama_models(),
-            )
+            selection = self._select_developer_model()
+            if selection.model is None:
+                return EvolutionResult(
+                    "deferred",
+                    branch,
+                    workspace,
+                    selection.reason,
+                    False,
+                )
+            model = selection.model
             try:
                 repaired = self._repair_static_failures(
                     chat=chat,
@@ -970,12 +1170,16 @@ class SelfDeveloper:
                     False,
                 )
 
-        available = available_ollama_models()
-        developer_model = select_developer_model(
-            self.config.selfdev.developer_model,
-            self.config.model.name,
-            available,
-        )
+        selection = self._select_developer_model()
+        if selection.model is None:
+            return EvolutionResult(
+                "deferred",
+                branch,
+                workspace,
+                selection.reason,
+                False,
+            )
+        developer_model = selection.model
 
         try:
             protected_paths = self.github.reviewer_modified_test_paths(workspace)
@@ -1103,9 +1307,10 @@ class SelfDeveloper:
             try:
                 inspected_context = build_read_context(tools)
 
-                response = developer_chat(
+                response = self._developer_chat(
                     chat,
-                    request_think=self.config.model.think,
+                    force=force,
+                    branch=branch,
                     model=developer_model,
                     messages=[
                         {
@@ -1350,6 +1555,34 @@ class SelfDeveloper:
         )
 
     def run_once(self, *, force: bool = False) -> EvolutionResult:
+        invocation_id = uuid.uuid4().hex
+        self.audit.write(
+            "evolve_run_start",
+            invocation_id=invocation_id,
+            force=force,
+        )
+        try:
+            result = self._run_once(force=force)
+        except Exception as exc:
+            self.audit.write(
+                "evolve_run_end",
+                invocation_id=invocation_id,
+                status="crashed",
+                summary=f"Unhandled {type(exc).__name__}: {exc}"[:2000],
+            )
+            raise
+        self.audit.write(
+            "evolve_run_end",
+            invocation_id=invocation_id,
+            status=result.status,
+            branch=result.branch,
+            workspace=str(result.workspace) if result.workspace else None,
+            checks_passed=result.tests_passed,
+            summary=result.summary[:2000],
+        )
+        return result
+
+    def _run_once(self, *, force: bool = False) -> EvolutionResult:
         if not self.config.selfdev.enabled:
             return EvolutionResult("disabled", None, None, "Self-development is disabled in config.")
 
@@ -1371,9 +1604,10 @@ class SelfDeveloper:
             )
 
         state = self.governor.sample()
-        if not force and not state.background_allowed:
+        if not state.allows_selfdev(ignore_idle=force):
             self.governor.apply_process_priority(idle=False)
-            return EvolutionResult("deferred", None, None, f"PC is in use or busy: {state.reason}")
+            reason = state.blocking_reason(ignore_idle=force)
+            return EvolutionResult("deferred", None, None, f"PC is in use or busy: {reason}")
         self.governor.apply_process_priority(idle=True)
 
         self._reconcile_candidates()
@@ -1390,12 +1624,10 @@ class SelfDeveloper:
         if not task:
             return EvolutionResult("idle", None, None, "No eligible todo item remains. Merged, validated tasks are skipped.")
 
-        available = available_ollama_models()
-        developer_model = select_developer_model(
-            self.config.selfdev.developer_model,
-            self.config.model.name,
-            available,
-        )
+        selection = self._select_developer_model()
+        if selection.model is None:
+            return EvolutionResult("deferred", None, None, selection.reason)
+        developer_model = selection.model
         slug = "".join(char if char.isalnum() else "-" for char in task["id"].lower()).strip("-")[:40]
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         branch = f"localpilot/candidate-{slug}-{stamp}"
@@ -1495,9 +1727,10 @@ class SelfDeveloper:
             if not tools.files_written:
                 self._check_resources(force, branch)
                 self._emit("Direct editing stalled; requesting structured fallback change plan")
-                response = developer_chat(
+                response = self._developer_chat(
                     chat,
-                    request_think=self.config.model.think,
+                    force=force,
+                    branch=branch,
                     model=developer_model,
                     messages=[
                         {

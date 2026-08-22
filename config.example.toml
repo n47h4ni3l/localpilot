@@ -31,8 +31,14 @@ auto_push_candidates = true
 [selfdev]
 enabled = true
 # Used only for research/implementation cycles when installed. Otherwise the
-# everyday model is used for that cycle.
+# everyday model and then these ordered fallbacks are considered. A model is
+# skipped when loading it would exceed the background memory ceiling.
 developer_model = "qwen2.5:32b"
+developer_model_fallbacks = ["qwen2.5:14b"]
+# Reserve space beyond the model file size for context/KV cache.
+model_memory_overhead_gb = 1.0
+# Unload after every response so a pause returns RAM/VRAM immediately.
+ollama_keep_alive = 0
 # This invariant cannot be enabled. Validated candidates still require a PR merge.
 auto_promote = false
 research_tool_rounds = 6

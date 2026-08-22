@@ -50,6 +50,17 @@ class CapabilityExperiment:
     updated_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class MissionFrontier:
+    task_id: str
+    mission_alignment: str
+    current_frontier: str
+    why_high_leverage: str
+    capability_unlocked: str
+    next_frontier: str
+    updated_at: str
+
+
 class LearningMemory:
     """Durable cycle outcomes and reusable lessons.
 
@@ -132,6 +143,17 @@ class LearningMemory:
                 );
                 CREATE INDEX IF NOT EXISTS experiments_status_idx
                     ON capability_experiments(status, id DESC);
+                CREATE TABLE IF NOT EXISTS mission_frontiers (
+                    task_id TEXT PRIMARY KEY,
+                    mission_alignment TEXT NOT NULL,
+                    current_frontier TEXT NOT NULL,
+                    why_high_leverage TEXT NOT NULL,
+                    capability_unlocked TEXT NOT NULL,
+                    next_frontier TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS mission_frontiers_updated_idx
+                    ON mission_frontiers(updated_at DESC);
                 """
             )
             columns = {
@@ -511,7 +533,9 @@ class LearningMemory:
                     now,
                 ),
             )
-        return int(row["id"])
+        experiment_id = int(row["id"])
+        self.record_mission_frontier(task)
+        return experiment_id
 
     def experiment_for_task(self, task_id: str) -> CapabilityExperiment | None:
         with self._connect() as connection:
@@ -528,32 +552,100 @@ class LearningMemory:
             ).fetchone()
         return self._experiment(row)
 
+    @staticmethod
+    def _frontier(row: sqlite3.Row | None) -> MissionFrontier | None:
+        if row is None:
+            return None
+        return MissionFrontier(
+            task_id=str(row["task_id"]),
+            mission_alignment=str(row["mission_alignment"]),
+            current_frontier=str(row["current_frontier"]),
+            why_high_leverage=str(row["why_high_leverage"]),
+            capability_unlocked=str(row["capability_unlocked"]),
+            next_frontier=str(row["next_frontier"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def record_mission_frontier(self, task: dict) -> None:
+        task = normalize_evolution_task(task)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO mission_frontiers (
+                    task_id, mission_alignment, current_frontier,
+                    why_high_leverage, capability_unlocked, next_frontier,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    mission_alignment = excluded.mission_alignment,
+                    current_frontier = excluded.current_frontier,
+                    why_high_leverage = excluded.why_high_leverage,
+                    capability_unlocked = excluded.capability_unlocked,
+                    next_frontier = excluded.next_frontier,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(task["id"])[:200],
+                    str(task["mission_alignment"])[:2000],
+                    str(task["current_frontier"])[:2000],
+                    str(task["why_high_leverage"])[:2000],
+                    str(task["capability_unlocked"])[:2000],
+                    str(task["next_frontier"])[:2000],
+                    _now(),
+                ),
+            )
+
+    def frontier_for_task(self, task_id: str) -> MissionFrontier | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM mission_frontiers WHERE task_id = ?",
+                (str(task_id),),
+            ).fetchone()
+        return self._frontier(row)
+
+    def latest_frontier(self) -> MissionFrontier | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM mission_frontiers ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+        return self._frontier(row)
+
     def experiment_task(self, task_id: str) -> dict | None:
         experiment = self.experiment_for_task(task_id)
         if experiment is None:
             return None
-        return normalize_evolution_task(
-            {
-                "id": experiment.task_id,
-                "title": experiment.title,
-                "status": "todo",
-                "source": "capability_discovery",
-                "evolution_class": experiment.evolution_class,
-                "capability_target": experiment.capability_target,
-                "question": experiment.question,
-                "observed_limitation": experiment.observed_limitation,
-                "evidence": list(experiment.evidence),
-                "alternatives": list(experiment.alternatives),
-                "hypothesis": experiment.hypothesis,
-                "expected_complexity": experiment.expected_complexity,
-                "evaluation": {
-                    "metric": experiment.metric,
-                    "baseline": experiment.baseline,
-                    "success_criterion": experiment.success_criterion,
-                    "measurement_method": experiment.measurement_method,
-                },
-            }
-        )
+        task = {
+            "id": experiment.task_id,
+            "title": experiment.title,
+            "status": "todo",
+            "source": "capability_discovery",
+            "evolution_class": experiment.evolution_class,
+            "capability_target": experiment.capability_target,
+            "question": experiment.question,
+            "observed_limitation": experiment.observed_limitation,
+            "evidence": list(experiment.evidence),
+            "alternatives": list(experiment.alternatives),
+            "hypothesis": experiment.hypothesis,
+            "expected_complexity": experiment.expected_complexity,
+            "evaluation": {
+                "metric": experiment.metric,
+                "baseline": experiment.baseline,
+                "success_criterion": experiment.success_criterion,
+                "measurement_method": experiment.measurement_method,
+            },
+        }
+        frontier = self.frontier_for_task(task_id)
+        if frontier is not None:
+            task.update(
+                {
+                    "mission_alignment": frontier.mission_alignment,
+                    "current_frontier": frontier.current_frontier,
+                    "why_high_leverage": frontier.why_high_leverage,
+                    "capability_unlocked": frontier.capability_unlocked,
+                    "next_frontier": frontier.next_frontier,
+                }
+            )
+        return normalize_evolution_task(task)
 
     def attach_experiment_cycle(self, task_id: str, cycle_id: int, branch: str) -> None:
         with self._connect() as connection:
@@ -660,6 +752,16 @@ class LearningMemory:
                 """,
                 (limit,),
             ).fetchall()
+            frontiers = connection.execute(
+                """
+                SELECT task_id, mission_alignment, current_frontier,
+                       why_high_leverage, capability_unlocked, next_frontier,
+                       updated_at
+                FROM mission_frontiers
+                ORDER BY updated_at DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
             cycles = connection.execute(
                 """
                 SELECT task_id, status, summary,
@@ -673,6 +775,7 @@ class LearningMemory:
             ).fetchall()
         return {
             "capabilities": [dict(row) for row in capabilities],
+            "frontiers": [dict(row) for row in frontiers],
             "experiments": [dict(row) for row in experiments],
             "recent_cycles": [dict(row) for row in cycles],
         }
@@ -696,7 +799,12 @@ class LearningMemory:
         """Exposed for diagnostics/tests that enforce the no-reasoning contract."""
         with self._connect() as connection:
             rows = []
-            for table in ("development_cycles", "capability_map", "capability_experiments"):
+            for table in (
+                "development_cycles",
+                "capability_map",
+                "capability_experiments",
+                "mission_frontiers",
+            ):
                 rows.extend(connection.execute(f"PRAGMA table_info({table})").fetchall())
         return {str(row["name"]) for row in rows}
 

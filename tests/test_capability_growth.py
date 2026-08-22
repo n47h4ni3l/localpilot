@@ -15,6 +15,7 @@ from localpilot.evolution import (
 )
 from localpilot.github_integration import MainSyncResult
 from localpilot.learning import LearningMemory
+from localpilot.mission import mission_context
 from localpilot.resource import ResourceState
 from localpilot.selfdev import DeveloperModelSelection, EvolutionResult, SelfDeveloper
 
@@ -32,6 +33,21 @@ def _proposal(*, complexity: str = "low", measured: bool = True) -> dict:
         "evolution_class": "improve_cognition",
         "title": "Evaluate structured plan checkpoints",
         "capability_target": "long-horizon planning",
+        "mission_alignment": (
+            "Improve transferable long-horizon reasoning while preserving human control."
+        ),
+        "current_frontier": (
+            "LocalPilot can resume durable implementation state but still loses some higher-level task structure."
+        ),
+        "why_high_leverage": (
+            "Better long-horizon planning transfers across research, coding, tool learning, and future capabilities."
+        ),
+        "capability_unlocked": (
+            "More reliable multi-session autonomous research and implementation."
+        ),
+        "next_frontier": (
+            "Generalize durable planning into hierarchical self-directed research programs."
+        ),
         "question": "Can structured plan checkpoints reduce lost intermediate state?",
         "observed_limitation": "Recent paused cycles lose useful task structure.",
         "evidence": ["Three recent cycles paused before delivery."],
@@ -111,6 +127,34 @@ def test_capability_experiment_persists_reviewable_evidence_and_rebuilds_task(tm
         "messages",
         "raw_tokens",
     }
+
+
+def test_mission_and_frontier_are_durable_and_reviewable(tmp_path: Path):
+    mission = mission_context()
+    assert "general-purpose personal intelligence" in mission["mission"]
+    assert "transferable general capability" in mission["evolution_objective"]
+    assert any("human" in item for item in mission["non_goals"])
+
+    memory = LearningMemory(tmp_path / "learning.sqlite3")
+    proposal = parse_capability_proposals(json.dumps(_proposal()))[0]
+    task = proposal.task("capability-frontier-test")
+    memory.record_experiment(task)
+
+    frontier = memory.latest_frontier()
+    assert frontier is not None
+    assert frontier.task_id == task["id"]
+    assert frontier.current_frontier == task["current_frontier"]
+    assert "multi-session" in frontier.capability_unlocked
+    assert "hierarchical" in frontier.next_frontier
+
+    rebuilt = memory.experiment_task(task["id"])
+    assert rebuilt is not None
+    assert rebuilt["mission_alignment"] == frontier.mission_alignment
+    assert rebuilt["current_frontier"] == frontier.current_frontier
+    assert rebuilt["next_frontier"] == frontier.next_frontier
+
+    context = memory.discovery_context()
+    assert context["frontiers"][0]["task_id"] == task["id"]
 
 
 def test_checkpoint_preserves_capability_contract_across_resume(tmp_path: Path):

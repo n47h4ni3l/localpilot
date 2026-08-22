@@ -61,6 +61,11 @@ class CapabilityProposal:
     baseline: str
     success_criterion: str
     measurement_method: str
+    mission_alignment: str
+    current_frontier: str
+    why_high_leverage: str
+    capability_unlocked: str
+    next_frontier: str
     expected_complexity: str
 
     def task(self, task_id: str) -> dict[str, Any]:
@@ -71,6 +76,11 @@ class CapabilityProposal:
             "source": "capability_discovery",
             "evolution_class": self.evolution_class.value,
             "capability_target": self.capability_target,
+            "mission_alignment": self.mission_alignment,
+            "current_frontier": self.current_frontier,
+            "why_high_leverage": self.why_high_leverage,
+            "capability_unlocked": self.capability_unlocked,
+            "next_frontier": self.next_frontier,
             "question": self.question,
             "observed_limitation": self.observed_limitation,
             "evidence": list(self.evidence),
@@ -188,6 +198,25 @@ def normalize_evolution_task(task: dict[str, Any]) -> dict[str, Any]:
         {
             "evolution_class": kind.value,
             "capability_target": target,
+            "mission_alignment": _clean(
+                normalized.get("mission_alignment")
+                or f"Increase transferable future capability in {target} while preserving human control."
+            ),
+            "current_frontier": _clean(
+                normalized.get("current_frontier") or limitation
+            ),
+            "why_high_leverage": _clean(
+                normalized.get("why_high_leverage")
+                or f"Improving {target} should increase capability across future tasks or improve learning."
+            ),
+            "capability_unlocked": _clean(
+                normalized.get("capability_unlocked")
+                or f"Stronger and more transferable {target}"
+            ),
+            "next_frontier": _clean(
+                normalized.get("next_frontier")
+                or f"Reassess the capability frontier after measuring {target}."
+            ),
             "question": _clean(
                 normalized.get("question")
                 or f"How can LocalPilot improve {target} with the highest verified leverage?"
@@ -241,6 +270,11 @@ def _proposal(value: dict[str, Any]) -> CapabilityProposal:
         evolution_class=kind or EvolutionClass.REPAIR,
         title=_clean(value.get("title")),
         capability_target=_clean(value.get("capability_target")),
+        mission_alignment=_clean(value.get("mission_alignment")),
+        current_frontier=_clean(value.get("current_frontier")),
+        why_high_leverage=_clean(value.get("why_high_leverage")),
+        capability_unlocked=_clean(value.get("capability_unlocked")),
+        next_frontier=_clean(value.get("next_frontier")),
         question=_clean(value.get("question")),
         observed_limitation=_clean(value.get("observed_limitation")),
         evidence=_strings(value.get("evidence")),
@@ -257,6 +291,11 @@ def _proposal(value: dict[str, Any]) -> CapabilityProposal:
         for name, item in (
             ("title", proposal.title),
             ("capability_target", proposal.capability_target),
+            ("mission_alignment", proposal.mission_alignment),
+            ("current_frontier", proposal.current_frontier),
+            ("why_high_leverage", proposal.why_high_leverage),
+            ("capability_unlocked", proposal.capability_unlocked),
+            ("next_frontier", proposal.next_frontier),
             ("question", proposal.question),
             ("observed_limitation", proposal.observed_limitation),
             ("evidence", proposal.evidence),
@@ -326,6 +365,25 @@ def capability_proposal_score(proposal: CapabilityProposal) -> int:
         EvolutionClass.EXPLORE: 2,
     }[proposal.evolution_class]
     score -= {"low": 0, "medium": 2, "high": 5}.get(proposal.expected_complexity, 8)
+
+    leverage_text = " ".join(
+        (
+            proposal.mission_alignment,
+            proposal.why_high_leverage,
+            proposal.capability_unlocked,
+            proposal.next_frontier,
+        )
+    ).lower()
+    transfer_signals = (
+        "general",
+        "transfer",
+        "across",
+        "many future",
+        "learn",
+        "new capability",
+        "multiple",
+    )
+    score += min(sum(signal in leverage_text for signal in transfer_signals), 5)
     return score
 
 
@@ -357,6 +415,11 @@ def evolution_status_fields(task: dict[str, Any]) -> dict[str, str]:
     return {
         "evolution_class": EvolutionClass(normalized["evolution_class"]).label,
         "capability_target": normalized["capability_target"],
+        "mission_alignment": normalized["mission_alignment"],
+        "current_frontier": normalized["current_frontier"],
+        "why_high_leverage": normalized["why_high_leverage"],
+        "capability_unlocked": normalized["capability_unlocked"],
+        "next_frontier": normalized["next_frontier"],
         "hypothesis": normalized["hypothesis"],
         "evaluation_plan": (
             f"{evaluation['metric']}; baseline: {evaluation['baseline']}; "

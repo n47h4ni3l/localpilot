@@ -15,6 +15,7 @@ from localpilot.config import load_config
 from localpilot.doctor import doctor
 from localpilot.github_integration import GitHubIntegration
 from localpilot.learning import LearningMemory
+from localpilot.mission import mission_context
 from localpilot.resource import ResourceGovernor
 from localpilot.selfdev import SelfDeveloper
 
@@ -39,6 +40,14 @@ def _show_status(console: Console, config, root: Path) -> None:
     table.add_column("Item")
     table.add_column("Value")
     table.add_row("Model", f"{config.model.provider}:{config.model.name}")
+    mission = mission_context()
+    table.add_row(
+        "Mission",
+        (
+            f"{mission['mission']}\n"
+            f"Evolution objective: {mission['evolution_objective']}"
+        )[:1400],
+    )
     table.add_row("User idle", f"{state.idle_seconds:.0f}s")
     table.add_row("CPU", f"{state.cpu_percent:.1f}%")
     table.add_row("Memory", f"{state.memory_percent:.1f}%")
@@ -119,6 +128,23 @@ def _show_status(console: Console, config, root: Path) -> None:
         table.add_row(
             "Evolution",
             "No experiment recorded yet; the next ungated idle cycle will discover a capability-growth question.",
+        )
+    frontier = memory.latest_frontier()
+    if frontier:
+        table.add_row(
+            "Capability frontier",
+            (
+                f"current: {frontier.current_frontier}\n"
+                f"mission alignment: {frontier.mission_alignment}\n"
+                f"why high leverage: {frontier.why_high_leverage}\n"
+                f"unlocks: {frontier.capability_unlocked}\n"
+                f"next: {frontier.next_frontier}"
+            )[:2200],
+        )
+    else:
+        table.add_row(
+            "Capability frontier",
+            "No frontier recorded yet; the next ungated capability-discovery cycle will establish one.",
         )
     table.add_row("Git", gh.status())
     console.print(table)

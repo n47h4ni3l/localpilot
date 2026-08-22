@@ -28,14 +28,10 @@ class TestOperator(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             runner.run(spec)
 
-    def test_destructive_operation_approved(self):
+    def test_harmless_approved_command(self):
         def approval_callback():
             return True
         runner = CommandRunner(approval_callback)
         spec = CommandSpec(argv=['echo', 'approved'], risk=OperationRisk.DESTRUCTIVE, timeout=5)
         result = runner.run(spec)
         self.assertIn('approved', result['stdout'])
-
-
-if __name__ == '__main__':
-    unittest.main()

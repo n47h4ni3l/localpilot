@@ -1,174 +1,282 @@
-# LocalPilot v0.2
+# LocalPilot
 
-LocalPilot is a private, local-first Windows agent intended to grow into a capable computer operator while using GitHub as its engineering and rollback layer.
+LocalPilot is a private, local-first Windows agent and an experiment in evidence-driven self-improvement. It uses local [Ollama](https://ollama.com/) models for everyday assistance, treats GitHub as its executable validation and rollback boundary, and can use idle time to research and prepare isolated improvements to its own source code.
 
-The end goal is simple:
+The long-term goal is a self-improving, general-purpose personal intelligence: a system that progressively expands what its owner can understand, create, and accomplish. That is a research direction, not a claim that LocalPilot is currently AGI. The present system is an early bootstrap with read-only PC observation, guarded self-development, and deliberately conservative promotion controls.
 
-> When the owner is using the PC, LocalPilot works for the owner. When the PC is idle, LocalPilot can work on LocalPilot.
+> **Stable mission:** Become an increasingly capable general-purpose personal intelligence that expands what its user can understand, create, and accomplish while remaining reliable, transparent, resource-aware, interruptible, and under human control.
 
-v0.1 is the bootstrap stage. It already contains the architecture needed to begin that process, but it deliberately does **not** give the first untested build unrestricted system-write access.
+In practical terms: when the owner is using the PC, LocalPilot works for the owner; when the PC is idle, LocalPilot may work on LocalPilot.
 
-## What v0.1 does
+## What exists today
 
-- Runs a local Ollama model (`gpt-oss:20b` by default).
-- Lets the agent inspect Windows, processes, disks, startup entries, power state, Defender and device problems.
-- Loads real settings from `localpilot.toml`.
-- Writes an audit log to `localpilot-data/audit.jsonl`.
-- Detects whether the PC is active or idle and keeps background development gated by CPU/memory/idle thresholds.
-- Integrates with local Git and a GitHub remote.
-- Maintains **stable / developer / candidate** separation.
-- Treats Repair, Extend, Improve Cognition, and Explore as first-class evolution classes.
-- Can select seed work from `selfdev-backlog.json` or discover its own measured capability-growth question when no candidate blocks it.
-- Confines autonomous source edits to an isolated candidate workspace.
-- Runs non-executing local static checks, then can commit/push a candidate branch for full testing in GitHub Actions.
-- Does not automatically promote an experimental candidate over stable.
+- A local interactive agent backed by Ollama (`gpt-oss:20b` by default).
+- Read-only Windows tools for processes, disks, startup entries, power, Defender, and device problems.
+- Real TOML configuration, resource gating, process-priority control, and JSONL audit logging.
+- Separate stable operator, idle-time developer, and isolated candidate roles.
+- Git worktree candidates, GitHub Actions validation, and focused PR presentation.
+- Mission-directed capability discovery with four evolution classes, falsifiable hypotheses, baselines, and evaluation plans.
+- Durable cycle, capability, experiment, frontier, and review records in local SQLite memory.
+- Compact checkpoints for safely resuming interrupted research, implementation, and repair work.
+- Guarded trusted-`main` self-sync and an optional per-user Windows idle scheduler.
 
-There is no pricing or credit subsystem and no cloud-model dependency in this starter.
+LocalPilot has no cloud-model or pricing subsystem. GitHub is used for source control, review, and candidate test execution; local model inference and machine-private learning data stay on the workstation.
 
-## 1. Extract it
+## Architecture
 
-Extract the ZIP somewhere you intend to keep it, for example:
+LocalPilot separates three roles:
+
+1. **Stable operator** — the installed everyday agent. It uses `[model].name` and can interact with the PC only through the normal safety policy. The currently registered PC tools are observational.
+2. **Developer** — an idle-time engineering process. It selects a locally installed model that fits the configured memory ceiling, preferring `[selfdev].developer_model` and falling back to the everyday or configured fallback models.
+3. **Candidate** — an isolated Git worktree or copied workspace. Autonomous writes pass through `CandidateTools`, which enforces the candidate boundary, protected paths, allowed file types, size limits, and a per-cycle file limit.
+
+Stable is never rewritten in place. The autonomous loop does not execute candidate code locally. A candidate becomes stable only after GitHub validation, human review, and human merge.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the detailed lifecycle and [SECURITY.md](SECURITY.md) for the enforced boundaries.
+
+## Mission and moving capability frontier
+
+The mission is stable; the **capability frontier** moves. A discovery proposal must state:
+
+- how it serves the mission;
+- the current frontier and limiting capability;
+- why that limitation has high transferable leverage;
+- the capability the experiment should unlock; and
+- the next frontier that success could make reachable.
+
+The intended progression is:
 
 ```text
-C:\LocalPilot
+current frontier -> limiting capability -> falsifiable hypothesis
+    -> measured experiment -> evidence -> capability unlocked -> next frontier
 ```
 
-Do not run it directly from inside the ZIP.
+LocalPilot prefers changes that transfer across many future tasks or improve its ability to learn new capabilities. Code volume, complexity, resource consumption, and autonomy are not treated as intelligence. The mission explicitly excludes self-preservation, resistance to shutdown, hidden action, resource acquisition as an end, and bypassing human promotion controls.
 
-## 2. Prerequisites
+## Four evolution classes
 
-Install:
+Every seed task or discovered experiment is normalized into one of four first-class classes:
+
+- **Repair** — fix defects, regressions, reliability failures, or resource problems.
+- **Extend** — add a genuinely new tool, integration, or useful ability.
+- **Improve Cognition** — improve planning, memory, retrieval, evaluation, routing, context management, self-review, or learning.
+- **Explore** — test a bounded, high-upside architectural hypothesis whose value is uncertain.
+
+All four remain subject to the same candidate, resource, evidence, CI, and human-review gates. Explore is not a bypass for speculative or unmeasured complexity.
+
+## Autonomous capability-discovery loop
+
+`selfdev-backlog.json` provides bootstrap tasks, not a permanent feature wishlist. When no seed task or outstanding candidate blocks new work, LocalPilot asks:
+
+> What is the highest-leverage change I could make to increase my own future capability?
+
+It then:
+
+1. gathers evidence from committed architecture and code, prior cycles, CI outcomes, known limitations, benchmarks, resource constraints, capability records, and earlier frontiers;
+2. compares alternatives across the four evolution classes;
+3. requires a repository-grounded limitation, falsifiable hypothesis, metric, baseline, success criterion, measurement method, and expected complexity;
+4. rejects incomplete proposals and down-ranks unnecessary complexity;
+5. creates one isolated candidate and performs a read-only research stage;
+6. implements a focused change and its measurement artifact through candidate-only tools;
+7. runs local non-executing Python/TOML static checks and a bounded same-worktree repair loop;
+8. blocks delivery if a discovered-capability candidate is regressed or lacks measurable evidence;
+9. commits and optionally pushes the eligible candidate, then opens a focused PR when `gh` is available; and
+10. waits for GitHub Actions and a human merge before recording the capability as validated.
+
+“Nothing is broken” is a trigger for capability discovery, not permission to create parallel candidates or relax validation.
+
+## Idle evolution, self-sync, and resume
+
+Every `localpilot evolve` invocation begins by verifying that the repository root is a clean checkout of the configured trusted branch (`main` by default). It fetches only that branch and accepts only a fast-forward. It refuses dirty, wrong-branch, ahead, divergent, non-root, or unreachable checkouts. It never switches branches, resets work, or merges divergence. If it fast-forwards successfully, that invocation stops so the next process loads the new code.
+
+After sync, LocalPilot checks user idle time, CPU, and memory. It rechecks the gate between model/tool rounds and while streaming model output, pauses when the owner returns or memory pressure rises, and lowers its own process priority as configured.
+
+Meaningful milestones are saved atomically to `localpilot-data/evolution-checkpoint.json`. The checkpoint contains bounded engineering facts—task contract, branch/worktree identity, inspected and changed paths, Git/content digests, findings, decisions, validation status, unresolved questions, lessons, and the exact next action—not prompts, transcripts, hidden reasoning, raw model streams, secrets, or file bodies.
+
+Resume fails closed unless the checkpoint still matches the learning cycle, task or experiment contract, capability target and hypothesis, registered worktree, branch, HEAD, changed paths, and content-state digest. A stale checkpoint is rejected. Paused or unfinished candidates retain their existing branch and worktree for later recovery; terminal completion clears the checkpoint.
+
+## Learning memory and observability
+
+Machine-private state lives under the Git-ignored `localpilot-data/` directory:
+
+- `audit.jsonl` records progress and paired `evolve_run_start` / `evolve_run_end` events, including deferrals and handled failures.
+- `learning.sqlite3` stores development cycles, candidate/PR/CI/merge state, bounded repair counts, experiment contracts and outcomes, a capability map, mission frontiers, and short reusable lessons.
+- `evolution-checkpoint.json` stores the active resumable engineering handoff.
+
+Only an experiment that passes CI **and** is merged by a human updates the capability map as validated. Failed and paused runs remain useful evidence, but unvalidated lessons are not promoted as established capability.
+
+`localpilot status` reports the stable mission, resources, latest evolve outcome, active checkpoint/resume state, current experiment, capability frontier, and Git status. Handled failure states return a nonzero exit code so scripts and Task Scheduler can distinguish failure from an ordinary deferral.
+
+## Resource-aware local models
+
+Before self-development inference, LocalPilot estimates the resident cost of each configured installed model using its Ollama size metadata plus `[selfdev].model_memory_overhead_gb`. It selects the first candidate that remains under `[resource].max_memory_percent_for_background`; if none fits, the cycle defers.
+
+Developer responses are streamed so user activity or memory pressure can interrupt them. `[selfdev].ollama_keep_alive = 0` by default asks Ollama to unload the model after every response, returning RAM/VRAM promptly. `--force` skips only the keyboard/mouse idle wait for a deliberate manual cycle; CPU and memory protection and every safety invariant remain active.
+
+## Safety invariants
+
+These are architectural contracts, not prompt suggestions:
+
+- **No local candidate execution.** Autonomous local validation only compiles Python and parses TOML; executable candidate tests run in GitHub Actions.
+- **Candidate confinement.** Autonomous writes cannot escape the isolated workspace or modify `.git`, `.github`, virtual environments, caches, or machine-private data.
+- **Reviewer tests are immutable.** Tests introduced or modified by human reviewer commits become read-only contracts during autonomous repair.
+- **No shell command strings.** Git, GitHub, static-check, and operator subprocesses use argument vectors with `shell=False`.
+- **One outstanding candidate.** Local unfinished, pushed, CI-failed, or review-pending work must be reconciled before another experiment starts.
+- **Human-only promotion.** LocalPilot may push a branch and present a PR; it has no merge or promotion method. `auto_promote = true` is rejected by configuration and at runtime.
+- **Trusted-main sync only.** Scheduled evolution runs only from a clean configured main checkout and accepts only verified fast-forwards.
+- **Resource authority.** Manual forcing does not bypass CPU, memory, confinement, CI, checkpoint, or promotion gates.
+
+GitHub Actions runs on Windows with read-only repository permissions and checkout credentials disabled. It executes the full test suite for `main`, PRs, and `localpilot/**` candidate branches.
+
+## Install on Windows
+
+Prerequisites:
 
 - Python 3.11 or newer
 - Ollama for Windows
 - Git for Windows
-- GitHub CLI (`gh`) is optional initially
+- GitHub CLI (`gh`) for automatic PR presentation; otherwise it is optional
 
-You do **not** need administrator PowerShell for the v0.1 bootstrap.
-
-## 3. Bootstrap
-
-Open PowerShell in the LocalPilot directory:
+From PowerShell in the repository root:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\bootstrap.ps1
-```
-
-The script creates `.venv`, installs LocalPilot and copies `config.example.toml` to `localpilot.toml`.
-
-If the configured Ollama model is missing, the script asks before starting the large model download. It does not silently pull it.
-
-Then:
-
-```powershell
 .\.venv\Scripts\Activate.ps1
 localpilot doctor
+localpilot status
 localpilot
 ```
 
-Useful interactive commands:
+The bootstrap script creates `.venv`, installs the project with development dependencies, and copies `config.example.toml` to the ignored `localpilot.toml`. It asks before downloading the default large Ollama model.
 
-```text
-/status
-/doctor
-/evolve
-/quit
-```
-
-`/evolve` waits for the configured idle/resource conditions. For a deliberate manual test you can run:
-
-```powershell
-localpilot evolve --force
-```
-
-That bypasses only the keyboard/mouse idle wait for that cycle. CPU and memory ceilings remain authoritative, as do candidate path confinement, stable/candidate separation, and the guarded main-branch sync. LocalPilot does not automatically install its scheduler. An external scheduler may invoke `localpilot evolve`, but the checkout must be the clean configured `main` branch. Each invocation fetches only that branch from the configured remote and permits only a fast-forward. Dirty, wrong-branch, ahead, divergent, or unreachable checkouts stop before candidate work. If a fast-forward occurs, that invocation exits so the next scheduled run starts with the newly loaded code.
-
-To let LocalPilot poll dynamically and begin work only when its own idle/resource gate permits it, register the included per-user Windows task from a clean `main` checkout after bootstrap:
-
-```powershell
-.\scripts\install-idle-evolve-task.ps1
-```
-
-The task invokes `localpilot evolve` every five minutes while you are signed in, ignores overlapping invocations, and never passes `--force`. Polling is only a wake-up mechanism: returning to the PC or exceeding a resource limit still defers or pauses model/tool work.
-
-Every invocation now writes paired `evolve_run_start` / `evolve_run_end` rows to `localpilot-data/audit.jsonl`, including early deferrals, capability discovery, handled failures, and candidate delivery. `localpilot status` shows the newest terminal outcome plus the current evolution class, capability target, hypothesis, evaluation plan, and latest experiment outcome. Handled failure states return a nonzero process exit so Task Scheduler's `LastTaskResult` no longer reports success for an internally failed cycle.
-
-Meaningful evolution milestones also update `localpilot-data/evolution-checkpoint.json`. This is a compact, versioned engineering handoff containing the task contract, candidate branch/worktree, inspected and changed paths, concise findings and decisions, Git/diff/static-check/test status and failure markers, unresolved questions, lessons and the exact next action. It intentionally contains no prompts, hidden reasoning, raw model output streams, chat transcripts, secrets or copied file contents. `localpilot status` shows whether a checkpoint exists and the latest resume outcome.
-
-Before resume, LocalPilot requires the checkpoint to match the learning cycle, current seed-or-experiment contract, capability target/hypothesis, registered Git worktree, branch, HEAD, changed paths and a content-state digest. Missing or inconsistent checkpoints are rejected and the candidate is reconstructed only from current safety-validated Git/task state. Checkpoints are retained across resource pauses and Ollama unloads, then removed after terminal candidate completion.
-
-## GitHub connection
-
-Create a **private, empty** GitHub repository named `localpilot`, then from the extracted project:
+To connect a new private GitHub repository without pushing automatically:
 
 ```powershell
 .\scripts\connect-github.ps1 -RepoUrl "https://github.com/YOUR-USER/localpilot.git"
 ```
 
-The script configures the remote but intentionally does not push without you reviewing the initial project. Then:
+Review `localpilot.toml` before enabling unattended evolution.
+
+## Run and inspect
 
 ```powershell
-git add .
-git commit -m "Initial LocalPilot v0.1"
-git push -u origin main
+# Check Python, Ollama/model, configuration, and GitHub readiness
+localpilot doctor
+
+# Show resources, mission/frontier, evolution/checkpoint, audit, and Git state
+localpilot status
+
+# Run one normal gated evolution invocation
+localpilot evolve
+
+# Manual test: bypass only the user-idle wait
+localpilot evolve --force
 ```
 
-After that, candidate self-development cycles can use Git worktrees/branches instead of plain copied workspaces. By default, statically valid candidates are pushed automatically so GitHub Actions can execute the test suite away from your workstation. GitHub Actions runs on `main`, PRs and `localpilot/**` branches.
+The interactive agent also accepts `/doctor`, `/status`, `/evolve`, and `/quit`.
 
-## Resource behaviour
+## Install the idle scheduler
 
-Defaults in `localpilot.toml`:
+Run this only from a clean, bootstrapped `main` checkout:
 
-- LocalPilot uses below-normal process priority while the PC is active.
-- Background self-development requires 10 minutes of keyboard/mouse idle time.
-- It defers background work when CPU is above 65% or memory usage is above 82%.
-- Before loading Ollama, it estimates each configured developer model's resident footprint and selects the first model that stays under the same memory ceiling. On a constrained machine this can choose the everyday or configured fallback model instead of starting an oversized preferred model.
-- Developer responses are streamed so user activity or new hardware pressure can cancel a long inference promptly. Ollama receives `keep_alive = 0` by default for self-development, returning model RAM/VRAM after each response.
+```powershell
+.\scripts\install-idle-evolve-task.ps1
+```
 
-These values are deliberately editable. The next development phase should add GPU and foreground-application awareness so gaming, CAD and other demanding work cause an even faster yield.
+The script registers a limited, per-user Windows Scheduled Task named `LocalPilot Idle Evolve`. By default it polls every five minutes while the user is signed in, invokes the virtual environment's `localpilot.exe` directly, ignores overlapping runs, and never passes `--force`. Polling is only a wake-up mechanism; LocalPilot's own idle and resource gates decide whether work begins or continues.
 
-## Self-development model
+Optional scheduler settings:
 
-`selfdev-backlog.json` contains seed tasks, not a permanent capability wishlist. One `localpilot evolve` cycle:
+```powershell
+.\scripts\install-idle-evolve-task.ps1 -PollMinutes 10 -TaskName "LocalPilot Idle Evolve"
+```
 
-1. verifies the process is running from the clean configured `main` checkout and fast-forwards it from the configured remote when safe;
-2. checks idle/load conditions;
-3. resumes or repairs the one outstanding candidate before considering new work;
-4. selects an eligible seed task or, when none remains, asks **“What is the highest-leverage change I could make to increase my own future capability?”**;
-5. derives its own capability target from committed architecture, prior cycle/CI evidence, known limitations, benchmarks and resource constraints;
-6. classifies the work as Repair, Extend, Improve Cognition, or Explore, compares alternatives, states a falsifiable hypothesis, and defines a metric, baseline, success criterion and measurement method;
-7. creates an isolated candidate workspace and gives the local model candidate-only file tools;
-8. performs read-only research, implements a limited candidate, and adds the measurement artifact needed for comparison;
-9. runs non-executing syntax/config checks locally and feeds failures back through the bounded same-worktree repair loop;
-10. rejects regressed or unmeasured capability candidates, then commits/pushes an eligible candidate and opens a focused human-review PR when GitHub CLI is available;
-11. lets GitHub Actions execute candidate tests and benchmarks away from the workstation; and
-12. retains validated capability evidence and lessons only through the existing CI-plus-human-merge lifecycle while leaving stable untouched.
+## Configuration
 
-“Nothing is broken” is not a terminal condition. It is the trigger for capability discovery. This does not authorize parallel candidates, local candidate execution, automatic merge, or automatic promotion; the existing resource, checkpoint, confinement, reviewer-test, and one-outstanding-candidate gates still apply.
+The important defaults in `config.example.toml` are:
 
-Automatic candidate promotion is disabled. Candidate code is also not executed locally by the autonomous self-development loop in v0.1; GitHub Actions is the executable test sandbox. That is intentional until a stronger local sandbox/rollback layer exists.
+| Area | Default | Meaning |
+| --- | --- | --- |
+| Everyday model | `gpt-oss:20b` | Interactive PC agent |
+| Developer model | `qwen2.5:32b` | Preferred idle engineering model when installed and within budget |
+| Developer fallback | `qwen2.5:14b` | Additional constrained-machine option |
+| Idle threshold | 600 seconds | Minimum keyboard/mouse idle time for unattended work |
+| CPU ceiling | 65% | Background cycle defers above this load |
+| Memory ceiling | 82% | Model selection and background cycle stay below this limit |
+| Candidate auto-push | `true` | Eligible candidates may be pushed for CI/review |
+| Auto-promotion | `false` | Immutable; enabling it is rejected |
+| Local candidate execution | `false` | Immutable safety boundary for autonomous evolution |
+| File limit | 8 | Maximum distinct candidate files changed per cycle |
+| Repair attempts | 3 | Durable bound for same-candidate local repair |
 
-## Why PC control starts read-only
+## Repository layout
 
-The intended LocalPilot is not a permanently restricted support bot. It is meant to gain broad operating freedom. The first build itself, however, has not yet earned permission to change Windows indiscriminately.
+```text
+localpilot/
+  agent.py                 interactive local agent
+  tools/windows.py         read-only Windows observation tools
+  operator.py              guarded argv-based command-runner foundation
+  selfdev.py               discovery, research, candidate, repair, and delivery loop
+  evolution.py             evolution classes, proposal schema, scoring, and evidence gates
+  mission.py               stable mission, priorities, objective, and non-goals
+  learning.py              SQLite cycle/capability/experiment/frontier memory
+  checkpoint.py            compact versioned resume handoff
+  resource.py              idle, CPU, memory, and priority governor
+  github_integration.py    trusted-main sync and candidate/PR/CI observation
+  audit.py                 redacted JSONL event log
+  cli.py                   chat, doctor, status, and evolve commands
+tests/                     executable contracts and regressions
+scripts/                   PowerShell bootstrap, GitHub, and scheduler helpers
+.github/workflows/tests.yml Windows GitHub Actions test boundary
+config.example.toml        documented configuration defaults
+selfdev-backlog.json       bootstrap tasks, not the permanent capability frontier
+ARCHITECTURE.md             detailed design and lifecycle
+SECURITY.md                 candidate and machine safety boundaries
+ROADMAP.md                  staged capability direction
+```
 
-The first backlog item is the guarded Windows operator foundation. Once that layer has tests, rollback hooks and command confinement, we can start adding real reversible PC actions without turning every harmless task into a confirmation-dialog exercise.
+## For external coding agents
 
-See `ARCHITECTURE.md`, `ROADMAP.md` and `SECURITY.md` for the design.
+Codex, Claude, and other external agents should be able to evaluate this repository without prior conversation context. Before proposing a change:
 
+1. Read `ARCHITECTURE.md`, `SECURITY.md`, `config.example.toml`, `localpilot/mission.py`, the relevant implementation, and its tests.
+2. Establish the current behavior and a concrete limitation from repository evidence; do not assume roadmap text is already implemented.
+3. Classify the proposal as Repair, Extend, Improve Cognition, or Explore and explain its mission alignment and transferable leverage.
+4. State a falsifiable hypothesis, metric, baseline, success criterion, and reproducible measurement method. Prefer gains across future tasks over one-off feature count.
+5. Preserve candidate confinement, reviewer-test immutability, argv subprocesses with `shell=False`, the one-candidate gate, trusted-main sync, no local autonomous candidate execution, and human-only merge/promotion.
+6. Add or adjust focused tests and measurement artifacts. Do not weaken a test to make an implementation pass.
+7. Keep the diff narrow, run the relevant tests plus the full suite where practical, and open a focused PR with before/after evidence and remaining uncertainty.
+8. Never auto-merge. A passing implementation is still a candidate until a human reviews and merges it.
 
-## Learning and evolution architecture
+A useful proposal answers: **What capability is currently limiting LocalPilot, what evidence shows that, what transferable capability would this change unlock, and what result would falsify the claim?**
 
-Everyday operation and self-development now use separate model roles:
+## Contributing
 
-- `[model].name` remains the everyday PC agent (`gpt-oss:20b` by default).
-- `[selfdev].developer_model` prefers the existing local `qwen2.5:32b` for engineering cycles and falls back to the everyday model when it is unavailable.
+Contributions are welcome when they improve measured capability, reliability, safety, learning, or resource efficiency. Small, legible changes with a clear evaluation are preferred over broad rewrites, speculative abstractions, or increased code volume without evidence.
 
-Evolution is staged as a capability discovery loop: observe current limitations → identify a limiting capability → research alternatives → state a falsifiable hypothesis → define a measurable evaluation and baseline → implement an isolated candidate → compare against the baseline → retain validated lessons → present the result for human review. A read-only research pass produces an evidence brief, then an implementation pass edits only the isolated candidate. If direct tool editing stalls, the developer must return a strict structured change plan; every proposed file is still validated and applied through `CandidateTools.write_project_file`, so it cannot bypass candidate path or file limits.
+For a normal human- or external-agent-authored change:
 
-Research and implementation can span scheduler invocations. The resume input is the validated structured checkpoint, not the previous model conversation. A resumed model receives only the concise engineering facts needed to continue, while current path confinement, reviewer-test immutability, non-executing local checks and resource gates are re-established first.
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pytest -q
+git diff --check
+```
 
-Cycle outcomes, a lightweight capability map, experiment hypotheses, evidence, baselines, evaluation plans/outcomes and short reusable lessons are stored locally in `localpilot-data/learning.sqlite3`. The schema intentionally excludes prompts, transcripts, model thinking, hidden reasoning, raw token streams, secrets and duplicated file contents. Failed and paused cycles are useful evidence too; only CI-and-human-merge validated experiment outcomes update the capability map. Unpushed Git candidates also retain their branch, worktree and durable repair-attempt count, so a later `evolve` invocation resumes the existing candidate instead of silently starting a replacement. The attempt limit prevents an endless repair loop; an exhausted candidate remains held for human review or a manual correction.
+Open a focused branch and PR. Include the observed limitation, alternatives considered, hypothesis, baseline, evidence or planned CI measurement, safety impact, and rollback story. Do not merge on LocalPilot's behalf; promotion remains a human decision.
 
-A pushed branch does not complete a backlog task. LocalPilot holds the current task while its candidate awaits a PR, records GitHub Actions status, and advances only after checks pass **and** the PR is merged. There is no automatic promotion path, even if a configuration file attempts to enable one.
+## Known limitations and open research questions
+
+- The stable PC tool registry is currently observation-only. A guarded command-runner foundation exists, but broad reversible Windows actions are not yet wired into the agent.
+- The project is Windows-first; the idle signal, process priorities, scheduler, and CI contract are Windows-specific.
+- Autonomous candidates are not locally sandboxed strongly enough to execute. GitHub Actions is therefore the executable evaluation boundary, which adds latency and external-service dependence.
+- Local static checks cover Python syntax and TOML parsing, not behavior. Reliable capability benchmarks and before/after measurement artifacts remain an active research area.
+- The resource model uses system CPU/memory and Ollama model-size estimates. It does not yet model GPU pressure, foreground applications, power cost, or inference-quality trade-offs deeply.
+- The interactive agent lacks desktop vision, UI automation, persistent machine knowledge, and many practical application integrations described in the roadmap.
+- Learning memory is local and deliberately compact. How to retain more useful experience without storing secrets, transcripts, hidden reasoning, stale conclusions, or benchmark-gaming artifacts remains open.
+- The one-candidate gate favors safety and causal attribution but limits parallel exploration. Safe multi-candidate comparison is unresolved.
+- Strong claims of recursive capability improvement require held-out, manipulation-resistant benchmarks, statistical evidence, lineage, rollback, and independent human review. The current system provides scaffolding for that research, not proof that it has been achieved.
+
+## License
+
+No license file is currently included. Treat the repository as all rights reserved unless the owner adds an explicit license.

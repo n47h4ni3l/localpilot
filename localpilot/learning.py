@@ -433,6 +433,17 @@ class LearningMemory:
             ).fetchall()
         return {str(row["task_id"]) for row in rows}
 
+    def rejected_task_ids(self) -> set[str]:
+        """Return tasks with an explicit, terminal human rejection."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT task_id FROM development_cycles
+                WHERE validation_state = 'rejected_by_human'
+                """
+            ).fetchall()
+        return {str(row["task_id"]) for row in rows}
+
     def pending_task_ids(self) -> set[str]:
         with self._connect() as connection:
             rows = connection.execute(

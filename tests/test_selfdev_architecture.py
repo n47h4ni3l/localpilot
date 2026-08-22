@@ -81,9 +81,11 @@ def test_structured_fallback_still_cannot_escape(tmp_path: Path):
         apply_change_plan(parse_change_plan(raw), CandidateTools(tmp_path))
 
 
-def test_backlog_does_not_advance_without_validated_merge():
+def test_backlog_advances_only_after_validated_merge_or_terminal_rejection():
     tasks = [{"id": "first", "status": "todo"}, {"id": "second", "status": "todo"}]
     assert choose_next_task(tasks, set())["id"] == "first"
     assert choose_next_task(tasks, set(), {"first"}) is None
     assert choose_next_task(tasks, {"first"})["id"] == "second"
+    assert choose_next_task(tasks, set(), set(), {"first"})["id"] == "second"
+    assert choose_next_task(tasks, set(), set(), {"first", "second"}) is None
 

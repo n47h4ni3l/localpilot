@@ -17,7 +17,7 @@ from localpilot.github_integration import GitHubIntegration
 from localpilot.learning import LearningMemory
 from localpilot.mission import mission_context
 from localpilot.resource import ResourceGovernor
-from localpilot.selfdev import SelfDeveloper
+from localpilot.selfdev import CandidateRejectionError, SelfDeveloper
 
 
 _FAILED_EVOLVE_STATUSES = {"failed", "sync_blocked", "candidate_needs_work"}
@@ -146,6 +146,19 @@ def _show_status(console: Console, config, root: Path) -> None:
             "Capability frontier",
             "No frontier recorded yet; the next ungated capability-discovery cycle will establish one.",
         )
+    rejected = memory.latest_rejected_candidate()
+    if rejected:
+        table.add_row(
+            "Last rejected candidate",
+            (
+                f"PR #{rejected.rejection_pull_request_number or '?'} — {rejected.branch}\n"
+                f"task: {rejected.task_id}\n"
+                f"prior CI: {rejected.rejection_prior_validation_state or 'unknown'}\n"
+                f"reason: {rejected.rejection_reason}"
+            )[:1800],
+        )
+    else:
+        table.add_row("Last rejected candidate", "No explicit human rejection recorded.")
     table.add_row("Git", gh.status())
     console.print(table)
 
@@ -202,7 +215,7 @@ def _chat(console: Console, config, root: Path) -> None:
             console.print(f"[red]Agent error:[/red] {type(exc).__name__}: {exc}")
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="localpilot")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("chat", help="Start the interactive agent")
@@ -210,8 +223,22 @@ def main() -> None:
     sub.add_parser("status", help="Show resource and Git status")
     evolve = sub.add_parser("evolve", help="Run one isolated self-development cycle")
     evolve.add_argument("--force", action="store_true", help="Ignore idle-resource gate for this manual cycle")
+    reject = sub.add_parser(
+        "reject",
+        help="Explicitly reject a LocalPilot-managed candidate PR",
+    )
+    reject.add_argument("pull_request", type=int, help="GitHub pull request number")
+    reject.add_argument(
+        "--reason",
+        default=None,
+        help="Durable, non-interactive reason retained as learning evidence",
+    )
     parser.add_argument("--config", default=None, help="Path to localpilot.toml")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     root = _root()
     config = load_config(args.config)
@@ -228,3 +255,22 @@ def main() -> None:
         if result.workspace:
             console.print(f"Candidate workspace: {result.workspace}")
         raise SystemExit(evolve_exit_code(result.status))
+    elif args.command == "reject":
+        developer = SelfDeveloper(config, root, progress=_progress(console))
+        try:
+            result = developer.reject_candidate(
+                args.pull_request,
+                reason=args.reason,
+            )
+        except CandidateRejectionError as exc:
+            console.print(f"[red]Rejection refused:[/red] {exc}")
+            raise SystemExit(1) from exc
+        state = "already rejected" if result.already_rejected else "rejected"
+        console.print(
+            f"[bold]PR #{result.pull_request_number} {state}[/bold]\n"
+            f"Branch: {result.branch}\n"
+            f"Task: {result.task_id}\n"
+            f"Reason: {result.reason}\n"
+            f"Local cleanup: {result.worktree_cleanup}\n"
+            "GitHub branch/history retained; no merge or promotion was performed."
+        )

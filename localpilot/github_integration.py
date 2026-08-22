@@ -34,6 +34,13 @@ class CandidateLifecycle:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidatePullRequest:
+    number: int
+    branch: str
+    url: str
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateSnapshot:
     branch: str
     head: str
@@ -81,6 +88,13 @@ _AUTONOMOUS_COMMIT_PREFIXES = ("candidate: ", "repair: ")
 _REVIEW_COMMIT_MARKER = "@@LOCALPILOT_COMMIT@@"
 _SAFE_REMOTE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SAFE_BRANCH_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+_MANAGED_CANDIDATE_BRANCH = re.compile(
+    r"^localpilot/candidate-[A-Za-z0-9][A-Za-z0-9._/-]*$"
+)
+
+
+def is_managed_candidate_branch(branch: str) -> bool:
+    return bool(_MANAGED_CANDIDATE_BRANCH.fullmatch(str(branch)))
 
 
 def parse_reviewer_modified_test_paths(log_text: str) -> set[str]:
@@ -276,6 +290,44 @@ class GitHubIntegration:
             cwd=worktree,
             timeout=120,
         )
+
+    def resolve_candidate_pull_request(self, pull_request_number: int) -> CandidatePullRequest:
+        """Resolve an explicit PR number without changing GitHub state."""
+        if isinstance(pull_request_number, bool) or int(pull_request_number) <= 0:
+            raise ValueError("Pull request number must be a positive integer.")
+        if not self.gh_available():
+            raise RuntimeError("GitHub CLI (gh) is required to resolve a pull request.")
+        result = self._run(
+            [
+                "gh",
+                "pr",
+                "view",
+                str(int(pull_request_number)),
+                "--json",
+                "number,headRefName,url",
+            ],
+            timeout=60,
+        )
+        if not result.ok:
+            detail = result.stderr or result.stdout or "GitHub returned no detail."
+            raise RuntimeError(f"Could not resolve PR #{pull_request_number}: {detail}")
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("GitHub returned invalid PR metadata.") from exc
+        if not isinstance(value, dict):
+            raise RuntimeError("GitHub returned invalid PR metadata.")
+        number = value.get("number")
+        branch = str(value.get("headRefName") or "")
+        url = str(value.get("url") or "")
+        if number != int(pull_request_number) or not url:
+            raise RuntimeError("GitHub PR metadata did not match the requested PR.")
+        if not is_managed_candidate_branch(branch):
+            raise ValueError(
+                f"PR #{pull_request_number} uses unrelated branch {branch or '(unknown)'}; "
+                "only LocalPilot-managed candidate branches can be rejected."
+            )
+        return CandidatePullRequest(int(number), branch, url)
 
     def tracked_project_paths(self) -> set[str]:
         """Return only committed paths suitable for read-only discovery."""
@@ -506,6 +558,50 @@ class GitHubIntegration:
                 return current.resolve()
 
         return None
+
+    def remove_candidate_worktree(
+        self,
+        branch: str,
+        *,
+        expected_workspace: str | Path | None = None,
+    ) -> CommandResult:
+        """Remove only a clean, registered candidate worktree; keep branch history."""
+        if not is_managed_candidate_branch(branch):
+            return CommandResult(False, "", "Branch is not a managed candidate.", 2)
+        workspace = self.worktree_for_branch(branch)
+        if workspace is None:
+            return CommandResult(True, "No registered candidate worktree.", "", 0)
+        if workspace == self.root:
+            return CommandResult(False, "", "Refusing to remove the project root worktree.", 2)
+        if expected_workspace is not None and workspace != Path(expected_workspace).resolve():
+            return CommandResult(
+                False,
+                "",
+                "Registered worktree does not match durable candidate memory.",
+                2,
+            )
+        status = self._run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=workspace,
+        )
+        if not status.ok:
+            return status
+        if status.stdout:
+            return CommandResult(
+                False,
+                "",
+                "Candidate worktree has local changes; cleanup was skipped.",
+                2,
+            )
+        removed = self._run(["git", "worktree", "remove", str(workspace)], timeout=60)
+        if not removed.ok:
+            return removed
+        return CommandResult(
+            True,
+            "Removed clean local candidate worktree; branch and GitHub history were retained.",
+            "",
+            0,
+        )
 
     def checkout_existing_branch_worktree(
         self,

@@ -24,6 +24,30 @@ class PendingCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class ManagedCandidate:
+    cycle_id: int
+    task_id: str
+    branch: str
+    workspace: str | None
+    is_worktree: bool
+    pushed: bool
+    pull_request_url: str | None
+    validation_state: str
+    merged: bool
+    status: str
+    rejection_reason: str
+    rejection_prior_validation_state: str
+    rejection_pull_request_number: int | None
+    rejected_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRejection:
+    candidate: ManagedCandidate
+    already_rejected: bool
+
+
+@dataclass(frozen=True, slots=True)
 class CapabilityExperiment:
     id: int
     task_id: str
@@ -100,6 +124,10 @@ class LearningMemory:
                     workspace TEXT,
                     is_worktree INTEGER NOT NULL DEFAULT 0,
                     local_repair_attempts INTEGER NOT NULL DEFAULT 0,
+                    rejection_reason TEXT NOT NULL DEFAULT '',
+                    rejection_prior_validation_state TEXT NOT NULL DEFAULT '',
+                    rejection_pull_request_number INTEGER,
+                    rejected_at TEXT,
                     started_at TEXT NOT NULL,
                     finished_at TEXT
                 );
@@ -171,6 +199,21 @@ class LearningMemory:
                 "local_repair_attempts": (
                     "ALTER TABLE development_cycles ADD COLUMN "
                     "local_repair_attempts INTEGER NOT NULL DEFAULT 0"
+                ),
+                "rejection_reason": (
+                    "ALTER TABLE development_cycles ADD COLUMN "
+                    "rejection_reason TEXT NOT NULL DEFAULT ''"
+                ),
+                "rejection_prior_validation_state": (
+                    "ALTER TABLE development_cycles ADD COLUMN "
+                    "rejection_prior_validation_state TEXT NOT NULL DEFAULT ''"
+                ),
+                "rejection_pull_request_number": (
+                    "ALTER TABLE development_cycles ADD COLUMN "
+                    "rejection_pull_request_number INTEGER"
+                ),
+                "rejected_at": (
+                    "ALTER TABLE development_cycles ADD COLUMN rejected_at TEXT"
                 ),
             }
             for name, statement in migrations.items():
@@ -291,7 +334,9 @@ class LearningMemory:
             rows = connection.execute(
                 """
                 SELECT id, task_id, branch FROM development_cycles
-                WHERE pushed = 1 AND NOT (merged = 1 AND validation_state = 'passed')
+                WHERE pushed = 1
+                  AND validation_state != 'rejected_by_human'
+                  AND NOT (merged = 1 AND validation_state = 'passed')
                 ORDER BY id
                 """
             ).fetchall()
@@ -363,6 +408,12 @@ class LearningMemory:
             raise ValueError(f"Unsupported validation state: {validation_state}")
         status = "merged" if merged and validation_state == "passed" else "candidate_pending_validation"
         with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT validation_state FROM development_cycles WHERE id = ?",
+                (cycle_id,),
+            ).fetchone()
+            if existing is not None and existing["validation_state"] == "rejected_by_human":
+                return
             connection.execute(
                 """
                 UPDATE development_cycles
@@ -389,6 +440,7 @@ class LearningMemory:
                 SELECT DISTINCT task_id FROM development_cycles
                 WHERE (
                     pushed = 1
+                    AND validation_state != 'rejected_by_human'
                     AND NOT (merged = 1 AND validation_state = 'passed')
                 ) OR (
                     pushed = 0
@@ -408,6 +460,7 @@ class LearningMemory:
                 """
                 SELECT 1 FROM development_cycles
                 WHERE NOT (merged = 1 AND validation_state = 'passed')
+                  AND validation_state != 'rejected_by_human'
                   AND (
                     pushed = 1 OR (
                         pushed = 0 AND is_worktree = 1
@@ -421,6 +474,153 @@ class LearningMemory:
                 """
             ).fetchone()
         return row is not None
+
+    @staticmethod
+    def _managed_candidate(row: sqlite3.Row | None) -> ManagedCandidate | None:
+        if row is None:
+            return None
+        return ManagedCandidate(
+            cycle_id=int(row["id"]),
+            task_id=str(row["task_id"]),
+            branch=str(row["branch"]),
+            workspace=str(row["workspace"]) if row["workspace"] else None,
+            is_worktree=bool(row["is_worktree"]),
+            pushed=bool(row["pushed"]),
+            pull_request_url=(
+                str(row["pull_request_url"]) if row["pull_request_url"] else None
+            ),
+            validation_state=str(row["validation_state"]),
+            merged=bool(row["merged"]),
+            status=str(row["status"]),
+            rejection_reason=str(row["rejection_reason"]),
+            rejection_prior_validation_state=str(
+                row["rejection_prior_validation_state"]
+            ),
+            rejection_pull_request_number=(
+                int(row["rejection_pull_request_number"])
+                if row["rejection_pull_request_number"] is not None
+                else None
+            ),
+            rejected_at=str(row["rejected_at"]) if row["rejected_at"] else None,
+        )
+
+    def candidate_for_branch(self, branch: str) -> ManagedCandidate | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM development_cycles WHERE branch = ? ORDER BY id DESC LIMIT 1",
+                (str(branch),),
+            ).fetchone()
+        return self._managed_candidate(row)
+
+    def latest_rejected_candidate(self) -> ManagedCandidate | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM development_cycles
+                WHERE validation_state = 'rejected_by_human'
+                ORDER BY rejected_at DESC, id DESC LIMIT 1
+                """
+            ).fetchone()
+        return self._managed_candidate(row)
+
+    @staticmethod
+    def _append_lesson(existing: str, lesson: str) -> str:
+        # The newly observed lesson must survive the size bound; retain prior
+        # evidence in the remaining space.
+        parts = [part.strip() for part in (lesson, existing) if part and part.strip()]
+        return "\n".join(dict.fromkeys(parts))[:2000]
+
+    def reject_candidate(
+        self,
+        cycle_id: int,
+        *,
+        pull_request_number: int,
+        pull_request_url: str,
+        reason: str,
+    ) -> CandidateRejection:
+        """Atomically retain evidence and make one explicit rejection terminal."""
+        clean_reason = str(reason).replace("\x00", " ").strip()[:1800]
+        if not clean_reason:
+            raise ValueError("A human rejection reason must not be empty.")
+        if (
+            isinstance(pull_request_number, bool)
+            or int(pull_request_number) <= 0
+        ):
+            raise ValueError("Pull request number must be a positive integer.")
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM development_cycles WHERE id = ?",
+                (int(cycle_id),),
+            ).fetchone()
+            candidate = self._managed_candidate(row)
+            if candidate is None:
+                raise ValueError(f"Development cycle {cycle_id} does not exist.")
+            if candidate.validation_state == "rejected_by_human":
+                return CandidateRejection(candidate, True)
+            if candidate.merged:
+                raise ValueError("A merged candidate cannot be rejected.")
+            if not candidate.pushed:
+                raise ValueError("Only a pushed candidate with a GitHub PR can be rejected.")
+
+            rejection_lesson = f"Human rejection: {clean_reason}"
+            cycle_lesson = self._append_lesson(
+                str(row["reusable_lesson"]), rejection_lesson
+            )
+            connection.execute(
+                """
+                UPDATE development_cycles
+                SET status = 'rejected_by_human',
+                    validation_state = 'rejected_by_human',
+                    rejection_reason = ?,
+                    rejection_prior_validation_state = ?,
+                    rejection_pull_request_number = ?,
+                    pull_request_url = ?,
+                    reusable_lesson = ?,
+                    rejected_at = ?, finished_at = ?
+                WHERE id = ?
+                """,
+                (
+                    clean_reason,
+                    candidate.validation_state,
+                    int(pull_request_number),
+                    str(pull_request_url)[:2000],
+                    cycle_lesson,
+                    now,
+                    now,
+                    int(cycle_id),
+                ),
+            )
+
+            experiment = connection.execute(
+                "SELECT outcome, reusable_lesson FROM capability_experiments WHERE task_id = ?",
+                (candidate.task_id,),
+            ).fetchone()
+            if experiment is not None:
+                outcome = self._append_lesson(
+                    str(experiment["outcome"]), f"Rejected by human: {clean_reason}"
+                )
+                experiment_lesson = self._append_lesson(
+                    str(experiment["reusable_lesson"]), rejection_lesson
+                )
+                connection.execute(
+                    """
+                    UPDATE capability_experiments
+                    SET status = 'rejected_by_human', outcome = ?,
+                        reusable_lesson = ?, updated_at = ?
+                    WHERE task_id = ?
+                    """,
+                    (outcome, experiment_lesson, now, candidate.task_id),
+                )
+
+            updated = connection.execute(
+                "SELECT * FROM development_cycles WHERE id = ?",
+                (int(cycle_id),),
+            ).fetchone()
+        result = self._managed_candidate(updated)
+        if result is None:
+            raise RuntimeError("Rejected candidate could not be reloaded.")
+        return CandidateRejection(result, False)
 
     @staticmethod
     def _experiment(row: sqlite3.Row | None) -> CapabilityExperiment | None:
@@ -697,6 +897,8 @@ class LearningMemory:
         experiment = self.experiment_for_task(task_id)
         if experiment is None:
             return
+        if experiment.status == "rejected_by_human":
+            return
         if validation_state == "failed":
             status = "evaluation_failed"
         elif merged and validation_state == "passed":
@@ -745,7 +947,8 @@ class LearningMemory:
                 """
                 SELECT evolution_class, capability_target, hypothesis, status,
                        outcome,
-                       CASE WHEN status = 'validated' THEN reusable_lesson ELSE '' END
+                       CASE WHEN status IN ('validated', 'rejected_by_human')
+                           THEN reusable_lesson ELSE '' END
                            AS reusable_lesson,
                        updated_at
                 FROM capability_experiments ORDER BY id DESC LIMIT ?
@@ -765,10 +968,11 @@ class LearningMemory:
             cycles = connection.execute(
                 """
                 SELECT task_id, status, summary,
-                       CASE WHEN merged = 1 AND validation_state = 'passed'
+                       CASE WHEN (merged = 1 AND validation_state = 'passed')
+                                  OR validation_state = 'rejected_by_human'
                            THEN reusable_lesson ELSE '' END AS reusable_lesson,
-                       checks_passed,
-                       validation_state, merged
+                       checks_passed, validation_state, merged,
+                       rejection_reason, rejection_prior_validation_state
                 FROM development_cycles ORDER BY id DESC LIMIT ?
                 """,
                 (limit,),

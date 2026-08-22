@@ -43,6 +43,21 @@ class EvolutionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateRejectionResult:
+    pull_request_number: int
+    branch: str
+    task_id: str
+    reason: str
+    already_rejected: bool
+    checkpoint_cleared: bool
+    worktree_cleanup: str
+
+
+class CandidateRejectionError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
 class PlannedChange:
     path: str
     content: str
@@ -660,6 +675,151 @@ class SelfDeveloper:
                 reason=reason,
                 branch=context.get("branch") if context else None,
             )
+
+    def reject_candidate(
+        self,
+        pull_request_number: int,
+        *,
+        reason: str | None = None,
+    ) -> CandidateRejectionResult:
+        """Record an explicit human rejection, then clean only matching local state."""
+        rejection_reason = (
+            str(reason).replace("\x00", " ").strip()
+            if reason is not None
+            else "Rejected by human without an additional reason."
+        )
+        if not rejection_reason:
+            raise CandidateRejectionError("The rejection reason must not be empty.")
+
+        try:
+            pull_request = self.github.resolve_candidate_pull_request(
+                pull_request_number
+            )
+        except (RuntimeError, ValueError) as exc:
+            self.audit.write(
+                "candidate_rejection",
+                status="refused",
+                pull_request_number=pull_request_number,
+                reason=str(exc)[:2000],
+            )
+            raise CandidateRejectionError(str(exc)) from exc
+
+        candidate = self.memory.candidate_for_branch(pull_request.branch)
+        if candidate is None:
+            message = (
+                f"PR #{pull_request.number} uses a LocalPilot-shaped branch, but no "
+                "durable LocalPilot development cycle owns it."
+            )
+            self.audit.write(
+                "candidate_rejection",
+                status="refused",
+                pull_request_number=pull_request.number,
+                branch=pull_request.branch,
+                reason=message,
+            )
+            raise CandidateRejectionError(message)
+        if (
+            candidate.pull_request_url
+            and candidate.pull_request_url.rstrip("/") != pull_request.url.rstrip("/")
+        ):
+            message = "Resolved PR URL does not match the candidate's durable review record."
+            self.audit.write(
+                "candidate_rejection",
+                status="refused",
+                pull_request_number=pull_request.number,
+                branch=pull_request.branch,
+                cycle_id=candidate.cycle_id,
+                reason=message,
+            )
+            raise CandidateRejectionError(message)
+
+        try:
+            rejection = self.memory.reject_candidate(
+                candidate.cycle_id,
+                pull_request_number=pull_request.number,
+                pull_request_url=pull_request.url,
+                reason=rejection_reason,
+            )
+        except ValueError as exc:
+            self.audit.write(
+                "candidate_rejection",
+                status="refused",
+                pull_request_number=pull_request.number,
+                branch=pull_request.branch,
+                cycle_id=candidate.cycle_id,
+                reason=str(exc)[:2000],
+            )
+            raise CandidateRejectionError(str(exc)) from exc
+
+        durable = rejection.candidate
+        checkpoint_cleared = False
+        checkpoint_note = "No matching checkpoint was active."
+        try:
+            checkpoint = self.checkpoints.load()
+        except Exception as exc:
+            checkpoint_note = (
+                f"Checkpoint cleanup skipped because it is invalid: {type(exc).__name__}: {exc}"
+            )[:2000]
+        else:
+            if (
+                checkpoint is not None
+                and checkpoint.cycle_id == durable.cycle_id
+                and checkpoint.branch == durable.branch
+            ):
+                try:
+                    checkpoint_cleared = self.checkpoints.clear()
+                except Exception as exc:
+                    checkpoint_note = (
+                        "Matching checkpoint cleanup failed after durable rejection: "
+                        f"{type(exc).__name__}: {exc}"
+                    )[:2000]
+                else:
+                    checkpoint_note = "Cleared the matching evolution checkpoint."
+
+        if durable.is_worktree and durable.workspace:
+            try:
+                cleanup = self.github.remove_candidate_worktree(
+                    durable.branch,
+                    expected_workspace=durable.workspace,
+                )
+            except Exception as exc:
+                worktree_cleanup = (
+                    "Candidate worktree cleanup failed after durable rejection: "
+                    f"{type(exc).__name__}: {exc}"
+                )[:2000]
+            else:
+                worktree_cleanup = cleanup.stdout or cleanup.stderr
+        elif durable.is_worktree:
+            worktree_cleanup = (
+                "Candidate memory has no workspace path; local cleanup was skipped."
+            )
+        else:
+            worktree_cleanup = "No candidate worktree was registered for cleanup."
+
+        self.audit.write(
+            "candidate_rejection",
+            status="already_rejected" if rejection.already_rejected else "rejected",
+            pull_request_number=pull_request.number,
+            pull_request_url=pull_request.url,
+            branch=durable.branch,
+            cycle_id=durable.cycle_id,
+            task_id=durable.task_id,
+            prior_validation_state=durable.rejection_prior_validation_state,
+            rejection_reason=durable.rejection_reason,
+            checkpoint_cleared=checkpoint_cleared,
+            checkpoint_cleanup=checkpoint_note,
+            worktree_cleanup=worktree_cleanup,
+            github_history_retained=True,
+        )
+        return CandidateRejectionResult(
+            pull_request_number=pull_request.number,
+            branch=durable.branch,
+            task_id=durable.task_id,
+            reason=durable.rejection_reason,
+            already_rejected=rejection.already_rejected,
+            checkpoint_cleared=checkpoint_cleared,
+            worktree_cleanup=worktree_cleanup,
+        )
 
     def _reconcile_candidates(self) -> None:
         for candidate in self.memory.pending_candidates():

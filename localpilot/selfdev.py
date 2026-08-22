@@ -15,6 +15,15 @@ import psutil
 from localpilot.audit import AuditLog
 from localpilot.checkpoint import CheckpointStore, EvolutionCheckpoint, task_fingerprint
 from localpilot.config import Config
+from localpilot.evolution import (
+    CORE_CAPABILITY_QUESTION,
+    EvolutionClass,
+    capability_task_id,
+    evolution_status_fields,
+    normalize_evolution_task,
+    parse_capability_proposals,
+    select_capability_proposal,
+)
 from localpilot.github_integration import GitHubIntegration
 from localpilot.learning import LearningMemory
 from localpilot.resource import ResourceGovernor
@@ -350,6 +359,7 @@ class CandidateTools:
         max_files: int = 8,
         protected_paths: Iterable[str] | None = None,
         existing_changed_paths: Iterable[str] | None = None,
+        readable_paths: Iterable[str] | None = None,
     ) -> None:
         self.workspace = workspace.resolve()
         self.max_files = max_files
@@ -357,6 +367,11 @@ class CandidateTools:
             Path(item).as_posix()
             for item in (protected_paths or ())
         }
+        self.readable_paths = (
+            {Path(item).as_posix() for item in readable_paths}
+            if readable_paths is not None
+            else None
+        )
         existing = {
             self._resolve(item)
             for item in (existing_changed_paths or ())
@@ -411,13 +426,19 @@ class CandidateTools:
             rel = path.relative_to(self.workspace)
             if any(part in _IGNORE_NAMES for part in rel.parts):
                 continue
-            rows.append(rel.as_posix())
+            relative = rel.as_posix()
+            if self.readable_paths is not None and relative not in self.readable_paths:
+                continue
+            rows.append(relative)
             if len(rows) >= max_results:
                 break
         return "\n".join(sorted(rows))
 
     def read_project_file(self, relative_path: str, max_chars: int = 24000) -> str:
         path = self._resolve(relative_path)
+        relative = path.relative_to(self.workspace).as_posix()
+        if self.readable_paths is not None and relative not in self.readable_paths:
+            raise PermissionError("Discovery can read only committed project files.")
         max_chars = max(1000, min(int(max_chars), 100000))
         if not path.is_file():
             return f"File not found: {relative_path}"
@@ -648,6 +669,11 @@ class SelfDeveloper:
                 merged=lifecycle.merged,
                 pull_request_url=lifecycle.pull_request_url,
             )
+            self.memory.update_experiment_review(
+                candidate.task_id,
+                validation_state=lifecycle.validation_state,
+                merged=lifecycle.merged,
+            )
 
     def _backlog_tasks(self) -> list[dict[str, Any]]:
         path = self.root / "selfdev-backlog.json"
@@ -660,15 +686,159 @@ class SelfDeveloper:
     def _load_task_by_id(self, task_id: str) -> dict[str, Any] | None:
         for task in self._backlog_tasks():
             if str(task.get("id")) == str(task_id):
-                return task
-        return None
+                return normalize_evolution_task(task)
+        return self.memory.experiment_task(task_id)
 
     def _load_next_task(self) -> dict[str, Any] | None:
-        return choose_next_task(
+        task = choose_next_task(
             self._backlog_tasks(),
             self.memory.completed_task_ids(),
             self.memory.pending_task_ids(),
         )
+        return normalize_evolution_task(task) if task else None
+
+    @staticmethod
+    def _evolution_context(task: dict[str, Any]) -> str:
+        normalized = normalize_evolution_task(task)
+        return json.dumps(
+            {
+                "evolution_class": normalized["evolution_class"],
+                "capability_target": normalized["capability_target"],
+                "question": normalized["question"],
+                "observed_limitation": normalized["observed_limitation"],
+                "evidence": normalized.get("evidence", []),
+                "alternatives": normalized.get("alternatives", []),
+                "hypothesis": normalized["hypothesis"],
+                "evaluation": normalized["evaluation"],
+                "expected_complexity": normalized["expected_complexity"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    def _discover_capability_task(
+        self,
+        *,
+        developer_model: str,
+        force: bool,
+    ) -> dict[str, Any]:
+        """Choose a measured capability-growth question from current evidence."""
+        try:
+            from ollama import chat
+        except ImportError as exc:
+            raise RuntimeError("Ollama Python package is required for capability discovery.") from exc
+
+        readable = self.github.tracked_project_paths()
+        tools = CandidateTools(
+            self.root,
+            self.config.selfdev.max_files_per_cycle,
+            readable_paths=readable,
+        )
+        evidence_context = {
+            "durable_memory": self.memory.discovery_context(),
+            "resource_constraints": {
+                "everyday_model": self.config.model.name,
+                "developer_model": developer_model,
+                "max_background_memory_percent": (
+                    self.config.resource.max_memory_percent_for_background
+                ),
+                "local_candidate_execution": False,
+            },
+            "safety_invariants": [
+                "one outstanding candidate",
+                "candidate-only writes",
+                "reviewer tests immutable",
+                "no local candidate execution",
+                "human-only merge and promotion",
+            ],
+        }
+        schema = (
+            "Return strict JSON with a proposals list (one to three objects). Every object must contain "
+            "evolution_class (repair, extend, improve_cognition, or explore), title, capability_target, "
+            "question, observed_limitation, evidence (repository facts), alternatives (at least two), "
+            "hypothesis (falsifiable), expected_complexity (low, medium, or high), and evaluation with "
+            "metric, baseline, success_criterion, and measurement_method."
+        )
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are LocalPilot's autonomous capability-discovery planner. Nothing being broken is not "
+                    "a terminal condition. Ask: "
+                    f"{CORE_CAPABILITY_QUESTION} Inspect only committed project files through the read-only tools, "
+                    "and choose questions from evidence in the architecture, prior cycle outcomes, failures, "
+                    "benchmarks, resource constraints, and observed capability gaps. Do not follow a static wishlist. "
+                    "Consider all four evolution classes as first-class: Repair, Extend, Improve Cognition, and "
+                    "Explore. Compare alternatives, prefer high leverage over feature count, penalize complexity, "
+                    "and reject any idea without a baseline and measurable success criterion. Never request weakened "
+                    "safety, local candidate execution, automatic merge, or automatic promotion. Do not output file "
+                    "contents, secrets, transcripts, messages, or hidden reasoning. "
+                    f"{schema}\nCurrent evidence:\n{json.dumps(evidence_context, ensure_ascii=False)[:16000]}"
+                ),
+            },
+            {
+                "role": "user",
+                "content": "Discover and rank the highest-leverage measured capability-growth experiment now.",
+            },
+        ]
+        raw = self._tool_stage(
+            chat=chat,
+            model=developer_model,
+            messages=messages,
+            functions=[tools.list_project_files, tools.read_project_file],
+            rounds=self.config.selfdev.research_tool_rounds,
+            force=force,
+            branch="capability-discovery",
+            stage="capability_discovery",
+        )
+        try:
+            proposals = parse_capability_proposals(raw)
+        except (ValueError, json.JSONDecodeError) as first_error:
+            response = self._developer_chat(
+                chat,
+                force=force,
+                branch="capability-discovery",
+                model=developer_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            f"Repair the prior discovery output into the required schema. {schema} "
+                            "Exclude unmeasured proposals and do not add hidden reasoning."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Validation error: {first_error}\nPrior output:\n{raw[:8000]}",
+                    },
+                ],
+                options={"temperature": 0.0},
+            )
+            proposals = parse_capability_proposals(self._content(response))
+
+        eligible = []
+        for candidate in proposals:
+            prior = self.memory.experiment_for_task(capability_task_id(candidate))
+            if prior is None or prior.status == "proposed":
+                eligible.append(candidate)
+        if not eligible:
+            raise ValueError(
+                "Discovery repeated only previously attempted hypotheses; a new evidence-backed question is required."
+            )
+        proposal = select_capability_proposal(eligible)
+        task = normalize_evolution_task(proposal.task(capability_task_id(proposal)))
+        self.memory.record_experiment(task)
+        fields = evolution_status_fields(task)
+        self.audit.write(
+            "capability_discovery",
+            task_id=task["id"],
+            evolution_class=fields["evolution_class"],
+            capability_target=fields["capability_target"],
+            hypothesis=fields["hypothesis"],
+            evaluation_plan=fields["evaluation_plan"],
+            proposals_considered=len(proposals),
+        )
+        return task
 
     def _reject_checkpoint(self, reason: str) -> None:
         self.checkpoints.clear()
@@ -705,6 +875,16 @@ class SelfDeveloper:
         task = self._load_task_by_id(checkpoint.task_id)
         if task is None or task_fingerprint(task) != checkpoint.task_fingerprint:
             self._reject_checkpoint("The backlog task contract is missing or has changed.")
+            return None
+        expected = evolution_status_fields(task)
+        if checkpoint.hypothesis and checkpoint.hypothesis != expected["hypothesis"]:
+            self._reject_checkpoint("The capability hypothesis changed after the checkpoint was saved.")
+            return None
+        if (
+            checkpoint.capability_target
+            and checkpoint.capability_target != expected["capability_target"]
+        ):
+            self._reject_checkpoint("The capability target changed after the checkpoint was saved.")
             return None
 
         workspace = Path(checkpoint.workspace).resolve()
@@ -976,6 +1156,52 @@ class SelfDeveloper:
             str(value.get("reusable_lesson") or default_lesson)[:1000],
         )
 
+    @staticmethod
+    def _evaluation_report(text: str, task: dict[str, Any]) -> dict[str, str]:
+        plan = normalize_evolution_task(task)["evaluation"]
+        report: dict[str, Any] = {}
+        try:
+            value = _json_object(text)
+            candidate = value.get("evaluation_evidence") or value.get("evaluation")
+            if isinstance(candidate, dict):
+                report = candidate
+        except (ValueError, json.JSONDecodeError):
+            pass
+        result = str(report.get("result") or "unmeasured").strip().lower()
+        if result not in {"improved", "no_change", "regressed", "inconclusive", "pending_ci"}:
+            result = "unmeasured"
+        return {
+            "metric": str(report.get("metric") or plan["metric"])[:1000],
+            "baseline_evidence": str(report.get("baseline_evidence") or plan["baseline"])[:2000],
+            "candidate_evidence": str(report.get("candidate_evidence") or "")[:2000],
+            "result": result,
+            "measurement_artifact": str(report.get("measurement_artifact") or "")[:1000],
+        }
+
+    @staticmethod
+    def _candidate_pr_body(
+        task: dict[str, Any],
+        report: dict[str, str],
+        check_result: str,
+    ) -> str:
+        fields = evolution_status_fields(task)
+        return (
+            "## Capability-growth experiment\n\n"
+            f"- Evolution class: {fields['evolution_class']}\n"
+            f"- Capability target: {fields['capability_target']}\n"
+            f"- Research question: {task['question']}\n"
+            f"- Hypothesis: {fields['hypothesis']}\n"
+            f"- Evaluation plan: {fields['evaluation_plan']}\n"
+            f"- Baseline evidence: {report['baseline_evidence']}\n"
+            f"- Candidate evidence: {report['candidate_evidence'] or 'Pending GitHub CI evaluation'}\n"
+            f"- Current evaluation outcome: {report['result']}\n"
+            f"- Measurement artifact: {report['measurement_artifact'] or 'Defined by the candidate/CI plan'}\n\n"
+            "## Safety boundary\n\n"
+            "This is an isolated candidate for human review. It was not executed locally and cannot merge or "
+            "promote itself. Reviewer-controlled tests and all existing safety/resource gates remain authoritative.\n\n"
+            f"## Local static validation\n\n````text\n{check_result[:4000]}\n````\n"
+        )
+
     def _repair_static_failures(
         self,
         *,
@@ -1133,6 +1359,7 @@ class SelfDeveloper:
         local_repair_attempts: int = 0,
     ) -> EvolutionResult:
         """Run or resume a candidate from a compact, validated handoff."""
+        task = normalize_evolution_task(task)
         initial_milestone = checkpoint.milestone if checkpoint else "candidate_created"
         self._activate_checkpoint(
             cycle_id=cycle_id,
@@ -1167,6 +1394,7 @@ class SelfDeveloper:
 
         lessons = self.memory.reusable_lessons(self.config.selfdev.lesson_limit)
         acceptance = json.dumps(task.get("acceptance", []), ensure_ascii=False)
+        evolution_context = self._evolution_context(task)
         milestone = checkpoint.milestone if checkpoint else "candidate_created"
         research_findings = list(checkpoint.research_findings) if checkpoint else []
         decisions = list(checkpoint.decisions) if checkpoint else []
@@ -1188,6 +1416,10 @@ class SelfDeveloper:
                             "messages, or hidden chain-of-thought. A resumed run may include a compact "
                             "engineering handoff, never a transcript.\n"
                             f"Task: {task['title']}\nAcceptance: {acceptance}\n"
+                            f"Capability experiment contract:\n{evolution_context}\n"
+                            "Research relevant alternatives, verify the observed limitation and baseline, and keep "
+                            "the hypothesis falsifiable. Added complexity without a measurable evaluation is not an "
+                            "acceptable outcome.\n"
                             f"Resume handoff: {checkpoint.next_action if checkpoint else 'new candidate'}\n"
                             f"Previously inspected paths: {json.dumps(list(checkpoint.files_inspected) if checkpoint else [])}"
                         ),
@@ -1235,6 +1467,13 @@ class SelfDeveloper:
                         if checkpoint and checkpoint.reusable_lessons
                         else "Use a compact verified handoff across invocations."
                     ),
+                    "evaluation_evidence": {
+                        "metric": task["evaluation"]["metric"],
+                        "baseline_evidence": task["evaluation"]["baseline"],
+                        "candidate_evidence": "Evaluation remains pending after resume.",
+                        "result": "pending_ci",
+                        "measurement_artifact": task["evaluation"]["measurement_method"],
+                    },
                 }
             )
             fallback_plan: ChangePlan | None = None
@@ -1253,8 +1492,14 @@ class SelfDeveloper:
                             "through the supplied file tools. Implement one focused task, add/update tests, inspect the "
                             "diff, and run static checks. Never edit stable, execute candidate code locally, promote, "
                             "weaken confinement, bypass the resource governor, or use shell command strings. "
-                            "Finish with JSON containing only summary and reusable_lesson; do not expose hidden reasoning.\n"
+                            "Implement the evaluation artifact needed to compare the candidate with the stated baseline. "
+                            "Do not keep complexity whose benefit cannot be measured. Finish with JSON containing only "
+                            "summary, reusable_lesson, and evaluation_evidence with metric, baseline_evidence, "
+                            "candidate_evidence, result (improved, no_change, regressed, inconclusive, or pending_ci), "
+                            "and measurement_artifact. Use pending_ci only when executable comparison is deliberately "
+                            "deferred to GitHub CI. Do not expose hidden reasoning.\n"
                             f"Task: {task['title']}\nAcceptance: {acceptance}\n"
+                            f"Capability experiment contract:\n{evolution_context}\n"
                             f"Research brief:\n{research[:12000]}\n"
                             f"Reusable lessons from earlier cycles:\n{json.dumps(lessons, ensure_ascii=False)}\n"
                             f"Resume next action: {checkpoint.next_action if checkpoint else 'begin implementation'}\n"
@@ -1297,7 +1542,9 @@ class SelfDeveloper:
                                     "changes must be a non-empty list of objects containing path, complete content, and reason. "
                                     "Only propose files needed for the task. No markdown and no hidden reasoning. "
                                     "The caller will validate every path and apply every change through write_project_file.\n"
-                                    f"Task: {task['title']}\nAcceptance: {acceptance}\nResearch:\n{research[:12000]}"
+                                    "Also return evaluation_evidence matching the capability experiment contract.\n"
+                                    f"Task: {task['title']}\nAcceptance: {acceptance}\n"
+                                    f"Capability experiment contract:\n{evolution_context}\nResearch:\n{research[:12000]}"
                                 ),
                             },
                             {"role": "user", "content": "Produce the candidate change plan now."},
@@ -1307,7 +1554,17 @@ class SelfDeveloper:
                     fallback_plan = parse_change_plan(self._content(response), tools.max_files)
                     apply_change_plan(fallback_plan, tools)
                     final_text = json.dumps(
-                        {"summary": fallback_plan.summary, "reusable_lesson": fallback_plan.reusable_lesson}
+                        {
+                            "summary": fallback_plan.summary,
+                            "reusable_lesson": fallback_plan.reusable_lesson,
+                            "evaluation_evidence": {
+                                "metric": task["evaluation"]["metric"],
+                                "baseline_evidence": task["evaluation"]["baseline"],
+                                "candidate_evidence": "Structured implementation requires GitHub CI comparison.",
+                                "result": "pending_ci",
+                                "measurement_artifact": task["evaluation"]["measurement_method"],
+                            },
+                        }
                     )
 
                 outcome_summary, outcome_lesson = self._checkpoint_outcome(
@@ -1360,10 +1617,21 @@ class SelfDeveloper:
                         next_action="Commit and deliver if checks pass; otherwise retain for review.",
                     )
 
+            evaluation_report = self._evaluation_report(final_text, task)
             status = classify_candidate_result(len(tools.files_written), checks_passed)
+            capability_candidate = task.get("source") == "capability_discovery"
+            measurement_blocked = capability_candidate and (
+                evaluation_report["result"] in {"unmeasured", "regressed"}
+                or (
+                    evaluation_report["result"] == "pending_ci"
+                    and not evaluation_report["measurement_artifact"]
+                )
+            )
+            if tools.files_written and measurement_blocked:
+                status = "candidate_needs_work"
             pushed = False
             delivery = ""
-            if tools.files_written and is_worktree and checks_passed:
+            if tools.files_written and is_worktree and checks_passed and not measurement_blocked:
                 self._checkpoint_milestone(
                     "delivery",
                     check_result=check_result,
@@ -1376,7 +1644,22 @@ class SelfDeveloper:
                     pushed = push.ok
                     if pushed:
                         status = "candidate_pending_validation"
-                        delivery = "Candidate pushed; it remains pending until CI passes and its PR is merged."
+                        if capability_candidate:
+                            pull_request = self.github.create_candidate_pull_request(
+                                workspace,
+                                branch=branch,
+                                title=f"{EvolutionClass(task['evolution_class']).label}: {task['title']}",
+                                body=self._candidate_pr_body(task, evaluation_report, check_result),
+                            )
+                            delivery = (
+                                "Candidate pushed and presented for human review; it remains pending until CI passes "
+                                "and a human merges it."
+                                if pull_request.ok
+                                else "Candidate pushed; automatic PR presentation was unavailable, so the branch remains "
+                                f"awaiting human review: {pull_request.stderr or pull_request.stdout}"
+                            )
+                        else:
+                            delivery = "Candidate pushed; it remains pending until CI passes and its PR is merged."
                     else:
                         status = "candidate_needs_work"
                         delivery = f"Candidate push failed: {push.stderr or push.stdout}"
@@ -1391,6 +1674,11 @@ class SelfDeveloper:
             summary = f"{summary}\n\n{check_result}"
             if delivery:
                 summary += f"\n\n{delivery}"
+            if measurement_blocked:
+                summary += (
+                    "\n\nCapability evidence gate blocked delivery because the candidate was regressed or "
+                    "did not provide a measurable evaluation artifact."
+                )
             self.memory.finish_cycle(
                 cycle_id,
                 status=status,
@@ -1399,6 +1687,15 @@ class SelfDeveloper:
                 checks_passed=checks_passed,
                 pushed=pushed,
             )
+            self.memory.update_experiment_outcome(
+                str(task["id"]),
+                status=status,
+                outcome=evaluation_report["result"],
+                before_evidence=evaluation_report["baseline_evidence"],
+                after_evidence=evaluation_report["candidate_evidence"],
+                reusable_lesson=lesson,
+            )
+            status_fields = evolution_status_fields(task)
             self.audit.write(
                 "selfdev_end",
                 branch=branch,
@@ -1408,6 +1705,8 @@ class SelfDeveloper:
                 files_written=len(tools.files_written),
                 status=status,
                 summary=summary[:2000],
+                **status_fields,
+                latest_experiment_outcome=evaluation_report["result"],
             )
             self._emit(f"Finished: {status} — wrote {len(tools.files_written)} candidate file(s)")
             return EvolutionResult(status, branch, workspace, summary, checks_passed)
@@ -1420,6 +1719,11 @@ class SelfDeveloper:
                 reusable_lesson="Resume from a validated compact checkpoint after the resource gate clears.",
                 checks_passed=None,
                 pushed=False,
+            )
+            self.memory.update_experiment_outcome(
+                str(task["id"]),
+                status="paused",
+                outcome=summary,
             )
             self._persist_active_checkpoint()
             return EvolutionResult("paused", branch, workspace, summary)
@@ -1450,6 +1754,12 @@ class SelfDeveloper:
                 reusable_lesson=f"Handle {type(exc).__name__} before retrying this task.",
                 checks_passed=None,
                 pushed=False,
+            )
+            self.memory.update_experiment_outcome(
+                str(task["id"]),
+                status=status,
+                outcome=summary,
+                reusable_lesson=f"Handle {type(exc).__name__} before retrying this task.",
             )
             self.audit.write("selfdev_end", branch=branch, task_id=task["id"], status=status, summary=summary)
             return EvolutionResult(status, branch, workspace, summary)
@@ -1769,7 +2079,32 @@ class SelfDeveloper:
             pushed = push.ok
             if pushed:
                 status = "candidate_pending_validation"
-                delivery = "Candidate pushed; it remains pending until CI passes and its PR is merged."
+                if task.get("source") == "capability_discovery":
+                    experiment = self.memory.experiment_for_task(str(task["id"]))
+                    report = {
+                        "metric": experiment.metric if experiment else task["evaluation"]["metric"],
+                        "baseline_evidence": (
+                            experiment.before_evidence if experiment else task["evaluation"]["baseline"]
+                        ),
+                        "candidate_evidence": experiment.after_evidence if experiment else "",
+                        "result": experiment.outcome if experiment else "pending_ci",
+                        "measurement_artifact": task["evaluation"]["measurement_method"],
+                    }
+                    pull_request = self.github.create_candidate_pull_request(
+                        workspace,
+                        branch=branch,
+                        title=f"{EvolutionClass(task['evolution_class']).label}: {task['title']}",
+                        body=self._candidate_pr_body(task, report, check_result),
+                    )
+                    delivery = (
+                        "Candidate pushed and presented for human review; it remains pending until CI passes and "
+                        "a human merges it."
+                        if pull_request.ok
+                        else "Candidate pushed; PR presentation remains awaiting human action: "
+                        f"{pull_request.stderr or pull_request.stdout}"
+                    )
+                else:
+                    delivery = "Candidate pushed; it remains pending until CI passes and its PR is merged."
             else:
                 status = "candidate_needs_work"
                 delivery = f"Candidate push failed: {push.stderr or push.stdout}"
@@ -2277,6 +2612,7 @@ class SelfDeveloper:
                 self._persist_active_checkpoint()
             else:
                 self._clear_checkpoint(f"terminal evolve status: {result.status}")
+        latest_experiment = self.memory.latest_experiment()
         self.audit.write(
             "evolve_run_end",
             invocation_id=invocation_id,
@@ -2285,6 +2621,7 @@ class SelfDeveloper:
             workspace=str(result.workspace) if result.workspace else None,
             checks_passed=result.tests_passed,
             summary=result.summary[:2000],
+            experiment_id=latest_experiment.id if latest_experiment else None,
         )
         return result
 
@@ -2331,13 +2668,40 @@ class SelfDeveloper:
             return repair
 
         task = self._load_next_task()
-        if not task:
-            return EvolutionResult("idle", None, None, "No eligible todo item remains. Merged, validated tasks are skipped.")
-
+        if task is None and self.memory.has_outstanding_candidate():
+            return EvolutionResult(
+                "idle",
+                None,
+                None,
+                "One candidate is still awaiting validation or human review; capability discovery remains gated.",
+            )
         selection = self._select_developer_model()
         if selection.model is None:
             return EvolutionResult("deferred", None, None, selection.reason)
         developer_model = selection.model
+        if task is None:
+            try:
+                task = self._discover_capability_task(
+                    developer_model=developer_model,
+                    force=force,
+                )
+            except CyclePaused as exc:
+                return EvolutionResult(
+                    "paused",
+                    None,
+                    None,
+                    f"Capability discovery paused because the resource gate changed: {exc}",
+                )
+            except Exception as exc:
+                return EvolutionResult(
+                    "failed",
+                    None,
+                    None,
+                    f"Capability discovery failed: {type(exc).__name__}: {exc}",
+                )
+
+        task = normalize_evolution_task(task)
+        self.memory.record_experiment(task)
         slug = "".join(char if char.isalnum() else "-" for char in task["id"].lower()).strip("-")[:40]
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         branch = f"localpilot/candidate-{slug}-{stamp}"
@@ -2352,12 +2716,15 @@ class SelfDeveloper:
             workspace=workspace,
             is_worktree=is_worktree,
         )
+        self.memory.attach_experiment_cycle(str(task["id"]), cycle_id, branch)
+        status_fields = evolution_status_fields(task)
         self.audit.write(
             "selfdev_start",
             task_id=task["id"],
             branch=branch,
             workspace=str(workspace),
             developer_model=developer_model,
+            **status_fields,
         )
 
         return self._continue_candidate(

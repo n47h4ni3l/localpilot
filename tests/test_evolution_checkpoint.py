@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -122,6 +123,33 @@ def test_checkpoint_save_is_compact_structured_and_redacted(tmp_path: Path):
     assert loaded.test_status == "not run locally; GitHub CI required"
     assert loaded.test_failures == ()
     assert len(raw) < 10_000
+
+
+def test_version_one_checkpoint_migrates_without_losing_resume_identity(tmp_path: Path):
+    store = CheckpointStore(tmp_path / "checkpoint.json")
+    current = EvolutionCheckpoint.create(
+        cycle_id=9,
+        task=TASK,
+        branch=BRANCH,
+        workspace=tmp_path / "candidate",
+        milestone="research_complete",
+        git_head=HEAD,
+        git_state_digest="d" * 64,
+        next_action="Resume the same candidate.",
+    )
+    legacy = asdict(current)
+    legacy["version"] = 1
+    for name in ("evolution_class", "capability_target", "hypothesis", "evaluation_plan"):
+        legacy.pop(name)
+    store.path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    migrated = store.load()
+
+    assert migrated is not None
+    assert migrated.version == 2
+    assert migrated.cycle_id == 9
+    assert migrated.branch == BRANCH
+    assert migrated.capability_target == TASK["title"]
 
 
 def test_unstructured_model_text_is_not_used_as_durable_handoff():

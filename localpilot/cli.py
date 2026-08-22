@@ -14,6 +14,7 @@ from localpilot.checkpoint import CheckpointStore
 from localpilot.config import load_config
 from localpilot.doctor import doctor
 from localpilot.github_integration import GitHubIntegration
+from localpilot.learning import LearningMemory
 from localpilot.resource import ResourceGovernor
 from localpilot.selfdev import SelfDeveloper
 
@@ -62,6 +63,8 @@ def _show_status(console: Console, config, root: Path) -> None:
     else:
         table.add_row("Last evolve", "No completed invocation has been recorded yet.")
     checkpoint_store = CheckpointStore(root / config.agent.data_dir / "evolution-checkpoint.json")
+    memory = LearningMemory(root / config.agent.data_dir / config.selfdev.learning_database)
+    checkpoint = None
     try:
         checkpoint = checkpoint_store.load()
     except Exception as exc:
@@ -86,6 +89,37 @@ def _show_status(console: Console, config, root: Path) -> None:
             )
         else:
             table.add_row("Checkpoint", "No active evolution checkpoint.")
+    experiment = memory.latest_experiment()
+    if checkpoint:
+        evolution_detail = (
+            f"class: {checkpoint.evolution_class}\n"
+            f"target: {checkpoint.capability_target}\n"
+            f"hypothesis: {checkpoint.hypothesis or '(legacy checkpoint; not recorded)'}\n"
+            f"evaluation: {checkpoint.evaluation_plan or '{}'}"
+        )
+        if experiment and experiment.task_id == checkpoint.task_id:
+            evolution_detail += f"\nlatest outcome: {experiment.status} — {experiment.outcome or 'pending'}"
+        table.add_row("Evolution", evolution_detail[:1800])
+    elif experiment:
+        evaluation = (
+            f"{experiment.metric}; baseline: {experiment.baseline}; "
+            f"success: {experiment.success_criterion}; method: {experiment.measurement_method}"
+        )
+        table.add_row(
+            "Evolution",
+            (
+                f"class: {experiment.evolution_class}\n"
+                f"target: {experiment.capability_target}\n"
+                f"hypothesis: {experiment.hypothesis}\n"
+                f"evaluation: {evaluation}\n"
+                f"latest outcome: {experiment.status} — {experiment.outcome or 'pending'}"
+            )[:1800],
+        )
+    else:
+        table.add_row(
+            "Evolution",
+            "No experiment recorded yet; the next ungated idle cycle will discover a capability-growth question.",
+        )
     table.add_row("Git", gh.status())
     console.print(table)
 

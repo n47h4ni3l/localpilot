@@ -32,8 +32,10 @@
 
 ## v0.5 — continuous self-development
 
-- GitHub issues as a development queue.
+- Evidence-driven autonomous capability discovery beyond seed tasks.
+- First-class Repair, Extend, Improve Cognition and bounded Explore experiments.
+- Durable capability map, falsifiable hypotheses, baselines and reusable validated lessons.
 - Resumable idle development cycles.
 - Candidate benchmarking and regression checks.
-- Automatic push/PR creation after successful tests.
+- Automatic candidate push/PR presentation with human-only merge and promotion.
 - Carefully designed promotion and rollback path.

@@ -31,6 +31,14 @@ from localpilot.resource import ResourceGovernor
 
 _IGNORE_NAMES = {".git", ".github", ".venv", "__pycache__", ".pytest_cache", "localpilot-data"}
 _ALLOWED_SUFFIXES = {".py", ".toml", ".md", ".txt", ".json", ".yml", ".yaml", ".ps1", ".gitignore"}
+# Derived from _ALLOWED_SUFFIXES so prompt guidance can never drift out of
+# sync with what CandidateTools.write_project_file actually enforces.
+_ALLOWED_SUFFIXES_NOTE = (
+    "Allowed file types for autonomous writes: "
+    f"{', '.join(sorted(_ALLOWED_SUFFIXES))}. write_project_file rejects any "
+    "other extension, including .sh — this project is Windows-first, so use "
+    ".ps1 for scripts, not .sh."
+)
 
 
 @dataclass(slots=True)
@@ -307,7 +315,28 @@ def parse_change_plan(text: str, max_files: int = 8) -> ChangePlan:
 
 
 def apply_change_plan(plan: ChangePlan, tools: "CandidateTools") -> list[str]:
-    """The sole fallback application path: every change passes CandidateTools."""
+    """The sole fallback application path: every change passes CandidateTools.
+
+    Every path is validated against the same rules write_project_file enforces
+    before any file in the plan is written, so a single disallowed or
+    out-of-budget path rejects the whole plan atomically. Without this, a
+    plan with N changes could write the first K successfully and then raise
+    on change K+1, leaving a partial candidate on disk (e.g. a workflow file
+    that references a script the plan never actually got to create).
+    """
+    if len(plan.changes) > tools.max_files:
+        raise ValueError("Change plan exceeds the candidate file limit.")
+    for change in plan.changes:
+        suffix = (
+            Path(change.path).suffix.lower()
+            if Path(change.path).name != ".gitignore"
+            else ".gitignore"
+        )
+        if suffix not in _ALLOWED_SUFFIXES:
+            raise ValueError(
+                "Change plan references a disallowed file type for "
+                f"'{change.path}': {suffix or '(none)'}. {_ALLOWED_SUFFIXES_NOTE}"
+            )
     return [tools.write_project_file(change.path, change.content) for change in plan.changes]
 
 
@@ -1426,6 +1455,7 @@ class SelfDeveloper:
                         "command strings. Reviewer-controlled tests are immutable. "
                         "Finish with JSON containing only summary and reusable_lesson; "
                         "do not expose hidden reasoning.\n"
+                        f"{_ALLOWED_SUFFIXES_NOTE}\n"
                         f"Reviewer-protected paths: {protected_note}\n"
                         f"Task: {task['title']}\nAcceptance: {acceptance}\n"
                         f"{context}"
@@ -1472,6 +1502,7 @@ class SelfDeveloper:
                                     "The caller applies every file only through the "
                                     "confined candidate write tool. Do not include a "
                                     "reviewer-protected path.\n"
+                                    f"{_ALLOWED_SUFFIXES_NOTE}\n"
                                     f"Reviewer-protected paths: {protected_note}\n"
                                     f"Task: {task['title']}\n{context}\n"
                                     f"Prior repair response: {final_text[:4000]}"
@@ -1670,6 +1701,7 @@ class SelfDeveloper:
                             "candidate_evidence, result (improved, no_change, regressed, inconclusive, or pending_ci), "
                             "and measurement_artifact. Use pending_ci only when executable comparison is deliberately "
                             "deferred to GitHub CI. Do not expose hidden reasoning.\n"
+                            f"{_ALLOWED_SUFFIXES_NOTE}\n"
                             f"Task: {task['title']}\nAcceptance: {acceptance}\n"
                             f"Capability experiment contract:\n{evolution_context}\n"
                             f"Research brief:\n{research[:12000]}\n"
@@ -1714,6 +1746,7 @@ class SelfDeveloper:
                                     "changes must be a non-empty list of objects containing path, complete content, and reason. "
                                     "Only propose files needed for the task. No markdown and no hidden reasoning. "
                                     "The caller will validate every path and apply every change through write_project_file.\n"
+                                    f"{_ALLOWED_SUFFIXES_NOTE}\n"
                                     "Also return evaluation_evidence matching the capability experiment contract.\n"
                                     f"Task: {task['title']}\nAcceptance: {acceptance}\n"
                                     f"Capability experiment contract:\n{evolution_context}\nResearch:\n{research[:12000]}"
@@ -1723,21 +1756,42 @@ class SelfDeveloper:
                         ],
                         options={"temperature": 0.0},
                     )
-                    fallback_plan = parse_change_plan(self._content(response), tools.max_files)
-                    apply_change_plan(fallback_plan, tools)
-                    final_text = json.dumps(
-                        {
-                            "summary": fallback_plan.summary,
-                            "reusable_lesson": fallback_plan.reusable_lesson,
-                            "evaluation_evidence": {
-                                "metric": task["evaluation"]["metric"],
-                                "baseline_evidence": task["evaluation"]["baseline"],
-                                "candidate_evidence": "Structured implementation requires GitHub CI comparison.",
-                                "result": "pending_ci",
-                                "measurement_artifact": task["evaluation"]["measurement_method"],
-                            },
-                        }
-                    )
+                    try:
+                        fallback_plan = parse_change_plan(self._content(response), tools.max_files)
+                        apply_change_plan(fallback_plan, tools)
+                        final_text = json.dumps(
+                            {
+                                "summary": fallback_plan.summary,
+                                "reusable_lesson": fallback_plan.reusable_lesson,
+                                "evaluation_evidence": {
+                                    "metric": task["evaluation"]["metric"],
+                                    "baseline_evidence": task["evaluation"]["baseline"],
+                                    "candidate_evidence": "Structured implementation requires GitHub CI comparison.",
+                                    "result": "pending_ci",
+                                    "measurement_artifact": task["evaluation"]["measurement_method"],
+                                },
+                            }
+                        )
+                    except Exception as exc:
+                        final_text = json.dumps(
+                            {
+                                "summary": (
+                                    "Structured fallback change plan was rejected: "
+                                    f"{type(exc).__name__}: {exc}"
+                                ),
+                                "reusable_lesson": (
+                                    f"{_ALLOWED_SUFFIXES_NOTE} Validate every planned "
+                                    "path before proposing a change plan."
+                                ),
+                                "evaluation_evidence": {
+                                    "metric": task["evaluation"]["metric"],
+                                    "baseline_evidence": task["evaluation"]["baseline"],
+                                    "candidate_evidence": "No candidate changes were applied.",
+                                    "result": "no_change",
+                                    "measurement_artifact": task["evaluation"]["measurement_method"],
+                                },
+                            }
+                        )
 
                 outcome_summary, outcome_lesson = self._checkpoint_outcome(
                     final_text,
@@ -2457,6 +2511,7 @@ class SelfDeveloper:
                     "when they are not reviewer-protected and the failure proves "
                     "the test itself is invalid. Finish with JSON containing only "
                     "summary and reusable_lesson; do not expose hidden reasoning.\n"
+                    f"{_ALLOWED_SUFFIXES_NOTE}\n"
                     f"Reviewer-protected paths: {protected_note}\n"
                     f"Task: {task['title']}\n"
                     f"Acceptance: {acceptance}\n"
@@ -2528,6 +2583,7 @@ class SelfDeveloper:
                                 "path confinement and file limits remain enforced. Reviewer-controlled "
                                 "regression tests are read-only and must not appear in the change plan. "
                                 "Repair only the concrete CI failure and do not weaken safety.\n"
+                                f"{_ALLOWED_SUFFIXES_NOTE}\n"
                                 f"Reviewer-protected paths: {protected_note}\n"
                                 f"Task: {task['title']}\n"
                                 f"Acceptance: {acceptance}\n"

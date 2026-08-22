@@ -1353,6 +1353,23 @@ class SelfDeveloper:
         if not self.config.selfdev.enabled:
             return EvolutionResult("disabled", None, None, "Self-development is disabled in config.")
 
+        sync = self.github.sync_trusted_main()
+        self.audit.write(
+            "selfdev_main_sync",
+            ok=sync.ok,
+            updated=sync.updated,
+            summary=sync.summary[:2000],
+        )
+        if not sync.ok:
+            return EvolutionResult("sync_blocked", None, None, sync.summary)
+        if sync.updated:
+            return EvolutionResult(
+                "updated",
+                None,
+                None,
+                sync.summary + " Evolve stopped so the next invocation loads the updated code.",
+            )
+
         state = self.governor.sample()
         if not force and not state.background_allowed:
             self.governor.apply_process_priority(idle=False)

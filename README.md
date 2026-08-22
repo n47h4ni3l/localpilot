@@ -81,7 +81,15 @@ Useful interactive commands:
 localpilot evolve --force
 ```
 
-That bypasses only the idle gate for that cycle; candidate path confinement and stable/candidate separation still apply.
+That bypasses only the idle gate for that cycle; candidate path confinement, stable/candidate separation, and the guarded main-branch sync still apply. LocalPilot does not automatically install its scheduler. An external scheduler may invoke `localpilot evolve`, but the checkout must be the clean configured `main` branch. Each invocation fetches only that branch from the configured remote and permits only a fast-forward. Dirty, wrong-branch, ahead, divergent, or unreachable checkouts stop before candidate work. If a fast-forward occurs, that invocation exits so the next scheduled run starts with the newly loaded code.
+
+To let LocalPilot poll dynamically and begin work only when its own idle/resource gate permits it, register the included per-user Windows task from a clean `main` checkout after bootstrap:
+
+```powershell
+.\scripts\install-idle-evolve-task.ps1
+```
+
+The task invokes `localpilot evolve` every five minutes while you are signed in, ignores overlapping invocations, and never passes `--force`. Polling is only a wake-up mechanism: returning to the PC or exceeding a resource limit still defers or pauses model/tool work.
 
 ## GitHub connection
 
@@ -115,16 +123,17 @@ These values are deliberately editable. The next development phase should add GP
 
 `selfdev-backlog.json` contains seed tasks for LocalPilot to work toward. One `localpilot evolve` cycle:
 
-1. checks idle/load conditions;
-2. selects the next todo task;
-3. creates an isolated candidate workspace;
-4. gives the local model candidate-only file tools;
-5. lets it inspect and modify a limited number of source files;
-6. runs non-executing syntax/config checks locally;
-7. feeds a static-check failure, the candidate diff and changed files back to the developer for a bounded repair loop in the same worktree;
-8. if Git is connected, commits and pushes only a passing candidate branch;
-9. GitHub Actions runs the executable test suite away from the workstation;
-10. leaves stable untouched.
+1. verifies the process is running from the clean configured `main` checkout and fast-forwards it from the configured remote when safe;
+2. checks idle/load conditions;
+3. selects the next todo task;
+4. creates an isolated candidate workspace;
+5. gives the local model candidate-only file tools;
+6. lets it inspect and modify a limited number of source files;
+7. runs non-executing syntax/config checks locally;
+8. feeds a static-check failure, the candidate diff and changed files back to the developer for a bounded repair loop in the same worktree;
+9. commits and pushes only a passing candidate branch;
+10. lets GitHub Actions run the executable test suite away from the workstation; and
+11. leaves stable untouched.
 
 Automatic candidate promotion is disabled. Candidate code is also not executed locally by the autonomous self-development loop in v0.1; GitHub Actions is the executable test sandbox. That is intentional until a stronger local sandbox/rollback layer exists.
 

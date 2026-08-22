@@ -18,6 +18,7 @@ from localpilot.learning import LearningMemory
 from localpilot.mission import mission_context
 from localpilot.resource import ResourceGovernor
 from localpilot.selfdev import CandidateRejectionError, SelfDeveloper
+from localpilot.study import STAGES, StudyEngine
 
 
 _FAILED_EVOLVE_STATUSES = {"failed", "sync_blocked", "candidate_needs_work"}
@@ -159,8 +160,61 @@ def _show_status(console: Console, config, root: Path) -> None:
         )
     else:
         table.add_row("Last rejected candidate", "No explicit human rejection recorded.")
+    curriculum = [memory.curriculum_state(stage) for stage in STAGES]
+    active = next((item for item in curriculum if item.status != "improved"), curriculum[-1])
+    curriculum_lines = []
+    for item in curriculum:
+        baseline = "—" if item.baseline_score is None else f"{item.baseline_score:.1f}"
+        latest = "—" if item.latest_score is None else f"{item.latest_score:.1f}"
+        curriculum_lines.append(
+            f"{item.stage}: {item.status} (baseline {baseline}, latest {latest})"
+        )
+    if active.known_weak_areas:
+        curriculum_lines.append(f"weak: {active.known_weak_areas[0][:220]}")
+    if active.next_lesson:
+        curriculum_lines.append(f"next: {active.next_lesson[:300]}")
+    table.add_row("Study curriculum", "\n".join(curriculum_lines))
+    comparison = memory.latest_peer_model_comparison()
+    if comparison:
+        table.add_row(
+            "Latest peer comparison",
+            (
+                f"{comparison.subject_model}: {comparison.subject_score:.1f} vs "
+                f"{comparison.peer_model}: {comparison.peer_score:.1f}\n"
+                f"latency: {comparison.subject_latency_ms}ms vs {comparison.peer_latency_ms}ms"
+            ),
+        )
     table.add_row("Git", gh.status())
     console.print(table)
+
+
+def _show_study_status(console: Console, memory: LearningMemory) -> None:
+    table = Table(title="LocalPilot study curriculum")
+    for name in ("Stage", "Status", "Baseline", "Latest", "Weak areas", "Next"):
+        table.add_column(name)
+    for stage in STAGES:
+        state = memory.curriculum_state(stage)
+        table.add_row(
+            stage,
+            state.status,
+            "—" if state.baseline_score is None else f"{state.baseline_score:.1f}",
+            "—" if state.latest_score is None else f"{state.latest_score:.1f}",
+            "; ".join(state.known_weak_areas[:3]) or "—",
+            state.next_lesson or "Establish the held-out baseline.",
+        )
+    console.print(table)
+
+
+def _show_study_outcome(console: Console, outcome) -> None:
+    gain = outcome.latest.score - outcome.baseline.score
+    console.print(
+        f"[bold]{outcome.stage}: {outcome.state.status}[/bold]\n"
+        f"Baseline: {outcome.baseline.score:.1f} ({outcome.baseline.correct}/{outcome.baseline.total})\n"
+        f"Latest: {outcome.latest.score:.1f} ({outcome.latest.correct}/{outcome.latest.total})\n"
+        f"Measured gain: {gain:+.1f}\n"
+        f"Facts added: {outcome.facts_written}; stale facts invalidated: {outcome.stale_facts}\n"
+        f"Next: {outcome.state.next_lesson}"
+    )
 
 
 def _show_doctor(console: Console, config, root: Path) -> int:
@@ -233,6 +287,46 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Durable, non-interactive reason retained as learning evidence",
     )
+    study = sub.add_parser(
+        "study",
+        help="Run benchmarked self-study; this does not train model weights",
+    )
+    study_sub = study.add_subparsers(dest="study_action")
+    study_sub.add_parser("status", help="Show curriculum progress and weak areas")
+    baseline = study_sub.add_parser(
+        "baseline", help="Record the held-out baseline before studying a stage"
+    )
+    baseline.add_argument("stage", choices=STAGES)
+    run_study = study_sub.add_parser(
+        "run", help="Study one stage and retest against its held-out benchmark"
+    )
+    run_study.add_argument("stage", choices=STAGES)
+    run_study.add_argument(
+        "--allow-web",
+        action="store_true",
+        help="Read authoritative HTTPS documentation and verify it before persistence",
+    )
+    run_all = study_sub.add_parser("all", help="Run stages in enforced curriculum order")
+    run_all.add_argument(
+        "--allow-web",
+        action="store_true",
+        help="Read authoritative HTTPS documentation and verify it before persistence",
+    )
+    compare = study_sub.add_parser(
+        "compare",
+        help="Compare the developer model with another installed model on transfer tasks",
+    )
+    compare.add_argument("peer_model", help="Installed Ollama model used as the peer")
+    compare.add_argument(
+        "--subject-model",
+        default=None,
+        help="Model being evaluated; defaults to selfdev.developer_model",
+    )
+    research = study_sub.add_parser(
+        "research",
+        help="Inspect any public HTTPS source transiently without promoting it to knowledge",
+    )
+    research.add_argument("url", help="Public HTTPS source to inspect read-only")
     parser.add_argument("--config", default=None, help="Path to localpilot.toml")
     return parser
 
@@ -274,3 +368,57 @@ def main() -> None:
             f"Local cleanup: {result.worktree_cleanup}\n"
             "GitHub branch/history retained; no merge or promotion was performed."
         )
+    elif args.command == "study":
+        memory = LearningMemory(root / config.agent.data_dir / config.selfdev.learning_database)
+        action = args.study_action or "status"
+        if action == "status":
+            _show_study_status(console, memory)
+            return
+        engine = StudyEngine(
+            root,
+            memory,
+            config,
+            allow_web=(
+                bool(getattr(args, "allow_web", False)) or action == "research"
+            ),
+        )
+        try:
+            if action == "baseline":
+                run = engine.baseline(args.stage)
+                console.print(
+                    f"[bold]{args.stage} baseline recorded[/bold]\n"
+                    f"Score: {run.score:.1f} ({run.correct}/{run.total})\n"
+                    f"Held-out set: {run.question_set_digest[:12]}"
+                )
+            elif action == "run":
+                _show_study_outcome(console, engine.run_stage(args.stage))
+            elif action == "all":
+                outcomes = engine.run_all()
+                for outcome in outcomes:
+                    _show_study_outcome(console, outcome)
+                if not outcomes:
+                    console.print("All curriculum stages already record measured improvement.")
+            elif action == "compare":
+                result = engine.compare_models(
+                    args.peer_model,
+                    subject_model=args.subject_model,
+                )
+                console.print(
+                    f"[bold]Peer comparison recorded[/bold]\n"
+                    f"{result.subject_model}: {result.subject_score:.1f} in {result.subject_latency_ms}ms\n"
+                    f"{result.peer_model}: {result.peer_score:.1f} in {result.peer_latency_ms}ms\n"
+                    f"Lesson: {result.transferable_lessons[0]}"
+                )
+            elif action == "research":
+                source = engine.inspect_web_source(args.url)
+                authority = "authoritative" if source.authoritative else "unverified"
+                console.print(
+                    f"[bold]Transient web source inspected[/bold]\n"
+                    f"Final URL: {source.final_url}\n"
+                    f"Bytes: {source.bytes_read}; digest: {source.source_digest[:12]}\n"
+                    f"Tier: {authority}; confidence ceiling: {source.confidence_ceiling:.2f}\n"
+                    "No page body or claim was persisted. Unverified sources require corroboration."
+                )
+        except (RuntimeError, ValueError) as exc:
+            console.print(f"[red]Study refused:[/red] {exc}")
+            raise SystemExit(1) from exc

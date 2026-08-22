@@ -1016,6 +1016,7 @@ class SelfDeveloper:
         evidence_context = {
             "mission": mission_context(),
             "durable_memory": self.memory.discovery_context(),
+            "study_curriculum": self.memory.curriculum_context(),
             "resource_constraints": {
                 "everyday_model": self.config.model.name,
                 "developer_model": developer_model,
@@ -1053,6 +1054,11 @@ class SelfDeveloper:
                     f"{CORE_CAPABILITY_QUESTION} Inspect only committed project files through the read-only tools, "
                     "and choose questions from evidence in the architecture, prior cycle outcomes, failures, "
                     "benchmarks, resource constraints, and observed capability gaps. Do not follow a static wishlist. "
+                    "Treat verified repository knowledge as the grounding boundary: confirm every cited path, symbol, "
+                    "configuration field, command, subsystem owner, test contract, and integration point before proposing it. "
+                    "Reject invented APIs, duplicated subsystems, disconnected code, missing commands, and plans that conflict "
+                    "with the recorded call graph or tests. If curriculum evidence is stale or weak, propose further study "
+                    "instead of pretending the gap is solved. "
                     "Consider all four evolution classes as first-class: Repair, Extend, Improve Cognition, and "
                     "Explore. Compare alternatives, prefer high leverage over feature count, penalize complexity, "
                     "and reject any idea without a baseline and measurable success criterion. Never request weakened "

@@ -2011,6 +2011,10 @@ class SelfDeveloper:
                     "did not provide a measurable evaluation artifact."
                 )
             if write_integrity_error:
+                self.memory.record_write_integrity_failure(
+                    cycle_id,
+                    write_integrity_error,
+                )
                 summary += f"\n\n{write_integrity_error}"
             self.memory.finish_cycle(
                 cycle_id,
@@ -2279,6 +2283,12 @@ class SelfDeveloper:
             next_action="Revalidate static checks and repair the retained local candidate if needed.",
         )
         check_result = tools.run_candidate_static_checks()
+        recovery_integrity_failure = candidate.write_integrity_failure.strip()
+        if recovery_integrity_failure:
+            check_result += (
+                "\nrecovery_integrity_review=required"
+                f"\nprior_write_integrity_failure={recovery_integrity_failure}"
+            )
         self._checkpoint_milestone(
             "static_checks",
             check_result=check_result,
@@ -2286,7 +2296,7 @@ class SelfDeveloper:
         )
         repair_text = ""
 
-        if not check_result.startswith("static_checks=passed"):
+        if recovery_integrity_failure or not check_result.startswith("static_checks=passed"):
             if candidate.local_repair_attempts >= max(
                 0,
                 int(self.config.selfdev.max_local_repair_attempts),
@@ -2361,6 +2371,8 @@ class SelfDeveloper:
                 return EvolutionResult("paused", branch, workspace, summary, False)
             check_result = repaired.check_result
             repair_text = repaired.final_text
+            if repaired.passed and recovery_integrity_failure:
+                self.memory.clear_write_integrity_failure(candidate.cycle_id)
 
         checks_passed = check_result.startswith("static_checks=passed")
         if not checks_passed:
@@ -2387,6 +2399,10 @@ class SelfDeveloper:
 
         write_integrity_error = candidate_write_integrity_failure(tools)
         if write_integrity_error:
+            self.memory.record_write_integrity_failure(
+                candidate.cycle_id,
+                write_integrity_error,
+            )
             summary, lesson = self._outcome(
                 repair_text,
                 "A rejected candidate write must block delivery until a fresh recovery cycle.",
@@ -2846,6 +2862,10 @@ class SelfDeveloper:
 
         write_integrity_error = candidate_write_integrity_failure(tools)
         if write_integrity_error:
+            self.memory.record_write_integrity_failure(
+                candidate.cycle_id,
+                write_integrity_error,
+            )
             summary, lesson = self._outcome(
                 final_text,
                 "A rejected repair write must block delivery until a fresh recovery cycle.",

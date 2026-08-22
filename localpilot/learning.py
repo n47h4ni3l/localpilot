@@ -21,6 +21,7 @@ class PendingCandidate:
     workspace: str | None = None
     local_repair_attempts: int = 0
     status: str = ""
+    write_integrity_failure: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +125,7 @@ class LearningMemory:
                     workspace TEXT,
                     is_worktree INTEGER NOT NULL DEFAULT 0,
                     local_repair_attempts INTEGER NOT NULL DEFAULT 0,
+                    write_integrity_failure TEXT NOT NULL DEFAULT '',
                     rejection_reason TEXT NOT NULL DEFAULT '',
                     rejection_prior_validation_state TEXT NOT NULL DEFAULT '',
                     rejection_pull_request_number INTEGER,
@@ -199,6 +201,10 @@ class LearningMemory:
                 "local_repair_attempts": (
                     "ALTER TABLE development_cycles ADD COLUMN "
                     "local_repair_attempts INTEGER NOT NULL DEFAULT 0"
+                ),
+                "write_integrity_failure": (
+                    "ALTER TABLE development_cycles ADD COLUMN "
+                    "write_integrity_failure TEXT NOT NULL DEFAULT ''"
                 ),
                 "rejection_reason": (
                     "ALTER TABLE development_cycles ADD COLUMN "
@@ -295,6 +301,20 @@ class LearningMemory:
             ).fetchone()
         return int(row["local_repair_attempts"]) if row is not None else 0
 
+    def record_write_integrity_failure(self, cycle_id: int, detail: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE development_cycles SET write_integrity_failure = ? WHERE id = ?",
+                (str(detail).strip()[:4000], cycle_id),
+            )
+
+    def clear_write_integrity_failure(self, cycle_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE development_cycles SET write_integrity_failure = '' WHERE id = ?",
+                (cycle_id,),
+            )
+
     def finish_cycle(
         self,
         cycle_id: int,
@@ -348,7 +368,7 @@ class LearningMemory:
             rows = connection.execute(
                 """
                 SELECT id, task_id, branch, workspace,
-                       local_repair_attempts, status
+                       local_repair_attempts, status, write_integrity_failure
                 FROM development_cycles
                 WHERE pushed = 0
                   AND merged = 0
@@ -365,6 +385,7 @@ class LearningMemory:
                 str(row["workspace"]) if row["workspace"] else None,
                 int(row["local_repair_attempts"]),
                 str(row["status"]),
+                str(row["write_integrity_failure"]),
             )
             for row in rows
         ]

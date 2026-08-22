@@ -6,7 +6,7 @@ import pytest
 from localpilot.config import Config
 from localpilot.github_integration import CommandResult
 from localpilot.learning import LearningMemory
-from localpilot.selfdev import CandidateTools, SelfDeveloper
+from localpilot.selfdev import CandidateTools, DeveloperModelSelection, SelfDeveloper
 
 
 def _start_local_cycle(memory: LearningMemory, workspace: Path) -> int:
@@ -55,6 +55,68 @@ def test_repair_attempt_is_counted_before_model_work(tmp_path: Path):
         check_result="static_checks=failed\ntests/test_candidate_changes.py: SyntaxError",
     ) == 2
     assert memory.local_candidates()[0].local_repair_attempts == 2
+
+
+def test_recovery_cannot_forget_a_prior_rejected_write(tmp_path: Path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "selfdev-backlog.json").write_text(
+        json.dumps(
+            {"tasks": [{"id": "repair-task", "title": "Repair task", "status": "todo"}]}
+        ),
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "candidate"
+    workspace.mkdir()
+    (workspace / "change.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    config = Config()
+    config.agent.data_dir = "data"
+    developer = SelfDeveloper(config, project)
+    cycle = _start_local_cycle(developer.memory, workspace)
+    integrity_failure = (
+        "Candidate delivery blocked because one or more autonomous write attempts "
+        "were rejected during this cycle: state.db: ValueError"
+    )
+    developer.memory.record_write_integrity_failure(cycle, integrity_failure)
+    developer.memory.finish_cycle(
+        cycle,
+        status="candidate_needs_work",
+        summary=integrity_failure,
+        reusable_lesson="rejected writes must remain durable",
+        checks_passed=False,
+        pushed=False,
+    )
+
+    monkeypatch.setattr(developer.github, "worktree_for_branch", lambda _branch: workspace)
+    monkeypatch.setattr(developer.github, "candidate_changed_paths", lambda _workspace: ["change.py"])
+    monkeypatch.setattr(developer.github, "branch_has_candidate_commit", lambda _workspace: False)
+    monkeypatch.setattr(
+        developer.github,
+        "reviewer_modified_test_paths",
+        lambda _workspace, refresh=False: set(),
+    )
+    monkeypatch.setattr(
+        developer,
+        "_select_developer_model",
+        lambda: DeveloperModelSelection(None, None, None, "repair model unavailable"),
+    )
+    monkeypatch.setattr(
+        developer.github,
+        "commit_paths",
+        lambda *_args, **_kwargs: pytest.fail("integrity-blocked candidate was committed"),
+    )
+    monkeypatch.setattr(
+        developer.github,
+        "push_branch",
+        lambda *_args, **_kwargs: pytest.fail("integrity-blocked candidate was pushed"),
+    )
+
+    result = developer._repair_local_candidate(force=True)
+
+    assert result is not None
+    assert result.status == "deferred"
+    assert developer.memory.local_candidates()[0].write_integrity_failure == integrity_failure
 
 
 def test_static_failure_feedback_repairs_same_workspace(tmp_path: Path, monkeypatch):

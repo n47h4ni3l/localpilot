@@ -31,6 +31,15 @@ from localpilot.resource import ResourceGovernor
 
 _IGNORE_NAMES = {".git", ".github", ".venv", "__pycache__", ".pytest_cache", "localpilot-data"}
 _ALLOWED_SUFFIXES = {".py", ".toml", ".md", ".txt", ".json", ".yml", ".yaml", ".ps1", ".gitignore"}
+# Derived from _ALLOWED_SUFFIXES so prompt guidance can never drift out of
+# sync with what CandidateTools.write_project_file actually enforces.
+_ALLOWED_SUFFIXES_NOTE = (
+    "Allowed file types for autonomous writes: "
+    f"{', '.join(sorted(_ALLOWED_SUFFIXES))}. write_project_file rejects any "
+    "other extension, including .sh — this project is Windows-first, so use "
+    ".ps1 for scripts, not .sh. Any rejected write attempt blocks candidate "
+    "delivery for the current cycle."
+)
 
 
 @dataclass(slots=True)
@@ -307,7 +316,16 @@ def parse_change_plan(text: str, max_files: int = 8) -> ChangePlan:
 
 
 def apply_change_plan(plan: ChangePlan, tools: "CandidateTools") -> list[str]:
-    """The sole fallback application path: every change passes CandidateTools."""
+    """Preflight the complete fallback plan, then apply it through CandidateTools.
+
+    Validation is deliberately a separate first pass. Deterministic safety
+    failures therefore reject the whole plan before any file is written. An
+    unexpected filesystem failure during the write pass is recorded by
+    CandidateTools and blocks candidate delivery for the current cycle.
+    """
+    if len(plan.changes) > tools.max_files:
+        raise ValueError("Change plan exceeds the candidate file limit.")
+    tools.validate_write_plan(plan.changes)
     return [tools.write_project_file(change.path, change.content) for change in plan.changes]
 
 
@@ -421,6 +439,7 @@ class CandidateTools:
         self.files_written = existing
         self.files_read: set[Path] = set()
         self.write_count = 0
+        self.failed_write_attempts: list[str] = []
 
     def _resolve(self, relative_path: str) -> Path:
         raw = Path(relative_path)
@@ -461,7 +480,14 @@ class CandidateTools:
         self.files_read.add(path)
         return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
 
-    def write_project_file(self, relative_path: str, content: str) -> str:
+    def validate_project_write(
+        self,
+        relative_path: str,
+        content: str,
+        *,
+        reserved_paths: Iterable[Path] | None = None,
+    ) -> Path:
+        """Validate one prospective write without changing candidate state."""
         path = self._resolve(relative_path)
         relative = path.relative_to(self.workspace).as_posix()
 
@@ -476,13 +502,85 @@ class CandidateTools:
             raise ValueError(f"File type is not allowed for autonomous editing: {suffix or '(none)'}")
         if len(content.encode("utf-8")) > 1_000_000:
             raise ValueError("Candidate file exceeds 1 MB safety limit.")
-        if path not in self.files_written and len(self.files_written) >= self.max_files:
+        reserved = set(self.files_written if reserved_paths is None else reserved_paths)
+        if path not in reserved and len(reserved) >= self.max_files:
             raise RuntimeError("Candidate file-write limit reached for this cycle.")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        return path
+
+    def validate_write_plan(self, changes: Iterable[PlannedChange]) -> tuple[Path, ...]:
+        """Validate all planned writes, including their aggregate file budget."""
+        reserved = set(self.files_written)
+        validated: list[Path] = []
+        for change in changes:
+            path = self.validate_project_write(
+                change.path,
+                change.content,
+                reserved_paths=reserved,
+            )
+            reserved.add(path)
+            validated.append(path)
+        return tuple(validated)
+
+    def _record_failed_write(self, relative_path: str, exc: Exception) -> None:
+        detail = (
+            f"{str(relative_path)[:500]}: {type(exc).__name__}: {str(exc)[:1000]}"
+        )
+        if detail not in self.failed_write_attempts:
+            self.failed_write_attempts.append(detail)
+        del self.failed_write_attempts[20:]
+
+    def write_project_file(self, relative_path: str, content: str) -> str:
+        try:
+            path = self.validate_project_write(relative_path, content)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        except Exception as exc:
+            self._record_failed_write(relative_path, exc)
+            raise
         self.files_written.add(path)
         self.write_count += 1
         return f"Wrote {path.relative_to(self.workspace).as_posix()} ({len(content)} chars)."
+
+    @staticmethod
+    def _entry_token(value: str) -> str:
+        """Return the executable token from a simple pre-commit entry value."""
+        candidate = value.strip()
+        if not candidate:
+            return ""
+        if candidate[0] in {"'", '"'}:
+            quote = candidate[0]
+            end = candidate.find(quote, 1)
+            return candidate[1:end] if end > 0 else candidate[1:]
+        return candidate.split(maxsplit=1)[0]
+
+    def _structural_errors(self) -> list[str]:
+        """Check repository configuration references without executing code."""
+        errors: list[str] = []
+        for name in (".pre-commit-config.yaml", ".pre-commit-config.yml"):
+            config_path = self.workspace / name
+            if not config_path.is_file():
+                continue
+            for line_no, line in enumerate(
+                config_path.read_text(encoding="utf-8", errors="replace").splitlines(),
+                start=1,
+            ):
+                stripped = line.lstrip()
+                field = stripped[1:].lstrip() if stripped.startswith("-") else stripped
+                if not field.startswith("entry:"):
+                    continue
+                entry = self._entry_token(field.partition(":")[2])
+                if not entry or ("/" not in entry and "\\" not in entry):
+                    continue
+                raw = Path(entry)
+                if raw.is_absolute():
+                    errors.append(f"{name}:{line_no}: absolute hook entry is not allowed: {entry}")
+                    continue
+                referenced = (self.workspace / raw).resolve()
+                if referenced != self.workspace and self.workspace not in referenced.parents:
+                    errors.append(f"{name}:{line_no}: hook entry escapes the repository: {entry}")
+                elif not referenced.is_file():
+                    errors.append(f"{name}:{line_no}: hook entry references a missing file: {entry}")
+        return errors
 
     def run_candidate_static_checks(self) -> str:
         import tomllib
@@ -506,6 +604,7 @@ class CandidateTools:
                     toml_count += 1
             except Exception as exc:
                 errors.append(f"{rel.as_posix()}: {type(exc).__name__}: {exc}")
+        errors.extend(self._structural_errors())
         if errors:
             return "static_checks=failed\n" + "\n".join(errors[:50])
         return f"static_checks=passed\npython_files={python_count}\ntoml_files={toml_count}"
@@ -523,6 +622,17 @@ class CandidateTools:
         if completed.returncode != 0:
             return completed.stderr.strip() or "git diff unavailable"
         return completed.stdout[-30000:] or "(no diff)"
+
+
+def candidate_write_integrity_failure(tools: CandidateTools) -> str | None:
+    """Return the fail-closed delivery reason for rejected write attempts."""
+    if not tools.failed_write_attempts:
+        return None
+    attempts = "; ".join(tools.failed_write_attempts[:10])
+    return (
+        "Candidate delivery blocked because one or more autonomous write attempts "
+        f"were rejected during this cycle: {attempts}"
+    )
 
 
 class SelfDeveloper:
@@ -1426,6 +1536,7 @@ class SelfDeveloper:
                         "command strings. Reviewer-controlled tests are immutable. "
                         "Finish with JSON containing only summary and reusable_lesson; "
                         "do not expose hidden reasoning.\n"
+                        f"{_ALLOWED_SUFFIXES_NOTE}\n"
                         f"Reviewer-protected paths: {protected_note}\n"
                         f"Task: {task['title']}\nAcceptance: {acceptance}\n"
                         f"{context}"
@@ -1472,6 +1583,7 @@ class SelfDeveloper:
                                     "The caller applies every file only through the "
                                     "confined candidate write tool. Do not include a "
                                     "reviewer-protected path.\n"
+                                    f"{_ALLOWED_SUFFIXES_NOTE}\n"
                                     f"Reviewer-protected paths: {protected_note}\n"
                                     f"Task: {task['title']}\n{context}\n"
                                     f"Prior repair response: {final_text[:4000]}"
@@ -1670,6 +1782,7 @@ class SelfDeveloper:
                             "candidate_evidence, result (improved, no_change, regressed, inconclusive, or pending_ci), "
                             "and measurement_artifact. Use pending_ci only when executable comparison is deliberately "
                             "deferred to GitHub CI. Do not expose hidden reasoning.\n"
+                            f"{_ALLOWED_SUFFIXES_NOTE}\n"
                             f"Task: {task['title']}\nAcceptance: {acceptance}\n"
                             f"Capability experiment contract:\n{evolution_context}\n"
                             f"Research brief:\n{research[:12000]}\n"
@@ -1714,6 +1827,7 @@ class SelfDeveloper:
                                     "changes must be a non-empty list of objects containing path, complete content, and reason. "
                                     "Only propose files needed for the task. No markdown and no hidden reasoning. "
                                     "The caller will validate every path and apply every change through write_project_file.\n"
+                                    f"{_ALLOWED_SUFFIXES_NOTE}\n"
                                     "Also return evaluation_evidence matching the capability experiment contract.\n"
                                     f"Task: {task['title']}\nAcceptance: {acceptance}\n"
                                     f"Capability experiment contract:\n{evolution_context}\nResearch:\n{research[:12000]}"
@@ -1723,21 +1837,53 @@ class SelfDeveloper:
                         ],
                         options={"temperature": 0.0},
                     )
-                    fallback_plan = parse_change_plan(self._content(response), tools.max_files)
-                    apply_change_plan(fallback_plan, tools)
-                    final_text = json.dumps(
-                        {
-                            "summary": fallback_plan.summary,
-                            "reusable_lesson": fallback_plan.reusable_lesson,
-                            "evaluation_evidence": {
-                                "metric": task["evaluation"]["metric"],
-                                "baseline_evidence": task["evaluation"]["baseline"],
-                                "candidate_evidence": "Structured implementation requires GitHub CI comparison.",
-                                "result": "pending_ci",
-                                "measurement_artifact": task["evaluation"]["measurement_method"],
-                            },
-                        }
-                    )
+                    try:
+                        fallback_plan = parse_change_plan(self._content(response), tools.max_files)
+                        apply_change_plan(fallback_plan, tools)
+                        final_text = json.dumps(
+                            {
+                                "summary": fallback_plan.summary,
+                                "reusable_lesson": fallback_plan.reusable_lesson,
+                                "evaluation_evidence": {
+                                    "metric": task["evaluation"]["metric"],
+                                    "baseline_evidence": task["evaluation"]["baseline"],
+                                    "candidate_evidence": "Structured implementation requires GitHub CI comparison.",
+                                    "result": "pending_ci",
+                                    "measurement_artifact": task["evaluation"]["measurement_method"],
+                                },
+                            }
+                        )
+                    except Exception as exc:
+                        files_applied = len(tools.files_written)
+                        final_text = json.dumps(
+                            {
+                                "summary": (
+                                    "Structured fallback change plan was rejected: "
+                                    f"{type(exc).__name__}: {exc}"
+                                ),
+                                "reusable_lesson": (
+                                    f"{_ALLOWED_SUFFIXES_NOTE} Validate every planned "
+                                    "path before proposing a change plan."
+                                ),
+                                "evaluation_evidence": {
+                                    "metric": task["evaluation"]["metric"],
+                                    "baseline_evidence": task["evaluation"]["baseline"],
+                                    "candidate_evidence": (
+                                        "No candidate changes were applied."
+                                        if files_applied == 0
+                                        else (
+                                            "Structured fallback aborted after "
+                                            f"{files_applied} candidate file(s) changed; "
+                                            "delivery is blocked pending recovery."
+                                        )
+                                    ),
+                                    "result": (
+                                        "no_change" if files_applied == 0 else "inconclusive"
+                                    ),
+                                    "measurement_artifact": task["evaluation"]["measurement_method"],
+                                },
+                            }
+                        )
 
                 outcome_summary, outcome_lesson = self._checkpoint_outcome(
                     final_text,
@@ -1790,7 +1936,12 @@ class SelfDeveloper:
                     )
 
             evaluation_report = self._evaluation_report(final_text, task)
-            status = classify_candidate_result(len(tools.files_written), checks_passed)
+            write_integrity_error = candidate_write_integrity_failure(tools)
+            delivery_validated = bool(checks_passed) and write_integrity_error is None
+            status = classify_candidate_result(
+                len(tools.files_written),
+                delivery_validated,
+            )
             capability_candidate = task.get("source") == "capability_discovery"
             measurement_blocked = capability_candidate and (
                 evaluation_report["result"] in {"unmeasured", "regressed"}
@@ -1803,7 +1954,12 @@ class SelfDeveloper:
                 status = "candidate_needs_work"
             pushed = False
             delivery = ""
-            if tools.files_written and is_worktree and checks_passed and not measurement_blocked:
+            if (
+                tools.files_written
+                and is_worktree
+                and delivery_validated
+                and not measurement_blocked
+            ):
                 self._checkpoint_milestone(
                     "delivery",
                     check_result=check_result,
@@ -1851,12 +2007,14 @@ class SelfDeveloper:
                     "\n\nCapability evidence gate blocked delivery because the candidate was regressed or "
                     "did not provide a measurable evaluation artifact."
                 )
+            if write_integrity_error:
+                summary += f"\n\n{write_integrity_error}"
             self.memory.finish_cycle(
                 cycle_id,
                 status=status,
                 summary=summary,
                 reusable_lesson=lesson,
-                checks_passed=checks_passed,
+                checks_passed=delivery_validated,
                 pushed=pushed,
             )
             self.memory.update_experiment_outcome(
@@ -1872,7 +2030,7 @@ class SelfDeveloper:
                 "selfdev_end",
                 branch=branch,
                 task_id=task["id"],
-                checks_passed=checks_passed,
+                checks_passed=delivery_validated,
                 files_read=len(tools.files_read),
                 files_written=len(tools.files_written),
                 status=status,
@@ -1881,7 +2039,7 @@ class SelfDeveloper:
                 latest_experiment_outcome=evaluation_report["result"],
             )
             self._emit(f"Finished: {status} — wrote {len(tools.files_written)} candidate file(s)")
-            return EvolutionResult(status, branch, workspace, summary, checks_passed)
+            return EvolutionResult(status, branch, workspace, summary, delivery_validated)
         except CyclePaused as exc:
             summary = f"User returned or PC became busy: {exc}"
             self.memory.finish_cycle(
@@ -2224,6 +2382,29 @@ class SelfDeveloper:
                 False,
             )
 
+        write_integrity_error = candidate_write_integrity_failure(tools)
+        if write_integrity_error:
+            summary, lesson = self._outcome(
+                repair_text,
+                "A rejected candidate write must block delivery until a fresh recovery cycle.",
+            )
+            summary += f"\n\n{check_result}\n\n{write_integrity_error}"
+            self.memory.finish_cycle(
+                candidate.cycle_id,
+                status="candidate_needs_work",
+                summary=summary,
+                reusable_lesson=lesson,
+                checks_passed=False,
+                pushed=False,
+            )
+            return EvolutionResult(
+                "candidate_needs_work",
+                branch,
+                workspace,
+                summary,
+                False,
+            )
+
         changed_paths = self.github.candidate_changed_paths(workspace)
         if changed_paths:
             commit = self.github.commit_paths(
@@ -2457,6 +2638,7 @@ class SelfDeveloper:
                     "when they are not reviewer-protected and the failure proves "
                     "the test itself is invalid. Finish with JSON containing only "
                     "summary and reusable_lesson; do not expose hidden reasoning.\n"
+                    f"{_ALLOWED_SUFFIXES_NOTE}\n"
                     f"Reviewer-protected paths: {protected_note}\n"
                     f"Task: {task['title']}\n"
                     f"Acceptance: {acceptance}\n"
@@ -2528,6 +2710,7 @@ class SelfDeveloper:
                                 "path confinement and file limits remain enforced. Reviewer-controlled "
                                 "regression tests are read-only and must not appear in the change plan. "
                                 "Repair only the concrete CI failure and do not weaken safety.\n"
+                                f"{_ALLOWED_SUFFIXES_NOTE}\n"
                                 f"Reviewer-protected paths: {protected_note}\n"
                                 f"Task: {task['title']}\n"
                                 f"Acceptance: {acceptance}\n"
@@ -2650,6 +2833,30 @@ class SelfDeveloper:
                 validation_state="failed",
             )
 
+            return EvolutionResult(
+                "candidate_needs_work",
+                branch,
+                workspace,
+                summary,
+                False,
+            )
+
+        write_integrity_error = candidate_write_integrity_failure(tools)
+        if write_integrity_error:
+            summary, lesson = self._outcome(
+                final_text,
+                "A rejected repair write must block delivery until a fresh recovery cycle.",
+            )
+            summary += f"\n\n{check_result}\n\n{write_integrity_error}"
+            self.memory.finish_cycle(
+                candidate.cycle_id,
+                status="candidate_needs_work",
+                summary=summary,
+                reusable_lesson=lesson,
+                checks_passed=False,
+                pushed=True,
+                validation_state="failed",
+            )
             return EvolutionResult(
                 "candidate_needs_work",
                 branch,
@@ -2909,4 +3116,3 @@ class SelfDeveloper:
             developer_model=developer_model,
             tools=tools,
         )
-

@@ -1,12 +1,5 @@
-.venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.coverage
-htmlcov/
-.env
-localpilot.toml
-localpilot-data/
+machine_knowledge.db
+*.pyc
+__pycache__
 *.log
-.DS_Store
-Thumbs.db
+*.db-journal

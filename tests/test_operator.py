@@ -20,7 +20,7 @@ class TestOperator(unittest.TestCase):
         )
         result = runner.run(spec)
         self.assertEqual('', result['stderr'])
-        self.assertEqual(-1, result['returncode'])
+        self.assertIsNone(result['returncode'])
 
     def test_destructive_operation_denied(self):
         runner = CommandRunner()

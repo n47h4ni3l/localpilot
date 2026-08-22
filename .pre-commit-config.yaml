@@ -1,0 +1,8 @@
+repos:
+  - repo: local
+    hooks:
+      - id: pre-ci-review
+        name: Pre‑CI Self‑Review
+        entry: scripts/pre_ci_review.sh
+        language: script
+        types: [python]

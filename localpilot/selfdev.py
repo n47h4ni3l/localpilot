@@ -115,14 +115,16 @@ def choose_next_task(
     tasks: Iterable[dict[str, Any]],
     completed_task_ids: set[str],
     pending_task_ids: set[str] | None = None,
+    rejected_task_ids: set[str] | None = None,
 ) -> dict[str, Any] | None:
-    """Advance sequentially only after the current task passes CI and merges."""
+    """Select the next unfinished task without retrying terminal rejections."""
     pending = pending_task_ids or set()
+    rejected = rejected_task_ids or set()
     for task in tasks:
         if task.get("status", "todo") != "todo":
             continue
         task_id = str(task.get("id"))
-        if task_id in completed_task_ids:
+        if task_id in completed_task_ids or task_id in rejected:
             continue
         if task_id in pending:
             return None
@@ -965,6 +967,7 @@ class SelfDeveloper:
             self._backlog_tasks(),
             self.memory.completed_task_ids(),
             self.memory.pending_task_ids(),
+            self.memory.rejected_task_ids(),
         )
         return normalize_evolution_task(task) if task else None
 

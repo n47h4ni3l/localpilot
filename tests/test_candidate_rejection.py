@@ -130,6 +130,7 @@ def test_reject_pr_maps_to_managed_cycle_and_retains_terminal_evidence(
     assert developer.memory.has_outstanding_candidate() is False
     assert developer.memory.pending_candidates() == []
     assert developer.memory.pending_task_ids() == set()
+    assert developer.memory.rejected_task_ids() == {TASK["id"]}
 
     experiment = developer.memory.experiment_for_task(TASK["id"])
     assert experiment.status == "rejected_by_human"

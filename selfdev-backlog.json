@@ -72,6 +72,23 @@
         "Keep rollback artifacts and provenance for every promoted model candidate",
         "Design later full-weight retraining as a separate hardware-gated stage rather than silently overwriting a running model"
       ]
+    },
+    {
+      "id": "recursive-capability-expansion",
+      "title": "Expand effective intelligence beyond the current base-model capacity ceiling through self-teaching",
+      "status": "todo",
+      "acceptance": [
+        "Establish repeatable held-out capability benchmarks and a baseline for the current standalone developer model before attempting capacity expansion",
+        "Build a self-teaching curriculum from verified successes, failed attempts, CI feedback, reviewer corrections, tool traces, and automatically generated challenge tasks",
+        "Use external memory, retrieval, tool decomposition, iterative search, self-review, and multiple independent candidate or reviewer roles to exceed the standalone base model on held-out tasks before relying on weight changes",
+        "Convert only verified high-quality trajectories into training data for candidate adapters, distilled models, or later full-weight training",
+        "Allow LocalPilot to propose and improve its own agent code, training pipeline, evaluation harness, inference strategy, and candidate model architecture inside the existing candidate and review boundaries",
+        "When adapter-based improvement plateaus, support benchmarked candidate model replacement, architecture changes, ensembles, routing, distillation, or larger locally runnable models rather than treating the original base model as a permanent ceiling",
+        "Measure capability gains on unseen tasks and reject memorization, benchmark gaming, test weakening, reward hacking, or improvements that exist only on training examples",
+        "Require statistically meaningful gains across coding, reasoning, tool use, autonomy, reliability, and safety before declaring that a new generation exceeds the previous capability ceiling",
+        "Preserve the currently active model and agent as a rollback target until a candidate generation has passed independent evaluation and explicit human promotion",
+        "Record lineage, training data provenance, benchmark results, resource cost, failures, and reusable lessons for every attempted capability-expansion generation"
+      ]
     }
   ]
 }

@@ -17,6 +17,22 @@ class ResourceState:
     memory_percent: float
     background_allowed: bool
     reason: str
+    idle_allowed: bool = True
+    capacity_allowed: bool = True
+    idle_reason: str = ""
+    capacity_reason: str = ""
+
+    def allows_selfdev(self, *, ignore_idle: bool = False) -> bool:
+        """Manual force may skip the idle wait, never hardware protection."""
+        return self.capacity_allowed and (ignore_idle or self.idle_allowed)
+
+    def blocking_reason(self, *, ignore_idle: bool = False) -> str:
+        reasons: list[str] = []
+        if not ignore_idle and self.idle_reason:
+            reasons.append(self.idle_reason)
+        if self.capacity_reason:
+            reasons.append(self.capacity_reason)
+        return "; ".join(reasons) or "idle capacity available"
 
 
 def windows_idle_seconds() -> float:
@@ -45,18 +61,30 @@ class ResourceGovernor:
         idle = windows_idle_seconds()
         cpu = psutil.cpu_percent(interval=interval)
         memory = psutil.virtual_memory().percent
-        allowed = True
-        reasons: list[str] = []
-        if idle < self.config.background_idle_seconds:
-            allowed = False
-            reasons.append(f"user idle {idle:.0f}s < {self.config.background_idle_seconds}s")
+        idle_allowed = idle >= self.config.background_idle_seconds
+        idle_reason = ""
+        capacity_reasons: list[str] = []
+        if not idle_allowed:
+            idle_reason = f"user idle {idle:.0f}s < {self.config.background_idle_seconds}s"
         if cpu > self.config.max_cpu_percent_for_background:
-            allowed = False
-            reasons.append(f"CPU {cpu:.0f}% > {self.config.max_cpu_percent_for_background:.0f}%")
+            capacity_reasons.append(f"CPU {cpu:.0f}% > {self.config.max_cpu_percent_for_background:.0f}%")
         if memory > self.config.max_memory_percent_for_background:
-            allowed = False
-            reasons.append(f"memory {memory:.0f}% > {self.config.max_memory_percent_for_background:.0f}%")
-        return ResourceState(idle, cpu, memory, allowed, "; ".join(reasons) or "idle capacity available")
+            capacity_reasons.append(f"memory {memory:.0f}% > {self.config.max_memory_percent_for_background:.0f}%")
+        capacity_reason = "; ".join(capacity_reasons)
+        capacity_allowed = not capacity_reasons
+        allowed = idle_allowed and capacity_allowed
+        reasons = "; ".join(item for item in (idle_reason, capacity_reason) if item)
+        return ResourceState(
+            idle,
+            cpu,
+            memory,
+            allowed,
+            reasons or "idle capacity available",
+            idle_allowed,
+            capacity_allowed,
+            idle_reason,
+            capacity_reason,
+        )
 
     def apply_process_priority(self, idle: bool) -> None:
         if os.name != "nt":

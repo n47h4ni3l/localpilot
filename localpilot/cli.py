@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -8,11 +9,20 @@ from rich.markdown import Markdown
 from rich.table import Table
 
 from localpilot.agent import LocalPilotAgent
+from localpilot.audit import AuditLog
 from localpilot.config import load_config
 from localpilot.doctor import doctor
 from localpilot.github_integration import GitHubIntegration
 from localpilot.resource import ResourceGovernor
 from localpilot.selfdev import SelfDeveloper
+
+
+_FAILED_EVOLVE_STATUSES = {"failed", "sync_blocked", "candidate_needs_work"}
+
+
+def evolve_exit_code(status: str) -> int:
+    """Expose internally handled failures to Task Scheduler and scripts."""
+    return 1 if status in _FAILED_EVOLVE_STATUSES else 0
 
 
 def _root() -> Path:
@@ -31,6 +41,24 @@ def _show_status(console: Console, config, root: Path) -> None:
     table.add_row("CPU", f"{state.cpu_percent:.1f}%")
     table.add_row("Memory", f"{state.memory_percent:.1f}%")
     table.add_row("Background self-dev", "available" if state.background_allowed else f"deferred — {state.reason}")
+    last_evolve = AuditLog(root / config.agent.data_dir / "audit.jsonl").latest("evolve_run_end")
+    if last_evolve:
+        timestamp = str(last_evolve.get("timestamp") or "")
+        try:
+            timestamp = datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+        except ValueError:
+            pass
+        status = str(last_evolve.get("status") or "unknown")
+        branch = str(last_evolve.get("branch") or "")
+        summary = str(last_evolve.get("summary") or "").splitlines()[0]
+        detail = f"{status} at {timestamp}"
+        if branch:
+            detail += f"\nbranch: {branch}"
+        if summary:
+            detail += f"\n{summary[:240]}"
+        table.add_row("Last evolve", detail)
+    else:
+        table.add_row("Last evolve", "No completed invocation has been recorded yet.")
     table.add_row("Git", gh.status())
     console.print(table)
 
@@ -112,3 +140,4 @@ def main() -> None:
         console.print(f"[bold]{result.status}[/bold]\n{result.summary}")
         if result.workspace:
             console.print(f"Candidate workspace: {result.workspace}")
+        raise SystemExit(evolve_exit_code(result.status))

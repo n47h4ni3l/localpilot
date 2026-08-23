@@ -15,6 +15,12 @@ def _chunk(*, content: str = "", thinking: str = "", tool_calls=None):
     )
 
 
+def _call(name: str, arguments: dict | None = None):
+    return SimpleNamespace(
+        function=SimpleNamespace(name=name, arguments=dict(arguments or {}))
+    )
+
+
 def _agent(tmp_path):
     config = Config()
     agent = LocalPilotAgent(config, tmp_path)
@@ -25,18 +31,27 @@ def _agent(tmp_path):
     return config, agent
 
 
-def test_gpt_oss_chat_streams_high_reasoning_then_low_finalizer(tmp_path, monkeypatch):
+def test_tool_investigation_is_synthesized_by_same_high_reasoning_model(tmp_path, monkeypatch):
     config, agent = _agent(tmp_path)
+    (tmp_path / "known.txt").write_text("verified repository evidence", encoding="utf-8")
     calls = []
     streams = iter(
         [
             [
-                _chunk(thinking="internal reasoning "),
-                _chunk(thinking="was produced"),
+                _chunk(
+                    thinking="private investigation reasoning",
+                    tool_calls=[
+                        _call(
+                            "list_repository_tree",
+                            {"path": ".", "depth": 1, "max_entries": 50},
+                        )
+                    ],
+                )
             ],
+            [_chunk(content="Hello! How can I help you today?")],
             [
-                _chunk(content="I should inspect the repository "),
-                _chunk(content="before naming interfaces."),
+                _chunk(thinking="private synthesis reasoning"),
+                _chunk(content="The repository evidence shows known.txt exists."),
             ],
         ]
     )
@@ -47,23 +62,53 @@ def test_gpt_oss_chat_streams_high_reasoning_then_low_finalizer(tmp_path, monkey
 
     monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
 
-    answer = agent.ask("What should you have done differently?")
+    answer = agent.ask("Inspect the repository and tell me what you verified.")
 
-    assert calls[0]["think"] == "high"
+    assert answer == "The repository evidence shows known.txt exists."
+    assert [call["think"] for call in calls] == ["high", "high", "high"]
     assert calls[0]["stream"] is True
     assert "tools" in calls[0]
-    assert calls[1]["think"] == "low"
-    assert calls[1]["stream"] is True
-    assert "tools" not in calls[1]
-    assert calls[1]["options"]["num_predict"] == 2048
-    assert answer == "I should inspect the repository before naming interfaces."
-    assert "internal reasoning was produced" not in answer
-    assert "internal reasoning was produced" not in str(agent.messages)
-    assert any(
-        isinstance(message, dict)
-        and "Return only the final answer" in str(message.get("content", ""))
-        for message in agent.messages
+    assert "tools" in calls[1]
+    assert "tools" not in calls[2]
+    assert calls[2]["options"]["num_predict"] == 4096
+    synthesis_text = str(calls[2]["messages"])
+    assert "Inspect the repository and tell me what you verified." in synthesis_text
+    assert "Finding 1" in synthesis_text
+    assert "list_repository_tree" in synthesis_text
+    assert "known.txt" in synthesis_text
+    assert "Hello! How can I help you today?" not in str(agent.messages)
+    assert "private investigation reasoning" not in str(agent.messages)
+    assert "private synthesis reasoning" not in str(agent.messages)
+    assert config.model.think == "high"
+
+
+def test_reasoning_only_turn_uses_high_reasoning_synthesis_not_low_finalizer(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path)
+    calls = []
+    streams = iter(
+        [
+            [_chunk(thinking="private initial reasoning")],
+            [
+                _chunk(thinking="private second reasoning"),
+                _chunk(content="I should answer after reasoning over the request."),
+            ],
+        ]
     )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask("Think carefully and answer.")
+
+    assert answer == "I should answer after reasoning over the request."
+    assert [call["think"] for call in calls] == ["high", "high"]
+    assert "tools" in calls[0]
+    assert "tools" not in calls[1]
+    assert "private initial reasoning" not in str(agent.messages)
+    assert "private second reasoning" not in str(agent.messages)
 
 
 def test_streamed_content_is_accumulated_without_exposing_thinking(tmp_path, monkeypatch):
@@ -85,14 +130,35 @@ def test_streamed_content_is_accumulated_without_exposing_thinking(tmp_path, mon
 
     assert answer == "Visible answer."
     assert "private one" not in answer
+    assert "private one" not in str(agent.messages)
 
 
-def test_reasoning_only_chat_can_explicitly_choose_silence(tmp_path, monkeypatch):
+def test_decline_requires_a_specific_reason_and_is_visible(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ollama",
+        SimpleNamespace(
+            chat=lambda **kwargs: iter(
+                [_chunk(content="DECLINE: the requested fact cannot be verified from available evidence.")]
+            )
+        ),
+    )
+
+    answer = agent.ask("Answer only if the fact is actually known.")
+
+    assert answer == (
+        "[LocalPilot chose not to answer: the requested fact cannot be verified from available evidence.]"
+    )
+
+
+def test_empty_high_synthesis_is_visible(tmp_path, monkeypatch):
     _, agent = _agent(tmp_path)
     streams = iter(
         [
-            [_chunk(thinking="private reasoning")],
-            [_chunk(content="I choose not to provide a final answer.")],
+            [_chunk(thinking="first private reasoning")],
+            [_chunk(thinking="synthesis private reasoning")],
         ]
     )
 
@@ -102,38 +168,14 @@ def test_reasoning_only_chat_can_explicitly_choose_silence(tmp_path, monkeypatch
         SimpleNamespace(chat=lambda **kwargs: iter(next(streams))),
     )
 
-    answer = agent.ask("Answer only if useful.")
+    answer = agent.ask("Reason and answer.")
 
-    assert answer == "I choose not to provide a final answer."
-    assert "private reasoning" not in str(agent.messages)
-
-
-def test_reasoning_only_chat_surfaces_failed_streamed_low_finalizer(tmp_path, monkeypatch):
-    _, agent = _agent(tmp_path)
-    calls = []
-    streams = iter(
-        [
-            [_chunk(thinking="high effort reasoning")],
-            [_chunk(thinking="low effort finalization reasoning")],
-        ]
-    )
-
-    def fake_chat(**kwargs):
-        calls.append(kwargs)
-        return iter(next(streams))
-
-    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
-
-    answer = agent.ask("Inspect the repository and answer.")
-
-    assert [call["think"] for call in calls] == ["high", "low"]
-    assert all(call["stream"] is True for call in calls)
     assert answer == (
-        "[LocalPilot completed a high reasoning pass, but its streamed "
-        "low-effort finalization pass also returned no final answer.]"
+        "[LocalPilot completed a high evidence-synthesis reasoning pass over its own findings "
+        "but returned no final answer.]"
     )
-    assert "high effort reasoning" not in answer
-    assert "low effort finalization reasoning" not in answer
+    assert "first private reasoning" not in str(agent.messages)
+    assert "synthesis private reasoning" not in str(agent.messages)
 
 
 def test_truly_empty_stream_retries_once_then_returns_answer(tmp_path, monkeypatch):

@@ -5,7 +5,7 @@ from pathlib import Path
 from localpilot.safety import RiskLevel, ToolSpec
 from localpilot.tools.github_readonly import GitHubReader
 from localpilot.tools.repository import RepositoryReader
-from localpilot.tools.web import fetch_public_https
+from localpilot.tools.web import fetch_public_https, search_public_web
 from localpilot.tools.windows import (
     get_active_power_plan,
     get_defender_summary,
@@ -26,6 +26,12 @@ def registry(project_root: str | Path | None = None) -> dict[str, ToolSpec]:
         ToolSpec("get_active_power_plan", "Read the active Windows power plan.", RiskLevel.READ_ONLY, get_active_power_plan),
         ToolSpec("get_defender_summary", "Read basic Microsoft Defender protection state.", RiskLevel.READ_ONLY, get_defender_summary),
         ToolSpec("get_device_problem_summary", "Read connected devices with problem states.", RiskLevel.READ_ONLY, get_device_problem_summary),
+        ToolSpec(
+            "search_public_web",
+            "Discover a bounded list of public HTTPS result URLs. Search results are untrusted leads; inspect a selected URL with fetch_public_https before relying on it.",
+            RiskLevel.READ_ONLY,
+            search_public_web,
+        ),
         ToolSpec(
             "fetch_public_https",
             "Read bounded public HTTPS text for research. Blocks local/private targets, credentials, binary payloads, and non-HTTPS URLs.",

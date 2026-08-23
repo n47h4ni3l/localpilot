@@ -22,6 +22,9 @@ class PendingCandidate:
     local_repair_attempts: int = 0
     status: str = ""
     write_integrity_failure: str = ""
+    human_authorized_retry: bool = False
+    retry_of_cycle_id: int | None = None
+    retry_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,10 +39,31 @@ class ManagedCandidate:
     validation_state: str
     merged: bool
     status: str
+    summary: str
+    reusable_lesson: str
+    local_repair_attempts: int
+    write_integrity_failure: str
     rejection_reason: str
     rejection_prior_validation_state: str
     rejection_pull_request_number: int | None
     rejected_at: str | None
+    failure_attribution: str
+    policy_failure_reason: str
+    human_authorized_retry: bool
+    retry_of_cycle_id: int | None
+    retry_reason: str
+    retry_authorized_at: str | None
+    retried_by_cycle_id: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class CandidatePolicyRetry:
+    prior_cycle_id: int
+    retry_cycle_id: int
+    task_id: str
+    branch: str
+    reason: str
+    already_authorized: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +212,13 @@ class LearningMemory:
                     rejection_prior_validation_state TEXT NOT NULL DEFAULT '',
                     rejection_pull_request_number INTEGER,
                     rejected_at TEXT,
+                    failure_attribution TEXT NOT NULL DEFAULT '',
+                    policy_failure_reason TEXT NOT NULL DEFAULT '',
+                    human_authorized_retry INTEGER NOT NULL DEFAULT 0,
+                    retry_of_cycle_id INTEGER,
+                    retry_reason TEXT NOT NULL DEFAULT '',
+                    retry_authorized_at TEXT,
+                    retried_by_cycle_id INTEGER,
                     started_at TEXT NOT NULL,
                     finished_at TEXT
                 );
@@ -336,6 +367,27 @@ class LearningMemory:
                 "rejected_at": (
                     "ALTER TABLE development_cycles ADD COLUMN rejected_at TEXT"
                 ),
+                "failure_attribution": (
+                    "ALTER TABLE development_cycles ADD COLUMN failure_attribution TEXT NOT NULL DEFAULT ''"
+                ),
+                "policy_failure_reason": (
+                    "ALTER TABLE development_cycles ADD COLUMN policy_failure_reason TEXT NOT NULL DEFAULT ''"
+                ),
+                "human_authorized_retry": (
+                    "ALTER TABLE development_cycles ADD COLUMN human_authorized_retry INTEGER NOT NULL DEFAULT 0"
+                ),
+                "retry_of_cycle_id": (
+                    "ALTER TABLE development_cycles ADD COLUMN retry_of_cycle_id INTEGER"
+                ),
+                "retry_reason": (
+                    "ALTER TABLE development_cycles ADD COLUMN retry_reason TEXT NOT NULL DEFAULT ''"
+                ),
+                "retry_authorized_at": (
+                    "ALTER TABLE development_cycles ADD COLUMN retry_authorized_at TEXT"
+                ),
+                "retried_by_cycle_id": (
+                    "ALTER TABLE development_cycles ADD COLUMN retried_by_cycle_id INTEGER"
+                ),
             }
             for name, statement in migrations.items():
                 if name not in columns:
@@ -483,7 +535,8 @@ class LearningMemory:
             rows = connection.execute(
                 """
                 SELECT id, task_id, branch, workspace,
-                       local_repair_attempts, status, write_integrity_failure
+                       local_repair_attempts, status, write_integrity_failure,
+                       human_authorized_retry, retry_of_cycle_id, retry_reason
                 FROM development_cycles
                 WHERE pushed = 0
                   AND merged = 0
@@ -501,6 +554,9 @@ class LearningMemory:
                 int(row["local_repair_attempts"]),
                 str(row["status"]),
                 str(row["write_integrity_failure"]),
+                bool(row["human_authorized_retry"]),
+                int(row["retry_of_cycle_id"]) if row["retry_of_cycle_id"] is not None else None,
+                str(row["retry_reason"]),
             )
             for row in rows
         ]
@@ -639,6 +695,10 @@ class LearningMemory:
             validation_state=str(row["validation_state"]),
             merged=bool(row["merged"]),
             status=str(row["status"]),
+            summary=str(row["summary"]),
+            reusable_lesson=str(row["reusable_lesson"]),
+            local_repair_attempts=int(row["local_repair_attempts"]),
+            write_integrity_failure=str(row["write_integrity_failure"]),
             rejection_reason=str(row["rejection_reason"]),
             rejection_prior_validation_state=str(
                 row["rejection_prior_validation_state"]
@@ -649,6 +709,144 @@ class LearningMemory:
                 else None
             ),
             rejected_at=str(row["rejected_at"]) if row["rejected_at"] else None,
+            failure_attribution=str(row["failure_attribution"]),
+            policy_failure_reason=str(row["policy_failure_reason"]),
+            human_authorized_retry=bool(row["human_authorized_retry"]),
+            retry_of_cycle_id=(
+                int(row["retry_of_cycle_id"])
+                if row["retry_of_cycle_id"] is not None else None
+            ),
+            retry_reason=str(row["retry_reason"]),
+            retry_authorized_at=(
+                str(row["retry_authorized_at"]) if row["retry_authorized_at"] else None
+            ),
+            retried_by_cycle_id=(
+                int(row["retried_by_cycle_id"])
+                if row["retried_by_cycle_id"] is not None else None
+            ),
+        )
+
+    def authorize_policy_retry(self, identifier: str, *, reason: str) -> CandidatePolicyRetry:
+        """Link a new bounded retry cycle to one proven framework-policy failure."""
+        clean_identifier = str(identifier).strip()
+        clean_reason = str(reason).replace("\x00", " ").strip()[:1800]
+        if not clean_identifier or not clean_reason:
+            raise ValueError("Candidate identifier and human retry reason are required.")
+        now = _now()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM development_cycles
+                WHERE branch = ? OR task_id = ?
+                ORDER BY id DESC
+                """,
+                (clean_identifier, clean_identifier),
+            ).fetchall()
+            if not rows:
+                raise ValueError("No LocalPilot-managed candidate matches that branch or task.")
+            row = rows[0]
+            if bool(row["human_authorized_retry"]) and row["retry_of_cycle_id"] is not None:
+                return CandidatePolicyRetry(
+                    int(row["retry_of_cycle_id"]), int(row["id"]), str(row["task_id"]),
+                    str(row["branch"]), str(row["retry_reason"]), True,
+                )
+            if row["retried_by_cycle_id"] is not None:
+                retry = connection.execute(
+                    "SELECT * FROM development_cycles WHERE id = ?",
+                    (int(row["retried_by_cycle_id"]),),
+                ).fetchone()
+                if retry is not None:
+                    return CandidatePolicyRetry(
+                        int(row["id"]), int(retry["id"]), str(retry["task_id"]),
+                        str(retry["branch"]), str(retry["retry_reason"]), True,
+                    )
+            if (
+                not str(row["branch"]).startswith("localpilot/candidate-")
+                or bool(row["pushed"])
+                or bool(row["merged"])
+                or not bool(row["is_worktree"])
+                or str(row["validation_state"]) == "rejected_by_human"
+                or str(row["status"]) not in {"candidate_needs_work", "failed"}
+            ):
+                raise ValueError("Retry is limited to an unmanaged, local failed candidate.")
+            evidence = (
+                f"{row['summary']}\n{row['write_integrity_failure']}"
+            ).lower()
+            policy_markers = (
+                "candidate delivery blocked", "file-write limit",
+                "hard file ceiling", "disallowed file type", "file type is not allowed",
+                "autonomous editing", "recovered candidate exceeds the file-write limit",
+            )
+            if not any(marker in evidence for marker in policy_markers):
+                raise ValueError(
+                    "Retry refused: durable evidence does not show a framework-policy write block."
+                )
+            other = connection.execute(
+                """
+                SELECT id FROM development_cycles
+                WHERE id != ? AND validation_state != 'rejected_by_human'
+                  AND NOT (merged = 1 AND validation_state = 'passed')
+                  AND (pushed = 1 OR (
+                    pushed = 0 AND is_worktree = 1
+                    AND status IN ('running', 'paused', 'candidate_ready', 'candidate_needs_work')
+                  ))
+                LIMIT 1
+                """,
+                (int(row["id"]),),
+            ).fetchone()
+            if other is not None:
+                raise ValueError("Retry refused while another nonterminal candidate exists.")
+            cursor = connection.execute(
+                """
+                INSERT INTO development_cycles (
+                    task_id, branch, everyday_model, developer_model, status,
+                    summary, reusable_lesson, checks_passed, pushed,
+                    validation_state, merged, workspace, is_worktree,
+                    local_repair_attempts, write_integrity_failure,
+                    human_authorized_retry, retry_of_cycle_id, retry_reason,
+                    retry_authorized_at, started_at
+                ) VALUES (?, ?, ?, ?, 'candidate_needs_work', ?, ?, 0, 0,
+                          'not_started', 0, ?, 1, 0, '', 1, ?, ?, ?, ?)
+                """,
+                (
+                    str(row["task_id"]), str(row["branch"]), str(row["everyday_model"]),
+                    str(row["developer_model"]),
+                    "Human-authorized retry of framework-policy-blocked prior cycle.",
+                    "The prior candidate idea was not at fault; framework policy blocked its construction.",
+                    str(row["workspace"]) if row["workspace"] else None,
+                    int(row["id"]), clean_reason, now, now,
+                ),
+            )
+            retry_id = int(cursor.lastrowid)
+            connection.execute(
+                """
+                UPDATE development_cycles
+                SET status = 'policy_blocked',
+                    failure_attribution = 'framework_policy',
+                    policy_failure_reason = ?, retried_by_cycle_id = ?,
+                    reusable_lesson = ?
+                WHERE id = ?
+                """,
+                (
+                    clean_reason, retry_id,
+                    self._append_lesson(
+                        str(row["reusable_lesson"]),
+                        "Failure attribution: framework policy was too restrictive; preserve the candidate objective and retry after policy correction.",
+                    ),
+                    int(row["id"]),
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE capability_experiments
+                SET cycle_id = ?, branch = ?, status = 'candidate_active', updated_at = ?
+                WHERE task_id = ?
+                """,
+                (retry_id, str(row["branch"]), now, str(row["task_id"])),
+            )
+        return CandidatePolicyRetry(
+            int(row["id"]), retry_id, str(row["task_id"]), str(row["branch"]),
+            clean_reason, False,
         )
 
     def candidate_for_branch(self, branch: str) -> ManagedCandidate | None:
@@ -659,6 +857,26 @@ class LearningMemory:
             ).fetchone()
         return self._managed_candidate(row)
 
+    def candidate_for_identifier(self, identifier: str) -> ManagedCandidate | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM development_cycles
+                WHERE branch = ? OR task_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (str(identifier), str(identifier)),
+            ).fetchone()
+        return self._managed_candidate(row)
+
+    def candidate_for_cycle(self, cycle_id: int) -> ManagedCandidate | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM development_cycles WHERE id = ?",
+                (int(cycle_id),),
+            ).fetchone()
+        return self._managed_candidate(row)
+
     def latest_rejected_candidate(self) -> ManagedCandidate | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -666,6 +884,17 @@ class LearningMemory:
                 SELECT * FROM development_cycles
                 WHERE validation_state = 'rejected_by_human'
                 ORDER BY rejected_at DESC, id DESC LIMIT 1
+                """
+            ).fetchone()
+        return self._managed_candidate(row)
+
+    def latest_policy_retry(self) -> ManagedCandidate | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM development_cycles
+                WHERE human_authorized_retry = 1
+                ORDER BY retry_authorized_at DESC, id DESC LIMIT 1
                 """
             ).fetchone()
         return self._managed_candidate(row)

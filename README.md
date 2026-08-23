@@ -29,7 +29,7 @@ LocalPilot separates three roles:
 
 1. **Stable operator** — the installed everyday agent. It uses `[model].name` and can interact with the PC only through the normal safety policy. The currently registered PC tools are observational.
 2. **Developer** — an idle-time engineering process. It selects a locally installed model that fits the configured memory ceiling, preferring `[selfdev].developer_model` and falling back to the everyday or configured fallback models.
-3. **Candidate** — an isolated Git worktree or copied workspace. Autonomous writes pass through `CandidateTools`, which enforces the candidate boundary, protected paths, allowed file types, size limits, and a per-cycle file limit.
+3. **Candidate** — an isolated Git worktree or copied workspace. Autonomous writes pass through `CandidateTools`, which permits free directory scaffolding, reports complexity after a 100-file soft budget, and enforces a configurable 500-file hard ceiling plus protected paths, allowed file types, and size limits.
 
 Stable is never rewritten in place. The autonomous loop does not execute candidate code locally. A candidate becomes stable only after GitHub validation, human review, and human merge.
 
@@ -172,6 +172,17 @@ localpilot reject 19 --reason "Green CI was insufficient: the candidate referenc
 
 The command resolves the PR through GitHub, refuses branches that are not both `localpilot/candidate-*` and owned by durable LocalPilot cycle memory, and records `rejected_by_human` before any local cleanup. It retains the prior CI state, PR, branch, task, experiment evidence, and rejection reason as reusable discovery context. The rejection clears the one-candidate gate and removes only a matching checkpoint and clean registered candidate worktree. It does not merge, promote, close the PR, delete the branch, or remove GitHub history. Running the same rejection again is safe and preserves the original reason.
 
+When durable evidence shows that a local candidate failed because the framework rejected otherwise valid construction, a human may authorize one linked retry of the same objective:
+
+```powershell
+localpilot retry localpilot/candidate-model-adaptation-lab-20260823-003946 --reason "Framework policy—not the candidate idea—blocked valid directory and file construction."
+localpilot evolve --force
+```
+
+The retry command fails closed for unrelated, pushed, rejected, unowned, or non-policy failures. It makes the prior cycle terminal as `policy_blocked`, preserves its summary, rejected-write evidence, lesson, and counters, records the failure attribution as `framework_policy`, and creates a linked human-authorized retry cycle with only its bounded repair counters reset. A registered worktree is resumed; otherwise LocalPilot restores the same managed branch and objective. The next evolve invocation re-enters the full research/implementation stage. Repeating the command is idempotent. It never executes, merges, or promotes the candidate.
+
+Candidate implementation tools may also create bounded ZIP archives and fetch inert resources over public HTTPS. Resources live under `localpilot-data/candidate-resources`, outside the repository, with URL/final URL, timestamp, SHA-256, MIME/extension, size, branch, task, and cycle provenance. Changed content marks prior records stale. Executables/installers are blocked, downloads are interruptible and quota-bound, and storage never implies execution or trust.
+
 ## Resource-aware local models
 
 Before self-development inference, LocalPilot estimates the resident cost of each configured installed model using its Ollama size metadata plus `[selfdev].model_memory_overhead_gb`. It selects the first candidate that remains under `[resource].max_memory_percent_for_background`; if none fits, the cycle defers.
@@ -184,6 +195,7 @@ These are architectural contracts, not prompt suggestions:
 
 - **No local candidate execution.** Autonomous local validation only compiles Python and parses TOML; executable candidate tests run in GitHub Actions.
 - **Candidate confinement.** Autonomous writes cannot escape the isolated workspace or modify `.git`, `.github`, virtual environments, caches, or machine-private data.
+- **Bounded construction, not arbitrary smallness.** Directories are free; file complexity is reported after 100 files and blocked only at the configurable 500-file hard ceiling. ZIP/resource byte and member quotas remain enforced.
 - **Reviewer tests are immutable.** Tests introduced or modified by human reviewer commits become read-only contracts during autonomous repair.
 - **No shell command strings.** Git, GitHub, static-check, and operator subprocesses use argument vectors with `shell=False`.
 - **One outstanding candidate.** Local unfinished, pushed, CI-failed, or review-pending work must be reconciled before another experiment starts.
@@ -239,6 +251,9 @@ localpilot study run self
 # Reject a managed candidate while retaining its evidence and GitHub history
 localpilot reject 19 --reason "Candidate references a missing required script."
 
+# Retry a managed local candidate when durable evidence attributes its failure to framework policy
+localpilot retry localpilot/candidate-model-adaptation-lab-20260823-003946 --reason "Framework policy—not the candidate idea—blocked valid construction."
+
 # Run one normal gated evolution invocation
 localpilot evolve
 
@@ -279,7 +294,10 @@ The important defaults in `config.example.toml` are:
 | Candidate auto-push | `true` | Eligible candidates may be pushed for CI/review |
 | Auto-promotion | `false` | Immutable; enabling it is rejected |
 | Local candidate execution | `false` | Immutable safety boundary for autonomous evolution |
-| File limit | 8 | Maximum distinct candidate files changed per cycle |
+| Candidate file soft budget | 100 | Complexity is reported above this point; candidate work continues |
+| Candidate file hard ceiling | 500 | Maximum distinct candidate files changed per cycle; directories are free |
+| Candidate resource quota | 8 GiB | Provenance-tracked inert downloads outside the repository |
+| Resource file limit | 512 MiB | Maximum size of one candidate download |
 | Repair attempts | 3 | Durable bound for same-candidate local repair |
 
 ## Repository layout

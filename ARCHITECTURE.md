@@ -4,7 +4,7 @@ LocalPilot has three isolated roles and two model responsibilities:
 
 1. **Stable operator** — the installed everyday agent. It uses `[model].name` and may interact with the PC only through the normal safety policy.
 2. **Developer** — an idle-time engineering process. It prefers `[selfdev].developer_model` (`qwen2.5:32b` by default) when that model is installed, otherwise it explicitly falls back to the everyday model.
-3. **Candidate** — an isolated Git worktree or copied workspace. Autonomous source writes are possible only through `CandidateTools.write_project_file` inside this boundary.
+3. **Candidate** — an isolated Git worktree or copied workspace. Autonomous construction is possible only through candidate tools inside this boundary: file writes, free inert directory scaffolding, bounded ZIP creation, and provenance-tracked HTTPS resources stored outside the repository.
 
 Stable is never rewritten in place, candidate code is not executed locally by the autonomous loop, and there is no automatic promotion path.
 
@@ -41,6 +41,10 @@ On a later invocation, an active checkpoint is considered only after guarded mai
 The self-sync gate acts only on the repository root while it is checked out on the configured main branch. It never switches branches, resets changes, merges divergent history, or enters a candidate worktree. Git operations use argument vectors with `shell=False`. A successful fast-forward ends the current invocation so no evolution work continues in a process that loaded the previous build.
 
 The fallback is data, not a privileged editing channel. Its paths and complete file contents are parsed into a `ChangePlan`, and every item is applied by calling `CandidateTools.write_project_file`. It therefore keeps the same path confinement, protected-directory rules, file limits, type allow-list, and size limit as ordinary candidate tool calls.
+
+Candidate file volume uses a configurable 100-file soft budget and 500-file hard ceiling. Crossing the soft budget adds explicit complexity evidence but does not block work; directories never count. ZIP members must originate in the candidate or its resource store and are normalized, member-count bounded, byte bounded, and never executed. Candidate resources use an 8 GiB default quota and 512 MiB per-file bound under `localpilot-data/candidate-resources`, with source/final URL, time, hash, MIME/extension, size, task, branch, cycle, and stale-source provenance.
+
+A human-authorized policy retry is represented by a new development cycle linked to the preserved prior cycle. The prior record becomes `policy_blocked` with `framework_policy` attribution; the linked retry retains the same task and branch, resets only bounded local repair/write-integrity counters, and re-enters research/implementation. This preserves one-nonterminal-candidate semantics and never promotes the result.
 
 GitHub validation and merge are separate facts. A passing local static check or a pushed branch does not complete a task. The next backlog item is eligible only after the current candidate's GitHub checks pass and its PR is merged. An unfinished unpushed Git candidate is pending too: its exact branch and worktree are reused on the next invocation, its existing changes are revalidated against path, type, size, reviewer-test and file-count protections, and it is never committed or pushed until static checks pass. LocalPilot can observe promotion state; it has no method that merges or promotes.
 

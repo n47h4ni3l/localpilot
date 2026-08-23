@@ -20,6 +20,9 @@ def test_everyday_and_developer_models_are_separate():
     assert cfg.selfdev.developer_model == "qwen2.5:32b"
     assert cfg.selfdev.developer_model_fallbacks == ["qwen2.5:14b"]
     assert cfg.selfdev.ollama_keep_alive == 0
+    assert cfg.selfdev.candidate_file_soft_budget == 100
+    assert cfg.selfdev.candidate_file_hard_ceiling == 500
+    assert cfg.selfdev.candidate_resource_quota_gb == 8.0
 
 
 def test_toml_loads_developer_model(tmp_path: Path):
@@ -48,4 +51,14 @@ def test_auto_promotion_cannot_be_enabled(tmp_path: Path):
     path.write_text("[selfdev]\nauto_promote = true\n", encoding="utf-8")
     with pytest.raises(ValueError, match="auto_promote"):
         load_config(path)
+
+
+def test_legacy_eight_file_config_migrates_to_useful_budget(tmp_path: Path):
+    path = tmp_path / "localpilot.toml"
+    path.write_text("[selfdev]\nmax_files_per_cycle = 8\n", encoding="utf-8")
+
+    cfg = load_config(path)
+
+    assert cfg.selfdev.candidate_file_soft_budget == 100
+    assert cfg.selfdev.candidate_file_hard_ceiling == 500
 

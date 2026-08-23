@@ -449,7 +449,6 @@ class LocalPilotAgent:
                     runtime_classification=runtime.get("runtime_classification"),
                 )
                 if hard_limit:
-                    # Preserve protocol continuity, but do not execute remembered tool calls after the hard ceiling.
                     self.messages.append(response)
                     transient.append(response)
                     for call in calls:
@@ -505,6 +504,57 @@ class LocalPilotAgent:
                     prompt_eval_count=runtime.get("prompt_eval_count"),
                 )
                 return visible
+
+            if self._looks_like_generic_reset(content):
+                self.audit.write(
+                    "model_same_context_answer_reset",
+                    model=self.config.model.name,
+                    think=self.config.model.think,
+                    round=round_no,
+                    after_tools=after_tools,
+                    runtime_classification=runtime.get("runtime_classification"),
+                    done_reason=runtime.get("done_reason"),
+                )
+                retry_instruction = {
+                    "role": "user",
+                    "content": (
+                        "Your previous final-answer attempt reset into a generic greeting instead of answering. "
+                        "Continue from the evidence and reasoning already present. Do not greet or restart. "
+                        f"Answer this original request now:\n{prompt}"
+                    ),
+                }
+                self.messages.append(retry_instruction)
+                transient.append(retry_instruction)
+                retry = self._stream_chat_message(
+                    chat,
+                    think=self.config.model.think,
+                    options={"num_predict": 4096},
+                    phase="same_context_reset_retry",
+                    turn_no=round_no,
+                )
+                runtime = dict(self._last_stream_runtime)
+                content = str(retry.get("content") or "")
+                calls = retry.get("tool_calls") or []
+                reasoning_present = reasoning_present or bool(str(retry.get("thinking") or "").strip())
+                if content.strip() and not self._looks_like_generic_reset(content):
+                    visible = self._visible_decline(content)
+                    self.messages.append({"role": "assistant", "content": visible})
+                    self.audit.write(
+                        "model_same_context_answer_succeeded",
+                        model=self.config.model.name,
+                        think=self.config.model.think,
+                        round=round_no,
+                        after_tools=after_tools,
+                        hard_limit=hard_limit,
+                        content_chars=len(content),
+                        declined=content.strip().upper().startswith("DECLINE:"),
+                        reset_retry=True,
+                        runtime_classification=runtime.get("runtime_classification"),
+                        done_reason=runtime.get("done_reason"),
+                        eval_count=runtime.get("eval_count"),
+                        prompt_eval_count=runtime.get("prompt_eval_count"),
+                    )
+                    return visible
 
             marker = (
                 f"[LocalPilot completed a {self.config.model.think} same-context answer reasoning pass "
@@ -669,14 +719,13 @@ class LocalPilotAgent:
                             except Exception as exc:
                                 result = f"Tool error: {type(exc).__name__}: {exc}"
                             ok = self._tool_result_success(result)
-                            if cacheable:
+                            # Only successful observations are reusable. A transient/auth/read failure must
+                            # remain retryable with the same arguments later in the turn.
+                            if cacheable and ok:
                                 observation_cache[cache_key] = (str(result), ok, evidence_source)
 
-                        if cache_hit:
-                            # ok was loaded from cache above.
-                            pass
-                        else:
-                            ok = self._tool_result_success(result) if spec is not None and permitted else ok
+                        if not cache_hit and spec is not None and permitted:
+                            ok = self._tool_result_success(result)
                         if evidence_source:
                             if ok:
                                 succeeded_evidence.add(evidence_source)
@@ -725,7 +774,6 @@ class LocalPilotAgent:
 
                 content = str(response.get("content") or "")
                 thinking = str(response.get("thinking") or "")
-                # Required evidence must have actually succeeded, not merely been attempted.
                 missing_evidence = evidence_requirements - succeeded_evidence
 
                 if missing_evidence:
@@ -734,8 +782,8 @@ class LocalPilotAgent:
                         evidence_recovery_attempts += 1
                         missing_text = ", ".join(sorted(missing_evidence))
                         add_internal(
-                            "This request explicitly requires direct evidence that has not yet been successfully "
-                            f"acquired from: {missing_text}. Appropriate read-only tools are available. Use the "
+                            "This request explicitly requires direct evidence you have not yet attempted successfully "
+                            f"to acquire from: {missing_text}. Appropriate read-only tools are available. Use the "
                             "relevant tool or tools now. Do not claim that access/evidence is unavailable unless "
                             "you actually attempt the source and the tool reports failure. Do not answer yet; "
                             "inspect first, then continue from the real results."
@@ -752,8 +800,9 @@ class LocalPilotAgent:
                         continue
                     self.messages.pop()
                     marker = (
-                        "[LocalPilot could not satisfy this request's direct-evidence requirement because the "
-                        "required read-only evidence was not successfully acquired within the bounded recovery loop.]"
+                        "[LocalPilot could not satisfy this request's direct-evidence requirement because it "
+                        "did not attempt the relevant available read-only source successfully within the bounded "
+                        "recovery loop.]"
                     )
                     self.messages.append({"role": "assistant", "content": marker})
                     self.audit.write(
@@ -770,11 +819,9 @@ class LocalPilotAgent:
 
                 if used_tools:
                     if not post_tool_guidance_given and allow_tools:
-                        # Preserve reasoning, but discard premature prose once so the model explicitly reviews
-                        # whether its own evidence is sufficient before settling on an answer.
                         response["content"] = ""
                         add_internal(
-                            "Continue from the exact tool results and reasoning already present above. Decide whether "
+                            "Continue from the exact tool results and reasoning already present above; decide whether "
                             "you have enough verified evidence for the owner's original request. If important facts "
                             "remain unverified, use additional appropriate read-only tools. If the evidence is "
                             "sufficient, reason over those actual findings and answer directly. Do not greet, restart, "
@@ -800,8 +847,6 @@ class LocalPilotAgent:
                         self.messages[-1]["content"] = visible
                         return visible
 
-                    # No final answer does not mean failure. While below the hard ceiling, let the same model
-                    # decide whether it needs another observation or is ready to synthesize.
                     response["content"] = ""
                     if allow_tools:
                         add_internal(
@@ -833,18 +878,12 @@ class LocalPilotAgent:
 
                 if thinking.strip() or self._looks_like_generic_reset(content):
                     response["content"] = ""
-                    add_internal(
-                        "Continue from the reasoning already present. If the owner's request requires evidence, use "
-                        "an appropriate available read-only tool; otherwise finish the reasoning and give the final "
-                        "answer. Do not restart or greet."
+                    return self._continue_high_reasoning_answer(
+                        chat,
+                        prompt=prompt,
+                        round_no=turn_no,
+                        after_tools=False,
                     )
-                    self.audit.write(
-                        "model_reasoning_continuation",
-                        round=turn_no,
-                        reasoning_present=bool(thinking.strip()),
-                        generic_reset=self._looks_like_generic_reset(content),
-                    )
-                    continue
 
                 if not retried_empty_response:
                     retried_empty_response = True

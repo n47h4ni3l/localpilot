@@ -1,10 +1,13 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from localpilot.safety import RiskLevel
 from localpilot.tools import registry
+from localpilot.tools.github_readonly import GitHubReader
 from localpilot.tools.repository import RepositoryReader
+from localpilot.tools.web import fetch_public_https
 
 
 def test_repository_reader_lists_reads_and_searches_verified_source(tmp_path: Path):
@@ -65,7 +68,7 @@ def test_repository_reader_does_not_follow_escape_symlink(tmp_path: Path):
     reader = RepositoryReader(tmp_path)
     tree = reader.list_repository_tree(depth=2)
     assert "outside-link.txt -> [symlink not followed]" in tree
-    with pytest.raises(ValueError, match="escapes"):
+    with pytest.raises(ValueError, match="Symlink"):
         reader.read_repository_file("outside-link.txt")
 
 
@@ -109,7 +112,49 @@ localpilot = "localpilot.cli:main"
     assert '"localpilot": "localpilot.cli:main"' in result
 
 
-def test_operator_registry_exposes_repository_senses_as_read_only(tmp_path: Path):
+def test_public_https_reader_blocks_nonpublic_and_credentialed_targets(monkeypatch):
+    with pytest.raises(ValueError, match="HTTPS"):
+        fetch_public_https("http://example.com")
+    with pytest.raises(ValueError, match="credentials"):
+        fetch_public_https("https://user:password@example.com")
+    with pytest.raises(ValueError, match="Local/private"):
+        fetch_public_https("https://localhost")
+
+    monkeypatch.setattr(
+        "localpilot.tools.web.socket.getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("127.0.0.1", 443))],
+    )
+    with pytest.raises(ValueError, match="non-public"):
+        fetch_public_https("https://example.test")
+
+
+def test_private_github_reader_uses_bounded_read_only_gh_commands(tmp_path: Path, monkeypatch):
+    reader = GitHubReader(tmp_path)
+    reader.gh = "gh"
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout='{"number":30}', stderr="")
+
+    monkeypatch.setattr("localpilot.tools.github_readonly.subprocess.run", fake_run)
+
+    result = reader.get_github_pull_request(30)
+    assert '"number":30' in result
+    argv, kwargs = calls[-1]
+    assert argv == [
+        "gh",
+        "pr",
+        "view",
+        "30",
+        "--json",
+        "number,title,state,body,headRefName,baseRefName,url,mergeStateStatus,isDraft,files,statusCheckRollup,commits",
+    ]
+    assert kwargs["shell"] is False
+    assert "token" not in " ".join(argv).lower()
+
+
+def test_operator_registry_exposes_trusted_senses_as_read_only(tmp_path: Path):
     tools = registry(tmp_path)
     expected = {
         "list_repository_tree",
@@ -117,9 +162,18 @@ def test_operator_registry_exposes_repository_senses_as_read_only(tmp_path: Path
         "search_repository",
         "inspect_project_dependencies",
         "get_repository_status",
+        "fetch_public_https",
+        "get_github_repository",
+        "list_github_pull_requests",
+        "get_github_pull_request",
+        "get_github_pull_request_diff",
+        "list_github_issues",
+        "get_github_issue",
     }
     assert expected <= tools.keys()
     assert all(tools[name].risk is RiskLevel.READ_ONLY for name in expected)
 
     legacy = registry()
-    assert expected.isdisjoint(legacy.keys())
+    assert "fetch_public_https" in legacy
+    assert "read_repository_file" not in legacy
+    assert "get_github_pull_request" not in legacy

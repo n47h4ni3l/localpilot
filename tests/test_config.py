@@ -18,8 +18,10 @@ def test_everyday_and_developer_models_are_separate():
     cfg = Config()
     assert cfg.model.name == "gpt-oss:20b"
     assert cfg.model.think == "high"
+    assert cfg.model.context_tokens == 32768
     assert cfg.selfdev.developer_model == "qwen2.5:32b"
     assert cfg.selfdev.developer_model_fallbacks == ["qwen2.5:14b"]
+    assert cfg.selfdev.context_tokens == 32768
     assert cfg.selfdev.ollama_keep_alive == 0
     assert cfg.selfdev.candidate_file_soft_budget == 100
     assert cfg.selfdev.candidate_file_hard_ceiling == 500
@@ -32,6 +34,30 @@ def test_toml_loads_developer_model(tmp_path: Path):
     cfg = load_config(path)
     assert cfg.model.name == "daily"
     assert cfg.selfdev.developer_model == "dev"
+
+
+def test_toml_loads_context_windows_independently(tmp_path: Path):
+    path = tmp_path / "localpilot.toml"
+    path.write_text(
+        '[model]\ncontext_tokens = 16384\n'
+        '[selfdev]\ncontext_tokens = 65536\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    assert cfg.model.context_tokens == 16384
+    assert cfg.selfdev.context_tokens == 65536
+
+
+def test_context_window_rejects_accidentally_tiny_or_invalid_values(tmp_path: Path):
+    tiny = tmp_path / "tiny.toml"
+    tiny.write_text('[model]\ncontext_tokens = 2048\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="between 4096 and 131072"):
+        load_config(tiny)
+
+    boolean = tmp_path / "boolean.toml"
+    boolean.write_text('[selfdev]\ncontext_tokens = true\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="integer token count"):
+        load_config(boolean)
 
 
 def test_toml_loads_resource_aware_model_options(tmp_path: Path):

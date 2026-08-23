@@ -257,17 +257,22 @@ def select_resource_aware_developer_model(
 def developer_chat(
     chat: Callable[..., Any],
     *,
-    request_think: bool,
+    request_think: bool | str,
+    context_tokens: int | None = None,
     keep_alive: float | str | None = None,
     stream_guard: Callable[[], None] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Use thinking when supported and permit prompt cancellation while streaming."""
 
-    def invoke(*, think: bool) -> Any:
+    def invoke(*, think: bool | str | None) -> Any:
         call_kwargs = dict(kwargs)
-        if think:
-            call_kwargs["think"] = True
+        if context_tokens is not None:
+            options = dict(call_kwargs.get("options") or {})
+            options["num_ctx"] = int(context_tokens)
+            call_kwargs["options"] = options
+        if think is not None:
+            call_kwargs["think"] = think
         if keep_alive is not None:
             call_kwargs["keep_alive"] = keep_alive
         if stream_guard is None:
@@ -276,6 +281,7 @@ def developer_chat(
         call_kwargs["stream"] = True
         response_stream = chat(**call_kwargs)
         content: list[str] = []
+        thinking: list[str] = []
         tool_calls: list[Any] = []
         try:
             for chunk in response_stream:
@@ -285,26 +291,33 @@ def developer_chat(
                     message = message["message"]
                 if isinstance(message, dict):
                     content.append(str(message.get("content") or ""))
+                    thinking.append(str(message.get("thinking") or ""))
                     tool_calls.extend(list(message.get("tool_calls") or []))
                 else:
                     content.append(str(getattr(message, "content", "") or ""))
+                    thinking.append(str(getattr(message, "thinking", "") or ""))
                     tool_calls.extend(list(getattr(message, "tool_calls", None) or []))
         finally:
             close = getattr(response_stream, "close", None)
             if callable(close):
                 close()
-        return StreamedChatResponse(
-            {"role": "assistant", "content": "".join(content), "tool_calls": tool_calls}
-        )
+        message = {"role": "assistant", "content": "".join(content), "tool_calls": tool_calls}
+        if any(thinking):
+            message["thinking"] = "".join(thinking)
+        return StreamedChatResponse(message)
 
     if request_think:
+        model = str(kwargs.get("model") or "").lower()
+        think: bool | str = request_think
+        if "gpt-oss" not in model:
+            think = True
         try:
-            return invoke(think=True)
+            return invoke(think=think)
         except Exception as exc:
             message = str(exc).lower()
             if "does not support thinking" not in message:
                 raise
-    return invoke(think=False)
+    return invoke(think=None)
 
 
 def _json_object(text: str) -> dict[str, Any]:
@@ -1689,6 +1702,7 @@ class SelfDeveloper:
         return developer_chat(
             chat,
             request_think=self.config.model.think,
+            context_tokens=self.config.selfdev.context_tokens,
             keep_alive=self.config.selfdev.ollama_keep_alive,
             stream_guard=stream_guard,
             **kwargs,

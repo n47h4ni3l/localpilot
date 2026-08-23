@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
 
-from localpilot.selfdev import developer_chat
+from localpilot.config import Config
+from localpilot.selfdev import SelfDeveloper, developer_chat
 
 
 def test_supported_model_keeps_thinking():
@@ -20,6 +23,24 @@ def test_supported_model_keeps_thinking():
     assert result == "ok"
     assert len(calls) == 1
     assert calls[0]["think"] is True
+
+
+def test_explicit_reasoning_level_is_preserved():
+    calls = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return "ok"
+
+    result = developer_chat(
+        fake_chat,
+        request_think="high",
+        model="gpt-oss:20b",
+        messages=[],
+    )
+
+    assert result == "ok"
+    assert calls[0]["think"] == "high"
 
 
 def test_unsupported_model_retries_without_thinking():
@@ -74,7 +95,7 @@ def test_thinking_can_be_omitted_explicitly():
     assert "think" not in captured
 
 
-def test_streaming_chat_is_guarded_and_unloads_model():
+def test_streaming_chat_is_guarded_unloads_model_and_preserves_transient_thinking():
     calls = []
     guard_calls = []
 
@@ -82,8 +103,14 @@ def test_streaming_chat_is_guarded_and_unloads_model():
         calls.append(dict(kwargs))
         return iter(
             [
-                {"message": {"content": "hello ", "tool_calls": []}},
-                {"message": {"content": "world", "tool_calls": [{"function": {"name": "inspect"}}]}},
+                {"message": {"thinking": "inspect ", "content": "hello ", "tool_calls": []}},
+                {
+                    "message": {
+                        "thinking": "then act",
+                        "content": "world",
+                        "tool_calls": [{"function": {"name": "inspect"}}],
+                    }
+                },
             ]
         )
 
@@ -97,7 +124,88 @@ def test_streaming_chat_is_guarded_and_unloads_model():
     )
 
     assert response.message["content"] == "hello world"
+    assert response.message["thinking"] == "inspect then act"
     assert len(response.message["tool_calls"]) == 1
     assert len(guard_calls) == 2
     assert calls[0]["stream"] is True
     assert calls[0]["keep_alive"] == 0
+
+
+def test_developer_chat_merges_explicit_context_into_existing_options():
+    captured = {}
+
+    def fake_chat(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    developer_chat(
+        fake_chat,
+        request_think=False,
+        context_tokens=16384,
+        model="qwen2.5:32b",
+        messages=[],
+        options={"temperature": 0.2},
+    )
+
+    assert captured["options"]["temperature"] == 0.2
+    assert captured["options"]["num_ctx"] == 16384
+
+
+def test_live_selfdev_path_preserves_gpt_oss_high_and_context():
+    developer = object.__new__(SelfDeveloper)
+    developer.config = Config()
+    developer.config.model.think = "high"
+    developer.config.selfdev.context_tokens = 16384
+    developer.config.selfdev.ollama_keep_alive = 0
+    developer._check_resources = lambda *args, **kwargs: None
+    calls = []
+
+    def fake_chat(**kwargs):
+        calls.append(dict(kwargs))
+        return iter([{"message": {"thinking": "careful", "content": "done", "tool_calls": []}}])
+
+    response = developer._developer_chat(
+        fake_chat,
+        force=True,
+        branch="candidate/test",
+        model="gpt-oss:20b",
+        messages=[],
+        options={"temperature": 0.1},
+    )
+
+    assert response.message["content"] == "done"
+    assert response.message["thinking"] == "careful"
+    assert calls[0]["think"] == "high"
+    assert calls[0]["options"]["num_ctx"] == 16384
+    assert calls[0]["keep_alive"] == 0
+
+
+def test_live_qwen_path_keeps_context_when_thinking_is_unsupported():
+    developer = object.__new__(SelfDeveloper)
+    developer.config = Config()
+    developer.config.model.think = "high"
+    developer.config.selfdev.context_tokens = 16384
+    developer.config.selfdev.ollama_keep_alive = 0
+    developer._check_resources = lambda *args, **kwargs: None
+    calls = []
+
+    def fake_chat(**kwargs):
+        calls.append(dict(kwargs))
+        if "think" in kwargs:
+            raise RuntimeError("model does not support thinking")
+        return iter([{"message": {"content": "qwen result", "tool_calls": []}}])
+
+    response = developer._developer_chat(
+        fake_chat,
+        force=True,
+        branch="candidate/test",
+        model="qwen2.5:32b",
+        messages=[],
+        options={"temperature": 0.1},
+    )
+
+    assert response.message["content"] == "qwen result"
+    assert len(calls) == 2
+    assert calls[0]["think"] is True
+    assert "think" not in calls[1]
+    assert calls[1]["options"]["num_ctx"] == 16384

@@ -22,6 +22,31 @@ The self-development subsystem may write only inside isolated candidate workspac
 GitHub is the durable engineering layer for source, issues, branches, tests and rollback. Private GitHub reads use the owner's authenticated gh CLI without exposing its credential to the model.
 """
 
+_REPOSITORY_TOOLS = {
+    "list_repository_tree",
+    "read_repository_file",
+    "search_repository",
+    "inspect_project_dependencies",
+    "get_repository_status",
+}
+_GITHUB_TOOLS = {
+    "get_github_repository",
+    "list_github_pull_requests",
+    "get_github_pull_request",
+    "get_github_pull_request_diff",
+    "list_github_issues",
+    "get_github_issue",
+}
+_PC_TOOLS = {
+    "get_system_summary",
+    "get_storage_summary",
+    "get_top_processes",
+    "get_startup_items",
+    "get_active_power_plan",
+    "get_defender_summary",
+    "get_device_problem_summary",
+}
+
 
 class LocalPilotAgent:
     def __init__(self, config: Config, project_root: str | Path) -> None:
@@ -84,13 +109,12 @@ class LocalPilotAgent:
         return [spec.fn for spec in self.tools.values() if self.policy.permits_without_confirmation(spec.risk)]
 
     @staticmethod
-    def _evidence_requirement(prompt: str) -> str | None:
-        """Identify requests that explicitly require evidence available from operator tools."""
+    def _evidence_requirements(prompt: str) -> set[str]:
+        """Identify explicit evidence sources the owner asked LocalPilot to inspect."""
         text = " ".join(str(prompt).lower().split())
+        requirements: set[str] = set()
         if re.search(r"https://\S+", text):
-            return "public HTTPS"
-        if re.search(r"\bpr\s*#?\s*\d+\b", text):
-            return "trusted repository/GitHub"
+            requirements.add("public HTTPS")
 
         action_terms = (
             "inspect",
@@ -110,18 +134,15 @@ class LocalPilotAgent:
             "status",
             "latest",
         )
-        repository_terms = (
-            "repository",
-            "repo",
-            "github",
-            "pull request",
-            "issue",
-            "ci",
-            "commit",
-            "branch",
-            "source code",
-            "codebase",
-        )
+        asks_for_evidence = any(term in text for term in action_terms)
+
+        if re.search(r"\bpr\s*#?\s*\d+\b", text):
+            requirements.add("private GitHub")
+        github_terms = ("github", "pull request", "issue", " ci ", "commit", "branch")
+        if asks_for_evidence and any(term in f" {text} " for term in github_terms):
+            requirements.add("private GitHub")
+
+        repository_terms = ("repository", "repo", "source code", "codebase")
         self_structure_terms = (
             "module",
             "class",
@@ -134,6 +155,11 @@ class LocalPilotAgent:
             "file",
             "command",
         )
+        if asks_for_evidence and any(term in text for term in repository_terms):
+            requirements.add("trusted repository")
+        if "localpilot" in text and any(term in text for term in self_structure_terms):
+            requirements.add("trusted repository")
+
         pc_terms = (
             "windows",
             "pc",
@@ -146,14 +172,20 @@ class LocalPilotAgent:
             "device",
             "power plan",
         )
-
-        asks_for_evidence = any(term in text for term in action_terms)
-        if asks_for_evidence and any(term in text for term in repository_terms):
-            return "trusted repository/GitHub"
-        if "localpilot" in text and any(term in text for term in self_structure_terms):
-            return "trusted repository/GitHub"
         if asks_for_evidence and any(term in text for term in pc_terms):
+            requirements.add("Windows/PC state")
+        return requirements
+
+    @staticmethod
+    def _tool_evidence_source(name: str) -> str | None:
+        if name in _REPOSITORY_TOOLS:
+            return "trusted repository"
+        if name in _GITHUB_TOOLS:
+            return "private GitHub"
+        if name in _PC_TOOLS:
             return "Windows/PC state"
+        if name == "fetch_public_https":
+            return "public HTTPS"
         return None
 
     @staticmethod
@@ -387,7 +419,8 @@ class LocalPilotAgent:
         self.messages.append({"role": "user", "content": prompt})
         retried_empty_response = False
         used_tools = False
-        evidence_requirement = self._evidence_requirement(prompt)
+        evidence_requirements = self._evidence_requirements(prompt)
+        attempted_evidence: set[str] = set()
         evidence_recovery_attempts = 0
         post_tool_guidance_given = False
         internal_messages: list[dict[str, Any]] = []
@@ -412,6 +445,9 @@ class LocalPilotAgent:
                     used_tools = True
                     for call in calls:
                         name = call.function.name
+                        evidence_source = self._tool_evidence_source(name)
+                        if evidence_source:
+                            attempted_evidence.add(evidence_source)
                         spec = self.tools.get(name)
                         args = call.function.arguments or {}
                         if spec is None:
@@ -430,21 +466,23 @@ class LocalPilotAgent:
 
                 content = str(response.get("content") or "")
                 thinking = str(response.get("thinking") or "")
+                missing_evidence = evidence_requirements - attempted_evidence
 
-                if not used_tools and evidence_requirement:
+                if missing_evidence:
                     if evidence_recovery_attempts < 2 and allow_tools:
                         # Do not let an unsupported refusal or confident guess become conversation memory.
                         self.messages.pop()
                         evidence_recovery_attempts += 1
+                        missing_text = ", ".join(sorted(missing_evidence))
                         recovery = {
                             "role": "user",
                             "content": (
-                                "This request explicitly requires direct evidence that your available read-only "
-                                f"{evidence_requirement} tools can obtain, but you have not attempted any tool this turn. "
-                                "Use the appropriate available tool or tools now to acquire the evidence yourself. "
-                                "Do not claim that you lack access or evidence unless you actually attempt the relevant "
-                                "tool and it reports that the evidence is unavailable. Do not answer the owner yet; "
-                                "inspect first, then continue from the real results."
+                                "This request explicitly requires direct evidence you have not yet attempted to "
+                                f"acquire from: {missing_text}. Appropriate read-only tools are available in this "
+                                "turn. Use the relevant available tool or tools now. Do not claim that you lack "
+                                "access or evidence unless you actually attempt the relevant source and its tool "
+                                "reports that the evidence is unavailable. Do not answer the owner yet; inspect "
+                                "first, then continue from the real results."
                             ),
                         }
                         self.messages.append(recovery)
@@ -454,13 +492,13 @@ class LocalPilotAgent:
                             model=self.config.model.name,
                             think=self.config.model.think,
                             round=turn_no,
-                            requirement=evidence_requirement,
+                            missing=sorted(missing_evidence),
                             attempt=evidence_recovery_attempts,
                         )
                         continue
                     marker = (
                         "[LocalPilot could not satisfy this request's direct-evidence requirement because it "
-                        "did not attempt an available read-only tool after two recovery prompts.]"
+                        "did not attempt the relevant available read-only source after two recovery prompts.]"
                     )
                     self.messages.append({"role": "assistant", "content": marker})
                     self.audit.write(
@@ -468,7 +506,7 @@ class LocalPilotAgent:
                         model=self.config.model.name,
                         think=self.config.model.think,
                         round=turn_no,
-                        requirement=evidence_requirement,
+                        missing=sorted(missing_evidence),
                     )
                     return marker
 
@@ -517,7 +555,9 @@ class LocalPilotAgent:
                     )
 
                 if content.strip():
-                    return self._visible_decline(content)
+                    visible = self._visible_decline(content)
+                    self.messages[-1]["content"] = visible
+                    return visible
                 if thinking.strip():
                     return self._continue_high_reasoning_answer(
                         chat,
@@ -560,7 +600,7 @@ class LocalPilotAgent:
                     round_no=max_model_turns,
                     after_tools=True,
                 )
-            if evidence_requirement:
+            if evidence_requirements - attempted_evidence:
                 return "[LocalPilot exhausted its bounded reasoning loop before acquiring the required evidence.]"
             return "Stopped at the tool-call limit. Narrow the request or inspect the audit log."
         finally:

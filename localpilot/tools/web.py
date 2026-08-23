@@ -28,7 +28,11 @@ def _validate_public_https(url: str) -> urllib.parse.ParseResult:
         raise ValueError("URLs containing credentials are not allowed.")
     if not parsed.hostname:
         raise ValueError("HTTPS URL must include a hostname.")
-    if parsed.port not in {None, 443}:
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("HTTPS URL contains an invalid port.") from exc
+    if port not in {None, 443}:
         raise ValueError("Only the standard HTTPS port is allowed.")
     hostname = parsed.hostname.rstrip(".").lower()
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
@@ -60,7 +64,13 @@ def _safe_search_result_url(url: str) -> str | None:
     parsed = urllib.parse.urlparse(candidate)
     if parsed.scheme.lower() != "https" or not parsed.hostname:
         return None
-    if parsed.username or parsed.password or parsed.port not in {None, 443}:
+    if parsed.username or parsed.password:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port not in {None, 443}:
         return None
     hostname = parsed.hostname.rstrip(".").lower()
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
@@ -139,7 +149,8 @@ class _SearchResultParser(HTMLParser):
             return
         absolute = urllib.parse.urljoin(_SEARCH_ENDPOINT, href)
         parsed = urllib.parse.urlparse(absolute)
-        if parsed.hostname and parsed.hostname.lower().endswith("duckduckgo.com"):
+        hostname = (parsed.hostname or "").lower()
+        if hostname == "duckduckgo.com" or hostname.endswith(".duckduckgo.com"):
             target = urllib.parse.parse_qs(parsed.query).get("uddg", [])
             if target:
                 absolute = target[0]
@@ -175,13 +186,12 @@ def search_public_web(query: str, max_results: int = 5) -> str:
             if content_type != "text/html":
                 raise ValueError(f"Web search returned unsupported content type: {content_type}")
             announced = response.headers.get("Content-Length")
-            if announced:
-                try:
-                    if int(announced) > _MAX_SEARCH_BYTES:
-                        raise ValueError("Web search response exceeds the bounded download limit.")
-                except (TypeError, ValueError) as exc:
-                    if isinstance(exc, ValueError) and str(exc).startswith("Web search response"):
-                        raise
+            try:
+                announced_size = int(announced) if announced else None
+            except (TypeError, ValueError):
+                announced_size = None
+            if announced_size is not None and announced_size > _MAX_SEARCH_BYTES:
+                raise ValueError("Web search response exceeds the bounded download limit.")
             payload = response.read(_MAX_SEARCH_BYTES + 1)
             charset = response.headers.get_content_charset() or "utf-8"
     except urllib.error.HTTPError as exc:

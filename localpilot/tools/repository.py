@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tomllib
 from pathlib import Path
+from typing import Iterator
 
 
 _BLOCKED_PARTS = {
@@ -52,6 +53,13 @@ class RepositoryReader:
         raw = Path(path or ".")
         if raw.is_absolute():
             raise ValueError("Repository paths must be relative to the trusted project root.")
+        cursor = self.root
+        for part in raw.parts:
+            if part in {"", "."}:
+                continue
+            cursor = cursor / part
+            if cursor.exists() and cursor.is_symlink():
+                raise ValueError("Symlink repository paths are not allowed.")
         candidate = (self.root / raw).resolve(strict=False)
         try:
             relative = candidate.relative_to(self.root)
@@ -65,6 +73,27 @@ class RepositoryReader:
 
     def _relative(self, path: Path) -> Path:
         return path.resolve(strict=False).relative_to(self.root)
+
+    def _iter_files(self, base: Path) -> Iterator[Path]:
+        if base.is_file():
+            yield base
+            return
+        for directory, dirnames, filenames in os.walk(base, followlinks=False):
+            current = Path(directory)
+            retained_dirs: list[str] = []
+            for dirname in dirnames:
+                candidate = current / dirname
+                relative = candidate.relative_to(self.root)
+                if self._is_sensitive(relative) or candidate.is_symlink():
+                    continue
+                retained_dirs.append(dirname)
+            dirnames[:] = retained_dirs
+            for filename in filenames:
+                candidate = current / filename
+                relative = candidate.relative_to(self.root)
+                if self._is_sensitive(relative) or candidate.is_symlink():
+                    continue
+                yield candidate
 
     def list_repository_tree(
         self,
@@ -87,7 +116,10 @@ class RepositoryReader:
             try:
                 entries = sorted(
                     directory.iterdir(),
-                    key=lambda item: (not item.is_dir(), item.name.lower()),
+                    key=lambda item: (
+                        item.is_symlink() or not item.is_dir(),
+                        item.name.lower(),
+                    ),
                 )
             except OSError as exc:
                 rows.append(f"[unreadable] {exc}")
@@ -126,8 +158,6 @@ class RepositoryReader:
         target = self._resolve(path)
         if not target.is_file():
             raise ValueError("Repository file inspection requires a regular file.")
-        if target.is_symlink():
-            raise ValueError("Symlink file reads are not allowed.")
         start_line = max(1, int(start_line))
         end_line = max(start_line, int(end_line))
         end_line = min(end_line, start_line + _MAX_READ_LINES - 1)
@@ -167,16 +197,10 @@ class RepositoryReader:
         max_results = max(1, min(int(max_results), 100))
         matches: list[str] = []
         lower_needle = needle.lower()
-        candidates = [base] if base.is_file() else base.rglob("*")
-        for candidate in candidates:
+        for candidate in self._iter_files(base):
             if len(matches) >= max_results:
                 break
-            try:
-                relative = candidate.relative_to(self.root)
-            except ValueError:
-                continue
-            if self._is_sensitive(relative) or candidate.is_symlink() or not candidate.is_file():
-                continue
+            relative = candidate.relative_to(self.root)
             try:
                 if candidate.stat().st_size > _MAX_SEARCH_FILE_BYTES:
                     continue

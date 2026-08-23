@@ -46,6 +46,34 @@ _PC_TOOLS = {
     "get_defender_summary",
     "get_device_problem_summary",
 }
+_STREAM_RUNTIME_FIELDS = (
+    "done",
+    "done_reason",
+    "total_duration",
+    "load_duration",
+    "prompt_eval_count",
+    "prompt_eval_duration",
+    "eval_count",
+    "eval_duration",
+)
+_TOOL_FAILURE_MARKERS = (
+    "tool error:",
+    "unknown tool:",
+    "requires confirmation and is unavailable",
+    "github read failed:",
+    "github cli is not available",
+    "powershell error:",
+    "git is not available.",
+)
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class LocalPilotAgent:
@@ -63,6 +91,7 @@ class LocalPilotAgent:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
         self.memory = LearningMemory(self.data_dir / config.selfdev.learning_database)
+        self._last_stream_runtime: dict[str, Any] = {}
         teachings = self.memory.human_lessons(config.selfdev.lesson_limit)
         self._loaded_human_lesson_ids = {item.id for item in teachings}
         if teachings:
@@ -218,6 +247,11 @@ class LocalPilotAgent:
         return None
 
     @staticmethod
+    def _tool_result_success(result: Any) -> bool:
+        text = str(result).strip().lower()
+        return bool(text) and not any(marker in text for marker in _TOOL_FAILURE_MARKERS)
+
+    @staticmethod
     def _looks_like_generic_reset(content: str) -> bool:
         text = " ".join(str(content).strip().lower().split())
         if len(text) > 300:
@@ -233,6 +267,35 @@ class LocalPilotAgent:
             )
         )
 
+    @staticmethod
+    def _chunk_value(chunk: Any, name: str) -> Any:
+        if isinstance(chunk, dict):
+            return chunk.get(name)
+        return getattr(chunk, name, None)
+
+    @staticmethod
+    def _classify_runtime(
+        *,
+        done_reason: str,
+        eval_count: int | None,
+        num_predict: int | None,
+        context_used_percent: float | None,
+    ) -> str:
+        if done_reason.lower() == "length":
+            return "generation_limit"
+        if (
+            num_predict is not None
+            and num_predict > 0
+            and eval_count is not None
+            and eval_count >= num_predict
+        ):
+            return "generation_limit"
+        if context_used_percent is not None and context_used_percent >= 90.0:
+            return "context_pressure"
+        if done_reason:
+            return f"done:{done_reason.lower()}"
+        return "unknown"
+
     def _stream_chat_message(
         self,
         chat,
@@ -241,8 +304,10 @@ class LocalPilotAgent:
         tools: list[Any] | None = None,
         options: dict[str, Any] | None = None,
         messages: list[dict[str, Any]] | None = None,
+        phase: str = "operator",
+        turn_no: int | None = None,
     ) -> dict[str, Any]:
-        """Accumulate one Ollama streaming turn without exposing its reasoning trace."""
+        """Accumulate one Ollama streaming turn and retain non-reasoning runtime metadata."""
         merged_options: dict[str, Any] = {
             "temperature": self.config.model.temperature,
             "num_ctx": int(self.config.model.context_tokens),
@@ -263,18 +328,28 @@ class LocalPilotAgent:
         content_parts: list[str] = []
         tool_calls: list[Any] = []
         chunk_count = 0
+        terminal: dict[str, Any] = {}
         for chunk in chat(**kwargs):
             chunk_count += 1
-            message = chunk.message
-            thinking = str(getattr(message, "thinking", "") or "")
-            content = str(getattr(message, "content", "") or "")
-            calls = getattr(message, "tool_calls", None) or []
+            message = chunk.get("message", {}) if isinstance(chunk, dict) else chunk.message
+            if isinstance(message, dict):
+                thinking = str(message.get("thinking") or "")
+                content = str(message.get("content") or "")
+                calls = message.get("tool_calls") or []
+            else:
+                thinking = str(getattr(message, "thinking", "") or "")
+                content = str(getattr(message, "content", "") or "")
+                calls = getattr(message, "tool_calls", None) or []
             if thinking:
                 thinking_parts.append(thinking)
             if content:
                 content_parts.append(content)
             if calls:
                 tool_calls.extend(calls)
+            for field in _STREAM_RUNTIME_FIELDS:
+                value = self._chunk_value(chunk, field)
+                if value is not None:
+                    terminal[field] = value
 
         result: dict[str, Any] = {
             "role": "assistant",
@@ -284,15 +359,49 @@ class LocalPilotAgent:
             result["thinking"] = "".join(thinking_parts)
         if tool_calls:
             result["tool_calls"] = tool_calls
+
+        prompt_eval_count = _int_or_none(terminal.get("prompt_eval_count"))
+        eval_count = _int_or_none(terminal.get("eval_count"))
+        context_tokens = int(merged_options.get("num_ctx") or self.config.model.context_tokens)
+        num_predict = _int_or_none(merged_options.get("num_predict"))
+        context_used_percent = (
+            round(100.0 * prompt_eval_count / context_tokens, 2)
+            if prompt_eval_count is not None and context_tokens > 0
+            else None
+        )
+        done_reason = str(terminal.get("done_reason") or "")
+        runtime_classification = self._classify_runtime(
+            done_reason=done_reason,
+            eval_count=eval_count,
+            num_predict=num_predict,
+            context_used_percent=context_used_percent,
+        )
+        runtime = {
+            "phase": phase,
+            "turn": turn_no,
+            "done": terminal.get("done"),
+            "done_reason": done_reason or None,
+            "runtime_classification": runtime_classification,
+            "context_tokens": context_tokens,
+            "context_used_percent": context_used_percent,
+            "num_predict": num_predict,
+            "prompt_eval_count": prompt_eval_count,
+            "eval_count": eval_count,
+            "total_duration": _int_or_none(terminal.get("total_duration")),
+            "load_duration": _int_or_none(terminal.get("load_duration")),
+            "prompt_eval_duration": _int_or_none(terminal.get("prompt_eval_duration")),
+            "eval_duration": _int_or_none(terminal.get("eval_duration")),
+            "chunks": chunk_count,
+            "reasoning_chars": sum(len(item) for item in thinking_parts),
+            "content_chars": sum(len(item) for item in content_parts),
+            "tool_calls": len(tool_calls),
+        }
+        self._last_stream_runtime = runtime
         self.audit.write(
             "model_stream_complete",
             model=self.config.model.name,
             think=think,
-            context_tokens=int(self.config.model.context_tokens),
-            chunks=chunk_count,
-            reasoning_present=bool(thinking_parts),
-            content_chars=sum(len(item) for item in content_parts),
-            tool_calls=len(tool_calls),
+            **runtime,
         )
         return result
 
@@ -358,7 +467,10 @@ class LocalPilotAgent:
                 chat,
                 think=self.config.model.think,
                 options={"num_predict": 4096},
+                phase="same_context_answer",
+                turn_no=round_no,
             )
+            runtime = dict(self._last_stream_runtime)
         finally:
             if self.messages and self.messages[-1] is instruction:
                 self.messages.pop()
@@ -376,6 +488,10 @@ class LocalPilotAgent:
                 after_tools=after_tools,
                 content_chars=len(content),
                 declined=content.strip().upper().startswith("DECLINE:"),
+                runtime_classification=runtime.get("runtime_classification"),
+                done_reason=runtime.get("done_reason"),
+                eval_count=runtime.get("eval_count"),
+                prompt_eval_count=runtime.get("prompt_eval_count"),
             )
             return visible
 
@@ -386,6 +502,8 @@ class LocalPilotAgent:
                 think=self.config.model.think,
                 round=round_no,
                 after_tools=after_tools,
+                runtime_classification=runtime.get("runtime_classification"),
+                done_reason=runtime.get("done_reason"),
             )
             retry_instruction = {
                 "role": "user",
@@ -401,7 +519,10 @@ class LocalPilotAgent:
                     chat,
                     think=self.config.model.think,
                     options={"num_predict": 4096},
+                    phase="same_context_reset_retry",
+                    turn_no=round_no,
                 )
+                retry_runtime = dict(self._last_stream_runtime)
             finally:
                 if self.messages and self.messages[-1] is retry_instruction:
                     self.messages.pop()
@@ -419,8 +540,13 @@ class LocalPilotAgent:
                     content_chars=len(retry_content),
                     declined=retry_content.strip().upper().startswith("DECLINE:"),
                     reset_retry=True,
+                    runtime_classification=retry_runtime.get("runtime_classification"),
+                    done_reason=retry_runtime.get("done_reason"),
+                    eval_count=retry_runtime.get("eval_count"),
+                    prompt_eval_count=retry_runtime.get("prompt_eval_count"),
                 )
                 return visible
+            runtime = retry_runtime
 
         marker = (
             f"[LocalPilot completed a {self.config.model.think} same-context answer reasoning pass "
@@ -434,6 +560,14 @@ class LocalPilotAgent:
             round=round_no,
             after_tools=after_tools,
             reasoning_present=reasoning_present,
+            runtime_classification=runtime.get("runtime_classification"),
+            done_reason=runtime.get("done_reason"),
+            eval_count=runtime.get("eval_count"),
+            prompt_eval_count=runtime.get("prompt_eval_count"),
+            context_used_percent=runtime.get("context_used_percent"),
+            num_predict=runtime.get("num_predict"),
+            reasoning_chars=runtime.get("reasoning_chars"),
+            content_chars=runtime.get("content_chars"),
         )
         return marker
 
@@ -450,6 +584,8 @@ class LocalPilotAgent:
         used_tools = False
         evidence_requirements = self._evidence_requirements(prompt)
         attempted_evidence: set[str] = set()
+        succeeded_evidence: set[str] = set()
+        failed_evidence: set[str] = set()
         evidence_recovery_attempts = 0
         post_tool_guidance_given = False
         internal_messages: list[dict[str, Any]] = []
@@ -466,6 +602,8 @@ class LocalPilotAgent:
                     chat,
                     think=self.config.model.think,
                     tools=self._functions() if allow_tools else None,
+                    phase="operator",
+                    turn_no=turn_no,
                 )
                 self.messages.append(response)
                 calls = response.get("tool_calls") or []
@@ -479,18 +617,53 @@ class LocalPilotAgent:
                             attempted_evidence.add(evidence_source)
                         spec = self.tools.get(name)
                         args = call.function.arguments or {}
+                        risk = spec.risk if spec is not None else "unknown"
+                        permitted = bool(
+                            spec is not None and self.policy.permits_without_confirmation(spec.risk)
+                        )
+                        self.audit.write(
+                            "tool_call",
+                            tool=name,
+                            risk=risk,
+                            args=args,
+                            round=turn_no,
+                            evidence_source=evidence_source,
+                            registered=spec is not None,
+                            permitted=permitted,
+                        )
                         if spec is None:
                             result = f"Unknown tool: {name}"
-                        elif not self.policy.permits_without_confirmation(spec.risk):
+                        elif not permitted:
                             result = f"Tool requires confirmation and is unavailable in this v0.1 loop: {name}"
                         else:
-                            self.audit.write("tool_call", tool=name, risk=spec.risk, args=args, round=turn_no)
                             try:
                                 result = spec.fn(**args)
                             except Exception as exc:
                                 result = f"Tool error: {type(exc).__name__}: {exc}"
-                            self.audit.write("tool_result", tool=name, result_preview=str(result)[:1200])
+                        ok = self._tool_result_success(result)
+                        if evidence_source:
+                            if ok:
+                                succeeded_evidence.add(evidence_source)
+                                failed_evidence.discard(evidence_source)
+                            elif evidence_source not in succeeded_evidence:
+                                failed_evidence.add(evidence_source)
+                        self.audit.write(
+                            "tool_result",
+                            tool=name,
+                            result_preview=str(result)[:1200],
+                            ok=ok,
+                            evidence_source=evidence_source,
+                            round=turn_no,
+                        )
                         self.messages.append({"role": "tool", "tool_name": name, "content": str(result)})
+                    self.audit.write(
+                        "model_evidence_state",
+                        round=turn_no,
+                        required=sorted(evidence_requirements),
+                        attempted=sorted(attempted_evidence),
+                        succeeded=sorted(succeeded_evidence),
+                        failed=sorted(failed_evidence),
+                    )
                     continue
 
                 content = str(response.get("content") or "")
@@ -538,6 +711,9 @@ class LocalPilotAgent:
                         think=self.config.model.think,
                         round=turn_no,
                         missing=sorted(missing_evidence),
+                        attempted=sorted(attempted_evidence),
+                        succeeded=sorted(succeeded_evidence),
+                        failed=sorted(failed_evidence),
                     )
                     return marker
 
@@ -567,6 +743,9 @@ class LocalPilotAgent:
                             think=self.config.model.think,
                             round=turn_no,
                             tool_rounds=tool_rounds_used,
+                            evidence_required=sorted(evidence_requirements),
+                            evidence_succeeded=sorted(succeeded_evidence),
+                            evidence_failed=sorted(failed_evidence),
                         )
                         continue
 
@@ -621,6 +800,9 @@ class LocalPilotAgent:
                     think=self.config.model.think,
                     round=turn_no,
                     reasoning_present=False,
+                    runtime_classification=self._last_stream_runtime.get("runtime_classification"),
+                    done_reason=self._last_stream_runtime.get("done_reason"),
+                    eval_count=self._last_stream_runtime.get("eval_count"),
                 )
                 return "[LocalPilot returned an empty response after one retry.]"
 

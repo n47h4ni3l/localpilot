@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +15,7 @@ from typing import Any, Callable, Iterable
 import psutil
 
 from localpilot.audit import AuditLog
+from localpilot.candidate_resources import CandidateResourceStore
 from localpilot.checkpoint import CheckpointStore, EvolutionCheckpoint, task_fingerprint
 from localpilot.config import Config
 from localpilot.evolution import (
@@ -30,15 +33,23 @@ from localpilot.mission import mission_context
 from localpilot.resource import ResourceGovernor
 
 _IGNORE_NAMES = {".git", ".github", ".venv", "__pycache__", ".pytest_cache", "localpilot-data"}
-_ALLOWED_SUFFIXES = {".py", ".toml", ".md", ".txt", ".json", ".yml", ".yaml", ".ps1", ".gitignore"}
+_ALLOWED_SUFFIXES = {
+    ".py", ".toml", ".md", ".txt", ".json", ".jsonl", ".csv", ".tsv",
+    ".yml", ".yaml", ".ps1", ".gitignore", ".zip",
+}
 # Derived from _ALLOWED_SUFFIXES so prompt guidance can never drift out of
 # sync with what CandidateTools.write_project_file actually enforces.
 _ALLOWED_SUFFIXES_NOTE = (
+    "Directories may be created freely inside the isolated candidate with "
+    "create_project_directory; directories do not consume the file budget. "
     "Allowed file types for autonomous writes: "
     f"{', '.join(sorted(_ALLOWED_SUFFIXES))}. write_project_file rejects any "
     "other extension, including .sh — this project is Windows-first, so use "
     ".ps1 for scripts, not .sh. Any rejected write attempt blocks candidate "
-    "delivery for the current cycle."
+    "delivery for the current cycle. Use create_zip for bounded, inert archives "
+    "and download_candidate_resource for provenance-tracked HTTPS research/data. "
+    "Resources are stored outside the repository, never executed, and remain "
+    "subject to resource-governor and quota checks."
 )
 
 
@@ -63,6 +74,21 @@ class CandidateRejectionResult:
 
 
 class CandidateRejectionError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRetryResult:
+    prior_cycle_id: int
+    retry_cycle_id: int
+    branch: str
+    task_id: str
+    reason: str
+    already_authorized: bool
+    resume_mode: str
+
+
+class CandidateRetryError(RuntimeError):
     pass
 
 
@@ -392,13 +418,28 @@ class CandidateTools:
     def __init__(
         self,
         workspace: Path,
-        max_files: int = 8,
+        max_files: int = 500,
         protected_paths: Iterable[str] | None = None,
         existing_changed_paths: Iterable[str] | None = None,
         readable_paths: Iterable[str] | None = None,
+        *,
+        soft_file_budget: int = 100,
+        resource_store: CandidateResourceStore | None = None,
+        candidate_branch: str = "",
+        task_id: str = "",
+        cycle_id: int = 0,
+        max_zip_members: int = 2000,
+        max_zip_bytes: int = 1024 * 1024 * 1024,
     ) -> None:
         self.workspace = workspace.resolve()
-        self.max_files = max_files
+        self.max_files = max(1, int(max_files))
+        self.soft_file_budget = max(1, min(int(soft_file_budget), self.max_files))
+        self.resource_store = resource_store
+        self.candidate_branch = str(candidate_branch)
+        self.task_id = str(task_id)
+        self.cycle_id = int(cycle_id)
+        self.max_zip_members = max(1, int(max_zip_members))
+        self.max_zip_bytes = max(1, int(max_zip_bytes))
         self.protected_paths = {
             Path(item).as_posix()
             for item in (protected_paths or ())
@@ -440,6 +481,7 @@ class CandidateTools:
                 )
         self.files_written = existing
         self.files_read: set[Path] = set()
+        self.directories_created: set[Path] = set()
         self.write_count = 0
         self.failed_write_attempts: list[str] = []
 
@@ -447,12 +489,40 @@ class CandidateTools:
         raw = Path(relative_path)
         if raw.is_absolute():
             raise ValueError("Absolute paths are not allowed in candidate tools.")
-        path = (self.workspace / raw).resolve()
+        if any(part == ".." for part in raw.parts):
+            raise ValueError("Path escapes candidate workspace; traversal is not allowed.")
+        lexical = self.workspace / raw
+        current = self.workspace
+        for part in raw.parts:
+            current = current / part
+            if current.exists() and current.is_symlink():
+                raise ValueError("Symlinks are not allowed in candidate paths.")
+        path = lexical.resolve()
         if path != self.workspace and self.workspace not in path.parents:
             raise ValueError("Path escapes candidate workspace.")
         if any(part in _IGNORE_NAMES for part in path.relative_to(self.workspace).parts):
             raise ValueError("Protected candidate path.")
         return path
+
+    def create_project_directory(self, relative_path: str) -> str:
+        """Create an inert directory inside the candidate; it uses no file budget."""
+        try:
+            path = self._resolve(relative_path)
+            relative = path.relative_to(self.workspace).as_posix()
+            if relative in self.protected_paths:
+                raise PermissionError(
+                    f"Reviewer-controlled path cannot become a directory: {relative}"
+                )
+            if path == self.workspace:
+                return "Candidate workspace directory already exists."
+            path.mkdir(parents=True, exist_ok=True)
+            if path.is_symlink():
+                raise ValueError("Symlinks are not allowed in candidate paths.")
+        except Exception as exc:
+            self._record_failed_write(relative_path, exc)
+            raise
+        self.directories_created.add(path)
+        return f"Created directory {path.relative_to(self.workspace).as_posix()} (not counted as a file)."
 
     def list_project_files(self, max_results: int = 160) -> str:
         max_results = max(1, min(int(max_results), 300))
@@ -506,7 +576,10 @@ class CandidateTools:
             raise ValueError("Candidate file exceeds 1 MB safety limit.")
         reserved = set(self.files_written if reserved_paths is None else reserved_paths)
         if path not in reserved and len(reserved) >= self.max_files:
-            raise RuntimeError("Candidate file-write limit reached for this cycle.")
+            raise RuntimeError(
+                f"Candidate file-write limit (hard ceiling) reached "
+                f"({self.max_files} files); directories do not count."
+            )
         return path
 
     def validate_write_plan(self, changes: Iterable[PlannedChange]) -> tuple[Path, ...]:
@@ -542,6 +615,103 @@ class CandidateTools:
         self.files_written.add(path)
         self.write_count += 1
         return f"Wrote {path.relative_to(self.workspace).as_posix()} ({len(content)} chars)."
+
+    def complexity_report(self) -> str:
+        count = len(self.files_written)
+        level = "within_default_budget" if count <= self.soft_file_budget else "above_default_budget"
+        return (
+            f"candidate_files={count}\nsoft_budget={self.soft_file_budget}\n"
+            f"hard_ceiling={self.max_files}\ncomplexity={level}\n"
+            f"directories_created={len(self.directories_created)}"
+        )
+
+    def download_candidate_resource(self, url: str, filename: str = "resource.dat") -> str:
+        """Download one inert HTTPS resource with hash, source, quota, and task provenance."""
+        if self.resource_store is None:
+            raise RuntimeError("Candidate resource storage is unavailable in this stage.")
+        record = self.resource_store.download(
+            url,
+            filename,
+            candidate_branch=self.candidate_branch,
+            task_id=self.task_id,
+            cycle_id=self.cycle_id,
+        )
+        return (
+            f"Stored inert resource {record.path.name}: {record.size_bytes} bytes, "
+            f"sha256={record.sha256}, mime={record.mime_type}. It was not executed."
+        )
+
+    @staticmethod
+    def _safe_zip_member(name: str) -> str:
+        normalized = Path(name).as_posix()
+        if Path(normalized).is_absolute() or any(part in {"", ".", ".."} for part in Path(normalized).parts):
+            raise ValueError(f"Unsafe ZIP member path: {name}")
+        return normalized
+
+    def create_zip(self, archive_path: str, members: list[str]) -> str:
+        """Create a bounded, non-executing ZIP from candidate/resource files only.
+
+        Project members are relative paths. Prefix a resource filename with
+        ``resource:`` to include it from the candidate resource store.
+        """
+        if not isinstance(members, list) or not members:
+            raise ValueError("ZIP creation requires a non-empty member list.")
+        try:
+            destination = self._resolve(archive_path)
+            if destination.suffix.lower() != ".zip":
+                raise ValueError("Candidate archives must use the .zip extension.")
+            self.validate_project_write(archive_path, "")
+            sources: list[tuple[Path, str]] = []
+            for item in members:
+                token = str(item)
+                if token.startswith("resource:"):
+                    if self.resource_store is None:
+                        raise RuntimeError("Candidate resource storage is unavailable.")
+                    source = self.resource_store.resolve_relative(token.partition(":")[2])
+                    arc_prefix = f"resources/{source.name}"
+                else:
+                    source = self._resolve(token)
+                    arc_prefix = source.relative_to(self.workspace).as_posix()
+                if source.is_symlink():
+                    raise ValueError("Symlink ZIP members are not allowed.")
+                expanded = [source] if source.is_file() else sorted(source.rglob("*"))
+                if not source.exists():
+                    raise FileNotFoundError(f"ZIP source does not exist: {item}")
+                for child in expanded:
+                    if not child.is_file():
+                        continue
+                    if child.is_symlink() or any(parent.is_symlink() for parent in child.parents if parent != self.workspace):
+                        raise ValueError("Symlink ZIP members are not allowed.")
+                    if source.is_dir():
+                        member_name = f"{arc_prefix}/{child.relative_to(source).as_posix()}"
+                    else:
+                        member_name = arc_prefix
+                    sources.append((child, self._safe_zip_member(member_name)))
+            if len(sources) > self.max_zip_members:
+                raise RuntimeError("Candidate ZIP member-count limit exceeded.")
+            total = sum(path.stat().st_size for path, _ in sources)
+            if total > self.max_zip_bytes:
+                raise RuntimeError("Candidate ZIP input-size limit exceeded.")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
+            try:
+                with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    for source, member_name in sources:
+                        archive.write(source, member_name)
+                if temporary.stat().st_size > self.max_zip_bytes:
+                    raise RuntimeError("Candidate ZIP archive-size limit exceeded.")
+                os.replace(temporary, destination)
+            finally:
+                temporary.unlink(missing_ok=True)
+        except Exception as exc:
+            self._record_failed_write(archive_path, exc)
+            raise
+        self.files_written.add(destination)
+        self.write_count += 1
+        return (
+            f"Created inert ZIP {destination.relative_to(self.workspace).as_posix()} "
+            f"with {len(sources)} member(s); no content was executed."
+        )
 
     @staticmethod
     def _entry_token(value: str) -> str:
@@ -609,7 +779,10 @@ class CandidateTools:
         errors.extend(self._structural_errors())
         if errors:
             return "static_checks=failed\n" + "\n".join(errors[:50])
-        return f"static_checks=passed\npython_files={python_count}\ntoml_files={toml_count}"
+        return (
+            f"static_checks=passed\npython_files={python_count}\ntoml_files={toml_count}\n"
+            f"{self.complexity_report()}"
+        )
 
     def show_candidate_diff(self) -> str:
         completed = subprocess.run(
@@ -659,6 +832,38 @@ class SelfDeveloper:
         self.github = GitHubIntegration(self.root, config.github)
         self.progress = progress or (lambda _message: None)
         self._active_checkpoint: dict[str, Any] | None = None
+
+    def _candidate_tools(
+        self,
+        workspace: Path,
+        *,
+        branch: str,
+        task_id: str,
+        cycle_id: int,
+        force: bool,
+        protected_paths: Iterable[str] = (),
+        existing_changed_paths: Iterable[str] = (),
+    ) -> CandidateTools:
+        resource_store = CandidateResourceStore(
+            self.data_dir / "candidate-resources",
+            quota_bytes=int(self.config.selfdev.candidate_resource_quota_gb * 1024**3),
+            max_file_bytes=int(self.config.selfdev.max_resource_file_mb * 1024**2),
+            governor_check=lambda: self._check_resources(force, branch),
+            audit=self.audit,
+        )
+        return CandidateTools(
+            workspace,
+            self.config.selfdev.candidate_file_hard_ceiling,
+            protected_paths=protected_paths,
+            existing_changed_paths=existing_changed_paths,
+            soft_file_budget=self.config.selfdev.candidate_file_soft_budget,
+            resource_store=resource_store,
+            candidate_branch=branch,
+            task_id=task_id,
+            cycle_id=cycle_id,
+            max_zip_members=self.config.selfdev.max_zip_members,
+            max_zip_bytes=self.config.selfdev.max_zip_size_mb * 1024**2,
+        )
 
     def _emit(self, message: str) -> None:
         self.progress(message)
@@ -787,6 +992,74 @@ class SelfDeveloper:
                 reason=reason,
                 branch=context.get("branch") if context else None,
             )
+
+    def retry_candidate(self, identifier: str, *, reason: str) -> CandidateRetryResult:
+        """Human-authorize one policy-blocked local candidate to retry its same objective."""
+        durable = self.memory.candidate_for_identifier(identifier)
+        if durable is None:
+            raise CandidateRetryError(
+                "No LocalPilot-managed candidate matches that branch or task."
+            )
+        if not durable.branch.startswith("localpilot/candidate-"):
+            raise CandidateRetryError("Only LocalPilot candidate branches may be retried.")
+        stored_workspace = Path(durable.workspace).resolve() if durable.workspace else None
+        if stored_workspace == self.root:
+            raise CandidateRetryError("Refusing to retry in the trusted main checkout.")
+        registered = self.github.worktree_for_branch(durable.branch)
+        if registered is not None and stored_workspace is not None:
+            if registered.resolve() != stored_workspace:
+                raise CandidateRetryError(
+                    "Registered candidate worktree disagrees with durable learning state."
+                )
+        try:
+            checkpoint = self.checkpoints.load()
+        except Exception as exc:
+            raise CandidateRetryError(f"Retry refused because checkpoint state is invalid: {exc}") from exc
+        try:
+            retry = self.memory.authorize_policy_retry(identifier, reason=reason)
+        except ValueError as exc:
+            raise CandidateRetryError(str(exc)) from exc
+
+        checkpoint_cleared = False
+        if checkpoint is not None and checkpoint.branch == retry.branch:
+            checkpoint_cleared = self.checkpoints.clear()
+        if registered is not None:
+            resume_mode = "resume_existing_worktree"
+        elif stored_workspace is not None and stored_workspace.exists():
+            rebuild_workspace = (
+                self.data_dir
+                / "retries"
+                / f"cycle-{retry.retry_cycle_id}-{retry.branch.split('/')[-1]}"
+            )
+            self.memory.update_candidate_workspace(retry.retry_cycle_id, rebuild_workspace)
+            resume_mode = "rebuild_same_branch_and_objective_preserving_old_workspace"
+        else:
+            resume_mode = "restore_same_branch_and_objective"
+        self.audit.write(
+            "candidate_policy_retry_authorized",
+            status="already_authorized" if retry.already_authorized else "authorized",
+            prior_cycle_id=retry.prior_cycle_id,
+            retry_cycle_id=retry.retry_cycle_id,
+            branch=retry.branch,
+            task_id=retry.task_id,
+            reason=retry.reason,
+            failure_attribution="framework_policy",
+            candidate_idea_at_fault=False,
+            checkpoint_cleared=checkpoint_cleared,
+            resume_mode=resume_mode,
+            counters_reset=["local_repair_attempts", "write_integrity_failure"],
+            history_preserved=True,
+            promotion_performed=False,
+        )
+        return CandidateRetryResult(
+            retry.prior_cycle_id,
+            retry.retry_cycle_id,
+            retry.branch,
+            retry.task_id,
+            retry.reason,
+            retry.already_authorized,
+            resume_mode,
+        )
 
     def reject_candidate(
         self,
@@ -1010,7 +1283,7 @@ class SelfDeveloper:
         readable = self.github.tracked_project_paths()
         tools = CandidateTools(
             self.root,
-            self.config.selfdev.max_files_per_cycle,
+            self.config.selfdev.candidate_file_hard_ceiling,
             readable_paths=readable,
         )
         evidence_context = {
@@ -1563,7 +1836,11 @@ class SelfDeveloper:
                 functions=[
                     tools.list_project_files,
                     tools.read_project_file,
+                    tools.create_project_directory,
                     tools.write_project_file,
+                    tools.create_zip,
+                    tools.download_candidate_resource,
+                    tools.complexity_report,
                     tools.run_candidate_static_checks,
                     tools.show_candidate_diff,
                 ],
@@ -1810,7 +2087,11 @@ class SelfDeveloper:
                     functions=[
                         tools.list_project_files,
                         tools.read_project_file,
+                        tools.create_project_directory,
                         tools.write_project_file,
+                        tools.create_zip,
+                        tools.download_candidate_resource,
+                        tools.complexity_report,
                         tools.run_candidate_static_checks,
                         tools.show_candidate_diff,
                     ],
@@ -2039,6 +2320,7 @@ class SelfDeveloper:
                 reusable_lesson=lesson,
             )
             status_fields = evolution_status_fields(task)
+            resource_usage = tools.resource_store.usage()[0] if tools.resource_store else 0
             self.audit.write(
                 "selfdev_end",
                 branch=branch,
@@ -2046,6 +2328,14 @@ class SelfDeveloper:
                 checks_passed=delivery_validated,
                 files_read=len(tools.files_read),
                 files_written=len(tools.files_written),
+                file_soft_budget=tools.soft_file_budget,
+                file_hard_ceiling=tools.max_files,
+                complexity_above_default=len(tools.files_written) > tools.soft_file_budget,
+                directories_created=len(tools.directories_created),
+                candidate_resource_usage_bytes=resource_usage,
+                candidate_resource_quota_bytes=(
+                    tools.resource_store.quota_bytes if tools.resource_store else 0
+                ),
                 status=status,
                 summary=summary[:2000],
                 **status_fields,
@@ -2104,7 +2394,17 @@ class SelfDeveloper:
                 outcome=summary,
                 reusable_lesson=f"Handle {type(exc).__name__} before retrying this task.",
             )
-            self.audit.write("selfdev_end", branch=branch, task_id=task["id"], status=status, summary=summary)
+            self.audit.write(
+                "selfdev_end",
+                branch=branch,
+                task_id=task["id"],
+                status=status,
+                summary=summary,
+                files_written=len(tools.files_written),
+                file_soft_budget=tools.soft_file_budget,
+                file_hard_ceiling=tools.max_files,
+                directories_created=len(tools.directories_created),
+            )
             return EvolutionResult(status, branch, workspace, summary)
 
     def _resume_checkpoint_candidate(
@@ -2145,9 +2445,12 @@ class SelfDeveloper:
                 workspace,
                 refresh=False,
             )
-            tools = CandidateTools(
+            tools = self._candidate_tools(
                 workspace,
-                self.config.selfdev.max_files_per_cycle,
+                branch=checkpoint.branch,
+                task_id=candidate.task_id,
+                cycle_id=candidate.cycle_id,
+                force=force,
                 protected_paths=protected_paths,
                 existing_changed_paths=checkpoint.files_changed,
             )
@@ -2255,9 +2558,12 @@ class SelfDeveloper:
             return EvolutionResult("failed", branch, workspace, summary, False)
 
         try:
-            tools = CandidateTools(
+            tools = self._candidate_tools(
                 workspace,
-                self.config.selfdev.max_files_per_cycle,
+                branch=branch,
+                task_id=candidate.task_id,
+                cycle_id=candidate.cycle_id,
+                force=force,
                 protected_paths=protected_paths,
                 existing_changed_paths=changed_paths,
             )
@@ -2277,6 +2583,35 @@ class SelfDeveloper:
                 workspace,
                 summary,
                 False,
+            )
+        if candidate.human_authorized_retry:
+            selection = self._select_developer_model()
+            if selection.model is None:
+                return EvolutionResult(
+                    "deferred", branch, workspace, selection.reason, False
+                )
+            self.audit.write(
+                "candidate_policy_retry_resumed",
+                branch=branch,
+                task_id=candidate.task_id,
+                retry_cycle_id=candidate.cycle_id,
+                prior_cycle_id=candidate.retry_of_cycle_id,
+                reason=candidate.retry_reason,
+                failure_attribution="framework_policy",
+                same_objective=True,
+                existing_worktree=True,
+            )
+            return self._continue_candidate(
+                force=force,
+                cycle_id=candidate.cycle_id,
+                task=task,
+                branch=branch,
+                workspace=workspace,
+                is_worktree=True,
+                developer_model=selection.model,
+                tools=tools,
+                checkpoint=None,
+                local_repair_attempts=0,
             )
         self._activate_checkpoint(
             cycle_id=candidate.cycle_id,
@@ -2593,9 +2928,12 @@ class SelfDeveloper:
 
         existing_changed_paths = self.github.candidate_changed_paths(workspace)
         try:
-            tools = CandidateTools(
+            tools = self._candidate_tools(
                 workspace,
-                self.config.selfdev.max_files_per_cycle,
+                branch=branch,
+                task_id=candidate.task_id,
+                cycle_id=candidate.cycle_id,
+                force=force,
                 protected_paths=protected_paths,
                 existing_changed_paths=existing_changed_paths,
             )
@@ -2689,7 +3027,11 @@ class SelfDeveloper:
                 functions=[
                     tools.list_project_files,
                     tools.read_project_file,
+                    tools.create_project_directory,
                     tools.write_project_file,
+                    tools.create_zip,
+                    tools.download_candidate_resource,
+                    tools.complexity_report,
                     tools.run_candidate_static_checks,
                     tools.show_candidate_diff,
                 ],
@@ -3115,7 +3457,6 @@ class SelfDeveloper:
         branch = f"localpilot/candidate-{slug}-{stamp}"
         self._emit(f"Creating candidate for: {task['title']}")
         workspace, is_worktree = self._candidate_workspace(branch)
-        tools = CandidateTools(workspace, self.config.selfdev.max_files_per_cycle)
         cycle_id = self.memory.start_cycle(
             task_id=str(task["id"]),
             branch=branch,
@@ -3123,6 +3464,13 @@ class SelfDeveloper:
             developer_model=developer_model,
             workspace=workspace,
             is_worktree=is_worktree,
+        )
+        tools = self._candidate_tools(
+            workspace,
+            branch=branch,
+            task_id=str(task["id"]),
+            cycle_id=cycle_id,
+            force=force,
         )
         self.memory.attach_experiment_cycle(str(task["id"]), cycle_id, branch)
         status_fields = evolution_status_fields(task)

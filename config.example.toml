@@ -47,7 +47,16 @@ max_tool_rounds = 14
 # per-repair tool limit and a durable total-attempt limit.
 local_repair_tool_rounds = 6
 max_local_repair_attempts = 3
-max_files_per_cycle = 8
+# Complexity is reported after 100 files; only the bounded hard ceiling blocks.
+# Directories do not count as files.
+candidate_file_soft_budget = 100
+candidate_file_hard_ceiling = 500
+max_zip_members = 2000
+max_zip_size_mb = 1024
+# Candidate downloads are stored under localpilot-data/candidate-resources,
+# never in the repository root. They remain inert and provenance-tracked.
+candidate_resource_quota_gb = 8.0
+max_resource_file_mb = 512
 run_static_checks = true
 allow_local_candidate_execution = false
 learning_database = "learning.sqlite3"

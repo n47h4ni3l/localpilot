@@ -17,7 +17,7 @@ from localpilot.github_integration import GitHubIntegration
 from localpilot.learning import LearningMemory
 from localpilot.mission import mission_context
 from localpilot.resource import ResourceGovernor
-from localpilot.selfdev import CandidateRejectionError, SelfDeveloper
+from localpilot.selfdev import CandidateRejectionError, CandidateRetryError, SelfDeveloper
 from localpilot.study import STAGES, StudyEngine
 
 
@@ -52,6 +52,21 @@ def _show_status(console: Console, config, root: Path) -> None:
     table.add_row("User idle", f"{state.idle_seconds:.0f}s")
     table.add_row("CPU", f"{state.cpu_percent:.1f}%")
     table.add_row("Memory", f"{state.memory_percent:.1f}%")
+    resource_files = root / config.agent.data_dir / "candidate-resources" / "files"
+    resource_usage = sum(
+        path.stat().st_size
+        for path in resource_files.iterdir()
+        if resource_files.is_dir() and path.is_file() and not path.is_symlink()
+    ) if resource_files.is_dir() else 0
+    resource_quota = int(config.selfdev.candidate_resource_quota_gb * 1024**3)
+    table.add_row(
+        "Candidate resources",
+        f"{resource_usage / 1024**3:.2f} GiB / {resource_quota / 1024**3:.2f} GiB",
+    )
+    table.add_row(
+        "Candidate file budget",
+        f"soft {config.selfdev.candidate_file_soft_budget}; hard {config.selfdev.candidate_file_hard_ceiling}; directories free",
+    )
     table.add_row("Background self-dev", "available" if state.background_allowed else f"deferred — {state.reason}")
     audit = AuditLog(root / config.agent.data_dir / "audit.jsonl")
     last_evolve = audit.latest("evolve_run_end")
@@ -160,6 +175,19 @@ def _show_status(console: Console, config, root: Path) -> None:
         )
     else:
         table.add_row("Last rejected candidate", "No explicit human rejection recorded.")
+    retry = memory.latest_policy_retry()
+    if retry:
+        table.add_row(
+            "Human-authorized policy retry",
+            (
+                f"{retry.branch}\n"
+                f"task: {retry.task_id}\n"
+                f"retry cycle: {retry.cycle_id}; prior cycle: {retry.retry_of_cycle_id}\n"
+                f"reason: {retry.retry_reason}"
+            )[:1800],
+        )
+    else:
+        table.add_row("Human-authorized policy retry", "No policy-blocked candidate retry recorded.")
     curriculum = [memory.curriculum_state(stage) for stage in STAGES]
     active = next((item for item in curriculum if item.status != "improved"), curriculum[-1])
     curriculum_lines = []
@@ -287,6 +315,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Durable, non-interactive reason retained as learning evidence",
     )
+    retry = sub.add_parser(
+        "retry",
+        help="Human-authorize retry of a framework-policy-blocked local candidate",
+    )
+    retry.add_argument("candidate", help="Managed local candidate branch or task id")
+    retry.add_argument(
+        "--reason",
+        required=True,
+        help="Durable attribution and authorization reason",
+    )
     study = sub.add_parser(
         "study",
         help="Run benchmarked self-study; this does not train model weights",
@@ -367,6 +405,24 @@ def main() -> None:
             f"Reason: {result.reason}\n"
             f"Local cleanup: {result.worktree_cleanup}\n"
             "GitHub branch/history retained; no merge or promotion was performed."
+        )
+    elif args.command == "retry":
+        developer = SelfDeveloper(config, root, progress=_progress(console))
+        try:
+            result = developer.retry_candidate(args.candidate, reason=args.reason)
+        except CandidateRetryError as exc:
+            console.print(f"[red]Retry refused:[/red] {exc}")
+            raise SystemExit(1) from exc
+        state = "already authorized" if result.already_authorized else "authorized"
+        console.print(
+            f"[bold]Candidate retry {state}[/bold]\n"
+            f"Branch: {result.branch}\n"
+            f"Task: {result.task_id}\n"
+            f"Prior cycle: {result.prior_cycle_id}; retry cycle: {result.retry_cycle_id}\n"
+            f"Mode: {result.resume_mode}\n"
+            f"Reason: {result.reason}\n"
+            "Prior failure evidence was retained and attributed to framework policy. "
+            "No merge, promotion, or candidate execution was performed."
         )
     elif args.command == "study":
         memory = LearningMemory(root / config.agent.data_dir / config.selfdev.learning_database)

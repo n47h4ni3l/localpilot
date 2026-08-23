@@ -81,10 +81,65 @@ class LocalPilotAgent:
     def _functions(self):
         return [spec.fn for spec in self.tools.values() if self.policy.permits_without_confirmation(spec.risk)]
 
+    def _stream_chat_message(
+        self,
+        chat,
+        *,
+        think: bool | str,
+        tools: list[Any] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Accumulate one Ollama streaming turn without exposing its reasoning trace."""
+        kwargs: dict[str, Any] = {
+            "model": self.config.model.name,
+            "messages": self.messages,
+            "think": think,
+            "stream": True,
+            "options": options or {"temperature": self.config.model.temperature},
+        }
+        if tools is not None:
+            kwargs["tools"] = tools
+
+        thinking_parts: list[str] = []
+        content_parts: list[str] = []
+        tool_calls: list[Any] = []
+        chunk_count = 0
+        for chunk in chat(**kwargs):
+            chunk_count += 1
+            message = chunk.message
+            thinking = str(getattr(message, "thinking", "") or "")
+            content = str(getattr(message, "content", "") or "")
+            calls = getattr(message, "tool_calls", None) or []
+            if thinking:
+                thinking_parts.append(thinking)
+            if content:
+                content_parts.append(content)
+            if calls:
+                tool_calls.extend(calls)
+
+        result: dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(content_parts),
+        }
+        if thinking_parts:
+            result["thinking"] = "".join(thinking_parts)
+        if tool_calls:
+            result["tool_calls"] = tool_calls
+        self.audit.write(
+            "model_stream_complete",
+            model=self.config.model.name,
+            think=think,
+            chunks=chunk_count,
+            reasoning_present=bool(thinking_parts),
+            content_chars=sum(len(item) for item in content_parts),
+            tool_calls=len(tool_calls),
+        )
+        return result
+
     def _finalize_reasoning_only_response(self, chat, *, round_no: int) -> str:
         """Turn a completed reasoning-only pass into a visible answer without redoing the work."""
-        # Do not feed the model's hidden reasoning trace back through conversation memory.
-        # The finalizer gets the prior user/tool evidence plus a neutral marker only.
+        # Do not feed the final reasoning-only trace back through conversation memory.
+        # The finalizer gets prior user/tool evidence plus a neutral marker only.
         self.messages[-1] = {
             "role": "assistant",
             "content": "[A reasoning pass completed, but no final answer was emitted.]",
@@ -107,15 +162,17 @@ class LocalPilotAgent:
             finalizer_think="low",
             round=round_no,
         )
-        final_response = chat(
-            model=self.config.model.name,
-            messages=self.messages,
+        final_response = self._stream_chat_message(
+            chat,
             think="low",
-            options={"temperature": self.config.model.temperature},
+            options={
+                "temperature": self.config.model.temperature,
+                "num_predict": 2048,
+            },
         )
-        self.messages.append(final_response.message)
-        final_content = str(final_response.message.content or "")
-        final_thinking = str(getattr(final_response.message, "thinking", "") or "")
+        self.messages.append(final_response)
+        final_content = str(final_response.get("content") or "")
+        final_thinking = str(final_response.get("thinking") or "")
         if final_content.strip():
             self.audit.write(
                 "model_finalization_succeeded",
@@ -134,8 +191,8 @@ class LocalPilotAgent:
             reasoning_present=bool(final_thinking.strip()),
         )
         return (
-            f"[LocalPilot completed a {self.config.model.think} reasoning pass, but its low-effort "
-            "finalization pass also returned no final answer.]"
+            f"[LocalPilot completed a {self.config.model.think} reasoning pass, but its streamed "
+            "low-effort finalization pass also returned no final answer.]"
         )
 
     def ask(self, prompt: str) -> str:
@@ -151,18 +208,16 @@ class LocalPilotAgent:
         for round_no in range(self.config.agent.max_tool_rounds):
             state = self.governor.sample(interval=0.02)
             self.governor.apply_process_priority(idle=state.background_allowed)
-            response = chat(
-                model=self.config.model.name,
-                messages=self.messages,
-                tools=self._functions(),
+            response = self._stream_chat_message(
+                chat,
                 think=self.config.model.think,
-                options={"temperature": self.config.model.temperature},
+                tools=self._functions(),
             )
-            self.messages.append(response.message)
-            calls = response.message.tool_calls or []
+            self.messages.append(response)
+            calls = response.get("tool_calls") or []
             if not calls:
-                content = str(response.message.content or "")
-                thinking = str(getattr(response.message, "thinking", "") or "")
+                content = str(response.get("content") or "")
+                thinking = str(response.get("thinking") or "")
                 if content.strip():
                     return content
                 if thinking.strip():

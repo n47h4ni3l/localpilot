@@ -20,7 +20,9 @@ class ModelConfig:
 
     provider: str = "ollama"
     name: str = "gpt-oss:20b"
-    think: bool = True
+    # GPT-OSS requires an explicit low/medium/high reasoning level. High is the
+    # default because LocalPilot's mission favors careful reasoning over speed.
+    think: bool | str = "high"
     temperature: float = 0.1
 
 
@@ -107,6 +109,34 @@ def _apply(instance: Any, values: dict[str, Any]) -> Any:
     return instance
 
 
+def _normalize_model_thinking(cfg: Config) -> None:
+    think = cfg.model.think
+    model_name = cfg.model.name.lower()
+    if "gpt-oss" in model_name:
+        # Ollama ignores boolean think values for GPT-OSS. Migrate old configs
+        # rather than silently leaving the model at an undefined effort level.
+        if think is True:
+            cfg.model.think = "high"
+        elif think is False:
+            cfg.model.think = "low"
+        elif isinstance(think, str):
+            normalized = think.strip().lower()
+            if normalized not in {"low", "medium", "high"}:
+                raise ValueError("GPT-OSS model.think must be low, medium, or high")
+            cfg.model.think = normalized
+        else:
+            raise ValueError("GPT-OSS model.think must be low, medium, or high")
+        return
+
+    if isinstance(think, str):
+        normalized = think.strip().lower()
+        if normalized not in {"low", "medium", "high", "max"}:
+            raise ValueError("model.think string must be low, medium, high, or max")
+        cfg.model.think = normalized
+    elif not isinstance(think, bool):
+        raise ValueError("model.think must be a boolean or supported reasoning level")
+
+
 def load_config(path: str | Path | None = None) -> Config:
     cfg = Config()
     chosen = Path(path) if path else Path(os.environ.get("LOCALPILOT_CONFIG", "localpilot.toml"))
@@ -132,6 +162,8 @@ def load_config(path: str | Path | None = None) -> Config:
             )
         cfg.source_path = chosen.resolve()
 
+    _normalize_model_thinking(cfg)
+
     # Promotion is a human/repository action, never an autonomous config knob.
     if cfg.selfdev.auto_promote:
         raise ValueError("selfdev.auto_promote cannot be enabled; candidates require review and merge")
@@ -146,4 +178,3 @@ def load_config(path: str | Path | None = None) -> Config:
     if cfg.selfdev.candidate_resource_quota_gb <= 0 or cfg.selfdev.max_resource_file_mb < 1:
         raise ValueError("candidate resource limits must be positive")
     return cfg
-

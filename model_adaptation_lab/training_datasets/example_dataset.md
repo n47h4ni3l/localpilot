@@ -1,0 +1,1 @@
+This is an example dataset for training model adapters or weights.

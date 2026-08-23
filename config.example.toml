@@ -41,9 +41,6 @@ enabled = true
 # skipped when loading it would exceed the background memory ceiling.
 developer_model = "qwen2.5:32b"
 developer_model_fallbacks = ["qwen2.5:14b"]
-# Context budget intended for repository research/coding tool loops. This is
-# separate from the everyday operator setting because developer models differ.
-context_tokens = 32768
 # Reserve space beyond the model file size for context/KV cache.
 model_memory_overhead_gb = 1.0
 # Unload after every response so a pause returns RAM/VRAM immediately.

@@ -99,21 +99,22 @@ def fetch_public_https(url: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
             if not (content_type.startswith("text/") or content_type in _ALLOWED_CONTENT_TYPES):
                 raise ValueError(f"Internet reader does not expose binary content type: {content_type}")
             announced = response.headers.get("Content-Length")
+            announced_size = None
             if announced:
                 try:
-                    if int(announced) > _MAX_DOWNLOAD_BYTES:
-                        raise ValueError("HTTPS response exceeds the bounded download limit.")
-                except ValueError as exc:
-                    if str(exc) == "HTTPS response exceeds the bounded download limit.":
-                        raise
+                    announced_size = int(announced)
+                except (TypeError, ValueError):
+                    announced_size = None
+            if announced_size is not None and announced_size > _MAX_DOWNLOAD_BYTES:
+                raise ValueError("HTTPS response exceeds the bounded download limit.")
             payload = response.read(_MAX_DOWNLOAD_BYTES + 1)
+            charset = response.headers.get_content_charset() or "utf-8"
     except urllib.error.HTTPError as exc:
         raise ValueError(f"HTTPS request failed with status {exc.code}.") from exc
     except urllib.error.URLError as exc:
         raise ValueError(f"HTTPS request failed: {exc.reason}") from exc
     if len(payload) > _MAX_DOWNLOAD_BYTES:
         raise ValueError("HTTPS response exceeds the bounded download limit.")
-    charset = response.headers.get_content_charset() or "utf-8"
     try:
         text = payload.decode(charset, errors="strict")
     except (LookupError, UnicodeDecodeError) as exc:

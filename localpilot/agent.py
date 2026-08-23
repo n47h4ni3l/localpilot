@@ -81,6 +81,63 @@ class LocalPilotAgent:
     def _functions(self):
         return [spec.fn for spec in self.tools.values() if self.policy.permits_without_confirmation(spec.risk)]
 
+    def _finalize_reasoning_only_response(self, chat, *, round_no: int) -> str:
+        """Turn a completed reasoning-only pass into a visible answer without redoing the work."""
+        # Do not feed the model's hidden reasoning trace back through conversation memory.
+        # The finalizer gets the prior user/tool evidence plus a neutral marker only.
+        self.messages[-1] = {
+            "role": "assistant",
+            "content": "[A reasoning pass completed, but no final answer was emitted.]",
+        }
+        finalizer_message = {
+            "role": "user",
+            "content": (
+                "Return only the final answer to my original request using the evidence already gathered in "
+                "this conversation. Do not redo the investigation and do not invent repository facts that "
+                "were not verified by tool results. If the available evidence is insufficient, say what remains "
+                "unverified. If you intentionally choose not to answer, say exactly: "
+                "I choose not to provide a final answer."
+            ),
+        }
+        self.messages.append(finalizer_message)
+        self.audit.write(
+            "model_finalization_retry",
+            model=self.config.model.name,
+            primary_think=self.config.model.think,
+            finalizer_think="low",
+            round=round_no,
+        )
+        final_response = chat(
+            model=self.config.model.name,
+            messages=self.messages,
+            think="low",
+            options={"temperature": self.config.model.temperature},
+        )
+        self.messages.append(final_response.message)
+        final_content = str(final_response.message.content or "")
+        final_thinking = str(getattr(final_response.message, "thinking", "") or "")
+        if final_content.strip():
+            self.audit.write(
+                "model_finalization_succeeded",
+                model=self.config.model.name,
+                primary_think=self.config.model.think,
+                finalizer_think="low",
+                round=round_no,
+            )
+            return final_content
+        self.audit.write(
+            "model_finalization_empty",
+            model=self.config.model.name,
+            primary_think=self.config.model.think,
+            finalizer_think="low",
+            round=round_no,
+            reasoning_present=bool(final_thinking.strip()),
+        )
+        return (
+            f"[LocalPilot completed a {self.config.model.think} reasoning pass, but its low-effort "
+            "finalization pass also returned no final answer.]"
+        )
+
     def ask(self, prompt: str) -> str:
         if self.config.model.provider.lower() != "ollama":
             raise RuntimeError("v0.1 supports Ollama only.")
@@ -116,10 +173,7 @@ class LocalPilotAgent:
                         round=round_no,
                         reasoning_present=True,
                     )
-                    return (
-                        f"[LocalPilot completed a {self.config.model.think} reasoning pass "
-                        "but returned no final answer.]"
-                    )
+                    return self._finalize_reasoning_only_response(chat, round_no=round_no)
                 if not retried_empty_response and round_no + 1 < self.config.agent.max_tool_rounds:
                     retried_empty_response = True
                     retry_message = {

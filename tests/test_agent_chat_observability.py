@@ -106,9 +106,16 @@ def test_tool_investigation_continues_in_same_high_reasoning_context(tmp_path, m
     assert config.model.think == "high"
 
 
-def test_explicit_repository_request_cannot_finish_before_attempting_evidence(tmp_path, monkeypatch):
+def test_explicit_repository_and_github_request_cannot_finish_before_both_are_attempted(
+    tmp_path, monkeypatch
+):
     _, agent = _agent(tmp_path)
     (tmp_path / "known.txt").write_text("verified", encoding="utf-8")
+    github_spec = agent.tools["get_github_pull_request"]
+    agent.tools["get_github_pull_request"] = SimpleNamespace(
+        risk=github_spec.risk,
+        fn=lambda number: f"Private GitHub PR #{number} verified",
+    )
     calls = []
     message_snapshots = []
     streams = iter(
@@ -116,14 +123,18 @@ def test_explicit_repository_request_cannot_finish_before_attempting_evidence(tm
             [_chunk(content="I cannot inspect the repository because I have no evidence or access.")],
             [
                 _chunk(
-                    thinking="I should use the repository tool.",
+                    thinking="I should use both evidence sources.",
                     tool_calls=[
-                        _call("list_repository_tree", {"path": ".", "depth": 1, "max_entries": 50})
+                        _call(
+                            "list_repository_tree",
+                            {"path": ".", "depth": 1, "max_entries": 50},
+                        ),
+                        _call("get_github_pull_request", {"number": 30}),
                     ],
                 )
             ],
-            [_chunk(content="I found the repository tree.")],
-            [_chunk(content="Verified: known.txt exists in the repository.")],
+            [_chunk(content="I found the requested evidence.")],
+            [_chunk(content="Verified: known.txt exists and private GitHub PR #30 was inspected.")],
         ]
     )
 
@@ -140,12 +151,61 @@ def test_explicit_repository_request_cannot_finish_before_attempting_evidence(tm
     )
     answer = agent.ask(prompt)
 
-    assert answer == "Verified: known.txt exists in the repository."
+    assert answer == "Verified: known.txt exists and private GitHub PR #30 was inspected."
     assert len(calls) == 4
     assert all("tools" in call for call in calls)
-    assert "you have not attempted any tool this turn" in str(message_snapshots[1]).lower()
+    assert "you have not yet attempted" in str(message_snapshots[1]).lower()
+    assert "trusted repository" in str(message_snapshots[1]).lower()
+    assert "private github" in str(message_snapshots[1]).lower()
+    assert any(
+        message.get("role") == "tool" and "Private GitHub PR #30 verified" in str(message.get("content"))
+        for message in message_snapshots[2]
+    )
     assert "I cannot inspect the repository" not in str(agent.messages)
-    assert "you have not attempted any tool this turn" not in str(agent.messages).lower()
+    assert "you have not yet attempted" not in str(agent.messages).lower()
+
+
+def test_wrong_tool_does_not_satisfy_required_repository_evidence(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path)
+    calls = []
+    streams = iter(
+        [
+            [
+                _chunk(
+                    tool_calls=[_call("get_system_summary")]
+                )
+            ],
+            [_chunk(content="I used a tool, so I can answer now.")],
+            [
+                _chunk(
+                    tool_calls=[
+                        _call(
+                            "list_repository_tree",
+                            {"path": ".", "depth": 1, "max_entries": 50},
+                        )
+                    ]
+                )
+            ],
+            [_chunk(content="The repository was actually inspected.")],
+            [_chunk(content="Final grounded answer.")],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask("Inspect the actual LocalPilot repository before answering.")
+
+    assert answer == "Final grounded answer."
+    assert len(calls) == 5
+    assert any(
+        event.get("role") == "tool" and event.get("tool_name") == "list_repository_tree"
+        for event in agent.messages
+        if isinstance(event, dict)
+    )
 
 
 def test_post_tool_review_can_choose_to_collect_more_evidence(tmp_path, monkeypatch):
@@ -157,7 +217,10 @@ def test_post_tool_review_can_choose_to_collect_more_evidence(tmp_path, monkeypa
             [
                 _chunk(
                     tool_calls=[
-                        _call("list_repository_tree", {"path": ".", "depth": 1, "max_entries": 50})
+                        _call(
+                            "list_repository_tree",
+                            {"path": ".", "depth": 1, "max_entries": 50},
+                        )
                     ]
                 )
             ],
@@ -166,7 +229,10 @@ def test_post_tool_review_can_choose_to_collect_more_evidence(tmp_path, monkeypa
                 _chunk(
                     thinking="I need the file contents too.",
                     tool_calls=[
-                        _call("read_repository_file", {"path": "known.txt", "start_line": 1, "end_line": 10})
+                        _call(
+                            "read_repository_file",
+                            {"path": "known.txt", "start_line": 1, "end_line": 10},
+                        )
                     ],
                 )
             ],
@@ -192,7 +258,9 @@ def test_post_tool_review_can_choose_to_collect_more_evidence(tmp_path, monkeypa
     )
 
 
-def test_repository_evidence_requirement_fails_visibly_after_two_ignored_recoveries(tmp_path, monkeypatch):
+def test_repository_evidence_requirement_fails_visibly_after_two_ignored_recoveries(
+    tmp_path, monkeypatch
+):
     _, agent = _agent(tmp_path)
     calls = []
 
@@ -205,11 +273,13 @@ def test_repository_evidence_requirement_fails_visibly_after_two_ignored_recover
     answer = agent.ask("Inspect the actual LocalPilot repository and review PR #30.")
 
     assert len(calls) == 3
-    assert "did not attempt an available read-only tool" in answer
+    assert "did not attempt the relevant available read-only source" in answer
     assert "I still cannot inspect it." not in str(agent.messages)
 
 
-def test_reasoning_only_turn_continues_in_same_high_context_with_explicit_context(tmp_path, monkeypatch):
+def test_reasoning_only_turn_continues_in_same_high_context_with_explicit_context(
+    tmp_path, monkeypatch
+):
     _, agent = _agent(tmp_path)
     calls = []
     message_snapshots = []
@@ -244,7 +314,9 @@ def test_reasoning_only_turn_continues_in_same_high_context_with_explicit_contex
     assert "private second reasoning" not in str(agent.messages)
 
 
-def test_generic_reset_during_forced_final_answer_gets_one_same_context_retry(tmp_path, monkeypatch):
+def test_generic_reset_during_forced_final_answer_gets_one_same_context_retry(
+    tmp_path, monkeypatch
+):
     _, agent = _agent(tmp_path)
     calls = []
     streams = iter(

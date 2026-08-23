@@ -637,6 +637,9 @@ class LocalPilotAgent:
                 if calls:
                     used_tools = True
                     if not allow_tools:
+                        # The assistant tool-call message and matching blocked tool result are transient control
+                        # protocol. Remove both after this owner turn so the next turn cannot inherit an orphaned call.
+                        internal_messages.append(response)
                         requested: list[str] = []
                         for call in calls:
                             name, _ = self._tool_call_parts(call)
@@ -657,6 +660,27 @@ class LocalPilotAgent:
                             tool_rounds=tool_rounds_used,
                             requested_tools=requested,
                         )
+                        missing_required = evidence_requirements - succeeded_evidence
+                        if missing_required:
+                            marker = (
+                                "[LocalPilot reached the hard research ceiling before successfully acquiring all "
+                                "required direct evidence. Missing: "
+                                + ", ".join(sorted(missing_required))
+                                + ".]"
+                            )
+                            self.messages.append({"role": "assistant", "content": marker})
+                            self.audit.write(
+                                "model_evidence_acquisition_failed",
+                                model=self.config.model.name,
+                                think=self.config.model.think,
+                                round=turn_no,
+                                hard_limit=True,
+                                missing=sorted(missing_required),
+                                attempted=sorted(attempted_evidence),
+                                succeeded=sorted(succeeded_evidence),
+                                failed=sorted(failed_evidence),
+                            )
+                            return marker
                         return self._continue_high_reasoning_answer(
                             chat,
                             prompt=prompt,
@@ -719,8 +743,6 @@ class LocalPilotAgent:
                             except Exception as exc:
                                 result = f"Tool error: {type(exc).__name__}: {exc}"
                             ok = self._tool_result_success(result)
-                            # Only successful observations are reusable. A transient/auth/read failure must
-                            # remain retryable with the same arguments later in the turn.
                             if cacheable and ok:
                                 observation_cache[cache_key] = (str(result), ok, evidence_source)
 

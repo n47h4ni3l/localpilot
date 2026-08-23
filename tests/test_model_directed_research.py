@@ -99,6 +99,54 @@ def test_hard_research_ceiling_blocks_remembered_tool_call(tmp_path, monkeypatch
     assert "tools" in calls[0]
     assert "tools" not in calls[1]
     assert "tools" not in calls[2]
+    # The blocked remembered call is transient. Only the legitimate first tool call remains in history.
+    persisted_calls = [
+        message for message in agent.messages
+        if isinstance(message, dict) and message.get("role") == "assistant" and message.get("tool_calls")
+    ]
+    assert len(persisted_calls) == 1
+    assert "read_repository_file" not in str(persisted_calls[0].get("tool_calls"))
+    assert not any(
+        isinstance(message, dict)
+        and message.get("role") == "tool"
+        and "hard research safety ceiling" in str(message.get("content"))
+        for message in agent.messages
+    )
+
+
+def test_hard_ceiling_cannot_bypass_missing_required_evidence(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path, soft=1, hard=1)
+    gh = agent.tools["get_github_pull_request"]
+    invocations = 0
+
+    def failed_read(number):
+        nonlocal invocations
+        invocations += 1
+        return "GitHub read failed: temporary auth error"
+
+    agent.tools["get_github_pull_request"] = SimpleNamespace(risk=gh.risk, fn=failed_read)
+    streams = iter(
+        [
+            [_chunk(tool_calls=[_call("get_github_pull_request", {"number": 30})])],
+            [_chunk(thinking="I still want the PR.", tool_calls=[_call("get_github_pull_request", {"number": 30})])],
+        ]
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "ollama",
+        SimpleNamespace(chat=lambda **kwargs: iter(next(streams))),
+    )
+
+    answer = agent.ask("Review PR #30 from private GitHub before answering.")
+
+    assert "hard research ceiling" in answer
+    assert "private GitHub" in answer
+    assert invocations == 1
+    persisted_calls = [
+        message for message in agent.messages
+        if isinstance(message, dict) and message.get("role") == "assistant" and message.get("tool_calls")
+    ]
+    assert len(persisted_calls) == 1
 
 
 def test_identical_read_only_observation_is_not_executed_twice(tmp_path, monkeypatch):

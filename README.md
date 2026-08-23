@@ -172,14 +172,14 @@ localpilot reject 19 --reason "Green CI was insufficient: the candidate referenc
 
 The command resolves the PR through GitHub, refuses branches that are not both `localpilot/candidate-*` and owned by durable LocalPilot cycle memory, and records `rejected_by_human` before any local cleanup. It retains the prior CI state, PR, branch, task, experiment evidence, and rejection reason as reusable discovery context. The rejection clears the one-candidate gate and removes only a matching checkpoint and clean registered candidate worktree. It does not merge, promote, close the PR, delete the branch, or remove GitHub history. Running the same rejection again is safe and preserves the original reason.
 
-When durable evidence shows that a local candidate failed because the framework rejected otherwise valid construction, a human may authorize one linked retry of the same objective:
+When durable evidence shows that a candidate failed because the framework rejected otherwise valid construction, a human may authorize one linked retry of the same objective:
 
 ```powershell
 localpilot retry localpilot/candidate-model-adaptation-lab-20260823-003946 --reason "Framework policy—not the candidate idea—blocked valid directory and file construction."
 localpilot evolve --force
 ```
 
-The retry command fails closed for unrelated, pushed, rejected, unowned, or non-policy failures. It makes the prior cycle terminal as `policy_blocked`, preserves its summary, rejected-write evidence, lesson, and counters, records the failure attribution as `framework_policy`, and creates a linked human-authorized retry cycle with only its bounded repair counters reset. A registered worktree is resumed; otherwise LocalPilot restores the same managed branch and objective. The next evolve invocation re-enters the full research/implementation stage. Repeating the command is idempotent. It never executes, merges, or promotes the candidate.
+The retry command fails closed for unrelated, merged/promoted, explicitly rejected, unowned, unverifiable, or non-policy failures. An unpushed local candidate may resume its managed branch. A pushed-but-unmerged candidate is first verified against its remote branch and all matching PRs, then its prior cycle becomes terminal as `policy_blocked` while retaining its pushed flag, CI/PR state, branch, workspace, summary, rejected-write evidence, lesson, and counters. Its linked retry uses the same task on a distinct deterministic branch created from clean current trusted `main`, so the original pushed commit and any open or closed PR remain untouched and unambiguous. Only the new cycle is outstanding. The next evolve invocation re-enters the full research/implementation stage, even though the fresh retry branch initially has no diff. Repeating the command returns the existing linkage. It never executes, closes, deletes, merges, or promotes a candidate.
 
 Candidate implementation tools may also create bounded ZIP archives and fetch inert resources over public HTTPS. Resources live under `localpilot-data/candidate-resources`, outside the repository, with URL/final URL, timestamp, SHA-256, MIME/extension, size, branch, task, and cycle provenance. Changed content marks prior records stale. Executables/installers are blocked, downloads are interruptible and quota-bound, and storage never implies execution or trust.
 
@@ -251,7 +251,7 @@ localpilot study run self
 # Reject a managed candidate while retaining its evidence and GitHub history
 localpilot reject 19 --reason "Candidate references a missing required script."
 
-# Retry a managed local candidate when durable evidence attributes its failure to framework policy
+# Retry a managed local or pushed-unmerged candidate when durable evidence attributes its failure to framework policy
 localpilot retry localpilot/candidate-model-adaptation-lab-20260823-003946 --reason "Framework policy—not the candidate idea—blocked valid construction."
 
 # Run one normal gated evolution invocation

@@ -27,7 +27,7 @@ from localpilot.evolution import (
     parse_capability_proposals,
     select_capability_proposal,
 )
-from localpilot.github_integration import GitHubIntegration
+from localpilot.github_integration import GitHubIntegration, is_managed_candidate_branch
 from localpilot.learning import LearningMemory
 from localpilot.mission import mission_context
 from localpilot.resource import ResourceGovernor
@@ -81,6 +81,7 @@ class CandidateRejectionError(RuntimeError):
 class CandidateRetryResult:
     prior_cycle_id: int
     retry_cycle_id: int
+    prior_branch: str
     branch: str
     task_id: str
     reason: str
@@ -994,14 +995,22 @@ class SelfDeveloper:
             )
 
     def retry_candidate(self, identifier: str, *, reason: str) -> CandidateRetryResult:
-        """Human-authorize one policy-blocked local candidate to retry its same objective."""
+        """Human-authorize one policy-blocked candidate to retry its same objective."""
         durable = self.memory.candidate_for_identifier(identifier)
         if durable is None:
             raise CandidateRetryError(
                 "No LocalPilot-managed candidate matches that branch or task."
             )
-        if not durable.branch.startswith("localpilot/candidate-"):
+        if not is_managed_candidate_branch(durable.branch):
             raise CandidateRetryError("Only LocalPilot candidate branches may be retried.")
+        if (
+            durable.validation_state == "rejected_by_human"
+            or durable.status == "rejected_by_human"
+            or durable.rejected_at is not None
+        ):
+            raise CandidateRetryError(
+                "Retry refused: the candidate was explicitly rejected by a human."
+            )
         stored_workspace = Path(durable.workspace).resolve() if durable.workspace else None
         if stored_workspace == self.root:
             raise CandidateRetryError("Refusing to retry in the trusted main checkout.")
@@ -1015,15 +1024,97 @@ class SelfDeveloper:
             checkpoint = self.checkpoints.load()
         except Exception as exc:
             raise CandidateRetryError(f"Retry refused because checkpoint state is invalid: {exc}") from exc
+
+        lifecycle = None
+        existing_link = (
+            durable.human_authorized_retry
+            or durable.retried_by_cycle_id is not None
+        )
+        if durable.pushed and not existing_link:
+            lifecycle = self.github.candidate_lifecycle(durable.branch)
+            if lifecycle.remote_branch_exists is not True:
+                raise CandidateRetryError(
+                    "Retry refused: the original pushed branch could not be verified on the remote."
+                )
+            if lifecycle.merged or lifecycle.pull_request_state == "merged":
+                self.memory.update_candidate_review(
+                    durable.cycle_id,
+                    validation_state=lifecycle.validation_state,
+                    merged=True,
+                    pull_request_url=lifecycle.pull_request_url,
+                )
+                raise CandidateRetryError(
+                    "Retry refused: the candidate branch has already been merged or promoted."
+                )
+            if lifecycle.pull_request_state not in {"open", "closed", "none"}:
+                raise CandidateRetryError(
+                    "Retry refused: GitHub pull-request state could not be verified."
+                )
+            self.memory.update_candidate_review(
+                durable.cycle_id,
+                validation_state=lifecycle.validation_state,
+                merged=False,
+                pull_request_url=lifecycle.pull_request_url,
+            )
         try:
-            retry = self.memory.authorize_policy_retry(identifier, reason=reason)
+            retry = self.memory.authorize_policy_retry(
+                identifier,
+                reason=reason,
+                remote_branch_verified=(
+                    lifecycle.remote_branch_exists is True if lifecycle is not None else False
+                ),
+                remote_merged=(lifecycle.merged if lifecycle is not None else None),
+                pull_request_state=(
+                    lifecycle.pull_request_state if lifecycle is not None else "unknown"
+                ),
+            )
         except ValueError as exc:
             raise CandidateRetryError(str(exc)) from exc
 
         checkpoint_cleared = False
-        if checkpoint is not None and checkpoint.branch == retry.branch:
+        if checkpoint is not None and checkpoint.branch in {retry.prior_branch, retry.branch}:
             checkpoint_cleared = self.checkpoints.clear()
-        if registered is not None:
+        if retry.branch != retry.prior_branch:
+            retry_candidate = self.memory.candidate_for_cycle(retry.retry_cycle_id)
+            retry_workspace = (
+                Path(retry_candidate.workspace).resolve()
+                if retry_candidate is not None and retry_candidate.workspace
+                else (
+                    self.data_dir
+                    / "retries"
+                    / f"cycle-{retry.retry_cycle_id}-{retry.branch.split('/')[-1]}"
+                ).resolve()
+            )
+            registered_retry = self.github.worktree_for_branch(retry.branch)
+            if registered_retry is not None:
+                if retry_candidate is not None and retry_candidate.workspace:
+                    if registered_retry.resolve() != retry_workspace:
+                        raise CandidateRetryError(
+                            "Registered retry worktree disagrees with durable learning state."
+                        )
+                retry_workspace = registered_retry.resolve()
+            else:
+                created = self.github.create_policy_retry_worktree(
+                    retry.branch,
+                    retry_workspace,
+                )
+                if not created.ok:
+                    detail = created.stderr or created.stdout or "unknown Git error"
+                    self.audit.write(
+                        "candidate_policy_retry_worktree_failed",
+                        prior_cycle_id=retry.prior_cycle_id,
+                        retry_cycle_id=retry.retry_cycle_id,
+                        prior_branch=retry.prior_branch,
+                        branch=retry.branch,
+                        reason=detail[:2000],
+                        history_preserved=True,
+                    )
+                    raise CandidateRetryError(
+                        f"Retry was linked but its fresh worktree could not be created: {detail}"
+                    )
+            self.memory.update_candidate_workspace(retry.retry_cycle_id, retry_workspace)
+            resume_mode = "fresh_retry_branch_from_trusted_main_preserving_pushed_history"
+        elif registered is not None:
             resume_mode = "resume_existing_worktree"
         elif stored_workspace is not None and stored_workspace.exists():
             rebuild_workspace = (
@@ -1035,11 +1126,13 @@ class SelfDeveloper:
             resume_mode = "rebuild_same_branch_and_objective_preserving_old_workspace"
         else:
             resume_mode = "restore_same_branch_and_objective"
+        prior_candidate = self.memory.candidate_for_cycle(retry.prior_cycle_id)
         self.audit.write(
             "candidate_policy_retry_authorized",
             status="already_authorized" if retry.already_authorized else "authorized",
             prior_cycle_id=retry.prior_cycle_id,
             retry_cycle_id=retry.retry_cycle_id,
+            prior_branch=retry.prior_branch,
             branch=retry.branch,
             task_id=retry.task_id,
             reason=retry.reason,
@@ -1049,11 +1142,22 @@ class SelfDeveloper:
             resume_mode=resume_mode,
             counters_reset=["local_repair_attempts", "write_integrity_failure"],
             history_preserved=True,
+            prior_pushed=prior_candidate.pushed if prior_candidate is not None else False,
+            prior_pull_request_url=(
+                lifecycle.pull_request_url
+                if lifecycle is not None
+                else prior_candidate.pull_request_url if prior_candidate is not None else None
+            ),
+            prior_pull_request_state=(
+                lifecycle.pull_request_state if lifecycle is not None else "previously_verified"
+            ),
+            fresh_retry_branch=retry.branch != retry.prior_branch,
             promotion_performed=False,
         )
         return CandidateRetryResult(
             retry.prior_cycle_id,
             retry.retry_cycle_id,
+            retry.prior_branch,
             retry.branch,
             retry.task_id,
             retry.reason,
@@ -2536,7 +2640,7 @@ class SelfDeveloper:
 
         changed_paths = self.github.candidate_changed_paths(workspace)
         has_commit = self.github.branch_has_candidate_commit(workspace)
-        if not changed_paths and not has_commit:
+        if not candidate.human_authorized_retry and not changed_paths and not has_commit:
             summary = "The recoverable candidate has no local changes or candidate commit."
             self.memory.finish_cycle(
                 candidate.cycle_id,
@@ -2590,9 +2694,15 @@ class SelfDeveloper:
                 return EvolutionResult(
                     "deferred", branch, workspace, selection.reason, False
                 )
+            prior = (
+                self.memory.candidate_for_cycle(candidate.retry_of_cycle_id)
+                if candidate.retry_of_cycle_id is not None
+                else None
+            )
             self.audit.write(
                 "candidate_policy_retry_resumed",
                 branch=branch,
+                prior_branch=prior.branch if prior is not None else None,
                 task_id=candidate.task_id,
                 retry_cycle_id=candidate.cycle_id,
                 prior_cycle_id=candidate.retry_of_cycle_id,
@@ -2600,6 +2710,9 @@ class SelfDeveloper:
                 failure_attribution="framework_policy",
                 same_objective=True,
                 existing_worktree=True,
+                fresh_retry_branch=(
+                    prior is not None and prior.branch != candidate.branch
+                ),
             )
             return self._continue_candidate(
                 force=force,

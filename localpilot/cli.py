@@ -177,10 +177,18 @@ def _show_status(console: Console, config, root: Path) -> None:
         table.add_row("Last rejected candidate", "No explicit human rejection recorded.")
     retry = memory.latest_policy_retry()
     if retry:
+        prior = (
+            memory.candidate_for_cycle(retry.retry_of_cycle_id)
+            if retry.retry_of_cycle_id is not None
+            else None
+        )
         table.add_row(
             "Human-authorized policy retry",
             (
-                f"{retry.branch}\n"
+                f"prior: {prior.branch if prior else '(unknown)'} "
+                f"(pushed={prior.pushed if prior else 'unknown'}, "
+                f"attribution={prior.failure_attribution if prior else 'unknown'})\n"
+                f"retry: {retry.branch}\n"
                 f"task: {retry.task_id}\n"
                 f"retry cycle: {retry.cycle_id}; prior cycle: {retry.retry_of_cycle_id}\n"
                 f"reason: {retry.retry_reason}"
@@ -317,9 +325,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     retry = sub.add_parser(
         "retry",
-        help="Human-authorize retry of a framework-policy-blocked local candidate",
+        help="Human-authorize retry of a framework-policy-blocked candidate",
     )
-    retry.add_argument("candidate", help="Managed local candidate branch or task id")
+    retry.add_argument("candidate", help="Managed candidate branch or task id")
     retry.add_argument(
         "--reason",
         required=True,
@@ -416,7 +424,8 @@ def main() -> None:
         state = "already authorized" if result.already_authorized else "authorized"
         console.print(
             f"[bold]Candidate retry {state}[/bold]\n"
-            f"Branch: {result.branch}\n"
+            f"Prior branch: {result.prior_branch}\n"
+            f"Retry branch: {result.branch}\n"
             f"Task: {result.task_id}\n"
             f"Prior cycle: {result.prior_cycle_id}; retry cycle: {result.retry_cycle_id}\n"
             f"Mode: {result.resume_mode}\n"

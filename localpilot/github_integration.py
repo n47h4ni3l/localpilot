@@ -31,6 +31,8 @@ class CandidateLifecycle:
     validation_state: str
     merged: bool
     pull_request_url: str | None = None
+    pull_request_state: str = "unknown"
+    remote_branch_exists: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +251,46 @@ class GitHubIntegration:
         destination.parent.mkdir(parents=True, exist_ok=True)
         return self._run(["git", "worktree", "add", "-b", branch, str(destination), "HEAD"])
 
+    def create_policy_retry_worktree(
+        self,
+        branch: str,
+        destination: Path,
+    ) -> CommandResult:
+        """Create a distinct retry branch only from clean, current trusted main."""
+        if not is_managed_candidate_branch(branch):
+            return CommandResult(False, "", "Retry branch is not a managed candidate.", 2)
+        top_level = self._run(["git", "rev-parse", "--show-toplevel"])
+        if not top_level.ok or Path(top_level.stdout).resolve() != self.root:
+            return CommandResult(False, "", "Project root is not the Git checkout root.", 2)
+        current = self._run(["git", "branch", "--show-current"])
+        if not current.ok or current.stdout != self.config.main_branch:
+            return CommandResult(
+                False,
+                "",
+                f"Trusted checkout must be on {self.config.main_branch} before retry.",
+                2,
+            )
+        clean = self._run(["git", "status", "--porcelain", "--untracked-files=all"])
+        if not clean.ok or clean.stdout:
+            return CommandResult(False, "", "Trusted main checkout must be clean before retry.", 2)
+        head = self._run(["git", "rev-parse", "--verify", "HEAD^{commit}"])
+        remote_main = self._run(
+            [
+                "git", "rev-parse", "--verify",
+                f"refs/remotes/{self.config.remote}/{self.config.main_branch}^{{commit}}",
+            ]
+        )
+        if not head.ok or not remote_main.ok or head.stdout != remote_main.stdout:
+            return CommandResult(
+                False,
+                "",
+                "Trusted main is not aligned with its fetched remote; pull with --ff-only first.",
+                2,
+            )
+        if destination.exists():
+            return CommandResult(False, "", "Retry worktree destination already exists.", 2)
+        return self.create_candidate_worktree(branch, destination)
+
     def commit_paths(self, worktree: Path, message: str, relative_paths: list[str]) -> CommandResult:
         if not relative_paths:
             return CommandResult(False, "", "No candidate paths supplied.", 2)
@@ -451,6 +493,23 @@ class GitHubIntegration:
             False,
         )
 
+    def remote_candidate_branch_exists(self, branch: str) -> bool | None:
+        """Return a definitive remote-branch answer, or None on query failure."""
+        if not is_managed_candidate_branch(branch):
+            return False
+        result = self._run(
+            [
+                "git", "ls-remote", "--exit-code", "--heads",
+                self.config.remote, f"refs/heads/{branch}",
+            ],
+            timeout=120,
+        )
+        if result.ok:
+            return bool(result.stdout.strip())
+        if result.returncode == 2:
+            return False
+        return None
+
     def failed_workflow_log(self, branch: str, max_chars: int = 16000) -> str:
         """Return a bounded failed-step log for the newest failed branch run."""
         if not self.gh_available():
@@ -630,32 +689,70 @@ class GitHubIntegration:
 
     def candidate_lifecycle(self, branch: str) -> CandidateLifecycle:
         """Observe PR/check state. This method never merges or promotes."""
+        if not is_managed_candidate_branch(branch):
+            return CandidateLifecycle("pending", False, None, "unrelated", False)
+        remote_branch_exists = self.remote_candidate_branch_exists(branch)
         if not self.gh_available():
-            return CandidateLifecycle("awaiting_pr", False)
+            workflow = self.branch_workflow_state(branch)
+            return CandidateLifecycle(
+                workflow.validation_state,
+                False,
+                None,
+                "unknown",
+                remote_branch_exists,
+            )
 
         result = self._run(
             [
                 "gh", "pr", "list",
                 "--head", branch,
                 "--state", "all",
-                "--limit", "1",
-                "--json", "url,mergedAt,statusCheckRollup",
+                "--limit", "20",
+                "--json", "headRefName,url,state,mergedAt,statusCheckRollup",
             ],
             timeout=60,
         )
 
         if not result.ok:
-            return self.branch_workflow_state(branch)
+            workflow = self.branch_workflow_state(branch)
+            return CandidateLifecycle(
+                workflow.validation_state, False, None, "unknown",
+                remote_branch_exists,
+            )
 
         try:
             rows = json.loads(result.stdout)
         except json.JSONDecodeError:
-            return self.branch_workflow_state(branch)
+            workflow = self.branch_workflow_state(branch)
+            return CandidateLifecycle(
+                workflow.validation_state, False, None, "unknown",
+                remote_branch_exists,
+            )
 
-        if not rows:
-            return self.branch_workflow_state(branch)
+        if not isinstance(rows, list):
+            workflow = self.branch_workflow_state(branch)
+            return CandidateLifecycle(
+                workflow.validation_state, False, None, "unknown",
+                remote_branch_exists,
+            )
 
-        pr = rows[0]
+        matching = [
+            row for row in rows
+            if isinstance(row, dict) and str(row.get("headRefName") or "") == branch
+        ]
+        if not matching:
+            workflow = self.branch_workflow_state(branch)
+            return CandidateLifecycle(
+                workflow.validation_state, False, None, "none",
+                remote_branch_exists,
+            )
+
+        merged_pr = next((row for row in matching if row.get("mergedAt")), None)
+        open_pr = next(
+            (row for row in matching if str(row.get("state") or "").upper() == "OPEN"),
+            None,
+        )
+        pr = merged_pr or open_pr or matching[0]
         checks = pr.get("statusCheckRollup") or []
 
         state = (
@@ -666,7 +763,13 @@ class GitHubIntegration:
 
         return CandidateLifecycle(
             state,
-            bool(pr.get("mergedAt")),
+            merged_pr is not None,
             pr.get("url"),
+            (
+                "merged" if merged_pr is not None
+                else "open" if open_pr is not None
+                else "closed"
+            ),
+            remote_branch_exists,
         )
 

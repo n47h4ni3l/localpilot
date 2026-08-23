@@ -6,11 +6,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SENSITIVE = ("password", "passwd", "token", "secret", "api_key", "apikey", "credential")
+_SENSITIVE_FRAGMENTS = ("password", "passwd", "secret", "api_key", "apikey", "credential")
+
+
+def _sensitive_key(key: str) -> bool:
+    """Redact credential-bearing fields without hiding harmless token metrics."""
+    normalized = str(key).strip().lower()
+    if any(fragment in normalized for fragment in _SENSITIVE_FRAGMENTS):
+        return True
+    # Credential names commonly end in singular "token". Metrics such as
+    # context_tokens, prompt_token_count, or generated_tokens remain visible.
+    return normalized == "token" or normalized.endswith("_token") or normalized.endswith("token")
 
 
 def _scrub(value: Any, key: str = "") -> Any:
-    if any(word in key.lower() for word in _SENSITIVE):
+    if _sensitive_key(key):
         return "<redacted>"
     if isinstance(value, dict):
         return {k: _scrub(v, str(k)) for k, v in value.items()}

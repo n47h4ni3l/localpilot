@@ -24,6 +24,10 @@ class ModelConfig:
     # default because LocalPilot's mission favors careful reasoning over speed.
     think: bool | str = "high"
     temperature: float = 0.1
+    # Ollama may otherwise allocate only a small runtime context window even
+    # when the model supports much more. Tool-driven agent work needs enough
+    # room to retain the owner request plus repository/GitHub observations.
+    context_tokens: int = 32768
 
 
 @dataclass(slots=True)
@@ -137,6 +141,18 @@ def _normalize_model_thinking(cfg: Config) -> None:
         raise ValueError("model.think must be a boolean or supported reasoning level")
 
 
+def _validate_context_tokens(name: str, value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer token count")
+    try:
+        tokens = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer token count") from exc
+    if tokens < 4096 or tokens > 131072:
+        raise ValueError(f"{name} must be between 4096 and 131072 tokens")
+    return tokens
+
+
 def load_config(path: str | Path | None = None) -> Config:
     cfg = Config()
     chosen = Path(path) if path else Path(os.environ.get("LOCALPILOT_CONFIG", "localpilot.toml"))
@@ -163,6 +179,9 @@ def load_config(path: str | Path | None = None) -> Config:
         cfg.source_path = chosen.resolve()
 
     _normalize_model_thinking(cfg)
+    cfg.model.context_tokens = _validate_context_tokens(
+        "model.context_tokens", cfg.model.context_tokens
+    )
 
     # Promotion is a human/repository action, never an autonomous config knob.
     if cfg.selfdev.auto_promote:

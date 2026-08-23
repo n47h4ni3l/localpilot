@@ -1,14 +1,20 @@
 [agent]
 name = "LocalPilot"
 data_dir = "localpilot-data"
+# Maximum rounds that may actually call operator tools. LocalPilot reserves a
+# few additional bounded control turns for evidence recovery/final synthesis.
 max_tool_rounds = 12
 
 # Everyday PC requests use this model.
 [model]
 provider = "ollama"
 name = "gpt-oss:20b"
-think = true
+think = "high"
 temperature = 0.1
+# Explicit API context allocation. Ollama installations can otherwise run a
+# much smaller context than the model supports, which is especially harmful
+# for repository/GitHub tool loops.
+context_tokens = 32768
 
 [resource]
 active_priority = "below_normal"
@@ -61,4 +67,3 @@ run_static_checks = true
 allow_local_candidate_execution = false
 learning_database = "learning.sqlite3"
 lesson_limit = 6
-

@@ -113,6 +113,13 @@ class LocalPilotAgent:
         """Identify explicit evidence sources the owner asked LocalPilot to inspect."""
         text = " ".join(str(prompt).lower().split())
         requirements: set[str] = set()
+
+        def mentions(*phrases: str) -> bool:
+            return any(
+                re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", text) is not None
+                for phrase in phrases
+            )
+
         if re.search(r"https://\S+", text):
             requirements.add("public HTTPS")
 
@@ -134,15 +141,35 @@ class LocalPilotAgent:
             "status",
             "latest",
         )
-        asks_for_evidence = any(term in text for term in action_terms)
+        asks_for_evidence = mentions(*action_terms)
 
-        if re.search(r"\bpr\s*#?\s*\d+\b", text):
+        pr_number = re.search(r"\bpr\s*#?\s*\d+\b", text) is not None
+        if pr_number or mentions("github", "pull request"):
             requirements.add("private GitHub")
-        github_terms = ("github", "pull request", "issue", " ci ", "commit", "branch")
-        if asks_for_evidence and any(term in f" {text} " for term in github_terms):
+        repo_context = mentions(
+            "repository",
+            "repo",
+            "local repository",
+            "trusted repository",
+            "source code",
+            "codebase",
+            "localpilot",
+            "github",
+        )
+        if asks_for_evidence and repo_context and mentions("issue", "ci", "commit", "branch"):
             requirements.add("private GitHub")
 
-        repository_terms = ("repository", "repo", "source code", "codebase")
+        local_repo_explicit = mentions(
+            "local repository",
+            "trusted repository",
+            "source code",
+            "codebase",
+        )
+        generic_repo = mentions("repository", "repo") and not mentions(
+            "github repository", "github repo"
+        )
+        if asks_for_evidence and (local_repo_explicit or generic_repo):
+            requirements.add("trusted repository")
         self_structure_terms = (
             "module",
             "class",
@@ -155,15 +182,11 @@ class LocalPilotAgent:
             "file",
             "command",
         )
-        if asks_for_evidence and any(term in text for term in repository_terms):
-            requirements.add("trusted repository")
-        if "localpilot" in text and any(term in text for term in self_structure_terms):
+        if mentions("localpilot") and mentions(*self_structure_terms):
             requirements.add("trusted repository")
 
-        pc_terms = (
+        pc_specific = mentions(
             "windows",
-            "pc",
-            "computer",
             "process",
             "storage",
             "disk",
@@ -171,8 +194,14 @@ class LocalPilotAgent:
             "defender",
             "device",
             "power plan",
+            "my pc",
+            "this pc",
+            "your pc",
+            "my computer",
+            "this computer",
+            "your computer",
         )
-        if asks_for_evidence and any(term in text for term in pc_terms):
+        if asks_for_evidence and pc_specific:
             requirements.add("Windows/PC state")
         return requirements
 

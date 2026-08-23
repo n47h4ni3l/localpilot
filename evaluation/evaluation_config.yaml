@@ -1,0 +1,8 @@
+dataset: localpilot_approved_outcomes
+parameters:
+  batch_size: 32
+  tasks:
+    - coding
+    - tool-use
+    - safety
+    - regression

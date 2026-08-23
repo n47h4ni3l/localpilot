@@ -1,0 +1,6 @@
+dataset: localpilot_approved_outcomes
+parameters:
+  learning_rate: 0.001
+  batch_size: 32
+  epochs: 10
+  adapter_type: lora

@@ -79,9 +79,6 @@ def test_tool_investigation_is_synthesized_by_same_high_reasoning_model(tmp_path
     assert "Hello! How can I help you today?" not in str(agent.messages)
     assert "private investigation reasoning" not in str(agent.messages)
     assert "private synthesis reasoning" not in str(agent.messages)
-    assert any(
-        event for event in []
-    ) is False  # audit behavior is exercised by the real AuditLog without storing reasoning text
     assert config.model.think == "high"
 
 

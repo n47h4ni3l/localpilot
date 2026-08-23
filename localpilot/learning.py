@@ -118,6 +118,17 @@ class MissionFrontier:
 
 
 @dataclass(frozen=True, slots=True)
+class HumanLesson:
+    id: int
+    lesson: str
+    topic: str
+    source: str
+    confidence: float
+    active: bool
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeFact:
     stage: str
     fact_key: str
@@ -280,6 +291,19 @@ class LearningMemory:
                 );
                 CREATE INDEX IF NOT EXISTS mission_frontiers_updated_idx
                     ON mission_frontiers(updated_at DESC);
+                CREATE TABLE IF NOT EXISTS human_lessons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lesson TEXT NOT NULL,
+                    topic TEXT NOT NULL DEFAULT 'general',
+                    source TEXT NOT NULL DEFAULT 'owner',
+                    confidence REAL NOT NULL DEFAULT 1.0,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS human_lessons_unique_idx
+                    ON human_lessons(topic, lesson, source);
+                CREATE INDEX IF NOT EXISTS human_lessons_active_idx
+                    ON human_lessons(active, id DESC);
                 CREATE TABLE IF NOT EXISTS knowledge_facts (
                     stage TEXT NOT NULL,
                     fact_key TEXT NOT NULL,
@@ -1406,6 +1430,109 @@ class LearningMemory:
                     ),
                 )
 
+    @staticmethod
+    def _human_lesson(row: sqlite3.Row | None) -> HumanLesson | None:
+        if row is None:
+            return None
+        return HumanLesson(
+            id=int(row["id"]),
+            lesson=str(row["lesson"]),
+            topic=str(row["topic"]),
+            source=str(row["source"]),
+            confidence=float(row["confidence"]),
+            active=bool(row["active"]),
+            created_at=str(row["created_at"]),
+        )
+
+    def record_human_lesson(
+        self,
+        lesson: str,
+        *,
+        topic: str = "general",
+        source: str = "owner",
+        confidence: float = 1.0,
+    ) -> HumanLesson:
+        """Persist explicit human teaching, never an inferred transcript or hidden reasoning."""
+        clean_lesson = " ".join(str(lesson).replace("\x00", " ").split())[:2000]
+        clean_topic = " ".join(str(topic).replace("\x00", " ").split())[:120] or "general"
+        clean_source = " ".join(str(source).replace("\x00", " ").split())[:80] or "owner"
+        if not clean_lesson:
+            raise ValueError("A human teaching must not be empty.")
+        bounded_confidence = max(0.0, min(float(confidence), 1.0))
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO human_lessons (
+                    lesson, topic, source, confidence, active, created_at
+                ) VALUES (?, ?, ?, ?, 1, ?)
+                """,
+                (clean_lesson, clean_topic, clean_source, bounded_confidence, _now()),
+            )
+            connection.execute(
+                """
+                UPDATE human_lessons SET confidence = ?, active = 1
+                WHERE lesson = ? AND topic = ? AND source = ?
+                """,
+                (bounded_confidence, clean_lesson, clean_topic, clean_source),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM human_lessons
+                WHERE lesson = ? AND topic = ? AND source = ?
+                """,
+                (clean_lesson, clean_topic, clean_source),
+            ).fetchone()
+        result = self._human_lesson(row)
+        if result is None:
+            raise RuntimeError("Human teaching could not be persisted.")
+        return result
+
+    @staticmethod
+    def _lesson_tokens(value: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r"[a-z0-9_]{3,}", str(value).lower())
+            if token not in {"the", "and", "for", "with", "that", "this", "from"}
+        }
+
+    def human_lessons(
+        self,
+        limit: int = 6,
+        *,
+        query: str | None = None,
+    ) -> list[HumanLesson]:
+        limit = max(0, min(int(limit), 50))
+        if not limit:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM human_lessons
+                WHERE active = 1
+                ORDER BY id DESC
+                LIMIT 100
+                """
+            ).fetchall()
+        lessons = [self._human_lesson(row) for row in rows]
+        items = [item for item in lessons if item is not None]
+        query_tokens = self._lesson_tokens(query or "")
+        if query_tokens:
+            items.sort(
+                key=lambda item: (
+                    len(query_tokens & self._lesson_tokens(f"{item.topic} {item.lesson}")),
+                    item.id,
+                ),
+                reverse=True,
+            )
+        return items[:limit]
+
+    def human_lesson_count(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM human_lessons WHERE active = 1"
+            ).fetchone()
+        return int(row["count"]) if row is not None else 0
+
     def discovery_context(self, limit: int = 8) -> dict:
         limit = max(1, min(int(limit), 20))
         with self._connect() as connection:
@@ -1447,27 +1574,52 @@ class LearningMemory:
                 """,
                 (limit,),
             ).fetchall()
+        teachings = self.human_lessons(limit=limit)
         return {
             "capabilities": [dict(row) for row in capabilities],
             "frontiers": [dict(row) for row in frontiers],
             "experiments": [dict(row) for row in experiments],
             "recent_cycles": [dict(row) for row in cycles],
+            "human_teachings": [
+                {
+                    "id": item.id,
+                    "topic": item.topic,
+                    "lesson": item.lesson,
+                    "source": item.source,
+                    "confidence": item.confidence,
+                    "created_at": item.created_at,
+                }
+                for item in teachings
+            ],
         }
 
-    def reusable_lessons(self, limit: int = 6) -> list[str]:
+    def reusable_lessons(
+        self,
+        limit: int = 6,
+        *,
+        query: str | None = None,
+    ) -> list[str]:
+        """Return bounded validated cycle lessons plus explicit owner teachings."""
         limit = max(0, min(int(limit), 50))
         if not limit:
             return []
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT reusable_lesson FROM development_cycles
-                WHERE reusable_lesson != ''
-                ORDER BY id DESC LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-        return [str(row["reusable_lesson"]) for row in rows]
+        human_limit = min(limit, max(1, (limit + 1) // 2))
+        human = self.human_lessons(human_limit, query=query)
+        remaining = max(0, limit - len(human))
+        rows = []
+        if remaining:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT reusable_lesson FROM development_cycles
+                    WHERE reusable_lesson != ''
+                    ORDER BY id DESC LIMIT ?
+                    """,
+                    (remaining,),
+                ).fetchall()
+        result = [f"Human teaching [{item.topic}]: {item.lesson}" for item in human]
+        result.extend(str(row["reusable_lesson"]) for row in rows)
+        return result
 
     @staticmethod
     def _knowledge_fact(row: sqlite3.Row) -> KnowledgeFact:

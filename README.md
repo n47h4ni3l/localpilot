@@ -110,6 +110,24 @@ latency/resource cost, weak areas, and next lessons. It never stores source file
 pages, model responses, prompts, transcripts, or hidden reasoning. Source-digest changes mark
 facts stale before they can support a benchmark or proposal.
 
+## Direct human teaching
+
+LocalPilot can retain explicit lessons from its owner without storing a conversation transcript.
+These teachings are durable local memory, not model-weight updates. They are loaded into new
+interactive sessions, exposed to capability discovery, and retrieved alongside relevant reusable
+lessons during later self-development.
+
+```powershell
+localpilot teach --topic repository-grounding --lesson "Before proposing an API, verify that it exists in the repository. If it does not exist, implement it explicitly and test the integration."
+localpilot teach --list
+localpilot chat
+# Inside chat: /teach Green CI is not proof that new code works if the new code was never imported or exercised.
+```
+
+Only text deliberately submitted through `teach` or `/teach` is persisted as human teaching.
+Ordinary chat messages remain transient. Teachings are provenance-marked as owner guidance and
+should guide decisions, while factual claims remain subject to repository/evidence verification.
+
 ## Benchmarked self-study (not weight training)
 
 `localpilot study` improves retrieval and durable repository grounding before any fine-tuning or

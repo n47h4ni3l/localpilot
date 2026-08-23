@@ -21,7 +21,6 @@ def test_everyday_and_developer_models_are_separate():
     assert cfg.model.context_tokens == 32768
     assert cfg.selfdev.developer_model == "qwen2.5:32b"
     assert cfg.selfdev.developer_model_fallbacks == ["qwen2.5:14b"]
-    assert cfg.selfdev.context_tokens == 32768
     assert cfg.selfdev.ollama_keep_alive == 0
     assert cfg.selfdev.candidate_file_soft_budget == 100
     assert cfg.selfdev.candidate_file_hard_ceiling == 500
@@ -36,16 +35,11 @@ def test_toml_loads_developer_model(tmp_path: Path):
     assert cfg.selfdev.developer_model == "dev"
 
 
-def test_toml_loads_context_windows_independently(tmp_path: Path):
+def test_toml_loads_operator_context_window(tmp_path: Path):
     path = tmp_path / "localpilot.toml"
-    path.write_text(
-        '[model]\ncontext_tokens = 16384\n'
-        '[selfdev]\ncontext_tokens = 65536\n',
-        encoding="utf-8",
-    )
+    path.write_text('[model]\ncontext_tokens = 16384\n', encoding="utf-8")
     cfg = load_config(path)
     assert cfg.model.context_tokens == 16384
-    assert cfg.selfdev.context_tokens == 65536
 
 
 def test_context_window_rejects_accidentally_tiny_or_invalid_values(tmp_path: Path):
@@ -55,7 +49,7 @@ def test_context_window_rejects_accidentally_tiny_or_invalid_values(tmp_path: Pa
         load_config(tiny)
 
     boolean = tmp_path / "boolean.toml"
-    boolean.write_text('[selfdev]\ncontext_tokens = true\n', encoding="utf-8")
+    boolean.write_text('[model]\ncontext_tokens = true\n', encoding="utf-8")
     with pytest.raises(ValueError, match="integer token count"):
         load_config(boolean)
 

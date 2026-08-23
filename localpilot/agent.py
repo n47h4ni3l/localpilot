@@ -525,6 +525,8 @@ class LocalPilotAgent:
                             attempt=evidence_recovery_attempts,
                         )
                         continue
+                    # The final unsupported answer is also transient; keep only the visible bounded failure.
+                    self.messages.pop()
                     marker = (
                         "[LocalPilot could not satisfy this request's direct-evidence requirement because it "
                         "did not attempt the relevant available read-only source after two recovery prompts.]"

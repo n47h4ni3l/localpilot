@@ -5,6 +5,7 @@ from typing import Any
 
 from localpilot.audit import AuditLog
 from localpilot.config import Config
+from localpilot.learning import HumanLesson, LearningMemory
 from localpilot.safety import SafetyPolicy
 from localpilot.resource import ResourceGovernor
 from localpilot.tools import registry
@@ -32,7 +33,48 @@ class LocalPilotAgent:
         self.data_dir = (self.project_root / config.agent.data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
+        self.memory = LearningMemory(self.data_dir / config.selfdev.learning_database)
+        teachings = self.memory.human_lessons(config.selfdev.lesson_limit)
+        self._loaded_human_lesson_ids = {item.id for item in teachings}
+        if teachings:
+            self.messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Durable explicit teachings from the owner. Treat these as high-priority "
+                        "guidance, but still verify factual claims against current evidence:\n- "
+                        + "\n- ".join(f"[{item.topic}] {item.lesson}" for item in teachings)
+                    ),
+                }
+            )
         self.governor = ResourceGovernor(config.resource)
+
+    def teach(self, lesson: str, *, topic: str = "general") -> HumanLesson:
+        record = self.memory.record_human_lesson(
+            lesson,
+            topic=topic,
+            source="owner",
+            confidence=1.0,
+        )
+        if record.id not in self._loaded_human_lesson_ids:
+            self.messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "New durable owner teaching. Apply it where relevant and verify "
+                        f"repository facts before acting: [{record.topic}] {record.lesson}"
+                    ),
+                }
+            )
+            self._loaded_human_lesson_ids.add(record.id)
+        self.audit.write(
+            "human_teaching",
+            teaching_id=record.id,
+            topic=record.topic,
+            source=record.source,
+            lesson=record.lesson,
+        )
+        return record
 
     def _functions(self):
         return [spec.fn for spec in self.tools.values() if self.policy.permits_without_confirmation(spec.risk)]

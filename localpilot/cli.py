@@ -89,6 +89,11 @@ def _show_status(console: Console, config, root: Path) -> None:
         table.add_row("Last evolve", "No completed invocation has been recorded yet.")
     checkpoint_store = CheckpointStore(root / config.agent.data_dir / "evolution-checkpoint.json")
     memory = LearningMemory(root / config.agent.data_dir / config.selfdev.learning_database)
+    teachings = memory.human_lessons(limit=2)
+    teaching_detail = f"{memory.human_lesson_count()} active"
+    if teachings:
+        teaching_detail += "\nlatest: " + teachings[0].lesson[:280]
+    table.add_row("Human teachings", teaching_detail)
     checkpoint = None
     try:
         checkpoint = checkpoint_store.load()
@@ -273,7 +278,10 @@ def _progress(console: Console):
 
 def _chat(console: Console, config, root: Path) -> None:
     console.print(f"[bold]{config.agent.name} 0.1[/bold] — local-first Windows agent")
-    console.print(f"Model: {config.model.name} via Ollama. Commands: /status /doctor /evolve /quit\n")
+    console.print(
+        f"Model: {config.model.name} via Ollama. "
+        "Commands: /status /doctor /evolve /teach <lesson> /quit\n"
+    )
     agent = LocalPilotAgent(config, root)
     while True:
         try:
@@ -297,6 +305,20 @@ def _chat(console: Console, config, root: Path) -> None:
             console.print(f"[bold]{result.status}[/bold]\n{result.summary}")
             if result.workspace:
                 console.print(f"Candidate: {result.workspace}")
+            continue
+        if command == "/teach" or command.startswith("/teach "):
+            lesson = prompt[len("/teach"):].strip()
+            if not lesson:
+                console.print("[yellow]Usage:[/yellow] /teach <durable lesson>")
+                continue
+            try:
+                record = agent.teach(lesson, topic="chat")
+            except ValueError as exc:
+                console.print(f"[red]Teaching refused:[/red] {exc}")
+            else:
+                console.print(
+                    f"[bold]Teaching #{record.id} saved[/bold] and loaded into this conversation."
+                )
             continue
         try:
             answer = agent.ask(prompt)
@@ -332,6 +354,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--reason",
         required=True,
         help="Durable attribution and authorization reason",
+    )
+    teach = sub.add_parser(
+        "teach",
+        help="Persist explicit owner guidance for chat and future self-development",
+    )
+    teach_mode = teach.add_mutually_exclusive_group(required=True)
+    teach_mode.add_argument(
+        "--lesson",
+        help="Concise durable lesson to retain as explicit owner teaching",
+    )
+    teach_mode.add_argument(
+        "--list",
+        action="store_true",
+        help="List active owner teachings without invoking a model",
+    )
+    teach.add_argument(
+        "--topic",
+        default="general",
+        help="Short topic used to retrieve the lesson for relevant future tasks",
     )
     study = sub.add_parser(
         "study",
@@ -432,6 +473,36 @@ def main() -> None:
             f"Reason: {result.reason}\n"
             "Prior failure evidence was retained and attributed to framework policy. "
             "No merge, promotion, or candidate execution was performed."
+        )
+    elif args.command == "teach":
+        memory = LearningMemory(root / config.agent.data_dir / config.selfdev.learning_database)
+        if args.list:
+            lessons = memory.human_lessons(limit=50)
+            if not lessons:
+                console.print("No active human teachings are recorded.")
+                return
+            table = Table(title="LocalPilot human teachings")
+            table.add_column("ID")
+            table.add_column("Topic")
+            table.add_column("Lesson")
+            table.add_column("Created")
+            for item in lessons:
+                table.add_row(str(item.id), item.topic, item.lesson, item.created_at)
+            console.print(table)
+            return
+        agent = LocalPilotAgent(config, root)
+        try:
+            record = agent.teach(args.lesson, topic=args.topic)
+        except ValueError as exc:
+            console.print(f"[red]Teaching refused:[/red] {exc}")
+            raise SystemExit(1) from exc
+        console.print(
+            f"[bold]Teaching #{record.id} saved[/bold]\n"
+            f"Topic: {record.topic}\n"
+            f"Lesson: {record.lesson}\n"
+            "It will be available to new chat sessions, capability discovery, "
+            "and relevant future implementation cycles. This is durable context "
+            "learning, not a model-weight update."
         )
     elif args.command == "study":
         memory = LearningMemory(root / config.agent.data_dir / config.selfdev.learning_database)

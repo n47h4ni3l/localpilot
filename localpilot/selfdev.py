@@ -2066,7 +2066,17 @@ class SelfDeveloper:
             )
             return EvolutionResult("failed", branch, workspace, summary)
 
-        lessons = self.memory.reusable_lessons(self.config.selfdev.lesson_limit)
+        lesson_query = " ".join(
+            (
+                str(task.get("title") or ""),
+                str(task.get("capability_target") or ""),
+                str(task.get("observed_limitation") or ""),
+            )
+        )
+        lessons = self.memory.reusable_lessons(
+            self.config.selfdev.lesson_limit,
+            query=lesson_query,
+        )
         acceptance = json.dumps(task.get("acceptance", []), ensure_ascii=False)
         evolution_context = self._evolution_context(task)
         milestone = checkpoint.milestone if checkpoint else "candidate_created"

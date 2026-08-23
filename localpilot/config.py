@@ -11,7 +11,12 @@ from typing import Any
 class AgentConfig:
     name: str = "LocalPilot"
     data_dir: str = "localpilot-data"
+    # Legacy compatibility input. New operator research uses an advisory soft
+    # budget and a separate hard safety ceiling so the model can decide when
+    # another observation is genuinely necessary.
     max_tool_rounds: int = 12
+    research_soft_tool_rounds: int = 12
+    research_hard_tool_rounds: int = 24
 
 
 @dataclass(slots=True)
@@ -159,7 +164,16 @@ def load_config(path: str | Path | None = None) -> Config:
     if chosen.exists():
         with chosen.open("rb") as handle:
             raw = tomllib.load(handle)
-        _apply(cfg.agent, raw.get("agent", {}))
+        agent_raw = raw.get("agent", {})
+        _apply(cfg.agent, agent_raw)
+        # Preserve the intent of older configs that only set max_tool_rounds,
+        # while giving them a distinct hard ceiling instead of silently using
+        # the old value as both advice and termination.
+        if "max_tool_rounds" in agent_raw and "research_soft_tool_rounds" not in agent_raw:
+            cfg.agent.research_soft_tool_rounds = int(cfg.agent.max_tool_rounds)
+        if "max_tool_rounds" in agent_raw and "research_hard_tool_rounds" not in agent_raw:
+            soft = max(1, int(cfg.agent.research_soft_tool_rounds))
+            cfg.agent.research_hard_tool_rounds = max(soft + 4, soft * 2)
         _apply(cfg.model, raw.get("model", {}))
         _apply(cfg.resource, raw.get("resource", {}))
         _apply(cfg.safety, raw.get("safety", {}))
@@ -182,6 +196,14 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg.model.context_tokens = _validate_context_tokens(
         "model.context_tokens", cfg.model.context_tokens
     )
+    cfg.agent.research_soft_tool_rounds = int(cfg.agent.research_soft_tool_rounds)
+    cfg.agent.research_hard_tool_rounds = int(cfg.agent.research_hard_tool_rounds)
+    if cfg.agent.research_soft_tool_rounds < 1:
+        raise ValueError("agent.research_soft_tool_rounds must be positive")
+    if cfg.agent.research_hard_tool_rounds < cfg.agent.research_soft_tool_rounds:
+        raise ValueError(
+            "agent.research_hard_tool_rounds must be at least agent.research_soft_tool_rounds"
+        )
 
     # Promotion is a human/repository action, never an autonomous config knob.
     if cfg.selfdev.auto_promote:

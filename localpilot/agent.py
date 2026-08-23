@@ -88,6 +88,7 @@ class LocalPilotAgent:
             raise RuntimeError("Ollama Python package is not installed. Run scripts/bootstrap.ps1.") from exc
 
         self.messages.append({"role": "user", "content": prompt})
+        retried_empty_response = False
         for round_no in range(self.config.agent.max_tool_rounds):
             state = self.governor.sample(interval=0.02)
             self.governor.apply_process_priority(idle=state.background_allowed)
@@ -101,7 +102,47 @@ class LocalPilotAgent:
             self.messages.append(response.message)
             calls = response.message.tool_calls or []
             if not calls:
-                return response.message.content or ""
+                content = str(response.message.content or "")
+                thinking = str(getattr(response.message, "thinking", "") or "")
+                if content.strip():
+                    return content
+                if thinking.strip():
+                    self.audit.write(
+                        "model_no_final_answer",
+                        model=self.config.model.name,
+                        think=self.config.model.think,
+                        round=round_no,
+                        reasoning_present=True,
+                    )
+                    return (
+                        f"[LocalPilot completed a {self.config.model.think} reasoning pass "
+                        "but returned no final answer.]"
+                    )
+                if not retried_empty_response and round_no + 1 < self.config.agent.max_tool_rounds:
+                    retried_empty_response = True
+                    retry_message = {
+                        "role": "user",
+                        "content": (
+                            "Your previous response contained neither a final answer nor a reasoning trace. "
+                            "Try once more. Return a final answer, or explicitly state that you choose not to answer."
+                        ),
+                    }
+                    self.messages.append(retry_message)
+                    self.audit.write(
+                        "model_empty_response_retry",
+                        model=self.config.model.name,
+                        think=self.config.model.think,
+                        round=round_no,
+                    )
+                    continue
+                self.audit.write(
+                    "model_empty_response",
+                    model=self.config.model.name,
+                    think=self.config.model.think,
+                    round=round_no,
+                    reasoning_present=False,
+                )
+                return "[LocalPilot returned an empty response after one retry.]"
 
             for call in calls:
                 name = call.function.name

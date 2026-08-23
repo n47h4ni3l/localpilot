@@ -31,10 +31,15 @@ def _agent(tmp_path):
     return config, agent
 
 
-def test_tool_investigation_is_synthesized_by_same_high_reasoning_model(tmp_path, monkeypatch):
+def _snapshot(messages):
+    return [dict(message) if isinstance(message, dict) else message for message in messages]
+
+
+def test_tool_investigation_continues_in_same_high_reasoning_context(tmp_path, monkeypatch):
     config, agent = _agent(tmp_path)
     (tmp_path / "known.txt").write_text("verified repository evidence", encoding="utf-8")
     calls = []
+    message_snapshots = []
     streams = iter(
         [
             [
@@ -48,9 +53,12 @@ def test_tool_investigation_is_synthesized_by_same_high_reasoning_model(tmp_path
                     ],
                 )
             ],
-            [_chunk(content="Hello! How can I help you today?")],
             [
-                _chunk(thinking="private synthesis reasoning"),
+                _chunk(thinking="private post-tool reasoning"),
+                _chunk(content="Hello! How can I help you today?"),
+            ],
+            [
+                _chunk(thinking="private final reasoning"),
                 _chunk(content="The repository evidence shows known.txt exists."),
             ],
         ]
@@ -58,6 +66,7 @@ def test_tool_investigation_is_synthesized_by_same_high_reasoning_model(tmp_path
 
     def fake_chat(**kwargs):
         calls.append(kwargs)
+        message_snapshots.append(_snapshot(kwargs["messages"]))
         return iter(next(streams))
 
     monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
@@ -66,47 +75,70 @@ def test_tool_investigation_is_synthesized_by_same_high_reasoning_model(tmp_path
 
     assert answer == "The repository evidence shows known.txt exists."
     assert [call["think"] for call in calls] == ["high", "high", "high"]
-    assert calls[0]["stream"] is True
+    assert all(call["stream"] is True for call in calls)
     assert "tools" in calls[0]
     assert "tools" in calls[1]
     assert "tools" not in calls[2]
     assert calls[2]["options"]["num_predict"] == 4096
-    synthesis_text = str(calls[2]["messages"])
-    assert "Inspect the repository and tell me what you verified." in synthesis_text
-    assert "Finding 1" in synthesis_text
-    assert "list_repository_tree" in synthesis_text
-    assert "known.txt" in synthesis_text
+
+    final_context = message_snapshots[2]
+    assert any(message.get("role") == "tool" and "known.txt" in str(message.get("content")) for message in final_context)
+    assert any(
+        message.get("role") == "user"
+        and "Continue from the exact conversation and tool results already present above" in str(message.get("content"))
+        for message in final_context
+    )
+    assert any(
+        message.get("role") == "user"
+        and "Inspect the repository and tell me what you verified." in str(message.get("content"))
+        for message in final_context
+    )
+    assert "Finding 1" not in str(final_context)
+    assert "TOOL FINDINGS FROM YOUR INVESTIGATION" not in str(final_context)
+    assert "Hello! How can I help you today?" not in str(final_context)
+    assert "private post-tool reasoning" in str(final_context)
+
     assert "Hello! How can I help you today?" not in str(agent.messages)
     assert "private investigation reasoning" not in str(agent.messages)
-    assert "private synthesis reasoning" not in str(agent.messages)
+    assert "private post-tool reasoning" not in str(agent.messages)
+    assert "private final reasoning" not in str(agent.messages)
+    assert not any(
+        message.get("role") == "user"
+        and "Continue from the exact conversation" in str(message.get("content"))
+        for message in agent.messages
+        if isinstance(message, dict)
+    )
     assert config.model.think == "high"
 
 
-def test_reasoning_only_turn_uses_high_reasoning_synthesis_not_low_finalizer(tmp_path, monkeypatch):
+def test_reasoning_only_turn_continues_in_same_high_context(tmp_path, monkeypatch):
     _, agent = _agent(tmp_path)
     calls = []
+    message_snapshots = []
     streams = iter(
         [
             [_chunk(thinking="private initial reasoning")],
             [
                 _chunk(thinking="private second reasoning"),
-                _chunk(content="I should answer after reasoning over the request."),
+                _chunk(content="I should answer after continuing my reasoning."),
             ],
         ]
     )
 
     def fake_chat(**kwargs):
         calls.append(kwargs)
+        message_snapshots.append(_snapshot(kwargs["messages"]))
         return iter(next(streams))
 
     monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
 
     answer = agent.ask("Think carefully and answer.")
 
-    assert answer == "I should answer after reasoning over the request."
+    assert answer == "I should answer after continuing my reasoning."
     assert [call["think"] for call in calls] == ["high", "high"]
     assert "tools" in calls[0]
     assert "tools" not in calls[1]
+    assert "private initial reasoning" in str(message_snapshots[1])
     assert "private initial reasoning" not in str(agent.messages)
     assert "private second reasoning" not in str(agent.messages)
 
@@ -153,12 +185,12 @@ def test_decline_requires_a_specific_reason_and_is_visible(tmp_path, monkeypatch
     )
 
 
-def test_empty_high_synthesis_is_visible(tmp_path, monkeypatch):
+def test_empty_same_context_high_answer_is_visible(tmp_path, monkeypatch):
     _, agent = _agent(tmp_path)
     streams = iter(
         [
             [_chunk(thinking="first private reasoning")],
-            [_chunk(thinking="synthesis private reasoning")],
+            [_chunk(thinking="continued private reasoning")],
         ]
     )
 
@@ -171,11 +203,10 @@ def test_empty_high_synthesis_is_visible(tmp_path, monkeypatch):
     answer = agent.ask("Reason and answer.")
 
     assert answer == (
-        "[LocalPilot completed a high evidence-synthesis reasoning pass over its own findings "
-        "but returned no final answer.]"
+        "[LocalPilot completed a high same-context answer reasoning pass but returned no final answer.]"
     )
     assert "first private reasoning" not in str(agent.messages)
-    assert "synthesis private reasoning" not in str(agent.messages)
+    assert "continued private reasoning" not in str(agent.messages)
 
 
 def test_truly_empty_stream_retries_once_then_returns_answer(tmp_path, monkeypatch):

@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from localpilot.safety import RiskLevel, ToolSpec
+from localpilot.tools.github_readonly import GitHubReader
 from localpilot.tools.repository import RepositoryReader
+from localpilot.tools.web import fetch_public_https
 from localpilot.tools.windows import (
     get_active_power_plan,
     get_defender_summary,
@@ -24,9 +26,16 @@ def registry(project_root: str | Path | None = None) -> dict[str, ToolSpec]:
         ToolSpec("get_active_power_plan", "Read the active Windows power plan.", RiskLevel.READ_ONLY, get_active_power_plan),
         ToolSpec("get_defender_summary", "Read basic Microsoft Defender protection state.", RiskLevel.READ_ONLY, get_defender_summary),
         ToolSpec("get_device_problem_summary", "Read connected devices with problem states.", RiskLevel.READ_ONLY, get_device_problem_summary),
+        ToolSpec(
+            "fetch_public_https",
+            "Read bounded public HTTPS text for research. Blocks local/private targets, credentials, binary payloads, and non-HTTPS URLs.",
+            RiskLevel.READ_ONLY,
+            fetch_public_https,
+        ),
     ]
     if project_root is not None:
         repository = RepositoryReader(project_root)
+        github = GitHubReader(project_root)
         specs.extend(
             [
                 ToolSpec(
@@ -58,6 +67,42 @@ def registry(project_root: str | Path | None = None) -> dict[str, ToolSpec]:
                     "Read current Git branch, HEAD, and working-tree status for the trusted LocalPilot checkout.",
                     RiskLevel.READ_ONLY,
                     repository.get_repository_status,
+                ),
+                ToolSpec(
+                    "get_github_repository",
+                    "Read metadata for the authenticated private GitHub repository using gh without exposing credentials.",
+                    RiskLevel.READ_ONLY,
+                    github.get_github_repository,
+                ),
+                ToolSpec(
+                    "list_github_pull_requests",
+                    "List pull requests in the authenticated private GitHub repository.",
+                    RiskLevel.READ_ONLY,
+                    github.list_github_pull_requests,
+                ),
+                ToolSpec(
+                    "get_github_pull_request",
+                    "Inspect one pull request and CI/file metadata in the authenticated private GitHub repository.",
+                    RiskLevel.READ_ONLY,
+                    github.get_github_pull_request,
+                ),
+                ToolSpec(
+                    "get_github_pull_request_diff",
+                    "Read a bounded patch for one pull request in the authenticated private GitHub repository.",
+                    RiskLevel.READ_ONLY,
+                    github.get_github_pull_request_diff,
+                ),
+                ToolSpec(
+                    "list_github_issues",
+                    "List issues in the authenticated private GitHub repository.",
+                    RiskLevel.READ_ONLY,
+                    github.list_github_issues,
+                ),
+                ToolSpec(
+                    "get_github_issue",
+                    "Read one issue and its comments in the authenticated private GitHub repository.",
+                    RiskLevel.READ_ONLY,
+                    github.get_github_issue,
                 ),
             ]
         )

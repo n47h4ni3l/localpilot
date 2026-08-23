@@ -63,9 +63,6 @@ class SelfDevConfig:
     # Ordered fallbacks are considered only when the preferred/everyday model
     # would exceed the background memory ceiling on the current machine.
     developer_model_fallbacks: list[str] = field(default_factory=lambda: ["qwen2.5:14b"])
-    # Explicitly allocate enough context for repository research/tool loops.
-    # This remains configurable because KV-cache cost is machine-dependent.
-    context_tokens: int = 32768
     # Model file size is a useful lower-bound estimate for resident memory.
     # Reserve additional space for context/KV cache before starting inference.
     model_memory_overhead_gb: float = 1.0
@@ -184,9 +181,6 @@ def load_config(path: str | Path | None = None) -> Config:
     _normalize_model_thinking(cfg)
     cfg.model.context_tokens = _validate_context_tokens(
         "model.context_tokens", cfg.model.context_tokens
-    )
-    cfg.selfdev.context_tokens = _validate_context_tokens(
-        "selfdev.context_tokens", cfg.selfdev.context_tokens
     )
 
     # Promotion is a human/repository action, never an autonomous config knob.

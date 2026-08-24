@@ -9,6 +9,11 @@ from typing import Any, Callable
 
 from localpilot.agent import LocalPilotAgent
 from localpilot.config import Config, load_config
+from localpilot.research import (
+    RESEARCH_NOTEBOOK_TOOL,
+    TransientResearchNotebook,
+    research_notebook_tool_schema,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +26,7 @@ class CognitionProbeResult:
     tool_rounds: int
     hard_budget: int
     runtime: dict[str, Any]
+    checkpoint_count: int = 0
 
 
 def _call_name(call: Any) -> str:
@@ -55,6 +61,7 @@ def run_cognition_probe(
     *,
     chat: Callable[..., Any] | None = None,
     facts: dict[str, Any] | None = None,
+    checkpoint_mode: bool = False,
 ) -> CognitionProbeResult:
     """Exercise multi-step planning -> retrieval -> reconciliation -> answer with unknowable facts.
 
@@ -62,7 +69,9 @@ def run_cognition_probe(
     synthetic read-only tools. The model must discover a manifest, retrieve three independently
     addressed fragments, validate a cross-fragment check, and answer inside the configured hard
     research budget. Passing therefore measures the runtime/tool/context path, not memorization of
-    a repository-specific expected answer.
+    a repository-specific expected answer. With checkpoint_mode enabled, the manifest is the
+    soft boundary and each later fragment requires the same compact checkpoint protocol used by
+    the operator before exactly one observation.
     """
     if config.model.provider.lower() != "ollama":
         raise RuntimeError("Cognition probe currently supports Ollama only.")
@@ -141,15 +150,47 @@ def run_cognition_probe(
     manifest_read = False
     fragments_read: set[str] = set()
     seen_calls: set[tuple[str, str]] = set()
+    probe_observations: dict[tuple[str, str], Any] = {}
     content = ""
     runtime: dict[str, Any] = {}
+    checkpoint_count = 0
+    notebook = TransientResearchNotebook(
+        allowed_tools={"get_probe_manifest", "get_probe_fragment"}
+    )
+    control_messages: list[dict[str, Any]] = []
+    if checkpoint_mode:
+        initial_checkpoint_guidance = {
+            "role": "user",
+            "content": (
+                "Checkpoint diagnostic mode: read only the manifest first. After that soft boundary, call "
+                "update_research_notebook by itself before each unique fragment. Use only bare current-turn "
+                "evidence_refs, one unresolved_fact, one proposed_tool, proposed_arguments as an object, the "
+                "result that would change the conclusion, and an optional new_hypothesis. Do not resend histories "
+                "or summaries. This planning control is removed before synthesis."
+            ),
+        }
+        messages.append(initial_checkpoint_guidance)
+        control_messages.append(initial_checkpoint_guidance)
 
-    for turn_no in range(hard_budget + 4):
+    def strip_controls() -> None:
+        if not control_messages:
+            return
+        control_ids = {id(message) for message in control_messages}
+        messages[:] = [message for message in messages if id(message) not in control_ids]
+        control_messages.clear()
+
+    max_model_turns = hard_budget * 3 + 6 if checkpoint_mode else hard_budget + 4
+    for turn_no in range(max_model_turns):
         allow_tools = tool_rounds < hard_budget
+        probe_tools: list[Any] | None = None
+        if allow_tools:
+            probe_tools = [get_probe_manifest, get_probe_fragment]
+            if checkpoint_mode and tool_rounds >= 1:
+                probe_tools.append(research_notebook_tool_schema())
         response = agent._stream_chat_message(
             chat,
             think=config.model.think,
-            tools=[get_probe_manifest, get_probe_fragment] if allow_tools else None,
+            tools=probe_tools,
             messages=messages,
             options={"temperature": 0.0, "num_predict": 4096},
             phase="cognition_probe_research" if allow_tools else "cognition_probe_synthesize",
@@ -159,6 +200,10 @@ def run_cognition_probe(
         messages.append(response)
         calls = list(response.get("tool_calls") or [])
         if not calls:
+            if checkpoint_mode and control_messages:
+                control_messages.append(response)
+                strip_controls()
+                continue
             content = str(response.get("content") or "").strip()
             break
         if not allow_tools:
@@ -171,6 +216,7 @@ def run_cognition_probe(
                 tool_rounds,
                 hard_budget,
                 runtime,
+                checkpoint_count,
             )
             agent.audit.write(
                 "cognition_probe",
@@ -183,19 +229,99 @@ def run_cognition_probe(
             )
             return result
 
+        checkpoint_calls = [call for call in calls if _call_name(call) == RESEARCH_NOTEBOOK_TOOL]
+        if checkpoint_calls:
+            control_messages.append(response)
+            accepted = False
+            if checkpoint_mode and tool_rounds >= 1 and len(calls) == len(checkpoint_calls) == 1:
+                decision = notebook.submit(_call_arguments(checkpoint_calls[0]))
+                accepted = decision.accepted
+                checkpoint_result = decision.message
+                if accepted:
+                    checkpoint_count += 1
+            else:
+                checkpoint_result = (
+                    "Checkpoint rejected (protocol): emit it alone after the manifest soft boundary."
+                )
+            result_message = {
+                "role": "tool",
+                "tool_name": RESEARCH_NOTEBOOK_TOOL,
+                "content": checkpoint_result,
+            }
+            messages.append(result_message)
+            control_messages.append(result_message)
+            agent.audit.write(
+                "cognition_probe_checkpoint",
+                accepted=accepted,
+                checkpoint_count=checkpoint_count,
+                tool_rounds=tool_rounds,
+                observation_count=observation_count,
+            )
+            continue
+
+        if checkpoint_mode and tool_rounds == 0:
+            initial_names = [_call_name(call) for call in calls]
+            if initial_names != ["get_probe_manifest"]:
+                control_messages.append(response)
+                for call in calls:
+                    blocked = {
+                        "role": "tool",
+                        "tool_name": _call_name(call),
+                        "content": (
+                            "Not executed: checkpoint probe mode begins with exactly one manifest observation."
+                        ),
+                    }
+                    messages.append(blocked)
+                    control_messages.append(blocked)
+                continue
+
+        unique_candidates: list[tuple[str, dict[str, Any]]] = []
+        for call in calls:
+            name = _call_name(call)
+            arguments = _call_arguments(call)
+            key = (name, json.dumps(arguments, sort_keys=True, default=str))
+            if key not in seen_calls:
+                unique_candidates.append((name, arguments))
+        checkpoint_consumed = False
+        if checkpoint_mode and tool_rounds >= 1 and unique_candidates:
+            authorized = len(unique_candidates) == 1 and notebook.authorizes(*unique_candidates[0])
+            if not authorized:
+                control_messages.append(response)
+                for call in calls:
+                    blocked = {
+                        "role": "tool",
+                        "tool_name": _call_name(call),
+                        "content": (
+                            "Not executed: first emit one accepted compact checkpoint authorizing exactly one "
+                            "fragment observation."
+                        ),
+                    }
+                    messages.append(blocked)
+                    control_messages.append(blocked)
+                continue
+            checkpoint_consumed = notebook.consume(*unique_candidates[0])
+
         unique_this_round = False
         for call in calls:
             name = _call_name(call)
             arguments = _call_arguments(call)
             key = (name, json.dumps(arguments, sort_keys=True, default=str))
             if key in seen_calls:
-                tool_result = "Exact duplicate probe observation; reuse the earlier raw result."
+                record = probe_observations.get(key)
+                tool_result = (
+                    notebook.render_cache_hit(record)
+                    if checkpoint_mode and record is not None
+                    else "Exact duplicate probe observation; reuse the earlier raw result."
+                )
             elif name == "get_probe_manifest":
                 seen_calls.add(key)
                 unique_this_round = True
                 observation_count += 1
                 manifest_read = True
-                tool_result = get_probe_manifest()
+                raw_result = get_probe_manifest()
+                record = notebook.add_observation(tool=name, arguments=arguments, ok=True)
+                probe_observations[key] = record
+                tool_result = notebook.render_raw_result(record, raw_result) if checkpoint_mode else raw_result
             elif name == "get_probe_fragment":
                 seen_calls.add(key)
                 unique_this_round = True
@@ -203,12 +329,32 @@ def run_cognition_probe(
                 fragment_id = str(arguments.get("fragment_id") or "")
                 if fragment_id in fragments:
                     fragments_read.add(fragment_id)
-                tool_result = get_probe_fragment(fragment_id)
+                raw_result = get_probe_fragment(fragment_id)
+                record = notebook.add_observation(
+                    tool=name,
+                    arguments=arguments,
+                    ok=fragment_id in fragments,
+                )
+                probe_observations[key] = record
+                tool_result = notebook.render_raw_result(record, raw_result) if checkpoint_mode else raw_result
             else:
                 tool_result = f"Unknown cognition-probe tool: {name}"
             messages.append({"role": "tool", "tool_name": name, "content": tool_result})
         if unique_this_round:
             tool_rounds += 1
+        if checkpoint_mode and (checkpoint_consumed or control_messages):
+            strip_controls()
+        if checkpoint_mode and tool_rounds == 1 and unique_this_round:
+            guidance = {
+                "role": "user",
+                "content": (
+                    "The manifest is the checkpoint-mode soft boundary. Before each unique fragment, emit exactly "
+                    "one compact update_research_notebook call by itself with bare current-turn evidence_refs and "
+                    "proposed_arguments as an object. Do not resend histories or summaries."
+                ),
+            }
+            messages.append(guidance)
+            control_messages.append(guidance)
     else:
         content = ""
 
@@ -227,6 +373,7 @@ def run_cognition_probe(
             tool_rounds,
             hard_budget,
             runtime,
+            checkpoint_count,
         )
         agent.audit.write("cognition_probe", ok=False, stage=result.stage, **runtime)
         return result
@@ -245,6 +392,7 @@ def run_cognition_probe(
             tool_rounds,
             hard_budget,
             runtime,
+            checkpoint_count,
         )
         agent.audit.write("cognition_probe", ok=False, stage=result.stage, **runtime)
         return result
@@ -265,6 +413,7 @@ def run_cognition_probe(
         tool_rounds,
         hard_budget,
         runtime,
+        checkpoint_count,
     )
     agent.audit.write(
         "cognition_probe",
@@ -273,6 +422,7 @@ def run_cognition_probe(
         observation_count=observation_count,
         tool_rounds=tool_rounds,
         hard_budget=hard_budget,
+        checkpoint_count=checkpoint_count,
         **runtime,
     )
     return result
@@ -281,16 +431,26 @@ def run_cognition_probe(
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m localpilot.cognition_probe")
     parser.add_argument("--config", default=None, help="Path to localpilot.toml")
+    parser.add_argument(
+        "--checkpoint",
+        action="store_true",
+        help="Cross the soft boundary after the manifest and exercise compact checkpoints.",
+    )
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    result = run_cognition_probe(load_config(args.config), root)
+    result = run_cognition_probe(
+        load_config(args.config),
+        root,
+        checkpoint_mode=args.checkpoint,
+    )
     state = "PASS" if result.ok else "FAIL"
     print(f"LocalPilot cognition probe: {state}")
     print(f"Stage: {result.stage}")
     print(result.detail)
     print(
         f"Research: observations={result.observation_count}, "
-        f"tool_rounds={result.tool_rounds}/{result.hard_budget}"
+        f"tool_rounds={result.tool_rounds}/{result.hard_budget}, "
+        f"checkpoints={result.checkpoint_count}"
     )
     runtime = result.runtime
     print(

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from localpilot.agent import LocalPilotAgent
 from localpilot.cognition_probe import run_cognition_probe
 from localpilot.config import Config
+from localpilot.research import RESEARCH_NOTEBOOK_TOOL
 
 
 def _chunk(
@@ -222,6 +223,78 @@ def test_cognition_probe_reports_generation_limit_instead_of_guessing(tmp_path):
     assert result.runtime["runtime_classification"] == "generation_limit"
     assert result.runtime["eval_count"] == 4096
     assert result.observation_count == 4
+
+
+def test_cognition_probe_checkpoint_mode_crosses_soft_boundary_with_compact_deltas(tmp_path):
+    config = Config()
+    config.agent.research_hard_tool_rounds = 4
+    calls = []
+
+    def checkpoint(ref, fragment_id):
+        return _call(
+            RESEARCH_NOTEBOOK_TOOL,
+            {
+                "evidence_refs": [ref],
+                "unresolved_fact": f"The value in {fragment_id} remains unknown.",
+                "proposed_tool": "get_probe_fragment",
+                "proposed_arguments": {"fragment_id": fragment_id},
+                "result_that_would_change_the_conclusion": (
+                    "A fragment value that fails the manifest reconciliation procedure."
+                ),
+            },
+        )
+
+    streams = iter(
+        [
+            [_chunk(tool_calls=[_call("get_probe_manifest")])],
+            [_chunk(tool_calls=[checkpoint("result-001", "frag-a")])],
+            [_chunk(tool_calls=[_call("get_probe_fragment", {"fragment_id": "frag-a"})])],
+            [_chunk(tool_calls=[checkpoint("result-002", "frag-b")])],
+            [_chunk(tool_calls=[_call("get_probe_fragment", {"fragment_id": "frag-b"})])],
+            [_chunk(tool_calls=[checkpoint("result-003", "frag-c")])],
+            [_chunk(tool_calls=[_call("get_probe_fragment", {"fragment_id": "frag-c"})])],
+            [_chunk(content='{"sum": 42, "nonce": "fresh-run-value"}')],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    result = run_cognition_probe(
+        config,
+        tmp_path,
+        chat=fake_chat,
+        facts={
+            "left": 19,
+            "right": 23,
+            "nonce": "fresh-run-value",
+            "fragment_ids": ["frag-a", "frag-b", "frag-c"],
+        },
+        checkpoint_mode=True,
+    )
+
+    assert result.ok is True
+    assert result.checkpoint_count == 3
+    assert result.observation_count == 4
+    assert result.tool_rounds == result.hard_budget == 4
+    assert all(call["think"] == "high" for call in calls)
+    checkpoint_schema = next(
+        tool
+        for tool in calls[1]["tools"]
+        if isinstance(tool, dict)
+        and tool.get("function", {}).get("name") == RESEARCH_NOTEBOOK_TOOL
+    )
+    properties = checkpoint_schema["function"]["parameters"]["properties"]
+    assert properties["proposed_arguments"]["type"] == "object"
+    assert "proposed_arguments_json" not in properties
+    final_context = str(calls[-1]["messages"])
+    assert '"left": 19' in final_context
+    assert '"right": 23' in final_context
+    assert '"xor_check": 4' in final_context
+    assert "update_research_notebook" not in final_context
+    assert "TRANSIENT RESEARCH CHECKPOINT" not in final_context
+    assert "Checkpoint diagnostic mode" not in final_context
 
 
 def test_cognition_probe_fails_closed_when_multistep_research_exceeds_hard_budget(tmp_path):

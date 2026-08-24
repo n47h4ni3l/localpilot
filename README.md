@@ -11,7 +11,7 @@ In practical terms: when the owner is using the PC, LocalPilot works for the own
 ## What exists today
 
 - A local interactive agent backed by Ollama (`gpt-oss:20b` by default).
-- Same-context bounded research with raw-result IDs, a transient source-pointer notebook after the soft budget, and a 24-round hard ceiling.
+- Same-context bounded research with raw-result IDs, compact next-observation checkpoints after the soft budget, and a 24-round hard ceiling.
 - Read-only Windows tools for processes, disks, startup entries, power, Defender, and device problems.
 - Real TOML configuration, resource gating, process-priority control, and JSONL audit logging.
 - Separate stable operator, idle-time developer, and isolated candidate roles.
@@ -24,12 +24,15 @@ In practical terms: when the owner is using the PC, LocalPilot works for the own
 
 LocalPilot has no cloud-model or pricing subsystem. GitHub is used for source control, review, and candidate test execution; local model inference and machine-private learning data stay on the workstation.
 
-The operator's transient research notebook is a planning/index aid, not a compressed evidence handoff. Complete raw tool results remain in the live high-reasoning conversation through the final answer and control whenever notebook wording conflicts. Notebook content is scrubbed after the turn and is not written to chat memory, `learning.sqlite3`, evolution checkpoints, or audit logs (apart from structural counts/status).
+The operator checkpoint is a six-field planning delta, not a compressed evidence handoff: bounded bare `evidence_refs`, one `unresolved_fact`, one `proposed_tool`, `proposed_arguments` as an object, the result that would change the conclusion, and an optional distinct hypothesis. It contains no verified-fact prose or running histories. Complete raw tool results remain in the same live high-reasoning conversation. Checkpoint calls, results, recovery prompts, and rejected control turns are removed **before every final-synthesis call**, so they cannot become factual substrate. They are also absent from retained chat memory, `learning.sqlite3`, evolution checkpoints, and audit content; only safe structural counts/status are audited.
 
 The runtime cognition diagnostic now requires a fresh manifest and three unpredictable fragments, then checks retrieval completeness, cross-fragment reconciliation, the final answer, and compliance with the configured hard research budget:
 
 ```powershell
 .\scripts\cognition-probe.ps1
+
+# Force the real model across the soft boundary and exercise the compact checkpoint protocol.
+.\scripts\cognition-probe.ps1 -Checkpoint
 ```
 
 ## Architecture

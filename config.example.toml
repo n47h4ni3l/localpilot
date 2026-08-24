@@ -1,8 +1,8 @@
 [agent]
 name = "LocalPilot"
 data_dir = "localpilot-data"
-# Advisory point after which every unique observation requires a transient,
-# source-ID-backed information-gain checkpoint. This does not force research to stop.
+# Advisory point after which every unique observation requires one compact,
+# bare-current-turn-ID next-observation checkpoint. It is stripped before synthesis.
 research_soft_tool_rounds = 12
 # Hard safety ceiling for unique operator tool rounds. Exact duplicate read-only
 # observations reuse the current-turn cache and do not consume another round.

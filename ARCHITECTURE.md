@@ -8,6 +8,16 @@ LocalPilot has three isolated roles and two model responsibilities:
 
 Stable is never rewritten in place, candidate code is not executed locally by the autonomous loop, and there is no automatic promotion path.
 
+## Stable-operator research context
+
+Operator research keeps the owner's request, streamed same-model reasoning, assistant tool calls, and complete raw tool results in one live context through final synthesis. Raw results receive current-turn `obs-NNN` and `result-NNN` identifiers. They are never replaced by a bounded ledger or fresh summary context.
+
+After the advisory 12-round soft budget, each further unique observation requires a model-authored information-gain checkpoint: the unresolved fact, why cited raw results are insufficient, one proposed observation, and what result would change the conclusion. A transient notebook indexes verified-fact pointers, unresolved questions, inspected observation IDs, and the next observation. Every factual entry must cite an existing current-turn observation/result ID. The notebook contains no raw evidence and cannot establish a fact; final synthesis resolves pointers against the raw results, which control on conflict.
+
+Semantically similar searches and overlapping reads prompt for the distinct new hypothesis being tested. A justified follow-up remains allowed. Exact duplicate read-only calls retain the existing result cache and consume no unique research round. The hard ceiling remains 24 rounds.
+
+Notebook tool calls, notebook text, checkpoint prompts, and rejected control turns are removed after the owner turn. Only structural counts/status may enter audit output; notebook content is excluded from chat memory, learning SQLite, evolution checkpoints, and hidden reasoning. A multi-step cognition probe separately uses a fresh manifest plus three unpredictable fragments to verify planning, retrieval, cross-result reconciliation, and same-context answering within the configured hard budget.
+
 ## Self-development cycle
 
 ```text

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from localpilot.agent import LocalPilotAgent
 from localpilot.audit import AuditLog
 from localpilot.config import Config
+from localpilot.research import RESEARCH_NOTEBOOK_TOOL, TransientResearchNotebook
 
 
 def _chunk(*, content: str = "", thinking: str = "", tool_calls=None, **runtime):
@@ -230,3 +231,210 @@ def test_audit_keeps_token_metrics_but_redacts_credentials(tmp_path):
     assert row["prompt_token_count"] == 1234
     assert row["github_token"] == "<redacted>"
     assert row["api_key"] == "<redacted>"
+
+
+def _checkpoint_args(*, proposed_path: str, fact_pointer: str = "result-001"):
+    return {
+        "verified_fact_pointers": [f"{fact_pointer}: locate the raw canonical-value result"],
+        "unresolved_questions": [f"{fact_pointer}: does a second source reconcile the value?"],
+        "inspected_observation_ids": ["obs-001"],
+        "unresolved_fact": f"{fact_pointer}: the canonical value needs independent reconciliation",
+        "why_current_evidence_is_insufficient": f"{fact_pointer}: only one raw source is present",
+        "proposed_tool": "read_repository_file",
+        "proposed_arguments_json": json.dumps(
+            {"path": proposed_path, "start_line": 1, "end_line": 20}, sort_keys=True
+        ),
+        "result_that_would_change_the_conclusion": "A conflicting canonical value would require reporting the conflict.",
+        "new_hypothesis": "",
+    }
+
+
+def test_notebook_rejects_unsupported_claims_and_requires_redundancy_hypothesis():
+    notebook = TransientResearchNotebook()
+    first = notebook.add_observation(
+        tool="search_repository",
+        arguments={"query": "model-adaptation-lab"},
+        ok=True,
+    )
+    unsupported = _checkpoint_args(proposed_path="second.txt", fact_pointer="result-999")
+    unsupported["proposed_tool"] = "search_repository"
+    unsupported["proposed_arguments_json"] = json.dumps({"query": "model adaptation lab"})
+
+    rejected = notebook.submit(unsupported)
+
+    assert rejected.accepted is False
+    assert "unknown current-turn references" in rejected.message
+
+    redundant = dict(unsupported)
+    redundant["verified_fact_pointers"] = [f"{first.result_id}: prior search result pointer"]
+    redundant["unresolved_questions"] = [f"{first.observation_id}: whether alternate spelling differs"]
+    redundant["inspected_observation_ids"] = [first.observation_id]
+    redundant["unresolved_fact"] = f"{first.result_id}: alternate spelling remains untested"
+    redundant["why_current_evidence_is_insufficient"] = f"{first.result_id}: prior query may be lexical"
+
+    needs_justification = notebook.submit(redundant)
+
+    assert needs_justification.accepted is False
+    assert needs_justification.redundant_with == (first.observation_id,)
+    assert "distinct new hypothesis" in needs_justification.message
+
+    redundant["new_hypothesis"] = (
+        f"{first.observation_id}: underscore normalization may expose paths omitted by the hyphenated query"
+    )
+    justified = notebook.submit(redundant)
+
+    assert justified.accepted is True
+    assert notebook.authorizes("search_repository", {"query": "model adaptation lab"})
+
+    next_turn = TransientResearchNotebook(start_at=2)
+    second = next_turn.add_observation(tool="search_repository", arguments={"query": "fresh"}, ok=True)
+    stale = dict(redundant)
+    stale["proposed_arguments_json"] = json.dumps({"query": "different"})
+    stale_decision = next_turn.submit(stale)
+    assert second.observation_id == "obs-002"
+    assert stale_decision.accepted is False
+    assert "unknown current-turn references" in stale_decision.message
+
+
+def test_post_soft_unique_observation_requires_matching_information_gain_checkpoint(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path, soft=1, hard=4)
+    (tmp_path / "first.txt").write_text("first raw fact", encoding="utf-8")
+    (tmp_path / "second.txt").write_text("second raw fact", encoding="utf-8")
+    second_reads = 0
+    original = agent.tools["read_repository_file"]
+
+    def counted_read(**kwargs):
+        nonlocal second_reads
+        if kwargs.get("path") == "second.txt":
+            second_reads += 1
+        return original.fn(**kwargs)
+
+    agent.tools["read_repository_file"] = SimpleNamespace(risk=original.risk, fn=counted_read)
+    streams = iter(
+        [
+            [_chunk(tool_calls=[_call("read_repository_file", {"path": "first.txt"})])],
+            [_chunk(tool_calls=[_call("read_repository_file", {"path": "second.txt"})])],
+            [_chunk(tool_calls=[_call(RESEARCH_NOTEBOOK_TOOL, _checkpoint_args(proposed_path="second.txt"))])],
+            [
+                _chunk(
+                    tool_calls=[
+                        _call(
+                            "read_repository_file",
+                            {"path": "second.txt", "start_line": 1, "end_line": 20},
+                        )
+                    ]
+                )
+            ],
+            [_chunk(content="The two raw facts were inspected.")],
+            [_chunk(content="Final answer grounded in both raw results.")],
+        ]
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ollama",
+        SimpleNamespace(chat=lambda **kwargs: iter(next(streams))),
+    )
+
+    answer = agent.ask("Inspect the repository and reconcile first.txt with second.txt.")
+
+    assert answer == "Final answer grounded in both raw results."
+    assert second_reads == 1
+    required = agent.audit.latest("model_research_checkpoint_required")
+    accepted = agent.audit.latest("model_research_checkpoint")
+    assert required is not None and required["unique_call_count"] == 1
+    assert accepted is not None and accepted["accepted"] is True
+    assert accepted["verified_pointer_count"] == 1
+
+
+def test_exact_duplicate_cache_still_bypasses_post_soft_checkpoint(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path, soft=1, hard=4)
+    invocations = 0
+    original = agent.tools["list_repository_tree"]
+
+    def counted_tree(**kwargs):
+        nonlocal invocations
+        invocations += 1
+        return original.fn(**kwargs)
+
+    agent.tools["list_repository_tree"] = SimpleNamespace(risk=original.risk, fn=counted_tree)
+    repeated = _call("list_repository_tree", {"path": ".", "depth": 1, "max_entries": 200})
+    streams = iter(
+        [
+            [_chunk(tool_calls=[repeated])],
+            [_chunk(tool_calls=[repeated])],
+            [_chunk(content="The exact duplicate reused the earlier result.")],
+            [_chunk(content="Final cache-preserving answer.")],
+        ]
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "ollama",
+        SimpleNamespace(chat=lambda **kwargs: iter(next(streams))),
+    )
+
+    answer = agent.ask("Inspect the repository and report the tree.")
+
+    assert answer == "Final cache-preserving answer."
+    assert invocations == 1
+    assert agent.audit.latest("tool_observation_cache_hit") is not None
+    assert agent.audit.latest("model_research_checkpoint_required") is None
+
+
+def test_misleading_notebook_cannot_replace_raw_evidence_and_late_result_reaches_final_synthesis(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path, soft=1, hard=2)
+    (tmp_path / "canonical.txt").write_text("CANONICAL VALUE: blue", encoding="utf-8")
+    (tmp_path / "late.txt").write_text("LATE RAW RESULT: blue is corroborated", encoding="utf-8")
+    snapshots = []
+    misleading = _checkpoint_args(proposed_path="late.txt")
+    misleading["verified_fact_pointers"] = [
+        "obs-001/result-001: MISLEADING NOTEBOOK CLAIM — canonical value is red"
+    ]
+    streams = iter(
+        [
+            [_chunk(tool_calls=[_call("read_repository_file", {"path": "canonical.txt"})])],
+            [_chunk(tool_calls=[_call(RESEARCH_NOTEBOOK_TOOL, misleading)])],
+            [
+                _chunk(
+                    tool_calls=[
+                        _call(
+                            "read_repository_file",
+                            {"path": "late.txt", "start_line": 1, "end_line": 20},
+                        )
+                    ]
+                )
+            ],
+            [_chunk(thinking="I should now reconcile the raw results in the same live context.")],
+            [_chunk(content="The canonical value is blue; the late raw result corroborates it.")],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        snapshots.append([dict(item) for item in kwargs["messages"]])
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask("Inspect the repository and report the canonical value using all raw evidence.")
+
+    assert answer == "The canonical value is blue; the late raw result corroborates it."
+    final_context = str(snapshots[-1])
+    assert "CANONICAL VALUE: blue" in final_context
+    assert "LATE RAW RESULT: blue is corroborated" in final_context
+    assert "MISLEADING NOTEBOOK CLAIM" in final_context
+    assert "If notebook text conflicts with a raw result, the raw result controls" in final_context
+    assert "MISLEADING NOTEBOOK CLAIM" not in str(agent.messages)
+    assert "MISLEADING NOTEBOOK CLAIM" not in (tmp_path / "localpilot-data" / "audit.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "MISLEADING NOTEBOOK CLAIM" not in (tmp_path / "localpilot-data" / "learning.sqlite3").read_bytes().decode(
+        "latin-1"
+    )
+    assert not (tmp_path / "localpilot-data" / "evolution-checkpoint.json").exists()
+    scrubbed = agent.audit.latest("model_research_notebook_scrubbed")
+    assert scrubbed is not None and scrubbed["notebook_entries_retained"] == 0
+    assert Config().agent.research_hard_tool_rounds == 24

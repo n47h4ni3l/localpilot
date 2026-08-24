@@ -1,9 +1,12 @@
 [agent]
 name = "LocalPilot"
 data_dir = "localpilot-data"
-# Maximum rounds that may actually call operator tools. LocalPilot reserves a
-# few additional bounded control turns for evidence recovery/final synthesis.
-max_tool_rounds = 12
+# Advisory point after which every unique observation requires a transient,
+# source-ID-backed information-gain checkpoint. This does not force research to stop.
+research_soft_tool_rounds = 12
+# Hard safety ceiling for unique operator tool rounds. Exact duplicate read-only
+# observations reuse the current-turn cache and do not consume another round.
+research_hard_tool_rounds = 24
 
 # Everyday PC requests use this model.
 [model]

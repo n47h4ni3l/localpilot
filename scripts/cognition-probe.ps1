@@ -1,5 +1,6 @@
 param(
-    [string]$Config
+    [string]$Config,
+    [switch]$Checkpoint
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,6 +14,9 @@ if (-not (Test-Path $python)) {
 $arguments = @("-m", "localpilot.cognition_probe")
 if ($Config) {
     $arguments += @("--config", $Config)
+}
+if ($Checkpoint) {
+    $arguments += "--checkpoint"
 }
 
 & $python @arguments

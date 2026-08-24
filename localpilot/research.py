@@ -1,33 +1,123 @@
 from __future__ import annotations
 
+import copy
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
 
 
 RESEARCH_NOTEBOOK_TOOL = "update_research_notebook"
-_REFERENCE = re.compile(r"\b(?:obs|result)-\d{3,}\b", re.IGNORECASE)
+MAX_EVIDENCE_REFS = 8
+MAX_CHECKPOINT_TEXT = 320
+MAX_TOOL_NAME = 80
+MAX_ARGUMENT_DEPTH = 4
+MAX_ARGUMENT_CONTAINER_ITEMS = 16
+MAX_ARGUMENT_NODES = 64
+MAX_ARGUMENT_STRING = 512
+MAX_ARGUMENT_SERIALIZED_BYTES = 2048
+MAX_CHECKPOINT_SERIALIZED_BYTES = 4096
+
+_REFERENCE = re.compile(r"^(?:obs|result)-\d{3,}$", re.IGNORECASE)
 _WORD = re.compile(r"[a-z0-9]+")
+_CHECKPOINT_FIELDS = {
+    "evidence_refs",
+    "unresolved_fact",
+    "proposed_tool",
+    "proposed_arguments",
+    "result_that_would_change_the_conclusion",
+    "new_hypothesis",
+}
+
+_RESEARCH_NOTEBOOK_TOOL_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": RESEARCH_NOTEBOOK_TOOL,
+        "description": (
+            "Authorize exactly one highest-value read-only observation after the research soft budget. "
+            "This compact, transient planning delta is not evidence and is removed before final synthesis. "
+            "Do not resend histories, factual summaries, raw results, or JSON encoded as a string."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "evidence_refs",
+                "unresolved_fact",
+                "proposed_tool",
+                "proposed_arguments",
+                "result_that_would_change_the_conclusion",
+            ],
+            "properties": {
+                "evidence_refs": {
+                    "type": "array",
+                    "description": "Bare current-turn obs-NNN or result-NNN IDs relevant to this decision.",
+                    "minItems": 1,
+                    "maxItems": MAX_EVIDENCE_REFS,
+                    "uniqueItems": True,
+                    "items": {
+                        "type": "string",
+                        "pattern": r"^(?:obs|result)-\d{3,}$",
+                        "maxLength": 32,
+                    },
+                },
+                "unresolved_fact": {
+                    "type": "string",
+                    "description": "The single material uncertainty blocking an answer.",
+                    "minLength": 1,
+                    "maxLength": MAX_CHECKPOINT_TEXT,
+                },
+                "proposed_tool": {
+                    "type": "string",
+                    "description": "One read-only tool for the next observation.",
+                    "minLength": 1,
+                    "maxLength": MAX_TOOL_NAME,
+                },
+                "proposed_arguments": {
+                    "type": "object",
+                    "description": "The proposed tool arguments as an object, never JSON text.",
+                    "maxProperties": MAX_ARGUMENT_CONTAINER_ITEMS,
+                },
+                "result_that_would_change_the_conclusion": {
+                    "type": "string",
+                    "description": "The concrete result that would materially change the current decision.",
+                    "minLength": 1,
+                    "maxLength": MAX_CHECKPOINT_TEXT,
+                },
+                "new_hypothesis": {
+                    "type": "string",
+                    "description": "For redundant research only: the distinct hypothesis tested.",
+                    "maxLength": MAX_CHECKPOINT_TEXT,
+                },
+            },
+        },
+    },
+}
+
+
+def research_notebook_tool_schema() -> dict[str, Any]:
+    """Return the bounded manual schema used instead of Ollama's lossy callable conversion."""
+    return copy.deepcopy(_RESEARCH_NOTEBOOK_TOOL_SCHEMA)
 
 
 def update_research_notebook(
-    verified_fact_pointers: list[str],
-    unresolved_questions: list[str],
-    inspected_observation_ids: list[str],
+    evidence_refs: list[str],
     unresolved_fact: str,
-    why_current_evidence_is_insufficient: str,
     proposed_tool: str,
-    proposed_arguments_json: str,
+    proposed_arguments: dict[str, Any],
     result_that_would_change_the_conclusion: str,
     new_hypothesis: str = "",
 ) -> str:
-    """Record a transient evidence-pointer notebook and one information-gain checkpoint.
+    """Record one compact, transient next-observation decision.
 
-    This is a planning/index operation, not an evidence source. Every factual notebook entry
-    must cite an existing obs-NNN or result-NNN identifier from this owner turn. Supply exactly
-    one proposed read-only observation. If it is similar to prior research, state the distinct
-    new hypothesis it tests. The agent validates and stores the request only in live turn memory.
+    Args:
+        evidence_refs: Bare current-turn obs-NNN or result-NNN IDs relevant to this decision.
+        unresolved_fact: The single material uncertainty blocking an answer.
+        proposed_tool: One read-only tool for the next observation.
+        proposed_arguments: Tool arguments as an object, never JSON text.
+        result_that_would_change_the_conclusion: Result that would materially change the decision.
+        new_hypothesis: Distinct hypothesis when the observation resembles prior research.
     """
     raise RuntimeError("The operator intercepts this transient control tool before execution.")
 
@@ -51,11 +141,8 @@ class ObservationRecord:
 
 @dataclass(frozen=True, slots=True)
 class ResearchCheckpoint:
-    verified_fact_pointers: tuple[str, ...]
-    unresolved_questions: tuple[str, ...]
-    inspected_observation_ids: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
     unresolved_fact: str
-    why_current_evidence_is_insufficient: str
     proposed_tool: str
     proposed_arguments: dict[str, Any]
     result_that_would_change_the_conclusion: str
@@ -71,14 +158,11 @@ class CheckpointDecision:
 
 
 class TransientResearchNotebook:
-    """Turn-local navigation state whose references resolve to live raw tool messages.
+    """Turn-local navigation state that never stores tool-result text or factual summaries."""
 
-    It intentionally stores no tool-result text. Raw results in the conversation remain the
-    only evidence and the only input from which a final answer may establish a fact.
-    """
-
-    def __init__(self, *, start_at: int = 1) -> None:
+    def __init__(self, *, start_at: int = 1, allowed_tools: set[str] | None = None) -> None:
         self._start_at = max(1, int(start_at))
+        self._allowed_tools = set(allowed_tools) if allowed_tools is not None else None
         self._observations: list[ObservationRecord] = []
         self._latest: ResearchCheckpoint | None = None
         self._pending: ResearchCheckpoint | None = None
@@ -91,13 +175,7 @@ class TransientResearchNotebook:
     def has_pending_checkpoint(self) -> bool:
         return self._pending is not None
 
-    def add_observation(
-        self,
-        *,
-        tool: str,
-        arguments: dict[str, Any],
-        ok: bool,
-    ) -> ObservationRecord:
+    def add_observation(self, *, tool: str, arguments: dict[str, Any], ok: bool) -> ObservationRecord:
         number = self._start_at + len(self._observations)
         record = ObservationRecord(
             observation_id=f"obs-{number:03d}",
@@ -115,7 +193,7 @@ class TransientResearchNotebook:
             f"[Observation ID: {record.observation_id}]\n"
             f"[Tool result ID: {record.result_id}]\n"
             f"[Tool: {record.tool}]\n"
-            "[This raw tool result is evidence; transient notebook text is not.]\n\n"
+            "[This raw tool result is evidence; transient checkpoint text is not.]\n\n"
             f"{result}"
         )
 
@@ -134,16 +212,61 @@ class TransientResearchNotebook:
             for reference in observation.references
         }
 
-    def _validate_references(self, label: str, entries: list[str]) -> str | None:
-        known = self._known_references()
-        for entry in entries:
-            references = {item.lower() for item in _REFERENCE.findall(str(entry))}
-            if not references:
-                return f"{label} entry lacks an obs-NNN or result-NNN pointer: {entry!r}"
-            unknown = sorted(references - known)
-            if unknown:
-                return f"{label} entry cites unknown current-turn references: {', '.join(unknown)}"
-        return None
+    @staticmethod
+    def _reject(code: str, detail: str) -> CheckpointDecision:
+        return CheckpointDecision(False, f"Checkpoint rejected ({code}): {detail}")
+
+    @staticmethod
+    def _bounded_text(arguments: dict[str, Any], field: str, *, required: bool) -> tuple[str, str | None]:
+        value = arguments.get(field, "")
+        if not isinstance(value, str):
+            return "", f"{field} must be a string."
+        value = value.strip()
+        if required and not value:
+            return "", f"{field} is required."
+        if len(value) > MAX_CHECKPOINT_TEXT:
+            return "", f"{field} exceeds {MAX_CHECKPOINT_TEXT} characters."
+        return value, None
+
+    @staticmethod
+    def _validate_argument_value(value: Any, *, depth: int = 0) -> tuple[int, str | None]:
+        if depth > MAX_ARGUMENT_DEPTH:
+            return 0, f"proposed_arguments exceeds depth {MAX_ARGUMENT_DEPTH}."
+        if value is None or isinstance(value, (bool, int)):
+            return 1, None
+        if isinstance(value, float):
+            return (1, None) if math.isfinite(value) else (0, "proposed_arguments contains a non-finite number.")
+        if isinstance(value, str):
+            if len(value) > MAX_ARGUMENT_STRING:
+                return 0, f"proposed_arguments contains a string over {MAX_ARGUMENT_STRING} characters."
+            return 1, None
+        if isinstance(value, list):
+            if len(value) > MAX_ARGUMENT_CONTAINER_ITEMS:
+                return 0, f"proposed_arguments list exceeds {MAX_ARGUMENT_CONTAINER_ITEMS} items."
+            nodes = 1
+            for item in value:
+                child_nodes, error = TransientResearchNotebook._validate_argument_value(item, depth=depth + 1)
+                if error:
+                    return 0, error
+                nodes += child_nodes
+                if nodes > MAX_ARGUMENT_NODES:
+                    return 0, f"proposed_arguments exceeds {MAX_ARGUMENT_NODES} values."
+            return nodes, None
+        if isinstance(value, dict):
+            if len(value) > MAX_ARGUMENT_CONTAINER_ITEMS:
+                return 0, f"proposed_arguments object exceeds {MAX_ARGUMENT_CONTAINER_ITEMS} fields."
+            nodes = 1
+            for key, item in value.items():
+                if not isinstance(key, str) or not key or len(key) > MAX_TOOL_NAME:
+                    return 0, "proposed_arguments keys must be short non-empty strings."
+                child_nodes, error = TransientResearchNotebook._validate_argument_value(item, depth=depth + 1)
+                if error:
+                    return 0, error
+                nodes += child_nodes
+                if nodes > MAX_ARGUMENT_NODES:
+                    return 0, f"proposed_arguments exceeds {MAX_ARGUMENT_NODES} values."
+            return nodes, None
+        return 0, "proposed_arguments contains a non-JSON value."
 
     @staticmethod
     def _tokens(value: Any) -> set[str]:
@@ -165,18 +288,12 @@ class TransientResearchNotebook:
         return start, end
 
     @classmethod
-    def _semantically_similar(
-        cls,
-        tool: str,
-        arguments: dict[str, Any],
-        prior: ObservationRecord,
-    ) -> bool:
+    def _semantically_similar(cls, tool: str, arguments: dict[str, Any], prior: ObservationRecord) -> bool:
         if tool != prior.tool:
             return False
         old = prior.arguments
         if tool in {"search_repository", "search_public_web"}:
-            query_key = "query"
-            return cls._queries_similar(arguments.get(query_key, ""), old.get(query_key, ""))
+            return cls._queries_similar(arguments.get("query", ""), old.get("query", ""))
         if tool == "read_repository_file":
             if str(arguments.get("path", "")).lower() != str(old.get("path", "")).lower():
                 return False
@@ -197,93 +314,97 @@ class TransientResearchNotebook:
         )
 
     def submit(self, arguments: dict[str, Any]) -> CheckpointDecision:
-        """Validate a model-authored notebook without interpreting it as factual evidence."""
-        fields = {
-            "verified_fact_pointers": list(arguments.get("verified_fact_pointers") or []),
-            "unresolved_questions": list(arguments.get("unresolved_questions") or []),
-            "inspected_observation_ids": list(arguments.get("inspected_observation_ids") or []),
-        }
-        for label in ("verified_fact_pointers", "unresolved_questions"):
-            error = self._validate_references(label, fields[label])
-            if error:
-                return CheckpointDecision(False, error)
-
-        known_observations = {item.observation_id for item in self._observations}
-        inspected = tuple(str(item).lower() for item in fields["inspected_observation_ids"])
-        if not inspected:
-            return CheckpointDecision(False, "inspected_observation_ids must cite current-turn observations.")
-        unknown_observations = sorted(set(inspected) - known_observations)
-        if unknown_observations:
-            return CheckpointDecision(
-                False,
-                "inspected_observation_ids contains unknown IDs: " + ", ".join(unknown_observations),
-            )
-
-        referenced_checkpoint_fields = {
-            "unresolved_fact": str(arguments.get("unresolved_fact") or "").strip(),
-            "why_current_evidence_is_insufficient": str(
-                arguments.get("why_current_evidence_is_insufficient") or ""
-            ).strip(),
-        }
-        for label, value in referenced_checkpoint_fields.items():
-            if not value:
-                return CheckpointDecision(False, f"{label} is required.")
-            error = self._validate_references(label, [value])
-            if error:
-                return CheckpointDecision(False, error)
-
-        proposed_tool = str(arguments.get("proposed_tool") or "").strip()
-        proposed_json = str(arguments.get("proposed_arguments_json") or "").strip()
-        conclusion_change = str(
-            arguments.get("result_that_would_change_the_conclusion") or ""
-        ).strip()
-        if not proposed_tool or not proposed_json or not conclusion_change:
-            return CheckpointDecision(
-                False,
-                "proposed_tool, proposed_arguments_json, and result_that_would_change_the_conclusion are required.",
-            )
+        """Validate one model-authored planning delta without treating it as evidence."""
+        if not isinstance(arguments, dict):
+            return self._reject("shape", "arguments must be one object.")
+        unexpected = sorted(set(arguments) - _CHECKPOINT_FIELDS)
+        if unexpected:
+            return self._reject("fields", "use only the six compact delta fields.")
         try:
-            proposed_arguments = json.loads(proposed_json)
-        except (json.JSONDecodeError, TypeError) as exc:
-            return CheckpointDecision(False, f"proposed_arguments_json is invalid JSON: {exc}")
+            checkpoint_bytes = len(json.dumps(arguments, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        except (TypeError, ValueError):
+            return self._reject("json", "arguments must contain only JSON values.")
+        if checkpoint_bytes > MAX_CHECKPOINT_SERIALIZED_BYTES:
+            return self._reject("size", f"payload exceeds {MAX_CHECKPOINT_SERIALIZED_BYTES} bytes.")
+
+        raw_refs = arguments.get("evidence_refs")
+        if not isinstance(raw_refs, list) or not raw_refs:
+            return self._reject("refs", "evidence_refs must be a non-empty list of bare current-turn IDs.")
+        if len(raw_refs) > MAX_EVIDENCE_REFS:
+            return self._reject("refs", f"evidence_refs is limited to {MAX_EVIDENCE_REFS} IDs.")
+        if any(not isinstance(item, str) or _REFERENCE.fullmatch(item) is None for item in raw_refs):
+            return self._reject("refs", "only bare obs-NNN or result-NNN IDs are accepted.")
+        evidence_refs = tuple(item.lower() for item in raw_refs)
+        if len(set(evidence_refs)) != len(evidence_refs):
+            return self._reject("refs", "evidence_refs must not repeat IDs.")
+        unknown = sorted(set(evidence_refs) - self._known_references())
+        if unknown:
+            return self._reject("refs", "evidence_refs contains an unknown current-turn ID.")
+
+        unresolved_fact, error = self._bounded_text(arguments, "unresolved_fact", required=True)
+        if error:
+            return self._reject("text", error)
+        conclusion_change, error = self._bounded_text(arguments, "result_that_would_change_the_conclusion", required=True)
+        if error:
+            return self._reject("text", error)
+        new_hypothesis, error = self._bounded_text(arguments, "new_hypothesis", required=False)
+        if error:
+            return self._reject("text", error)
+
+        proposed_tool = arguments.get("proposed_tool")
+        if not isinstance(proposed_tool, str) or not proposed_tool.strip():
+            return self._reject("tool", "proposed_tool is required.")
+        proposed_tool = proposed_tool.strip()
+        if len(proposed_tool) > MAX_TOOL_NAME:
+            return self._reject("tool", f"proposed_tool exceeds {MAX_TOOL_NAME} characters.")
+        if self._allowed_tools is not None and proposed_tool not in self._allowed_tools:
+            return self._reject("tool", "proposed_tool is not an allowed read-only observation tool.")
+
+        proposed_arguments = arguments.get("proposed_arguments")
         if not isinstance(proposed_arguments, dict):
-            return CheckpointDecision(False, "proposed_arguments_json must encode one JSON object.")
+            return self._reject("arguments", "proposed_arguments must be an object, not JSON text.")
+        _, error = self._validate_argument_value(proposed_arguments)
+        if error:
+            return self._reject("arguments", error)
+        serialized_arguments = json.dumps(
+            proposed_arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        if len(serialized_arguments) > MAX_ARGUMENT_SERIALIZED_BYTES:
+            return self._reject("arguments", f"proposed_arguments exceeds {MAX_ARGUMENT_SERIALIZED_BYTES} bytes.")
 
         redundant_with = self.semantic_redundancies(proposed_tool, proposed_arguments)
-        new_hypothesis = str(arguments.get("new_hypothesis") or "").strip()
         if redundant_with:
-            error = self._validate_references("new_hypothesis", [new_hypothesis]) if new_hypothesis else "missing"
-            if error:
+            if not new_hypothesis:
                 return CheckpointDecision(
                     False,
-                    "The proposed observation is semantically similar to "
-                    + ", ".join(redundant_with)
-                    + ". State the distinct new hypothesis it tests and cite the prior observation ID; "
-                    "a justified follow-up will be allowed.",
+                    "Checkpoint rejected (redundancy): state one distinct new_hypothesis.",
+                    redundant_with,
+                )
+            redundant_refs = {
+                reference
+                for observation in self._observations
+                if observation.observation_id in redundant_with
+                for reference in observation.references
+            }
+            if not (set(evidence_refs) & redundant_refs):
+                return CheckpointDecision(
+                    False,
+                    "Checkpoint rejected (redundancy): evidence_refs must include the similar prior observation.",
                     redundant_with,
                 )
 
         checkpoint = ResearchCheckpoint(
-            verified_fact_pointers=tuple(str(item) for item in fields["verified_fact_pointers"]),
-            unresolved_questions=tuple(str(item) for item in fields["unresolved_questions"]),
-            inspected_observation_ids=inspected,
-            unresolved_fact=referenced_checkpoint_fields["unresolved_fact"],
-            why_current_evidence_is_insufficient=referenced_checkpoint_fields[
-                "why_current_evidence_is_insufficient"
-            ],
+            evidence_refs=evidence_refs,
+            unresolved_fact=unresolved_fact,
             proposed_tool=proposed_tool,
-            proposed_arguments=proposed_arguments,
+            proposed_arguments=dict(proposed_arguments),
             result_that_would_change_the_conclusion=conclusion_change,
             new_hypothesis=new_hypothesis,
             redundant_with=redundant_with,
         )
         self._latest = checkpoint
         self._pending = checkpoint
-        return CheckpointDecision(
-            True,
-            self.render(),
-            redundant_with,
-        )
+        return CheckpointDecision(True, self.render(), redundant_with)
 
     def authorizes(self, tool: str, arguments: dict[str, Any]) -> bool:
         pending = self._pending
@@ -302,36 +423,18 @@ class TransientResearchNotebook:
     def render(self) -> str:
         checkpoint = self._latest
         if checkpoint is None:
-            return "TRANSIENT RESEARCH NOTEBOOK: empty"
-
-        def section(title: str, entries: tuple[str, ...]) -> list[str]:
-            return [title, *(f"- {item}" for item in entries)] if entries else [title, "- none"]
-
+            return "TRANSIENT RESEARCH CHECKPOINT: empty"
         rows = [
-            "TRANSIENT RESEARCH NOTEBOOK — NAVIGATION/PLANNING ONLY; NOT EVIDENCE",
-            "Resolve every pointer against the full raw tool result still present in this conversation. ",
-            "If notebook text conflicts with a raw result, the raw result controls.",
-            "",
+            "TRANSIENT RESEARCH CHECKPOINT — PLANNING ONLY; NOT EVIDENCE",
+            "Accepted for exactly one next observation and removed before final synthesis.",
+            f"evidence_refs: {', '.join(checkpoint.evidence_refs)}",
+            f"unresolved_fact: {checkpoint.unresolved_fact}",
+            f"proposed_observation: {checkpoint.proposed_tool} {canonical_arguments(checkpoint.proposed_arguments)}",
+            "result_that_would_change_the_conclusion: "
+            f"{checkpoint.result_that_would_change_the_conclusion}",
         ]
-        rows.extend(section("Verified fact pointers", checkpoint.verified_fact_pointers))
-        rows.append("")
-        rows.extend(section("Unresolved questions", checkpoint.unresolved_questions))
-        rows.extend(
-            [
-                "",
-                "Inspected observations",
-                *(f"- {item}" for item in checkpoint.inspected_observation_ids),
-                "",
-                "Next highest-value observation / information-gain checkpoint",
-                f"- unresolved fact: {checkpoint.unresolved_fact}",
-                f"- why raw evidence is insufficient: {checkpoint.why_current_evidence_is_insufficient}",
-                f"- proposed observation: {checkpoint.proposed_tool} "
-                f"{canonical_arguments(checkpoint.proposed_arguments)}",
-                f"- result that would change the conclusion: "
-                f"{checkpoint.result_that_would_change_the_conclusion}",
-                f"- distinct hypothesis: {checkpoint.new_hypothesis or 'not semantically redundant'}",
-            ]
-        )
+        if checkpoint.new_hypothesis:
+            rows.append(f"new_hypothesis: {checkpoint.new_hypothesis}")
         return "\n".join(rows)
 
     def clear(self) -> None:

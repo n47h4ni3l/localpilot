@@ -2,10 +2,20 @@ import json
 import sys
 from types import SimpleNamespace
 
+import pytest
+from ollama import ResponseError
+
 from localpilot.agent import LocalPilotAgent
 from localpilot.audit import AuditLog
 from localpilot.config import Config
-from localpilot.research import RESEARCH_NOTEBOOK_TOOL, TransientResearchNotebook
+from localpilot.research import (
+    MAX_ARGUMENT_DEPTH,
+    MAX_CHECKPOINT_TEXT,
+    MAX_EVIDENCE_REFS,
+    RESEARCH_NOTEBOOK_TOOL,
+    TransientResearchNotebook,
+    research_notebook_tool_schema,
+)
 
 
 def _chunk(*, content: str = "", thinking: str = "", tool_calls=None, **runtime):
@@ -233,54 +243,65 @@ def test_audit_keeps_token_metrics_but_redacts_credentials(tmp_path):
     assert row["api_key"] == "<redacted>"
 
 
-def _checkpoint_args(*, proposed_path: str, fact_pointer: str = "result-001"):
+def _checkpoint_args(
+    *,
+    proposed_path: str,
+    evidence_refs: list[str] | None = None,
+    unresolved_fact: str = "A second raw source may materially change the current conclusion.",
+):
     return {
-        "verified_fact_pointers": [f"{fact_pointer}: locate the raw canonical-value result"],
-        "unresolved_questions": [f"{fact_pointer}: does a second source reconcile the value?"],
-        "inspected_observation_ids": ["obs-001"],
-        "unresolved_fact": f"{fact_pointer}: the canonical value needs independent reconciliation",
-        "why_current_evidence_is_insufficient": f"{fact_pointer}: only one raw source is present",
+        "evidence_refs": list(evidence_refs or ["result-001"]),
+        "unresolved_fact": unresolved_fact,
         "proposed_tool": "read_repository_file",
-        "proposed_arguments_json": json.dumps(
-            {"path": proposed_path, "start_line": 1, "end_line": 20}, sort_keys=True
-        ),
+        "proposed_arguments": {"path": proposed_path, "start_line": 1, "end_line": 20},
         "result_that_would_change_the_conclusion": "A conflicting canonical value would require reporting the conflict.",
         "new_hypothesis": "",
     }
 
 
-def test_notebook_rejects_unsupported_claims_and_requires_redundancy_hypothesis():
-    notebook = TransientResearchNotebook()
+def test_compact_checkpoint_schema_and_semantic_redundancy_require_distinct_hypothesis():
+    schema = research_notebook_tool_schema()["function"]["parameters"]
+    assert set(schema["properties"]) == {
+        "evidence_refs",
+        "unresolved_fact",
+        "proposed_tool",
+        "proposed_arguments",
+        "result_that_would_change_the_conclusion",
+        "new_hypothesis",
+    }
+    assert schema["properties"]["proposed_arguments"]["type"] == "object"
+    assert schema["properties"]["evidence_refs"]["maxItems"] == MAX_EVIDENCE_REFS
+    assert "proposed_arguments_json" not in str(schema)
+
+    notebook = TransientResearchNotebook(allowed_tools={"search_repository"})
     first = notebook.add_observation(
         tool="search_repository",
         arguments={"query": "model-adaptation-lab"},
         ok=True,
     )
-    unsupported = _checkpoint_args(proposed_path="second.txt", fact_pointer="result-999")
-    unsupported["proposed_tool"] = "search_repository"
-    unsupported["proposed_arguments_json"] = json.dumps({"query": "model adaptation lab"})
+    unsupported = {
+        "evidence_refs": ["result-999"],
+        "unresolved_fact": "Alternate spelling may find a distinct path.",
+        "proposed_tool": "search_repository",
+        "proposed_arguments": {"query": "model adaptation lab"},
+        "result_that_would_change_the_conclusion": "A new implementation path would change the conclusion.",
+    }
 
     rejected = notebook.submit(unsupported)
 
     assert rejected.accepted is False
-    assert "unknown current-turn references" in rejected.message
+    assert "unknown current-turn ID" in rejected.message
 
     redundant = dict(unsupported)
-    redundant["verified_fact_pointers"] = [f"{first.result_id}: prior search result pointer"]
-    redundant["unresolved_questions"] = [f"{first.observation_id}: whether alternate spelling differs"]
-    redundant["inspected_observation_ids"] = [first.observation_id]
-    redundant["unresolved_fact"] = f"{first.result_id}: alternate spelling remains untested"
-    redundant["why_current_evidence_is_insufficient"] = f"{first.result_id}: prior query may be lexical"
+    redundant["evidence_refs"] = [first.result_id]
 
     needs_justification = notebook.submit(redundant)
 
     assert needs_justification.accepted is False
     assert needs_justification.redundant_with == (first.observation_id,)
-    assert "distinct new hypothesis" in needs_justification.message
+    assert "distinct new_hypothesis" in needs_justification.message
 
-    redundant["new_hypothesis"] = (
-        f"{first.observation_id}: underscore normalization may expose paths omitted by the hyphenated query"
-    )
+    redundant["new_hypothesis"] = "Underscore normalization may expose a path omitted by the hyphenated query."
     justified = notebook.submit(redundant)
 
     assert justified.accepted is True
@@ -289,11 +310,48 @@ def test_notebook_rejects_unsupported_claims_and_requires_redundancy_hypothesis(
     next_turn = TransientResearchNotebook(start_at=2)
     second = next_turn.add_observation(tool="search_repository", arguments={"query": "fresh"}, ok=True)
     stale = dict(redundant)
-    stale["proposed_arguments_json"] = json.dumps({"query": "different"})
+    stale["proposed_arguments"] = {"query": "different"}
     stale_decision = next_turn.submit(stale)
     assert second.observation_id == "obs-002"
     assert stale_decision.accepted is False
-    assert "unknown current-turn references" in stale_decision.message
+    assert "unknown current-turn ID" in stale_decision.message
+
+
+def test_checkpoint_rejects_non_bare_refs_and_oversized_repetitive_or_nested_payloads_compactly():
+    notebook = TransientResearchNotebook(allowed_tools={"read_repository_file"})
+    observation = notebook.add_observation(
+        tool="read_repository_file", arguments={"path": "known.txt"}, ok=True
+    )
+    base = _checkpoint_args(proposed_path="next.txt", evidence_refs=[observation.result_id])
+
+    json_string = dict(base)
+    json_string["proposed_arguments"] = json.dumps(base["proposed_arguments"])
+    assert "must be an object" in notebook.submit(json_string).message
+
+    prose_ref = dict(base)
+    prose_ref["evidence_refs"] = ["result-001: copied prose and a long observation history"]
+    assert "only bare" in notebook.submit(prose_ref).message
+
+    repeated = dict(base)
+    repeated["evidence_refs"] = [observation.result_id] * (MAX_EVIDENCE_REFS + 1)
+    repeated_result = notebook.submit(repeated)
+    assert repeated_result.accepted is False
+    assert len(repeated_result.message) < 140
+    assert observation.result_id not in repeated_result.message
+
+    oversized = dict(base)
+    oversized["unresolved_fact"] = "x" * (MAX_CHECKPOINT_TEXT + 1)
+    oversized_result = notebook.submit(oversized)
+    assert oversized_result.accepted is False
+    assert len(oversized_result.message) < 140
+    assert "x" * 20 not in oversized_result.message
+
+    nested: dict = {"value": "leaf"}
+    for _ in range(MAX_ARGUMENT_DEPTH + 1):
+        nested = {"nested": nested}
+    too_deep = dict(base)
+    too_deep["proposed_arguments"] = nested
+    assert "exceeds depth" in notebook.submit(too_deep).message
 
 
 def test_post_soft_unique_observation_requires_matching_information_gain_checkpoint(
@@ -346,7 +404,7 @@ def test_post_soft_unique_observation_requires_matching_information_gain_checkpo
     accepted = agent.audit.latest("model_research_checkpoint")
     assert required is not None and required["unique_call_count"] == 1
     assert accepted is not None and accepted["accepted"] is True
-    assert accepted["verified_pointer_count"] == 1
+    assert accepted["evidence_ref_count"] == 1
 
 
 def test_exact_duplicate_cache_still_bypasses_post_soft_checkpoint(tmp_path, monkeypatch):
@@ -390,10 +448,10 @@ def test_misleading_notebook_cannot_replace_raw_evidence_and_late_result_reaches
     (tmp_path / "canonical.txt").write_text("CANONICAL VALUE: blue", encoding="utf-8")
     (tmp_path / "late.txt").write_text("LATE RAW RESULT: blue is corroborated", encoding="utf-8")
     snapshots = []
-    misleading = _checkpoint_args(proposed_path="late.txt")
-    misleading["verified_fact_pointers"] = [
-        "obs-001/result-001: MISLEADING NOTEBOOK CLAIM — canonical value is red"
-    ]
+    misleading = _checkpoint_args(
+        proposed_path="late.txt",
+        unresolved_fact="MISLEADING CHECKPOINT CLAIM: the canonical value may be red.",
+    )
     streams = iter(
         [
             [_chunk(tool_calls=[_call("read_repository_file", {"path": "canonical.txt"})])],
@@ -425,19 +483,222 @@ def test_misleading_notebook_cannot_replace_raw_evidence_and_late_result_reaches
     final_context = str(snapshots[-1])
     assert "CANONICAL VALUE: blue" in final_context
     assert "LATE RAW RESULT: blue is corroborated" in final_context
-    assert "MISLEADING NOTEBOOK CLAIM" in final_context
-    assert "If notebook text conflicts with a raw result, the raw result controls" in final_context
-    assert "MISLEADING NOTEBOOK CLAIM" not in str(agent.messages)
-    assert "MISLEADING NOTEBOOK CLAIM" not in (tmp_path / "localpilot-data" / "audit.jsonl").read_text(
+    assert "MISLEADING CHECKPOINT CLAIM" not in final_context
+    assert "TRANSIENT RESEARCH CHECKPOINT" not in final_context
+    assert "update_research_notebook" not in final_context
+    assert "advisory research soft budget" not in final_context
+    assert "MISLEADING CHECKPOINT CLAIM" not in str(agent.messages)
+    assert "MISLEADING CHECKPOINT CLAIM" not in (tmp_path / "localpilot-data" / "audit.jsonl").read_text(
         encoding="utf-8"
     )
-    assert "MISLEADING NOTEBOOK CLAIM" not in (tmp_path / "localpilot-data" / "learning.sqlite3").read_bytes().decode(
+    assert "MISLEADING CHECKPOINT CLAIM" not in (tmp_path / "localpilot-data" / "learning.sqlite3").read_bytes().decode(
         "latin-1"
     )
     assert not (tmp_path / "localpilot-data" / "evolution-checkpoint.json").exists()
     scrubbed = agent.audit.latest("model_research_notebook_scrubbed")
     assert scrubbed is not None and scrubbed["notebook_entries_retained"] == 0
     assert Config().agent.research_hard_tool_rounds == 24
+
+
+def test_late_raw_observation_survives_checkpoint_control_stripping(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path, soft=1, hard=2)
+    (tmp_path / "first.txt").write_text("EARLY RAW AUTHORITY", encoding="utf-8")
+    (tmp_path / "late.txt").write_text("LATE RAW AUTHORITY", encoding="utf-8")
+    snapshots = []
+    checkpoint = _checkpoint_args(proposed_path="late.txt")
+    streams = iter(
+        [
+            [_chunk(tool_calls=[_call("read_repository_file", {"path": "first.txt"})])],
+            [_chunk(tool_calls=[_call(RESEARCH_NOTEBOOK_TOOL, checkpoint)])],
+            [
+                _chunk(
+                    tool_calls=[
+                        _call(
+                            "read_repository_file",
+                            {"path": "late.txt", "start_line": 1, "end_line": 20},
+                        )
+                    ]
+                )
+            ],
+            [_chunk(thinking="The complete raw results are ready for synthesis.")],
+            [_chunk(content="Both early and late raw authority are present.")],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        snapshots.append([dict(item) for item in kwargs["messages"]])
+        return iter(next(streams))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ollama",
+        SimpleNamespace(chat=fake_chat, ResponseError=ResponseError),
+    )
+
+    answer = agent.ask("Inspect both files and answer from their raw contents.")
+
+    assert answer == "Both early and late raw authority are present."
+    final_context = str(snapshots[-1])
+    assert "EARLY RAW AUTHORITY" in final_context
+    assert "LATE RAW AUTHORITY" in final_context
+    assert "TRANSIENT RESEARCH CHECKPOINT" not in final_context
+    assert "result_that_would_change_the_conclusion" not in final_context
+
+
+def test_streamed_tool_call_parse_error_recovers_to_valid_compact_checkpoint_and_observation(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path, soft=1, hard=2)
+    (tmp_path / "first.txt").write_text("FIRST RAW VALUE: blue", encoding="utf-8")
+    (tmp_path / "late.txt").write_text("LATE RAW VALUE: blue", encoding="utf-8")
+    late_reads = 0
+    original = agent.tools["read_repository_file"]
+
+    def counted_read(**kwargs):
+        nonlocal late_reads
+        if kwargs.get("path") == "late.txt":
+            late_reads += 1
+        return original.fn(**kwargs)
+
+    agent.tools["read_repository_file"] = SimpleNamespace(risk=original.risk, fn=counted_read)
+    snapshots = []
+    invocations = []
+    checkpoint = _checkpoint_args(proposed_path="late.txt")
+
+    def malformed_stream():
+        yield _chunk(thinking="PRIVATE MALFORMED PARTIAL REASONING")
+        raise ResponseError(
+            "error parsing tool call: invalid character ',' after array element"
+        )
+
+    streams = iter(
+        [
+            iter([_chunk(tool_calls=[_call("read_repository_file", {"path": "first.txt"})])]),
+            malformed_stream(),
+            iter([_chunk(tool_calls=[_call(RESEARCH_NOTEBOOK_TOOL, checkpoint)])]),
+            iter(
+                [
+                    _chunk(
+                        tool_calls=[
+                            _call(
+                                "read_repository_file",
+                                {"path": "late.txt", "start_line": 1, "end_line": 20},
+                            )
+                        ]
+                    )
+                ]
+            ),
+            iter([_chunk(thinking="Both raw values agree.")]),
+            iter([_chunk(content="The authoritative raw values are both blue.")]),
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        snapshots.append([dict(item) for item in kwargs["messages"]])
+        return next(streams)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ollama",
+        SimpleNamespace(chat=fake_chat, ResponseError=ResponseError),
+    )
+
+    answer = agent.ask("Inspect both files and report their raw values.")
+
+    assert answer == "The authoritative raw values are both blue."
+    assert late_reads == 1
+    assert all(snapshot is not None for snapshot in snapshots)
+    assert "PRIVATE MALFORMED PARTIAL REASONING" in str(snapshots[2])
+    assert "nothing executed or counted" in str(snapshots[2])
+    assert "proposed_arguments must be an object" in str(snapshots[2])
+    assert all(call["think"] == "high" for call in invocations)
+    final_context = str(snapshots[-1])
+    assert "FIRST RAW VALUE: blue" in final_context
+    assert "LATE RAW VALUE: blue" in final_context
+    assert "PRIVATE MALFORMED PARTIAL REASONING" not in final_context
+    assert "nothing executed or counted" not in final_context
+    assert "TRANSIENT RESEARCH CHECKPOINT" not in final_context
+    retained = str(agent.messages)
+    audit_text = (tmp_path / "localpilot-data" / "audit.jsonl").read_text(encoding="utf-8")
+    learning_text = (tmp_path / "localpilot-data" / "learning.sqlite3").read_bytes().decode(
+        "latin-1"
+    )
+    assert "PRIVATE MALFORMED PARTIAL REASONING" not in retained
+    assert "PRIVATE MALFORMED PARTIAL REASONING" not in audit_text
+    assert "PRIVATE MALFORMED PARTIAL REASONING" not in learning_text
+    assert "invalid character" not in audit_text
+    assert "nothing executed or counted" not in audit_text
+    assert not (tmp_path / "localpilot-data" / "evolution-checkpoint.json").exists()
+    retry = agent.audit.latest("model_tool_call_protocol_recovery_retry")
+    assert retry is not None and retry["attempt"] == 1
+    state = agent.audit.latest("model_evidence_state")
+    assert state is not None and state["tool_rounds"] == 2
+
+
+def test_tool_call_parse_recovery_exhaustion_is_visible_and_bounded(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path, soft=1, hard=3)
+    (tmp_path / "first.txt").write_text("FIRST RAW VALUE", encoding="utf-8")
+    calls = []
+
+    def malformed_stream(label):
+        def generate():
+            yield _chunk(thinking=label)
+            raise ResponseError("error parsing tool call: malformed arguments")
+
+        return generate()
+
+    streams = iter(
+        [
+            iter([_chunk(tool_calls=[_call("read_repository_file", {"path": "first.txt"})])]),
+            malformed_stream("PRIVATE RETRY ONE"),
+            malformed_stream("PRIVATE RETRY TWO"),
+            malformed_stream("PRIVATE RETRY EXHAUSTED"),
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return next(streams)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ollama",
+        SimpleNamespace(chat=fake_chat, ResponseError=ResponseError),
+    )
+
+    answer = agent.ask("Inspect first.txt and continue researching if needed.")
+
+    assert answer == (
+        "[LocalPilot could not recover a valid tool call after the bounded protocol retries; "
+        "no malformed call was executed.]"
+    )
+    assert len(calls) == 4
+    assert all(call["think"] == "high" for call in calls)
+    assert "PRIVATE RETRY" not in str(agent.messages)
+    exhausted = agent.audit.latest("model_tool_call_protocol_recovery_exhausted")
+    assert exhausted is not None and exhausted["retries"] == exhausted["retry_limit"] == 2
+
+
+def test_non_tool_protocol_response_error_still_surfaces(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path)
+
+    def failed_chat(**kwargs):
+        def generate():
+            if False:
+                yield None
+            raise ResponseError("Internal Server Error", 500)
+
+        return generate()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ollama",
+        SimpleNamespace(chat=failed_chat, ResponseError=ResponseError),
+    )
+
+    with pytest.raises(ResponseError, match="Internal Server Error"):
+        agent.ask("Answer normally.")
 
 
 def test_generation_limited_final_reasoning_continues_once_in_same_raw_context(

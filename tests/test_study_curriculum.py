@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -234,6 +235,34 @@ def test_qwen_facts_prefer_local_metadata_and_authoritative_sources(tmp_path: Pa
     assert tool_fact is not None
     assert tool_fact.source_uri.startswith("https://docs.ollama.com/")
     assert tool_fact.confidence == 0.9
+
+
+def test_qwen_stage_accepts_typed_ollama_show_response(tmp_path: Path, monkeypatch):
+    details = SimpleNamespace(family="qwen2", quantization_level="Q4_K_M")
+    response = SimpleNamespace(
+        details=details,
+        model_dump=lambda **kwargs: {
+            "details": {
+                "family": details.family,
+                "quantization_level": details.quantization_level,
+            },
+            "capabilities": ["completion", "tools"],
+            "modified_at": "2026-08-25T00:00:00Z",
+            "model_info": {"qwen2.context_length": 32768},
+        },
+    )
+    monkeypatch.setattr("ollama.show", lambda model: response)
+    memory = LearningMemory(tmp_path / "learning.sqlite3")
+    engine = StudyEngine(ROOT, memory, Config())
+
+    engine.run_stage("self")
+    outcome = engine.run_stage("qwen")
+    metadata = memory.knowledge_fact("qwen", "qwen:installed_model_metadata")
+
+    assert outcome.state.status == "improved"
+    assert metadata is not None
+    assert '"family": "qwen2"' in metadata.summary
+    assert '"modified_at": "2026-08-25T00:00:00Z"' in metadata.summary
 
 
 def test_broad_web_research_is_opt_in_and_rejects_private_hosts(tmp_path: Path):

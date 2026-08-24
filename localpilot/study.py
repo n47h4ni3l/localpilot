@@ -330,6 +330,12 @@ class StudyEngine:
             return None
         if isinstance(response, dict):
             return response
+        model_dump = getattr(response, "model_dump", None)
+        if callable(model_dump):
+            try:
+                return dict(model_dump(mode="json"))
+            except TypeError:
+                return dict(model_dump())
         fields = ("details", "model_info", "capabilities", "parameters", "modified_at")
         return {field: getattr(response, field, None) for field in fields}
 

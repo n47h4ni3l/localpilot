@@ -1760,6 +1760,157 @@ class LearningMemory:
             ).fetchall()
         return [self._knowledge_fact(row) for row in rows]
 
+    @staticmethod
+    def _knowledge_tokens(value: str) -> set[str]:
+        """Tokenize bounded fact metadata for deterministic in-process retrieval."""
+        stop_words = {
+            "about", "after", "again", "also", "before", "being", "could",
+            "from", "have", "into", "localpilot", "more", "only", "should",
+            "that", "their", "there", "these", "they", "this", "using",
+            "what", "when", "where", "which", "with", "would", "your",
+        }
+        text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(value))
+        text = re.sub(r"[_:./\\>\-]+", " ", text).lower()
+        tokens = {
+            token
+            for token in re.findall(r"[a-z0-9]{3,}", text)
+            if token not in stop_words
+        }
+        expansions = {
+            "architecture": {"owner", "symbol"},
+            "candidate": {"confinement", "reviewer"},
+            "dependency": {"pyproject", "toml"},
+            "developer": {"development", "selfdev"},
+            "development": {"developer", "selfdev"},
+            "durable": {"learning", "memory"},
+            "learning": {"memory", "study"},
+            "memory": {"learning", "study"},
+            "operator": {"agent"},
+            "safety": {"confinement", "governor", "policy", "reviewer"},
+        }
+        for token in tuple(tokens):
+            tokens.update(expansions.get(token, ()))
+        return tokens
+
+    def search_knowledge_facts(
+        self,
+        query: str,
+        *,
+        stage: str | None = None,
+        limit: int = 8,
+        include_stale: bool = True,
+    ) -> list[KnowledgeFact]:
+        """Return a small relevance-ranked set without exposing the whole fact store."""
+        limit = max(0, min(int(limit), 12))
+        query_tokens = self._knowledge_tokens(query)
+        if not limit or not query_tokens:
+            return []
+
+        query_text = " ".join(str(query).lower().split())
+        requests_test_evidence = bool(
+            query_tokens & {"pytest", "regression", "test", "tests"}
+        )
+        scored: list[tuple[float, int, KnowledgeFact]] = []
+        for fact in self.knowledge_facts(stage=stage, include_stale=include_stale):
+            if fact.source_uri.startswith("repo://tests/") and not requests_test_evidence:
+                continue
+            fields = {
+                "key": self._knowledge_tokens(fact.fact_key),
+                "type": self._knowledge_tokens(fact.fact_type),
+                "subject": self._knowledge_tokens(fact.subject),
+                "summary": self._knowledge_tokens(fact.summary),
+                "relationships": self._knowledge_tokens(" ".join(fact.relationships)),
+                "stage": self._knowledge_tokens(fact.stage),
+            }
+            matched = query_tokens & set().union(*fields.values())
+            exact_subject = bool(
+                fact.subject.strip()
+                and fact.subject.strip().lower() in query_text
+            )
+            explicit_stage = fact.stage.lower() in query_tokens
+            if len(matched) < 2 and not exact_subject and not explicit_stage:
+                continue
+            quality = {
+                "owner": 100,
+                "symbol": 5,
+                "verified_lesson": 4,
+                "config_field": 3,
+                "file": 2,
+                "test_contract": 1,
+                "call_relationship": -1,
+                "import": -4,
+            }.get(fact.fact_type, 0)
+            source_quality = (
+                50 if fact.source_uri == "repo://ARCHITECTURE.md"
+                else -7 if fact.source_uri.startswith("repo://tests/")
+                else 0
+            )
+            source_hint = (
+                100
+                if "dependency" in query_tokens and "pyproject" in fields["subject"]
+                else 0
+            )
+            score = (
+                7 * len(query_tokens & fields["subject"])
+                + 5 * len(query_tokens & fields["key"])
+                + 4 * len(query_tokens & fields["type"])
+                + 3 * len(query_tokens & fields["summary"])
+                + 2 * len(query_tokens & fields["relationships"])
+                + 2 * len(query_tokens & fields["stage"])
+                + (10 if exact_subject else 0)
+                + float(fact.confidence)
+                + quality
+                + source_quality
+                + source_hint
+                - (4 if fact.stale else 0)
+            )
+            scored.append((score, len(matched), fact))
+
+        scored.sort(
+            key=lambda item: (
+                item[0], item[1], item[2].confidence,
+                item[2].last_verified_at, item[2].fact_key,
+            ),
+            reverse=True,
+        )
+
+        # Prefer distinct subjects first so a broad question gets coverage instead
+        # of eight near-identical symbols from one module.
+        selected: list[KnowledgeFact] = []
+        deferred: list[KnowledgeFact] = []
+        subjects: set[tuple[str, str]] = set()
+        sources: set[str] = set()
+        source_diversity_target = min(limit, 4)
+        for _, _, fact in scored:
+            subject_key = (fact.stage, fact.subject.lower())
+            if (
+                len(selected) >= source_diversity_target
+                or subject_key in subjects
+                or fact.source_uri in sources
+            ):
+                deferred.append(fact)
+                continue
+            selected.append(fact)
+            subjects.add(subject_key)
+            sources.add(fact.source_uri)
+            if len(selected) == limit:
+                return selected
+        still_deferred: list[KnowledgeFact] = []
+        for fact in deferred:
+            subject_key = (fact.stage, fact.subject.lower())
+            if subject_key in subjects:
+                still_deferred.append(fact)
+                continue
+            selected.append(fact)
+            subjects.add(subject_key)
+            if len(selected) == limit:
+                return selected
+        for fact in still_deferred:
+            selected.append(fact)
+            if len(selected) == limit:
+                break
+        return selected
+
     def knowledge_fact(self, stage: str, fact_key: str) -> KnowledgeFact | None:
         with self._connect() as connection:
             row = connection.execute(

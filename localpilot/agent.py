@@ -74,6 +74,9 @@ _TOOL_FAILURE_MARKERS = (
     "powershell error:",
     "git is not available.",
 )
+_FINAL_ANSWER_NUM_PREDICT = 4096
+_GENERATION_LIMIT_CONTINUATION_CEILING = 8192
+_GENERATION_LIMIT_CONTINUATION_MINIMUM = 256
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -400,6 +403,25 @@ class LocalPilotAgent:
             cleaned.append(message)
         self.messages[:] = cleaned
 
+    @staticmethod
+    def _generation_limit_continuation_budget(runtime: dict[str, Any]) -> int:
+        """Bound one continuation within the measured live-context headroom."""
+        context_tokens = _int_or_none(runtime.get("context_tokens"))
+        prompt_tokens = _int_or_none(runtime.get("prompt_eval_count"))
+        generated_tokens = _int_or_none(runtime.get("eval_count"))
+        if context_tokens is None or context_tokens <= 0 or prompt_tokens is None:
+            return 0
+
+        # The next prompt contains the previous prompt, its reasoning-only completion, and a
+        # short continuation instruction. Reserve five percent of the window (at least 1K)
+        # for serialization/token-count variance and that instruction before allocating output.
+        safety_margin = max(1024, context_tokens // 20)
+        estimated_next_prompt = prompt_tokens + max(0, generated_tokens or 0)
+        available = context_tokens - estimated_next_prompt - safety_margin
+        if available < _GENERATION_LIMIT_CONTINUATION_MINIMUM:
+            return 0
+        return min(_GENERATION_LIMIT_CONTINUATION_CEILING, available)
+
     def _continue_high_reasoning_answer(
         self,
         chat,
@@ -447,7 +469,7 @@ class LocalPilotAgent:
             response = self._stream_chat_message(
                 chat,
                 think=self.config.model.think,
-                options={"num_predict": 4096},
+                options={"num_predict": _FINAL_ANSWER_NUM_PREDICT},
                 phase="same_context_answer",
                 turn_no=round_no,
             )
@@ -494,7 +516,7 @@ class LocalPilotAgent:
                     response = self._stream_chat_message(
                         chat,
                         think=self.config.model.think,
-                        options={"num_predict": 4096},
+                        options={"num_predict": _FINAL_ANSWER_NUM_PREDICT},
                         phase="hard_limit_answer_retry",
                         turn_no=round_no,
                     )
@@ -522,6 +544,116 @@ class LocalPilotAgent:
                 )
                 return visible
 
+            generation_limit_incomplete = bool(
+                runtime.get("runtime_classification") == "generation_limit"
+                and reasoning_present
+                and not content.strip()
+                and not calls
+            )
+            if generation_limit_incomplete:
+                continuation_budget = self._generation_limit_continuation_budget(runtime)
+                self.audit.write(
+                    "model_same_context_generation_limit_continuation",
+                    model=self.config.model.name,
+                    think=self.config.model.think,
+                    round=round_no,
+                    after_tools=after_tools,
+                    hard_limit=hard_limit,
+                    context_tokens=runtime.get("context_tokens"),
+                    prompt_eval_count=runtime.get("prompt_eval_count"),
+                    prior_eval_count=runtime.get("eval_count"),
+                    continuation_num_predict=continuation_budget,
+                )
+                if continuation_budget:
+                    # This reasoning-only response is useful cognitive state, not evidence. Keep it
+                    # in the live same-model context for exactly one continuation and scrub it below.
+                    self.messages.append(response)
+                    transient.append(response)
+                    continuation_instruction = {
+                        "role": "user",
+                        "content": (
+                            "Your preceding same-context final-answer pass exhausted its generation budget during "
+                            "reasoning before emitting any visible answer. Continue that exact reasoning once; do "
+                            "not restart, request tools, or repeat the investigation. Finish the owner's answer now "
+                            "from the complete existing raw tool results and original request already in this live "
+                            "context. Raw tool results remain authoritative over any notebook text."
+                        ),
+                    }
+                    self.messages.append(continuation_instruction)
+                    transient.append(continuation_instruction)
+                    continuation = self._stream_chat_message(
+                        chat,
+                        think=self.config.model.think,
+                        options={"num_predict": continuation_budget},
+                        phase="same_context_generation_limit_continuation",
+                        turn_no=round_no,
+                    )
+                    continuation_runtime = dict(self._last_stream_runtime)
+                    continuation_content = str(continuation.get("content") or "")
+                    continuation_calls = continuation.get("tool_calls") or []
+                    continuation_exhausted = (
+                        continuation_runtime.get("runtime_classification") == "generation_limit"
+                    )
+                    self.audit.write(
+                        "model_same_context_generation_limit_continuation_complete",
+                        model=self.config.model.name,
+                        think=self.config.model.think,
+                        round=round_no,
+                        content_chars=len(continuation_content),
+                        requested_tools=[
+                            self._tool_call_parts(call)[0] for call in continuation_calls
+                        ],
+                        exhausted=continuation_exhausted,
+                        runtime_classification=continuation_runtime.get("runtime_classification"),
+                        done_reason=continuation_runtime.get("done_reason"),
+                        eval_count=continuation_runtime.get("eval_count"),
+                        prompt_eval_count=continuation_runtime.get("prompt_eval_count"),
+                        num_predict=continuation_runtime.get("num_predict"),
+                    )
+                    if continuation_content.strip() and not self._looks_like_generic_reset(
+                        continuation_content
+                    ):
+                        visible = self._visible_decline(continuation_content)
+                        if continuation_exhausted:
+                            visible += (
+                                "\n\n[LocalPilot's single bounded same-context answer continuation "
+                                "reached its generation limit; this answer may be incomplete.]"
+                            )
+                        self.messages.append({"role": "assistant", "content": visible})
+                        self.audit.write(
+                            "model_same_context_answer_succeeded",
+                            model=self.config.model.name,
+                            think=self.config.model.think,
+                            round=round_no,
+                            after_tools=after_tools,
+                            hard_limit=hard_limit,
+                            content_chars=len(continuation_content),
+                            declined=continuation_content.strip().upper().startswith("DECLINE:"),
+                            generation_limit_continuation=True,
+                            continuation_exhausted=continuation_exhausted,
+                            runtime_classification=continuation_runtime.get(
+                                "runtime_classification"
+                            ),
+                            done_reason=continuation_runtime.get("done_reason"),
+                            eval_count=continuation_runtime.get("eval_count"),
+                            prompt_eval_count=continuation_runtime.get("prompt_eval_count"),
+                        )
+                        return visible
+                    if continuation_exhausted:
+                        marker = (
+                            "[LocalPilot's single bounded same-context answer continuation also reached "
+                            "its generation limit before producing a usable final answer.]"
+                        )
+                        self.messages.append({"role": "assistant", "content": marker})
+                        return marker
+                else:
+                    marker = (
+                        "[LocalPilot's same-context answer exhausted its generation budget, and the "
+                        "remaining context-window headroom was too small for a safe continuation.]"
+                    )
+                    self.messages.append({"role": "assistant", "content": marker})
+                    return marker
+
             if self._looks_like_generic_reset(content):
                 self.audit.write(
                     "model_same_context_answer_reset",
@@ -545,7 +677,7 @@ class LocalPilotAgent:
                 retry = self._stream_chat_message(
                     chat,
                     think=self.config.model.think,
-                    options={"num_predict": 4096},
+                    options={"num_predict": _FINAL_ANSWER_NUM_PREDICT},
                     phase="same_context_reset_retry",
                     turn_no=round_no,
                 )

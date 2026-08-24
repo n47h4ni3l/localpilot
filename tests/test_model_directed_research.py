@@ -438,3 +438,162 @@ def test_misleading_notebook_cannot_replace_raw_evidence_and_late_result_reaches
     scrubbed = agent.audit.latest("model_research_notebook_scrubbed")
     assert scrubbed is not None and scrubbed["notebook_entries_retained"] == 0
     assert Config().agent.research_hard_tool_rounds == 24
+
+
+def test_generation_limited_final_reasoning_continues_once_in_same_raw_context(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path, soft=1, hard=1)
+    (tmp_path / "known.txt").write_text("VERIFIED RAW EVIDENCE: blue", encoding="utf-8")
+    calls = []
+    snapshots = []
+    first_pass_reasoning = "first final-pass private reasoning"
+    first_pass_reasoning += "r" * (18611 - len(first_pass_reasoning))
+    streams = iter(
+        [
+            [_chunk(tool_calls=[_call("read_repository_file", {"path": "known.txt"})])],
+            [_chunk(thinking="research is complete from the raw result")],
+            [
+                _chunk(
+                    thinking=first_pass_reasoning,
+                    done=True,
+                    done_reason="length",
+                    prompt_eval_count=18752,
+                    eval_count=4096,
+                )
+            ],
+            [
+                _chunk(
+                    thinking="continuation private reasoning",
+                    content="The verified raw evidence says the canonical value is blue.",
+                    done=True,
+                    done_reason="stop",
+                    prompt_eval_count=22900,
+                    eval_count=640,
+                )
+            ],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        snapshots.append([dict(item) for item in kwargs["messages"]])
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask("Inspect known.txt and answer from its raw evidence.")
+
+    assert answer == "The verified raw evidence says the canonical value is blue."
+    assert len(calls) == 4
+    assert calls[2]["think"] == "high"
+    assert calls[3]["think"] == "high"
+    assert "tools" not in calls[2]
+    assert "tools" not in calls[3]
+    assert calls[2]["options"]["num_predict"] == 4096
+    assert calls[3]["options"]["num_predict"] == 8192
+    continuation_context = str(snapshots[3])
+    assert "VERIFIED RAW EVIDENCE: blue" in continuation_context
+    assert "first final-pass private reasoning" in continuation_context
+    assert "Finish the owner's answer now" in continuation_context
+    assert "first final-pass private reasoning" not in str(agent.messages)
+    assert "continuation private reasoning" not in str(agent.messages)
+    audit_text = (tmp_path / "localpilot-data" / "audit.jsonl").read_text(encoding="utf-8")
+    assert "first final-pass private reasoning" not in audit_text
+    assert "continuation private reasoning" not in audit_text
+    assert "first final-pass private reasoning" not in (
+        tmp_path / "localpilot-data" / "learning.sqlite3"
+    ).read_bytes().decode("latin-1")
+    assert not (tmp_path / "localpilot-data" / "evolution-checkpoint.json").exists()
+    completed = agent.audit.latest(
+        "model_same_context_generation_limit_continuation_complete"
+    )
+    assert completed is not None and completed["exhausted"] is False
+    audit_rows = [json.loads(line) for line in audit_text.splitlines()]
+    first_final_runtime = next(
+        row
+        for row in audit_rows
+        if row.get("event") == "model_stream_complete"
+        and row.get("phase") == "same_context_answer"
+    )
+    assert first_final_runtime["think"] == "high"
+    assert first_final_runtime["done_reason"] == "length"
+    assert first_final_runtime["runtime_classification"] == "generation_limit"
+    assert first_final_runtime["context_tokens"] == 32768
+    assert first_final_runtime["prompt_eval_count"] == 18752
+    assert first_final_runtime["context_used_percent"] == 57.23
+    assert first_final_runtime["num_predict"] == 4096
+    assert first_final_runtime["eval_count"] == 4096
+    assert first_final_runtime["reasoning_chars"] == 18611
+    assert first_final_runtime["content_chars"] == 0
+    assert first_final_runtime["tool_calls"] == 0
+
+
+def test_second_generation_limit_returns_visible_marker_without_loop(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path)
+    calls = []
+    streams = iter(
+        [
+            [_chunk(thinking="initial private reasoning")],
+            [
+                _chunk(
+                    thinking="first final-pass private reasoning",
+                    done=True,
+                    done_reason="length",
+                    prompt_eval_count=18752,
+                    eval_count=4096,
+                )
+            ],
+            [
+                _chunk(
+                    thinking="bounded continuation private reasoning",
+                    done=True,
+                    done_reason="length",
+                    prompt_eval_count=22900,
+                    eval_count=8192,
+                )
+            ],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask("Reason carefully and answer.")
+
+    assert answer == (
+        "[LocalPilot's single bounded same-context answer continuation also reached "
+        "its generation limit before producing a usable final answer.]"
+    )
+    assert len(calls) == 3
+    assert [call["think"] for call in calls] == ["high", "high", "high"]
+    assert "tools" not in calls[1]
+    assert "tools" not in calls[2]
+    assert "first final-pass private reasoning" not in str(agent.messages)
+    assert "bounded continuation private reasoning" not in str(agent.messages)
+    completed = agent.audit.latest(
+        "model_same_context_generation_limit_continuation_complete"
+    )
+    assert completed is not None and completed["exhausted"] is True
+
+
+def test_generation_limit_continuation_budget_preserves_context_safety_margin(tmp_path):
+    _, agent = _agent(tmp_path)
+
+    observed = agent._generation_limit_continuation_budget(
+        {"context_tokens": 32768, "prompt_eval_count": 18752, "eval_count": 4096}
+    )
+    near_ceiling = agent._generation_limit_continuation_budget(
+        {"context_tokens": 32768, "prompt_eval_count": 30000, "eval_count": 500}
+    )
+    too_close = agent._generation_limit_continuation_budget(
+        {"context_tokens": 32768, "prompt_eval_count": 31000, "eval_count": 200}
+    )
+
+    assert observed == 8192
+    assert near_ceiling == 630
+    assert 30000 + 500 + near_ceiling + 1638 == 32768
+    assert too_close == 0

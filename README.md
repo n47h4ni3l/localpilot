@@ -11,6 +11,7 @@ In practical terms: when the owner is using the PC, LocalPilot works for the own
 ## What exists today
 
 - A local interactive agent backed by Ollama (`gpt-oss:20b` by default).
+- Same-context bounded research with raw-result IDs, a transient source-pointer notebook after the soft budget, and a 24-round hard ceiling.
 - Read-only Windows tools for processes, disks, startup entries, power, Defender, and device problems.
 - Real TOML configuration, resource gating, process-priority control, and JSONL audit logging.
 - Separate stable operator, idle-time developer, and isolated candidate roles.
@@ -22,6 +23,14 @@ In practical terms: when the owner is using the PC, LocalPilot works for the own
 - Guarded trusted-`main` self-sync and an optional per-user Windows idle scheduler.
 
 LocalPilot has no cloud-model or pricing subsystem. GitHub is used for source control, review, and candidate test execution; local model inference and machine-private learning data stay on the workstation.
+
+The operator's transient research notebook is a planning/index aid, not a compressed evidence handoff. Complete raw tool results remain in the live high-reasoning conversation through the final answer and control whenever notebook wording conflicts. Notebook content is scrubbed after the turn and is not written to chat memory, `learning.sqlite3`, evolution checkpoints, or audit logs (apart from structural counts/status).
+
+The runtime cognition diagnostic now requires a fresh manifest and three unpredictable fragments, then checks retrieval completeness, cross-fragment reconciliation, the final answer, and compliance with the configured hard research budget:
+
+```powershell
+.\scripts\cognition-probe.ps1
+```
 
 ## Architecture
 
@@ -304,6 +313,8 @@ The important defaults in `config.example.toml` are:
 | Area | Default | Meaning |
 | --- | --- | --- |
 | Everyday model | `gpt-oss:20b` | Interactive PC agent |
+| Operator research soft budget | 12 rounds | Further unique observations require a source-ID-backed information-gain checkpoint |
+| Operator research hard ceiling | 24 rounds | No further unique operator observations execute in the turn |
 | Developer model | `qwen2.5:32b` | Preferred idle engineering model when installed and within budget |
 | Developer fallback | `qwen2.5:14b` | Additional constrained-machine option |
 | Idle threshold | 600 seconds | Minimum keyboard/mouse idle time for unattended work |

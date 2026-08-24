@@ -100,8 +100,8 @@ def test_cognition_probe_requires_unpredictable_tool_then_validates_reasoned_ans
         [
             [
                 _chunk(
-                    thinking="I need the tool facts.",
-                    tool_calls=[_call("get_probe_facts")],
+                    thinking="I should discover the manifest first.",
+                    tool_calls=[_call("get_probe_manifest")],
                     done=True,
                     done_reason="stop",
                     prompt_eval_count=200,
@@ -109,7 +109,21 @@ def test_cognition_probe_requires_unpredictable_tool_then_validates_reasoned_ans
                 )
             ],
             [
-                _chunk(thinking="I should add the two numbers."),
+                _chunk(
+                    thinking="I need every distinct fragment before reconciling.",
+                    tool_calls=[
+                        _call("get_probe_fragment", {"fragment_id": "frag-a"}),
+                        _call("get_probe_fragment", {"fragment_id": "frag-b"}),
+                        _call("get_probe_fragment", {"fragment_id": "frag-c"}),
+                    ],
+                    done=True,
+                    done_reason="stop",
+                    prompt_eval_count=320,
+                    eval_count=80,
+                ),
+            ],
+            [
+                _chunk(thinking="The XOR check reconciles, so I can add and reconstruct the nonce."),
                 _chunk(
                     content='{"sum": 42, "nonce": "fresh-run-value"}',
                     done=True,
@@ -129,17 +143,27 @@ def test_cognition_probe_requires_unpredictable_tool_then_validates_reasoned_ans
         config,
         tmp_path,
         chat=fake_chat,
-        facts={"left": 19, "right": 23, "nonce": "fresh-run-value"},
+        facts={
+            "left": 19,
+            "right": 23,
+            "nonce": "fresh-run-value",
+            "fragment_ids": ["frag-a", "frag-b", "frag-c"],
+        },
     )
 
     assert result.ok is True
     assert result.stage == "passed"
     assert result.tool_called is True
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert calls[0]["think"] == "high"
     assert calls[1]["think"] == "high"
+    assert calls[2]["think"] == "high"
     assert "tools" in calls[0]
-    assert "tools" not in calls[1]
+    assert "tools" in calls[1]
+    assert "tools" in calls[2]
+    assert result.observation_count == 4
+    assert result.tool_rounds == 2
+    assert result.tool_rounds <= result.hard_budget
     assert result.runtime["done_reason"] == "stop"
 
 
@@ -149,11 +173,24 @@ def test_cognition_probe_reports_generation_limit_instead_of_guessing(tmp_path):
         [
             [
                 _chunk(
-                    tool_calls=[_call("get_probe_facts")],
+                    tool_calls=[_call("get_probe_manifest")],
                     done=True,
                     done_reason="stop",
                     prompt_eval_count=200,
                     eval_count=40,
+                )
+            ],
+            [
+                _chunk(
+                    tool_calls=[
+                        _call("get_probe_fragment", {"fragment_id": "one"}),
+                        _call("get_probe_fragment", {"fragment_id": "two"}),
+                        _call("get_probe_fragment", {"fragment_id": "three"}),
+                    ],
+                    done=True,
+                    done_reason="stop",
+                    prompt_eval_count=350,
+                    eval_count=60,
                 )
             ],
             [
@@ -172,10 +209,50 @@ def test_cognition_probe_reports_generation_limit_instead_of_guessing(tmp_path):
         config,
         tmp_path,
         chat=lambda **kwargs: iter(next(streams)),
-        facts={"left": 7, "right": 11, "nonce": "another-fresh-value"},
+        facts={
+            "left": 7,
+            "right": 11,
+            "nonce": "another-fresh-value",
+            "fragment_ids": ["one", "two", "three"],
+        },
     )
 
     assert result.ok is False
     assert result.stage == "generation_limit"
     assert result.runtime["runtime_classification"] == "generation_limit"
     assert result.runtime["eval_count"] == 4096
+    assert result.observation_count == 4
+
+
+def test_cognition_probe_fails_closed_when_multistep_research_exceeds_hard_budget(tmp_path):
+    config = Config()
+    config.agent.research_hard_tool_rounds = 1
+    streams = iter(
+        [
+            [_chunk(tool_calls=[_call("get_probe_manifest")], done=True, done_reason="stop")],
+            [
+                _chunk(
+                    tool_calls=[_call("get_probe_fragment", {"fragment_id": "x"})],
+                    done=True,
+                    done_reason="stop",
+                )
+            ],
+        ]
+    )
+
+    result = run_cognition_probe(
+        config,
+        tmp_path,
+        chat=lambda **kwargs: iter(next(streams)),
+        facts={
+            "left": 2,
+            "right": 3,
+            "nonce": "unpredictable",
+            "fragment_ids": ["x", "y", "z"],
+        },
+    )
+
+    assert result.ok is False
+    assert result.stage == "hard_budget"
+    assert result.observation_count == 1
+    assert result.tool_rounds == result.hard_budget == 1

@@ -51,6 +51,8 @@ Together these principles imply broad freedom to think and narrow, reviewable au
 ## What exists today
 
 - A local interactive operator backed by Ollama (`gpt-oss:20b` by default).
+- A persistent Windows desktop chat with Unicode-safe history, replayable runtime/tool events, and a runtime-driven pixel LocalPilot body.
+- A loopback broker that stays independent of the replaceable operator/PowerShell worker while the CLI remains available as a fallback.
 - Same-context, bounded research in which complete raw tool results remain authoritative.
 - Read-only Windows observation tools for processes, disks, startup entries, power, Defender, and device problems.
 - Durable owner lessons and a staged study system for repository, Qwen/Ollama, and Python knowledge.
@@ -71,7 +73,7 @@ LocalPilot does not autonomously merge or promote its own code, execute untruste
 
 ## Information authority
 
-LocalPilot deliberately keeps four kinds of information on separate paths:
+LocalPilot deliberately keeps five kinds of information on separate paths:
 
 | Path | Lifetime | Purpose | Authority |
 | --- | --- | --- | --- |
@@ -79,8 +81,9 @@ LocalPilot deliberately keeps four kinds of information on separate paths:
 | Human lessons | Durable | Preserve explicit owner guidance entered with `/teach` or `localpilot teach` | Trusted guidance, but not a substitute for current evidence |
 | Study knowledge facts | Durable | Retain researched facts with provenance and freshness metadata | Prior knowledge that must yield to fresher contradictory evidence |
 | Self-development records | Durable | Track cycles, hypotheses, experiments, checkpoints, reviews, and failures | Evidence about development history, not operator knowledge by default |
+| Desktop chat history | Durable UI/session record | Repaint the window and restore completed visible turns after runtime restart | Conversation context only; never promoted into learning facts |
 
-Prompts, transcripts, and hidden reasoning are not stored as knowledge facts. Retrieved facts are turn-local and are not written back as new learning merely because they were retrieved.
+Visible desktop turns are stored separately in `chat.sqlite3`; prompts, transcripts, tool results, and hidden reasoning are never stored as knowledge facts. Retrieved facts are turn-local and are not written back as new learning merely because they were retrieved.
 
 When a request falls within a studied domain, the operator may retrieve a small relevant set from `LearningMemory` before researching from scratch. Retrieval is capped at 6 facts and 6,000 characters. Results retain their source URI and kind, confidence, source digest, verification time, staleness, and relationships where available.
 
@@ -258,10 +261,20 @@ localpilot chat
 
 Inside chat, use `/status`, `/doctor`, `/evolve`, `/teach <lesson>`, and `/quit`.
 
+Or open the persistent desktop window:
+
+```powershell
+localpilot desktop
+```
+
+The desktop command starts a detached loopback broker when needed. The window reconnects to that broker, while the broker supervises a replaceable operator worker that owns Ollama and the existing PowerShell-backed tools. Closing the window does not stop the broker; `localpilot chat` remains the independent fallback.
+
 ## Command reference
 
 ```text
 localpilot chat              Start the interactive operator
+localpilot desktop           Open the persistent desktop chat
+localpilot broker            Run the local broker in the foreground
 localpilot doctor            Validate local configuration and dependencies
 localpilot status            Show operator and self-development status
 localpilot evolve            Run one guarded evolution cycle
@@ -306,6 +319,7 @@ The task does not bypass LocalPilot's own idle, resource, candidate, or trusted-
 - `[agent]` — data directory and operator research budgets;
 - `[resource]` — idle, CPU, memory, and priority gates;
 - `[selfdev]` — developer models, candidate limits, GitHub delivery, and checkpoints;
+- `[desktop]` — loopback broker port, separate chat database, and runtime restart ceiling;
 - `[github]` — trusted remote, main branch, and candidate delivery; and
 - `[safety]` — the normal operator command-policy foundation.
 
@@ -315,7 +329,7 @@ Read [config.example.toml](config.example.toml) before changing limits. Security
 
 ## Local data and privacy
 
-By default, local state lives under `localpilot-data/`. It may include redacted audit events, learning memory, evolution records, checkpoints, and machine-specific status. Repository candidates live in isolated worktrees or workspaces outside the stable checkout.
+By default, local state lives under `localpilot-data/`. It may include redacted audit events, learning memory, desktop chat history/events, evolution records, checkpoints, a broker authentication token, and machine-specific status. Repository candidates live in isolated worktrees or workspaces outside the stable checkout.
 
 LocalPilot redacts common secret-shaped values from audit output and does not intentionally persist hidden reasoning. Nevertheless, local databases and logs should be treated as private because observations and owner-provided lessons may contain sensitive context.
 
@@ -326,6 +340,11 @@ Source branches and pull requests leave the machine when GitHub delivery is enab
 ```text
 localpilot/
   agent.py                 interactive operator and same-context research loop
+  broker.py                loopback API, history/event ownership, runtime handoff
+  chat_store.py            separate persistent UI and session records
+  desktop.py               native Windows chat window and pixel avatar
+  runtime_supervisor.py    replaceable worker process supervision
+  runtime_worker.py        JSONL adapter around the authoritative operator
   learning.py              lessons, grounded facts, retrieval, and study memory
   study.py                 staged study curriculum and held-out comparison
   research.py              bounded research and raw-evidence handling

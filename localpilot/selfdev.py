@@ -31,6 +31,11 @@ from localpilot.github_integration import GitHubIntegration, is_managed_candidat
 from localpilot.learning import LearningMemory
 from localpilot.mission import mission_context
 from localpilot.resource import ResourceGovernor
+from localpilot.study import (
+    GroundingIssue,
+    GroundingReport,
+    RepositoryGroundingValidator,
+)
 
 _IGNORE_NAMES = {".git", ".github", ".venv", "__pycache__", ".pytest_cache", "localpilot-data"}
 _ALLOWED_SUFFIXES = {
@@ -90,6 +95,10 @@ class CandidateRetryResult:
 
 
 class CandidateRetryError(RuntimeError):
+    pass
+
+
+class GroundingGateError(RuntimeError):
     pass
 
 
@@ -355,6 +364,33 @@ def parse_change_plan(text: str, max_files: int = 8) -> ChangePlan:
         str(value.get("reusable_lesson") or "Use a structured write plan when direct tool editing stalls."),
         tuple(parsed),
     )
+
+
+_GROUNDING_PLAN_FIELDS = (
+    "referenced_symbols",
+    "referenced_config_fields",
+    "referenced_paths",
+    "required_test_contracts",
+    "integration_points",
+    "expected_call_relationships",
+    "planned_subsystems",
+    "new_runtime_paths",
+)
+
+
+def parse_grounding_plan(text: str) -> dict[str, list[Any]]:
+    """Parse the repository-claim manifest produced before implementation."""
+    value = _json_object(text)
+    candidate = value.get("change_plan", value)
+    if not isinstance(candidate, dict):
+        raise ValueError("Grounding change_plan must be a JSON object.")
+    plan: dict[str, list[Any]] = {}
+    for field in _GROUNDING_PLAN_FIELDS:
+        items = candidate.get(field)
+        if not isinstance(items, list):
+            raise ValueError(f"Grounding change_plan field {field!r} must be a list.")
+        plan[field] = items[:50]
+    return plan
 
 
 def apply_change_plan(plan: ChangePlan, tools: "CandidateTools") -> list[str]:
@@ -1823,6 +1859,47 @@ class SelfDeveloper:
             str(value.get("next_action") or "Implement the focused task.")[:1000],
         )
 
+    def _enforce_grounding_gate(
+        self,
+        *,
+        text: str,
+        workspace: Path,
+        branch: str,
+        task_id: str,
+    ) -> tuple[dict[str, list[Any]], GroundingReport]:
+        """Fail closed unless a generated change plan matches the live candidate tree."""
+        try:
+            plan = parse_grounding_plan(text)
+            report = RepositoryGroundingValidator(root=workspace).validate(plan)
+        except (ValueError, json.JSONDecodeError) as exc:
+            plan = {}
+            report = GroundingReport(
+                False,
+                (GroundingIssue("malformed_grounding_plan", str(exc)),),
+            )
+
+        issue_rows = [
+            {"code": issue.code, "detail": issue.detail[:500]}
+            for issue in report.issues[:30]
+        ]
+        self.audit.write(
+            "selfdev_grounding_gate",
+            branch=branch,
+            task_id=task_id,
+            status="passed" if report.grounded else "rejected",
+            issues=issue_rows,
+            evidence=list(report.evidence[:50]),
+        )
+        if not report.grounded:
+            details = "; ".join(
+                f"{issue.code}: {issue.detail}" for issue in report.issues[:10]
+            )
+            raise GroundingGateError(
+                "Repository grounding rejected the generated change plan before "
+                f"implementation: {details or 'no verifiable repository evidence'}"
+            )
+        return plan, report
+
     @staticmethod
     def _checkpoint_outcome(text: str, default_lesson: str) -> tuple[str, str]:
         """Never place an unstructured model response in the durable checkpoint."""
@@ -2178,6 +2255,64 @@ class SelfDeveloper:
 
             if run_implementation:
                 self._checkpoint_milestone(
+                    "grounding",
+                    research_findings=research_findings,
+                    next_action="Generate and validate the repository-claim manifest before implementation.",
+                )
+                grounding_messages: list[dict[str, Any]] = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are LocalPilot's pre-implementation repository-grounding planner. "
+                            "You have read-only candidate tools only. Inspect any source needed, then return "
+                            "one strict JSON object with a change_plan object containing exactly these list "
+                            f"fields: {', '.join(_GROUNDING_PLAN_FIELDS)}. referenced_paths must name existing "
+                            "candidate-relative files. referenced_symbols and integration_points must use exact "
+                            "module:Symbol or module:Class.method names declared in those files. "
+                            "referenced_config_fields must use exact section.field names. "
+                            "required_test_contracts may name only existing tests; do not claim a proposed new test "
+                            "already exists. expected_call_relationships items must be [caller, callee] pairs, "
+                            "where caller is the exact qualified function/method and callee is the exact call "
+                            "expression used in its AST. planned_subsystems contains only genuinely new subsystem "
+                            "names; new_runtime_paths contains only proposed new paths. Use empty lists when a "
+                            "claim class is not relevant. Never guess. Do not include file content, prose, markdown, "
+                            "messages, or hidden reasoning. The caller checks every claim against the live candidate "
+                            "tree and will reject the cycle before exposing write tools if any claim is false.\n"
+                            f"Task: {task['title']}\nAcceptance: {acceptance}\n"
+                            f"Capability experiment contract:\n{evolution_context}\n"
+                            f"Research brief:\n{research[:12000]}\n"
+                            f"Previously inspected paths: {json.dumps(sorted(path.relative_to(workspace).as_posix() for path in tools.files_read))}"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": "Produce the grounded repository change-plan manifest now.",
+                    },
+                ]
+                grounding_text = self._tool_stage(
+                    chat=chat,
+                    model=developer_model,
+                    messages=grounding_messages,
+                    functions=[tools.list_project_files, tools.read_project_file],
+                    rounds=max(2, min(self.config.selfdev.research_tool_rounds, 4)),
+                    force=force,
+                    branch=branch,
+                    stage="grounding",
+                )
+                grounding_plan, grounding_report = self._enforce_grounding_gate(
+                    text=grounding_text,
+                    workspace=workspace,
+                    branch=branch,
+                    task_id=str(task["id"]),
+                )
+                grounding_evidence = list(grounding_report.evidence)
+                self._checkpoint_milestone(
+                    "grounding_complete",
+                    research_findings=research_findings,
+                    decisions=[*decisions[:10], *grounding_evidence[:10]],
+                    next_action="Implement only after the live repository grounding gate passed.",
+                )
+                self._checkpoint_milestone(
                     "implementation",
                     research_findings=research_findings,
                     next_action="Continue the focused implementation and inspect its diff.",
@@ -2200,6 +2335,8 @@ class SelfDeveloper:
                             f"Task: {task['title']}\nAcceptance: {acceptance}\n"
                             f"Capability experiment contract:\n{evolution_context}\n"
                             f"Research brief:\n{research[:12000]}\n"
+                            f"Verified repository change plan:\n{json.dumps(grounding_plan, ensure_ascii=False)}\n"
+                            f"Grounding evidence:\n{json.dumps(grounding_evidence, ensure_ascii=False)}\n"
                             f"Reusable lessons from earlier cycles:\n{json.dumps(lessons, ensure_ascii=False)}\n"
                             f"Resume next action: {checkpoint.next_action if checkpoint else 'begin implementation'}\n"
                             f"Verified changed paths: {json.dumps(list(checkpoint.files_changed) if checkpoint else [])}\n"

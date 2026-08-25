@@ -8,6 +8,7 @@ from localpilot.agent import (
     _LEARNING_MEMORY_CHAR_BUDGET,
     _LEARNING_MEMORY_FACT_LIMIT,
     LocalPilotAgent,
+    SYSTEM_PROMPT,
 )
 from localpilot.config import Config
 from localpilot.learning import LearningMemory
@@ -155,6 +156,11 @@ def test_digest_mismatch_and_stale_state_are_surfaced(tmp_path):
     assert item["stale"] is True
     assert item["repository_source_digest_status"] == "mismatch"
     assert "live raw tool results control" in context
+    targets = _payload(context)["verification_targets"]
+    assert targets[0]["tool"] == "search_repository"
+    assert targets[0]["arguments"]["query"] == "auto_promote"
+    assert targets[1]["arguments"]["path"] == "ARCHITECTURE.md"
+    assert targets[2]["arguments"]["query"] == "record_human_lesson("
 
 
 def test_declared_dependency_query_prioritizes_pyproject_live_check(
@@ -163,6 +169,13 @@ def test_declared_dependency_query_prioritizes_pyproject_live_check(
     agent = _agent(tmp_path)
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text('[project]\ndependencies = ["ollama>=0.6.0"]\n', encoding="utf-8")
+    (tmp_path / "localpilot").mkdir()
+    (tmp_path / "localpilot" / "agent.py").write_text(
+        "from ollama import chat\n"
+        "def _stream_chat_message():\n"
+        "    return chat(stream=True)\n",
+        encoding="utf-8",
+    )
     _record(
         agent.memory,
         key="file:pyproject.toml",
@@ -179,7 +192,7 @@ def test_declared_dependency_query_prioritizes_pyproject_live_check(
 
     assert targets[0] == {
         "source_uri": "repo://pyproject.toml",
-        "reason": "Read the declared dependency before other live repository checks.",
+        "reason": "Read the live declared Ollama dependency.",
         "tool": "read_repository_file",
         "arguments": {
             "path": "pyproject.toml",
@@ -189,24 +202,33 @@ def test_declared_dependency_query_prioritizes_pyproject_live_check(
     }
     assert targets[1]["tool"] == "search_repository"
     assert targets[1]["arguments"]["query"] == "from ollama import chat"
-    assert targets[2]["tool"] == "read_repository_file"
-    assert targets[2]["arguments"] == {
+    assert targets[2]["tool"] == "search_repository"
+    assert targets[2]["arguments"]["query"] == "_stream_chat_message("
+    assert targets[3]["tool"] == "read_repository_file"
+    assert targets[3]["arguments"] == {
         "path": "localpilot/agent.py",
-        "start_line": 450,
-        "end_line": 580,
+        "start_line": 650,
+        "end_line": 790,
     }
     snapshots = []
+    grounded_answer = (
+        "pyproject declares ollama>=0.6.0; _stream_chat_message calls chat(**kwargs), "
+        "aggregates thinking, content, and tool_calls, and handles the verified ResponseError path."
+    )
 
     def fake_chat(**kwargs):
         snapshots.append([dict(item) for item in kwargs["messages"]])
-        return iter([_chunk(content="pyproject declares ollama>=0.6.0.")])
+        return iter([_chunk(content=grounded_answer)])
 
     monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
     answer = agent.ask("Verify the declared dependency for the Ollama streaming integration.")
 
-    assert answer == "pyproject declares ollama>=0.6.0."
+    assert answer == grounded_answer
     assert "ollama>=0.6.0" in str(snapshots[0])
-    assert agent.audit.latest("model_learning_memory_live_verification")["target_count"] == 3
+    assert "Never invent or rename a version" in str(snapshots[-1])
+    assert agent.audit.latest("model_learning_memory_live_verification")["target_count"] == 4
+    assert agent.audit.latest("model_learning_memory_direct_synthesis")["target_count"] == 4
+    assert agent.audit.latest("model_same_context_authority_review_complete")["accepted"] is True
     assert "Memory-guided live verification" not in str(agent.messages)
 
 
@@ -227,6 +249,8 @@ def test_current_live_raw_result_remains_in_same_context_and_controls_answer(
     snapshots = []
     streams = iter(
         [
+            [_chunk(content="Live source controls: auto promotion is false and merge remains human-only.")],
+            [_chunk(content="Live source controls: auto promotion is false and merge remains human-only.")],
             [_chunk(content="Live source controls: auto promotion is false and merge remains human-only.")],
         ]
     )
@@ -278,11 +302,20 @@ def test_retrieved_memory_is_turn_local_and_never_relearned_or_exposes_reasoning
         snapshots.append([dict(item) for item in kwargs["messages"]])
         thinks.append(kwargs["think"])
         tool_visibility.append("tools" in kwargs)
-        return iter([_chunk(content="The retained subprocess contract recommends argv and shell=False.")])
+        return iter([
+            _chunk(
+                content=(
+                    "The retained subprocess prior recommends argv and shell=False; "
+                    "the current CommandRunner remains unverified without a live source read."
+                )
+            )
+        ])
 
     monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
     answer = agent.ask(
-        "Without using any tools, what did Python study retain about subprocess process boundaries?"
+        "Without using any tools, what did Python study retain about subprocess process boundaries, "
+        "and how should that prior influence but not prove claims about the current LocalPilot "
+        "CommandRunner implementation?"
     )
 
     assert "argv" in answer
@@ -294,6 +327,7 @@ def test_retrieved_memory_is_turn_local_and_never_relearned_or_exposes_reasoning
     assert agent.audit.latest("model_learning_memory_retrieved")["fact_count"] == 1
     assert agent.audit.latest("model_learning_memory_scrubbed")["retained_in_messages"] is False
     assert agent.audit.latest("model_learning_memory_live_verification") is None
+    assert agent.audit.latest("model_evidence_acquisition_failed") is None
     with sqlite3.connect(agent.memory.path) as connection:
         columns = {
             row[1]
@@ -336,6 +370,7 @@ def test_memory_guided_turn_forces_synthesis_after_four_live_observations(
                 "path": "source-0.txt", "start_line": 1, "end_line": 2,
             })])],
             [_chunk(content="Four targeted live sources are sufficient for the answer.")],
+            [_chunk(content="Four targeted live sources are sufficient for the answer.")],
         ]
     )
     calls = []
@@ -345,16 +380,140 @@ def test_memory_guided_turn_forces_synthesis_after_four_live_observations(
         return iter(next(streams))
 
     monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
-    answer = agent.ask("Inspect the current LocalPilot operator architecture.")
+    answer = agent.ask("Inspect the current LocalPilot operator research design.")
 
     assert answer.startswith("Four targeted")
-    assert len(calls) == 6
+    assert len(calls) == 7
     assert all("tools" in item for item in calls[:4])
     assert "tools" not in calls[4]
     assert "tools" not in calls[5]
+    assert "tools" not in calls[6]
     assert all(item["think"] == "high" for item in calls[:5])
     assert calls[5]["think"] == "low"
+    assert calls[6]["think"] == "low"
     budget = agent.audit.latest("model_learning_memory_research_budget")
     assert budget["soft_tool_rounds"] == 4
     assert budget["hard_tool_rounds"] == 4
     assert agent.audit.latest("model_research_soft_budget") is None
+
+
+def test_operator_information_paths_and_literal_authority_are_explicit():
+    assert "Ordinary operator tool observations are turn-local raw evidence" in SYSTEM_PROMPT
+    assert "Sharing a database class does not establish an automatic data flow" in SYSTEM_PROMPT
+    assert "Never invent a product version, symbol, file, import, call path" in SYSTEM_PROMPT
+    assert "has no merge or promotion method" in SYSTEM_PROMPT
+    assert LocalPilotAgent._information_authority_risks(
+        "After each interaction the operator records lessons."
+    ) == ["automatic_operator_learning"]
+    assert LocalPilotAgent._information_authority_risks(
+        "The operator research loop may invoke upsert_knowledge_facts."
+    ) == ["operator_writes_study_facts"]
+    assert LocalPilotAgent._information_authority_risks(
+        "Ordinary operator observations remain turn-local; the separate StudyEngine writes facts."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "The operator loop never calls upsert_knowledge_facts. CommandRunner is not the wrapper "
+        "for every tool. GitHub Actions does not merge or promote."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "The operator research loop does not write staged facts. A separate durable learning "
+        "section explains that StudyEngine alone calls upsert_knowledge_facts."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "Not all tools are wrapped by CommandRunner."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "Reconciliation preserves candidate branch and GitHub history rather than clearing or deleting it."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "The candidate branch remains intact while a clean registered matching worktree is removed."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "GitHub Actions automatically merges the pull request."
+    ) == ["github_actions_merges"]
+    assert LocalPilotAgent._information_authority_risks(
+        "Facts are written by record_human_lesson and upsert_knowledge_facts."
+    ) == ["human_lesson_as_knowledge_fact"]
+    assert LocalPilotAgent._information_authority_risks(
+        "record_human_lesson creates a separate HumanLesson, not a knowledge_fact."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "Targeted live verification is performed only when a digest mismatch is detected."
+    ) == ["verification_only_on_digest_mismatch"]
+    assert LocalPilotAgent._information_authority_risks(
+        "The stable operator records observations only via explicit /teach or record_human_lesson."
+    ) == ["teach_records_observations"]
+    assert LocalPilotAgent._information_authority_risks(
+        "The operator's safety policy governs all tool calls."
+    ) == ["operator_policy_governs_all_tools"]
+    assert LocalPilotAgent._information_authority_risks(
+        "Normal operator tools use SafetyPolicy; CandidateTools enforce separate confinement."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "LearningMemory is written to only by explicit /teach calls or staged-study updates."
+    ) == ["learning_memory_only_teach_study"]
+    assert LocalPilotAgent._information_authority_risks(
+        "LearningMemory stores separate HumanLesson, knowledge_facts, and self-development cycle records."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "Self-development is triggered by the ResourceGovernor; only the stable operator runs locally; "
+        "the candidate branch is cleared after merge."
+    ) == [
+        "resource_governor_triggers_evolution",
+        "candidate_branch_history_cleared",
+        "developer_local_process_erased",
+    ]
+    architecture_prompt = (
+        "Explain the operator architecture and durable learning memory from staged study."
+    )
+    assert LocalPilotAgent._information_authority_gaps(
+        "The operator uses durable facts.", architecture_prompt
+    ) == [
+        "operator_study_retrieval_call",
+        "retrieval_bounds",
+        "freshness_and_turn_end_scrub",
+    ]
+    assert LocalPilotAgent._information_authority_gaps(
+        "search_knowledge_facts selects at most six facts in a 6,000 character turn-local "
+        "block; repository digest checks target live verification and messages are scrubbed after the turn.",
+        architecture_prompt,
+    ) == []
+    appendix = LocalPilotAgent._authority_gap_appendix(
+        ["retrieval_bounds", "freshness_and_turn_end_scrub"]
+    )
+    assert LocalPilotAgent._information_authority_gaps(appendix, architecture_prompt) == []
+    assert LocalPilotAgent._information_authority_gaps(
+        "search_knowledge_facts selects six relevant facts under a bounded 6,000 character "
+        "limit; digest checks target verification and messages are removed after the turn.",
+        architecture_prompt,
+    ) == []
+    assert LocalPilotAgent._strip_authority_meta(
+        "Grounded answer.\n\nAll statements above are directly supported.\n"
+        "No additional classes are inferred."
+    ) == "Grounded answer."
+
+
+def test_explicit_study_stage_outranks_loose_cross_stage_matches(tmp_path):
+    memory = LearningMemory(tmp_path / "learning.sqlite3")
+    _record(
+        memory,
+        key="self:ollama_integration",
+        subject="LocalPilot Ollama integration",
+        summary="Self architecture has Ollama streaming integration and tool calls.",
+        stage="self",
+    )
+    _record(
+        memory,
+        key="qwen:tool_calling",
+        subject="tool_calling",
+        summary="Ollama passes tools and Qwen models can return structured tool calls while streaming.",
+        stage="qwen",
+        source_uri="https://ollama.com/blog/tool-support",
+    )
+
+    results = memory.search_knowledge_facts(
+        "Distinguish the Qwen tool calling contract in the Ollama streaming integration",
+        limit=2,
+    )
+
+    assert results[0].stage == "qwen"

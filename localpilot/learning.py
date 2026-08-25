@@ -1858,6 +1858,7 @@ class LearningMemory:
                 + 2 * len(query_tokens & fields["relationships"])
                 + 2 * len(query_tokens & fields["stage"])
                 + (10 if exact_subject else 0)
+                + (120 if explicit_stage else 0)
                 + float(fact.confidence)
                 + quality
                 + source_quality

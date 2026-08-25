@@ -276,8 +276,46 @@ def _progress(console: Console):
     return lambda message: console.print(f"[dim]{message}[/dim]")
 
 
+def _console_safe_text(console: Console, value: object) -> str:
+    """Render model text safely through legacy Windows console encodings."""
+    text = str(value).replace("\u202f", " ").replace("\u00a0", " ")
+    encoding = getattr(getattr(console, "file", None), "encoding", None) or "utf-8"
+    if not encoding.lower().replace("_", "-").startswith("utf-"):
+        text = text.translate(
+            str.maketrans(
+                {
+                    "\u2010": "-",
+                    "\u2011": "-",
+                    "\u2012": "-",
+                    "\u2013": "-",
+                    "\u2014": "-",
+                    "\u2018": "'",
+                    "\u2019": "'",
+                    "\u201c": '"',
+                    "\u201d": '"',
+                    "\u2022": "*",
+                    "\u2026": "...",
+                    "\u2192": "->",
+                    "\u2194": "<->",
+                }
+            )
+        )
+    try:
+        text.encode(encoding)
+    except LookupError:
+        return text
+    except UnicodeEncodeError:
+        return text.encode(encoding, errors="replace").decode(encoding)
+    return text
+
+
 def _chat(console: Console, config, root: Path) -> None:
-    console.print(f"[bold]{config.agent.name} 0.1[/bold] — local-first Windows agent")
+    console.print(
+        _console_safe_text(
+            console,
+            f"[bold]{config.agent.name} 0.1[/bold] — local-first Windows agent",
+        )
+    )
     console.print(
         f"Model: {config.model.name} via Ollama. "
         "Commands: /status /doctor /evolve /teach <lesson> /quit\n"
@@ -322,9 +360,14 @@ def _chat(console: Console, config, root: Path) -> None:
             continue
         try:
             answer = agent.ask(prompt)
-            console.print(Markdown(answer))
+            console.print(Markdown(_console_safe_text(console, answer)))
         except Exception as exc:
-            console.print(f"[red]Agent error:[/red] {type(exc).__name__}: {exc}")
+            console.print(
+                _console_safe_text(
+                    console,
+                    f"[red]Agent error:[/red] {type(exc).__name__}: {exc}",
+                )
+            )
 
 
 def build_parser() -> argparse.ArgumentParser:

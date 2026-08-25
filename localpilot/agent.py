@@ -79,6 +79,33 @@ _TOOL_FAILURE_MARKERS = (
     "powershell error:",
     "git is not available.",
 )
+
+
+def _ollama_memory_embedder(
+    model: str,
+    keep_alive: float | str,
+) -> Callable[[list[str]], list[list[float]]]:
+    """Bind the official batch embedding API without pulling any model."""
+
+    def embed_texts(texts: list[str]) -> list[list[float]]:
+        from ollama import embed
+
+        response = embed(
+            model=model,
+            input=texts,
+            truncate=True,
+            keep_alive=keep_alive,
+        )
+        values = (
+            response.get("embeddings")
+            if isinstance(response, dict)
+            else getattr(response, "embeddings", None)
+        )
+        return [list(vector) for vector in (values or [])]
+
+    return embed_texts
+
+
 _FINAL_ANSWER_NUM_PREDICT = 4096
 _GENERATION_LIMIT_CONTINUATION_CEILING = 8192
 _GENERATION_LIMIT_CONTINUATION_MINIMUM = 256
@@ -136,7 +163,27 @@ class LocalPilotAgent:
         self.data_dir = (self.project_root / config.agent.data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
-        self.memory = LearningMemory(self.data_dir / config.selfdev.learning_database)
+        embedding_provider = (
+            _ollama_memory_embedder(
+                config.model.memory_embedding_model,
+                config.model.memory_embedding_keep_alive,
+            )
+            if config.model.memory_embeddings_enabled
+            else None
+        )
+        self.memory = LearningMemory(
+            self.data_dir / config.selfdev.learning_database,
+            embedding_provider=embedding_provider,
+            embedding_model=(
+                config.model.memory_embedding_model
+                if config.model.memory_embeddings_enabled
+                else ""
+            ),
+            semantic_weight=config.model.memory_semantic_weight,
+            semantic_min_similarity=config.model.memory_semantic_min_similarity,
+            embedding_batch_size=config.model.memory_embedding_batch_size,
+            embedding_migration_limit=config.model.memory_embedding_migration_limit,
+        )
         self._last_stream_runtime: dict[str, Any] = {}
         self._event_sink = event_sink
         self._observation_sequence = 0
@@ -1602,6 +1649,7 @@ class LocalPilotAgent:
         learning_message: dict[str, Any] | None = None
         learning_verification_messages: list[dict[str, Any]] = []
         if learning_context:
+            retrieval = self.memory.last_retrieval_diagnostics
             learning_message = {"role": "system", "content": learning_context}
             self.messages.append(learning_message)
             self.audit.write(
@@ -1617,6 +1665,13 @@ class LocalPilotAgent:
                 ),
                 context_chars=len(learning_context),
                 character_budget=_LEARNING_MEMORY_CHAR_BUDGET,
+                retrieval_mode=retrieval.mode,
+                retrieval_latency_ms=retrieval.latency_ms,
+                embedding_model=retrieval.embedding_model,
+                embedding_cache_hits=retrieval.cache_hits,
+                embedding_facts_indexed=retrieval.indexed_facts,
+                semantic_candidate_count=retrieval.semantic_candidates,
+                embedding_error_type=retrieval.error_type,
             )
         self.messages.append({"role": "user", "content": prompt})
         retried_empty_response = False

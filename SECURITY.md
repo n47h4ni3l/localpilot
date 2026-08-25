@@ -29,3 +29,9 @@ Desktop boundary rules:
 - the runtime/PowerShell worker is started with an argument vector, UTF-8 pipes, and `shell=False`;
 - a worker restart cannot merge, promote, or weaken candidate confinement; and
 - the CLI continues to use the same `LocalPilotAgent`, tool registry, and safety policy independently of the GUI.
+
+Learning retrieval is lexical by default. Optional semantic retrieval sends only bounded fact documents
+and the current retrieval query to the owner's local Ollama service; it does not download models or call a
+remote embedding service. Cached fact vectors stay in the ignored local learning database, while query
+text and query vectors are not persisted. Semantic ranking cannot bypass stage, provenance, staleness,
+digest, test-evidence, or context-size controls, and any embedding failure falls back to lexical retrieval.

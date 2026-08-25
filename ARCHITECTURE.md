@@ -42,7 +42,16 @@ small set of staged-study facts before model inference. The operator exposes at 
 summary, source URI and kind, source digest, confidence, last verification time, staleness and bounded
 relationships. Repository-backed facts also receive a live digest status for the current source bytes.
 
-The retrieval block is prior knowledge, not a replacement for current evidence. A matching repository
+The default selector is lexical. When explicitly enabled, a local Ollama embedding provider adds a
+semantic rank and similarity bonus without replacing the lexical score. Existing facts are indexed
+lazily in bounded batches in `knowledge_fact_embeddings`; the cache key includes stage, fact key,
+embedding model and a digest of the stable fact document, so model or fact changes cannot silently
+reuse an obsolete vector. Query vectors and query text are never persisted. An unavailable or malformed
+embedding response disables semantic retrieval for the process and preserves the lexical result path.
+Stage, staleness, test-evidence, six-fact and 6,000-character limits are applied independently of ranking.
+
+The retrieval block is prior knowledge, not a replacement for current evidence. Semantic similarity
+does not raise a fact's authority. A matching repository
 digest can establish that the studied source bytes are unchanged. Stale or mismatched facts require a
 targeted current read. Explicit architecture or runtime questions may attach a bounded set of read-only
 verification targets; once a complete target set succeeds, final synthesis runs directly over the same

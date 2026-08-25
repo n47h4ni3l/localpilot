@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Callable
 
 from localpilot.evolution import normalize_evolution_task
 
@@ -145,6 +149,18 @@ class KnowledgeFact:
 
 
 @dataclass(frozen=True, slots=True)
+class RetrievalDiagnostics:
+    mode: str = "lexical"
+    embedding_model: str = ""
+    candidate_count: int = 0
+    cache_hits: int = 0
+    indexed_facts: int = 0
+    semantic_candidates: int = 0
+    latency_ms: int = 0
+    error_type: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class StudyRun:
     id: int
     stage: str
@@ -193,9 +209,31 @@ class LearningMemory:
     column. It stores reviewable facts about what happened, not chain-of-thought.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        embedding_provider: Callable[[list[str]], list[list[float]]] | None = None,
+        embedding_model: str = "",
+        semantic_weight: float = 12.0,
+        semantic_min_similarity: float = 0.2,
+        embedding_batch_size: int = 64,
+        embedding_migration_limit: int = 512,
+    ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.embedding_provider = embedding_provider
+        self.embedding_model = str(embedding_model).strip()
+        self.semantic_weight = max(0.0, float(semantic_weight))
+        self.semantic_min_similarity = max(
+            -1.0, min(float(semantic_min_similarity), 1.0)
+        )
+        self.embedding_batch_size = max(1, min(int(embedding_batch_size), 256))
+        self.embedding_migration_limit = max(
+            1, min(int(embedding_migration_limit), 5000)
+        )
+        self._embedding_session_error = ""
+        self.last_retrieval_diagnostics = RetrievalDiagnostics()
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -323,6 +361,21 @@ class LearningMemory:
                     ON knowledge_facts(source_uri, stale);
                 CREATE INDEX IF NOT EXISTS knowledge_stage_idx
                     ON knowledge_facts(stage, stale, fact_type);
+                CREATE TABLE IF NOT EXISTS knowledge_fact_embeddings (
+                    stage TEXT NOT NULL,
+                    fact_key TEXT NOT NULL,
+                    embedding_model TEXT NOT NULL,
+                    content_digest TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL,
+                    embedding_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(stage, fact_key, embedding_model),
+                    FOREIGN KEY(stage, fact_key)
+                        REFERENCES knowledge_facts(stage, fact_key)
+                        ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS knowledge_embedding_model_idx
+                    ON knowledge_fact_embeddings(embedding_model, stage);
                 CREATE TABLE IF NOT EXISTS study_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     stage TEXT NOT NULL,
@@ -1792,6 +1845,183 @@ class LearningMemory:
             tokens.update(expansions.get(token, ()))
         return tokens
 
+    @staticmethod
+    def _embedding_document(fact: KnowledgeFact) -> str:
+        """Stable semantic text; provenance remains on the returned fact, not in vectors."""
+        return json.dumps(
+            {
+                "stage": fact.stage,
+                "fact_type": fact.fact_type,
+                "subject": fact.subject,
+                "summary": fact.summary,
+                "relationships": list(fact.relationships),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @classmethod
+    def _embedding_digest(cls, fact: KnowledgeFact) -> str:
+        return hashlib.sha256(
+            cls._embedding_document(fact).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _cosine_similarity(left: list[float], right: list[float]) -> float | None:
+        if not left or len(left) != len(right):
+            return None
+        dot = sum(a * b for a, b in zip(left, right))
+        left_norm = math.sqrt(sum(value * value for value in left))
+        right_norm = math.sqrt(sum(value * value for value in right))
+        if not left_norm or not right_norm:
+            return None
+        return max(-1.0, min(dot / (left_norm * right_norm), 1.0))
+
+    @staticmethod
+    def _validated_embeddings(
+        values: Any,
+        expected: int,
+    ) -> list[list[float]]:
+        if not isinstance(values, (list, tuple)) or len(values) != expected:
+            raise ValueError("Embedding provider returned an unexpected vector count.")
+        vectors: list[list[float]] = []
+        dimensions: int | None = None
+        for value in values:
+            if not isinstance(value, (list, tuple)) or not value:
+                raise ValueError("Embedding provider returned an empty vector.")
+            vector = [float(item) for item in value]
+            if not all(math.isfinite(item) for item in vector):
+                raise ValueError("Embedding provider returned a non-finite vector.")
+            if dimensions is None:
+                dimensions = len(vector)
+            elif len(vector) != dimensions:
+                raise ValueError("Embedding provider returned inconsistent dimensions.")
+            vectors.append(vector)
+        return vectors
+
+    def _embed_texts(self, texts: list[str]) -> list[list[float]]:
+        if self.embedding_provider is None or not self.embedding_model:
+            raise RuntimeError("Semantic retrieval is not configured.")
+        return self._validated_embeddings(self.embedding_provider(texts), len(texts))
+
+    def _cached_fact_embeddings(
+        self,
+        facts: list[KnowledgeFact],
+    ) -> tuple[dict[tuple[str, str], list[float]], list[KnowledgeFact]]:
+        wanted = {(fact.stage, fact.fact_key): fact for fact in facts}
+        cached: dict[tuple[str, str], list[float]] = {}
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT stage, fact_key, content_digest, dimensions, embedding_json
+                FROM knowledge_fact_embeddings
+                WHERE embedding_model = ?
+                """,
+                (self.embedding_model,),
+            ).fetchall()
+        for row in rows:
+            key = (str(row["stage"]), str(row["fact_key"]))
+            fact = wanted.get(key)
+            if fact is None or str(row["content_digest"]) != self._embedding_digest(fact):
+                continue
+            try:
+                vector = [float(item) for item in json.loads(row["embedding_json"])]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if (
+                not vector
+                or len(vector) != int(row["dimensions"])
+                or not all(math.isfinite(item) for item in vector)
+            ):
+                continue
+            cached[key] = vector
+        missing = [
+            fact for fact in facts if (fact.stage, fact.fact_key) not in cached
+        ]
+        return cached, missing
+
+    def _index_fact_embeddings(
+        self,
+        facts: list[KnowledgeFact],
+        cached: dict[tuple[str, str], list[float]],
+    ) -> int:
+        indexed = 0
+        pending = facts[: self.embedding_migration_limit]
+        for offset in range(0, len(pending), self.embedding_batch_size):
+            batch = pending[offset : offset + self.embedding_batch_size]
+            vectors = self._embed_texts(
+                [self._embedding_document(fact) for fact in batch]
+            )
+            with self._connect() as connection:
+                for fact, vector in zip(batch, vectors):
+                    connection.execute(
+                        """
+                        INSERT INTO knowledge_fact_embeddings (
+                            stage, fact_key, embedding_model, content_digest,
+                            dimensions, embedding_json, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(stage, fact_key, embedding_model) DO UPDATE SET
+                            content_digest = excluded.content_digest,
+                            dimensions = excluded.dimensions,
+                            embedding_json = excluded.embedding_json,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            fact.stage,
+                            fact.fact_key,
+                            self.embedding_model,
+                            self._embedding_digest(fact),
+                            len(vector),
+                            json.dumps(vector, separators=(",", ":")),
+                            _now(),
+                        ),
+                    )
+                    cached[(fact.stage, fact.fact_key)] = vector
+                    indexed += 1
+        return indexed
+
+    def _semantic_scores(
+        self,
+        query: str,
+        facts: list[KnowledgeFact],
+    ) -> tuple[dict[tuple[str, str], float], int, int, str]:
+        if (
+            self.embedding_provider is None
+            or not self.embedding_model
+            or self._embedding_session_error
+        ):
+            return {}, 0, 0, self._embedding_session_error
+        try:
+            query_vector = self._embed_texts([query])[0]
+            cached, missing = self._cached_fact_embeddings(facts)
+            cache_hits = len(cached)
+            indexed = self._index_fact_embeddings(missing, cached) if missing else 0
+            scores: dict[tuple[str, str], float] = {}
+            for fact in facts:
+                vector = cached.get((fact.stage, fact.fact_key))
+                if vector is None:
+                    continue
+                similarity = self._cosine_similarity(query_vector, vector)
+                if similarity is not None:
+                    scores[(fact.stage, fact.fact_key)] = similarity
+            return scores, cache_hits, indexed, ""
+        except Exception as exc:
+            self._embedding_session_error = type(exc).__name__
+            return {}, 0, 0, self._embedding_session_error
+
+    def knowledge_embedding_count(self, model: str | None = None) -> int:
+        """Expose migration/index coverage without storing or returning query vectors."""
+        chosen = str(model or self.embedding_model).strip()
+        if not chosen:
+            return 0
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM knowledge_fact_embeddings WHERE embedding_model = ?",
+                (chosen,),
+            ).fetchone()
+        return int(row["count"] if row is not None else 0)
+
     def search_knowledge_facts(
         self,
         query: str,
@@ -1800,10 +2030,14 @@ class LearningMemory:
         limit: int = 8,
         include_stale: bool = True,
     ) -> list[KnowledgeFact]:
-        """Return a small relevance-ranked set without exposing the whole fact store."""
+        """Return bounded hybrid lexical/semantic results with lexical fallback."""
+        started = time.monotonic()
         limit = max(0, min(int(limit), 12))
         query_tokens = self._knowledge_tokens(query)
         if not limit or not query_tokens:
+            self.last_retrieval_diagnostics = RetrievalDiagnostics(
+                latency_ms=int((time.monotonic() - started) * 1000)
+            )
             return []
 
         query_text = " ".join(str(query).lower().split())
@@ -1811,9 +2045,11 @@ class LearningMemory:
             query_tokens & {"pytest", "regression", "test", "tests"}
         )
         scored: list[tuple[float, int, KnowledgeFact]] = []
+        candidates: list[KnowledgeFact] = []
         for fact in self.knowledge_facts(stage=stage, include_stale=include_stale):
             if fact.source_uri.startswith("repo://tests/") and not requests_test_evidence:
                 continue
+            candidates.append(fact)
             fields = {
                 "key": self._knowledge_tokens(fact.fact_key),
                 "type": self._knowledge_tokens(fact.fact_type),
@@ -1866,6 +2102,74 @@ class LearningMemory:
                 - (4 if fact.stale else 0)
             )
             scored.append((score, len(matched), fact))
+
+        semantic_scores, cache_hits, indexed_facts, semantic_error = (
+            self._semantic_scores(query, candidates)
+        )
+        semantic_candidates = 0
+        if semantic_scores:
+            semantic_ranks = {
+                key: rank
+                for rank, (key, similarity) in enumerate(
+                    sorted(
+                        semantic_scores.items(),
+                        key=lambda item: (item[1], item[0]),
+                        reverse=True,
+                    ),
+                    start=1,
+                )
+                if similarity >= self.semantic_min_similarity
+            }
+
+            def semantic_bonus(key: tuple[str, str]) -> float:
+                similarity = semantic_scores.get(key)
+                rank = semantic_ranks.get(key)
+                if similarity is None or rank is None:
+                    return 0.0
+                span = max(0.0001, 1.0 - self.semantic_min_similarity)
+                normalized = max(
+                    0.0,
+                    (similarity - self.semantic_min_similarity) / span,
+                )
+                return self.semantic_weight * (1.0 / rank + normalized)
+
+            rescored: list[tuple[float, int, KnowledgeFact]] = []
+            lexical_keys: set[tuple[str, str]] = set()
+            for score, matched_count, fact in scored:
+                key = (fact.stage, fact.fact_key)
+                lexical_keys.add(key)
+                rescored.append((score + semantic_bonus(key), matched_count, fact))
+            for fact in candidates:
+                key = (fact.stage, fact.fact_key)
+                similarity = semantic_scores.get(key)
+                if key in lexical_keys or similarity is None:
+                    continue
+                if similarity < self.semantic_min_similarity:
+                    continue
+                semantic_candidates += 1
+                score = (
+                    semantic_bonus(key)
+                    + float(fact.confidence)
+                    - (4 if fact.stale else 0)
+                )
+                rescored.append((score, 0, fact))
+            scored = rescored
+
+        mode = "lexical"
+        if semantic_scores:
+            mode = "hybrid"
+        elif semantic_error:
+            mode = "lexical_fallback"
+        self.last_retrieval_diagnostics = RetrievalDiagnostics(
+            mode=mode,
+            embedding_model=self.embedding_model if self.embedding_provider else "",
+            candidate_count=len(candidates),
+            cache_hits=cache_hits,
+            indexed_facts=indexed_facts,
+            semantic_candidates=semantic_candidates,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            error_type=semantic_error,
+        )
 
         scored.sort(
             key=lambda item: (
@@ -2179,6 +2483,7 @@ class LearningMemory:
                 "capability_experiments",
                 "mission_frontiers",
                 "knowledge_facts",
+                "knowledge_fact_embeddings",
                 "study_runs",
                 "curriculum_stage_state",
                 "peer_model_comparisons",

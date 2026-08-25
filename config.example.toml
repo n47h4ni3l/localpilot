@@ -18,6 +18,16 @@ temperature = 0.1
 # much smaller context than the model supports, which is especially harmful
 # for repository/GitHub tool loops.
 context_tokens = 32768
+# Optional hybrid lexical + semantic retrieval for durable study facts. Install
+# the named embedding model explicitly with Ollama before enabling; LocalPilot
+# never downloads it automatically and falls back to lexical retrieval on error.
+memory_embeddings_enabled = false
+memory_embedding_model = "embeddinggemma"
+memory_embedding_keep_alive = "5m"
+memory_semantic_weight = 12.0
+memory_semantic_min_similarity = 0.2
+memory_embedding_batch_size = 64
+memory_embedding_migration_limit = 512
 
 [resource]
 active_priority = "below_normal"

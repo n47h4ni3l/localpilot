@@ -12,6 +12,31 @@ Stable is never rewritten in place, candidate code is not executed locally by th
 
 Operator research keeps the owner's request, streamed same-model reasoning, assistant tool calls, and complete raw tool results in one live context through final synthesis. Raw results receive current-turn `obs-NNN` and `result-NNN` identifiers. They are never replaced by a bounded ledger or fresh summary context.
 
+### Turn-local retrieval from staged study
+
+For a relevant operator request, `LearningMemory.search_knowledge_facts` deterministically selects a
+small set of staged-study facts before model inference. The operator exposes at most six facts and a
+6,000-character retrieval block. Each returned fact keeps its stage, key, type, subject, bounded
+summary, source URI and kind, source digest, confidence, last verification time, staleness and bounded
+relationships. Repository-backed facts also receive a live digest status for the current source bytes.
+
+The retrieval block is prior knowledge, not a replacement for current evidence. A matching repository
+digest can establish that the studied source bytes are unchanged. Stale or mismatched facts require a
+targeted current read. Explicit architecture or runtime questions may attach a bounded set of read-only
+verification targets; once a complete target set succeeds, final synthesis runs directly over the same
+raw results. Live raw results control any contradiction. The retrieved block and its pre-verification
+messages are removed after the owner turn and are never written back merely because they were retrieved.
+
+The information paths remain separate:
+
+- ordinary operator observations are turn-local and are not automatically written to learning memory;
+- `/teach` explicitly records a `HumanLesson`;
+- staged `study` writes source-linked `knowledge_facts`; and
+- self-development records its own candidate-cycle, review and experiment outcomes.
+
+Audit records only a digest of the owner query, selected fact keys, bounded counts and verification
+status. It does not record the query text, retrieved prompts, transcripts, messages or hidden reasoning.
+
 After the advisory 12-round soft budget, each further unique observation requires a model-authored compact information-gain delta. It contains only a bounded list of bare current-turn `evidence_refs`, one `unresolved_fact`, one `proposed_tool`, `proposed_arguments` as a real object, the result that would change the conclusion, and an optional distinct hypothesis. It has no verified-fact prose, unresolved-question history, or inspected-observation history. Prior inspection state and semantic redundancy are derived internally from `ObservationRecord`.
 
 Semantically similar searches and overlapping reads prompt for the distinct new hypothesis being tested. A justified follow-up remains allowed. Exact duplicate read-only calls retain the existing result cache and consume no unique research round. The hard ceiling remains 24 rounds.

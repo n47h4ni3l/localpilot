@@ -493,6 +493,7 @@ class LocalPilotAgent:
             "all claims above",
             "no additional classes",
             "no additional claims",
+            "this summary reflects only",
         )
         kept: list[str] = []
         for part in parts:
@@ -514,6 +515,11 @@ class LocalPilotAgent:
             r"operator(?: research)? loop.{0,80}(?:does not|never).{0,80}upsert_knowledge_facts",
             "",
             text,
+        )
+        risk_text = re.sub(
+            r"operator(?: research)? loop.{0,100}(?:does not|never).{0,40}(?:write|record|persist|store)s?.{0,60}(?:knowledge[_ ]?facts?|staged[- ]study facts?|study facts?)",
+            "",
+            risk_text,
         )
         risk_text = re.sub(
             r"commandrunner.{0,80}(?:is not|does not|never).{0,80}(?:every|all) tool",
@@ -548,6 +554,7 @@ class LocalPilotAgent:
             "operator_writes_study_facts": (
                 r"operator(?: research)? loop.{0,80}(?:may |does |will )?(?:invokes?|calls?|writes?)(?: to)? (?:learningmemory\.)?upsert_knowledge_facts",
                 r"operator(?: research)? loop.{0,80}(?:persists?|stores?|writes?) (?:staged[- ]study |study )?(?:knowledge_)?facts",
+                r"operator(?: research)? loop.{0,180}(?:records?|persists?|stores?).{0,60}(?:knowledge[_ ]?facts?|staged[- ]study facts?)",
             ),
             "cycle_memory_becomes_operator_knowledge": (
                 r"(?:cycle|candidate) (?:outcomes?|records?).{0,160}inform.{0,80}operator",
@@ -569,6 +576,7 @@ class LocalPilotAgent:
             ),
             "developer_local_process_erased": (
                 r"only (?:the )?stable operator (?:runs|executes) locally",
+                r"only (?:the )?operator(?:'s)? (?:own )?code (?:runs|executes)(?: locally)?",
             ),
             "human_lesson_as_knowledge_fact": (
                 r"(?:facts|knowledge_facts).{0,40}(?:are |is )?(?:written|stored|recorded)(?: only)? (?:by|through).{0,40}record_human_lesson",
@@ -583,10 +591,35 @@ class LocalPilotAgent:
             ),
             "operator_policy_governs_all_tools": (
                 r"(?:operator(?:'s)? )?safety policy.{0,50}(?:governs|applies to|controls).{0,30}all tool",
+                r"(?:operator(?:'s)? )?safety policy.{0,60}ensures.{0,40}(?:any|all) tool",
+                r"all interactions.{0,50}(?:governed|controlled).{0,40}(?:the )?safety policy",
             ),
             "learning_memory_only_teach_study": (
                 r"learningmemory.{0,100}(?:written|populated).{0,30}only.{0,120}(?:/teach|staged.?study|study)",
                 r"learningmemory.{0,100}(?:only written|only populated).{0,120}(?:/teach|staged.?study|study)",
+                r"learningmemory.{0,200}(?:it )?(?:is )?(?:updated|written|populated) only.{0,150}(?:record_human_lesson|upsert_knowledge_facts|/teach|staged.?study)",
+                r"learningmemory.{0,200}only explicit writes.{0,150}(?:record_human_lesson|upsert_knowledge_facts|/teach|staged.?study)",
+            ),
+            "ci_after_human_merge": (
+                r"after (?:a |the )?(?:candidate )?(?:pull request|pr) is merged.{0,100}(?:github actions|ci)",
+                r"human merge.{0,100}(?:then|before).{0,50}(?:github actions|ci (?:runs|starts))",
+            ),
+            "developer_uses_operator_policy": (
+                r"stable operator and (?:the )?developer.{0,80}(?:normal|same|operator) safety policy",
+                r"developer.{0,80}(?:uses|operates under|is governed by).{0,50}(?:normal|operator) safety policy",
+                r"self-development(?: runtime)?.{0,160}(?:same|operator).{0,60}safety boundar",
+                r"developer.{0,120}(?:same|operator).{0,60}safety boundar",
+            ),
+            "candidate_commit_after_merge": (
+                r"candidate changes.{0,140}(?:never|not).{0,50}(?:committed|pushed).{0,100}until.{0,50}(?:pull request|pr)?.{0,20}merged",
+                r"candidate.{0,100}(?:committed|pushed).{0,60}after (?:the )?(?:human )?merge",
+            ),
+            "stable_operator_local_process_erased": (
+                r"only (?:the )?developer(?: process)? (?:runs|executes) locally",
+            ),
+            "exclusive_learning_writer": (
+                r"record_human_lesson.{0,80}(?:is )?the only (?:place|path|writer)",
+                r"upsert_knowledge_facts.{0,80}(?:is )?the only (?:place|path|writer)",
             ),
         }
         return [
@@ -622,6 +655,16 @@ class LocalPilotAgent:
                 token in text for token in ("scrub", "removed after", "remove after")
             ):
                 gaps.append("freshness_and_turn_end_scrub")
+            if not any(
+                phrase in text
+                for phrase in (
+                    "self-development cycle records",
+                    "self-development records its own candidate-cycle",
+                    "cycle, review, and experiment records",
+                    "candidate-cycle outcomes",
+                )
+            ):
+                gaps.append("selfdev_learning_records")
         if all(token in request for token in ("ollama", "stream")):
             required_literals = (
                 "ollama>=0.6.0",
@@ -648,6 +691,7 @@ class LocalPilotAgent:
             "operator_study_retrieval_call",
             "retrieval_bounds",
             "freshness_and_turn_end_scrub",
+            "selfdev_learning_records",
         }
         if architecture_gaps & set(gaps):
             paragraphs.append(
@@ -656,7 +700,9 @@ class LocalPilotAgent:
                 "digests govern freshness: a match establishes unchanged studied source bytes, "
                 "while stale or mismatched facts require targeted live verification; an explicit "
                 "current-state request may also justify a narrow live check. Retrieved facts and "
-                "pre-verification messages are scrubbed after the turn and are not re-learned."
+                "pre-verification messages are scrubbed after the turn and are not re-learned. "
+                "LearningMemory also stores separate self-development cycle, review, and experiment "
+                "records; they are not knowledge_facts and do not automatically become operator knowledge."
             )
         runtime_gaps = {
             "ollama_streaming_literals",
@@ -1052,7 +1098,15 @@ class LocalPilotAgent:
                             "source-linked priors, never as live verification. Do not use blanket claims that all "
                             "statements are verified, do not say /teach records observations, do not say the normal "
                             "operator SafetyPolicy governs candidate or all tool paths, do not claim LearningMemory "
-                            "is written only by /teach and study while omitting separate self-development records, "
+                            "is written or updated only by /teach and study while omitting separate self-development records, "
+                            "do not put GitHub Actions CI after the human merge, and do not place the developer "
+                            "under the normal operator SafetyPolicy, do not say only operator code runs locally, "
+                            "do not say the operator records study knowledge facts, and do not merge operator and "
+                            "CandidateTools safety boundaries, "
+                            "do not put candidate commit or push after human merge, and do not say only the "
+                            "developer runs locally, "
+                            "do not call a scoped record_human_lesson or upsert_knowledge_facts search result the "
+                            "repository-wide only place or exclusive writer, "
                             "do not say live verification happens only on digest mismatch, "
                             "and do not end with a test-checklist or validator-facing remark. Preserve exact source literals such as function names and "
                             "exception behavior, distinguish what is unresolved, and do not request tools."
@@ -1143,8 +1197,15 @@ class LocalPilotAgent:
                                 "lesson text, not operator observations. Normal operator tools use SafetyPolicy; "
                                 "CandidateTools enforce separate candidate confinement. LearningMemory also stores "
                                 "separate self-development cycle, review, and experiment records; those are not "
-                                "knowledge_facts. Do not request tools "
-                                "or repeat a rejected claim. For an operator-learning architecture request, explicitly "
+                                "knowledge_facts. GitHub Actions CI precedes the authorized human merge. The normal "
+                                "operator registry uses SafetyPolicy; self-development uses its bounded research and "
+                                "CandidateTools surfaces. The developer is also a local process, but candidate code "
+                                "is not executed locally. The operator never writes staged knowledge facts. "
+                                "Candidate commit and push precede PR, GitHub Actions CI, and authorized human merge. "
+                                "Both the stable operator and developer are local stable-code processes; candidate code is not. "
+                                "Describe record_human_lesson and upsert_knowledge_facts only as the inspected call paths, "
+                                "not repository-wide exclusive writers. "
+                                "Do not request tools or repeat a rejected claim. For an operator-learning architecture request, explicitly "
                                 "state that search_knowledge_facts selects at most six facts in a 6,000-character "
                                 "turn-local block; a digest match establishes unchanged studied source bytes; stale "
                                 "or mismatched facts require targeted live verification; explicit current-state "
@@ -1196,8 +1257,15 @@ class LocalPilotAgent:
                                     "knowledge_fact. Never say verification happens only on digest mismatch. "
                                     "Never say /teach records observations or that the operator SafetyPolicy governs "
                                     "all tool paths; CandidateTools enforce separate candidate confinement. "
-                                    "Never say LearningMemory is written only by /teach and study: self-development "
+                                    "Never say LearningMemory is written or updated only by /teach and study: self-development "
                                     "also writes its separate cycle, review, and experiment records. "
+                                    "State that GitHub Actions CI precedes human merge. Never put the developer under "
+                                    "the normal operator SafetyPolicy; self-development uses bounded research and "
+                                    "CandidateTools surfaces. The developer is a local process; never say only "
+                                    "operator code runs. The operator never writes staged knowledge facts. "
+                                    "Candidate commit and push precede PR, CI, and human merge. Both stable operator "
+                                    "and developer run locally; only candidate code is prohibited. "
+                                    "Never call the inspected lesson/fact call sites repository-wide exclusive writers. "
                                     "Retain every required coverage item already supplied by the preceding "
                                     "correction, including search_knowledge_facts, at most six facts, the 6,000 "
                                     "character limit, digest freshness/targeted verification, and turn-end scrubbing. "

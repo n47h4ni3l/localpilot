@@ -420,6 +420,13 @@ def test_operator_information_paths_and_literal_authority_are_explicit():
         "section explains that StudyEngine alone calls upsert_knowledge_facts."
     ) == []
     assert LocalPilotAgent._information_authority_risks(
+        "The operator research loop never writes staged knowledge facts."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "The operator research loop collects raw results and, if needed, records lessons or "
+        "knowledge facts into LearningMemory."
+    ) == ["operator_writes_study_facts"]
+    assert LocalPilotAgent._information_authority_risks(
         "Not all tools are wrapped by CommandRunner."
     ) == []
     assert LocalPilotAgent._information_authority_risks(
@@ -447,13 +454,65 @@ def test_operator_information_paths_and_literal_authority_are_explicit():
         "The operator's safety policy governs all tool calls."
     ) == ["operator_policy_governs_all_tools"]
     assert LocalPilotAgent._information_authority_risks(
+        "The safety policy ensures that any tool call respects candidate boundaries."
+    ) == ["operator_policy_governs_all_tools"]
+    assert LocalPilotAgent._information_authority_risks(
+        "All interactions are governed by the safety policy."
+    ) == ["operator_policy_governs_all_tools"]
+    assert LocalPilotAgent._information_authority_risks(
         "Normal operator tools use SafetyPolicy; CandidateTools enforce separate confinement."
     ) == []
     assert LocalPilotAgent._information_authority_risks(
         "LearningMemory is written to only by explicit /teach calls or staged-study updates."
     ) == ["learning_memory_only_teach_study"]
     assert LocalPilotAgent._information_authority_risks(
+        "LearningMemory stores lessons, knowledge facts, and candidate-cycle outcomes. It is "
+        "updated only through explicit API calls (record_human_lesson, upsert_knowledge_facts)."
+    ) == ["learning_memory_only_teach_study"]
+    assert LocalPilotAgent._information_authority_risks(
+        "LearningMemory is separate from turn-local observations; only explicit writes "
+        "(/teach, record_human_lesson, upsert_knowledge_facts) persist data."
+    ) == ["learning_memory_only_teach_study"]
+    assert LocalPilotAgent._information_authority_risks(
         "LearningMemory stores separate HumanLesson, knowledge_facts, and self-development cycle records."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "After a candidate PR is merged, GitHub Actions run CI."
+    ) == ["ci_after_human_merge"]
+    assert LocalPilotAgent._information_authority_risks(
+        "GitHub Actions CI passes before the authorized human merge."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "The stable operator and developer operate under the normal safety policy."
+    ) == ["developer_uses_operator_policy"]
+    assert LocalPilotAgent._information_authority_risks(
+        "Normal operator tools use SafetyPolicy; self-development uses bounded research and CandidateTools."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "Candidate code is never executed locally; only the operator's own code runs."
+    ) == ["developer_local_process_erased"]
+    assert LocalPilotAgent._information_authority_risks(
+        "Self-development relies on the same safety boundaries that the operator enforces."
+    ) == ["developer_uses_operator_policy"]
+    assert LocalPilotAgent._information_authority_risks(
+        "Candidate changes are never committed to GitHub until a PR is merged."
+    ) == ["candidate_commit_after_merge"]
+    assert LocalPilotAgent._information_authority_risks(
+        "Candidate commit and push precede PR creation, CI, and human merge."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "Candidate code is prohibited from local execution; only the developer process runs locally."
+    ) == ["stable_operator_local_process_erased"]
+    assert LocalPilotAgent._information_authority_risks(
+        "Both stable operator and developer run locally; candidate code does not."
+    ) == []
+    assert LocalPilotAgent._information_authority_risks(
+        "record_human_lesson is the only place where a human lesson is written, and "
+        "upsert_knowledge_facts is the only place where facts are written."
+    ) == ["exclusive_learning_writer"]
+    assert LocalPilotAgent._information_authority_risks(
+        "The inspected operator path calls record_human_lesson; the inspected StudyEngine path "
+        "calls upsert_knowledge_facts."
     ) == []
     assert LocalPilotAgent._information_authority_risks(
         "Self-development is triggered by the ResourceGovernor; only the stable operator runs locally; "
@@ -472,24 +531,30 @@ def test_operator_information_paths_and_literal_authority_are_explicit():
         "operator_study_retrieval_call",
         "retrieval_bounds",
         "freshness_and_turn_end_scrub",
+        "selfdev_learning_records",
     ]
     assert LocalPilotAgent._information_authority_gaps(
         "search_knowledge_facts selects at most six facts in a 6,000 character turn-local "
-        "block; repository digest checks target live verification and messages are scrubbed after the turn.",
+        "block; repository digest checks target live verification and messages are scrubbed after the turn. "
+        "Self-development cycle records remain separate from knowledge_facts.",
         architecture_prompt,
     ) == []
     appendix = LocalPilotAgent._authority_gap_appendix(
-        ["retrieval_bounds", "freshness_and_turn_end_scrub"]
+        ["retrieval_bounds", "freshness_and_turn_end_scrub", "selfdev_learning_records"]
     )
     assert LocalPilotAgent._information_authority_gaps(appendix, architecture_prompt) == []
     assert LocalPilotAgent._information_authority_gaps(
         "search_knowledge_facts selects six relevant facts under a bounded 6,000 character "
-        "limit; digest checks target verification and messages are removed after the turn.",
+        "limit; digest checks target verification and messages are removed after the turn. "
+        "LearningMemory stores separate cycle, review, and experiment records.",
         architecture_prompt,
     ) == []
     assert LocalPilotAgent._strip_authority_meta(
         "Grounded answer.\n\nAll statements above are directly supported.\n"
         "No additional classes are inferred."
+    ) == "Grounded answer."
+    assert LocalPilotAgent._strip_authority_meta(
+        "Grounded answer.\n\nThis summary reflects only verified evidence."
     ) == "Grounded answer."
 
 

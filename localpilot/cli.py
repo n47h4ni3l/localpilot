@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -276,11 +278,14 @@ def _progress(console: Console):
     return lambda message: console.print(f"[dim]{message}[/dim]")
 
 
-def _console_safe_text(console: Console, value: object) -> str:
-    """Render model text safely through legacy Windows console encodings."""
+def _console_safe_value(value: object, encoding: str | None) -> str:
+    """Normalize text before it crosses a legacy Windows console boundary."""
     text = str(value).replace("\u202f", " ").replace("\u00a0", " ")
-    encoding = getattr(getattr(console, "file", None), "encoding", None) or "utf-8"
+    encoding = encoding or "utf-8"
     if not encoding.lower().replace("_", "-").startswith("utf-"):
+        text = re.sub(r"(?<=\S)\u2014(?=\S)", " - ", text)
+        text = re.sub(r"(?<=\S)\u2014(?=\s)", " -", text)
+        text = re.sub(r"(?<=\s)\u2014(?=\S)", "- ", text)
         text = text.translate(
             str.maketrans(
                 {
@@ -307,6 +312,32 @@ def _console_safe_text(console: Console, value: object) -> str:
     except UnicodeEncodeError:
         return text.encode(encoding, errors="replace").decode(encoding)
     return text
+
+
+def _console_safe_text(console: Console, value: object) -> str:
+    """Render model text safely through the console's configured encoding."""
+    encoding = getattr(getattr(console, "file", None), "encoding", None)
+    return _console_safe_value(value, encoding)
+
+
+class _ConsoleSafeWriter:
+    """Sanitize every Rich write while preserving the underlying stream API."""
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+
+    @property
+    def encoding(self) -> str | None:
+        return getattr(self._stream, "encoding", None)
+
+    def write(self, value: object) -> int:
+        return self._stream.write(_console_safe_value(value, self.encoding))
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
 
 
 def _chat(console: Console, config, root: Path) -> None:
@@ -466,7 +497,7 @@ def main() -> None:
 
     root = _root()
     config = load_config(args.config)
-    console = Console()
+    console = Console(file=_ConsoleSafeWriter(sys.stdout))
     if args.command in {None, "chat"}:
         _chat(console, config, root)
     elif args.command == "doctor":

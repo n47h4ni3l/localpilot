@@ -64,25 +64,32 @@ def get_storage_summary() -> str:
 
 
 def get_top_processes(limit: int = 12) -> str:
-    """Return top processes by sampled CPU and resident memory."""
+    """Return top workloads using Windows Task Manager-style CPU percentages."""
     limit = max(1, min(int(limit), 30))
+    logical_cpus = psutil.cpu_count(logical=True) or 1
     procs = []
     for p in psutil.process_iter(["pid", "name"]):
+        if p.info["pid"] == 0 or str(p.info["name"] or "").casefold() == "system idle process":
+            continue
         try:
             p.cpu_percent(None)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
     time.sleep(0.2)
     for p in psutil.process_iter(["pid", "name", "memory_info"]):
+        if p.info["pid"] == 0 or str(p.info["name"] or "").casefold() == "system idle process":
+            continue
         try:
             mem = p.info["memory_info"].rss if p.info["memory_info"] else 0
             procs.append({
                 "pid": p.info["pid"],
                 "name": p.info["name"],
-                "cpu_percent": round(p.cpu_percent(None), 1),
+                # Process.cpu_percent uses top-style per-core percentages and can
+                # exceed 100. Divide by logical CPUs to match Windows Task Manager.
+                "cpu_percent": round(p.cpu_percent(None) / logical_cpus, 1),
                 "ram_mb": round(mem / 1024**2, 1),
             })
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
     procs.sort(key=lambda row: (row["cpu_percent"], row["ram_mb"]), reverse=True)
     return json.dumps(procs[:limit], indent=2)

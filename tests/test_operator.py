@@ -6,7 +6,11 @@ from localpilot.operator import CommandRunner, CommandSpec, OperationRisk
 class TestOperator(unittest.TestCase):
     def test_shell_metacharacters(self):
         runner = CommandRunner()
-        spec = CommandSpec(argv=['echo', '&&', 'echo', 'second'], risk=OperationRisk.READ_ONLY, timeout=5)
+        spec = CommandSpec(
+            argv=[sys.executable, '-c', 'import sys; print("|".join(sys.argv[1:]))', '&&', 'echo', 'second'],
+            risk=OperationRisk.READ_ONLY,
+            timeout=5,
+        )
         result = runner.run(spec)
         self.assertIn('&&', result['stdout'])
         self.assertIn('second', result['stdout'])
@@ -32,6 +36,10 @@ class TestOperator(unittest.TestCase):
         def approval_callback():
             return True
         runner = CommandRunner(approval_callback)
-        spec = CommandSpec(argv=['echo', 'approved'], risk=OperationRisk.DESTRUCTIVE, timeout=5)
+        spec = CommandSpec(
+            argv=[sys.executable, '-c', 'print("approved")'],
+            risk=OperationRisk.DESTRUCTIVE,
+            timeout=5,
+        )
         result = runner.run(spec)
         self.assertIn('approved', result['stdout'])

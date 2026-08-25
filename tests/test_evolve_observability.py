@@ -65,6 +65,7 @@ def test_status_exposes_current_capability_experiment(tmp_path: Path):
     _show_status(console, config, tmp_path)
 
     rendered = console.export_text()
+    assert "% system-wide" in rendered
     assert "improve_cognition" in rendered
     assert "retrieval quality" in rendered
     assert "Query-aware ranking" in rendered

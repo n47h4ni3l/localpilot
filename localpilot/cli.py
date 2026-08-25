@@ -405,6 +405,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="localpilot")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("chat", help="Start the interactive agent")
+    sub.add_parser("desktop", help="Open the persistent desktop chat UI")
+    sub.add_parser("broker", help="Run the loopback desktop broker in the foreground")
     sub.add_parser("doctor", help="Check prerequisites and GitHub/model readiness")
     sub.add_parser("status", help="Show resource and Git status")
     evolve = sub.add_parser("evolve", help="Run one isolated self-development cycle")
@@ -500,6 +502,14 @@ def main() -> None:
     console = Console(file=_ConsoleSafeWriter(sys.stdout))
     if args.command in {None, "chat"}:
         _chat(console, config, root)
+    elif args.command == "desktop":
+        from localpilot.desktop import main as desktop_main
+
+        desktop_main(root, args.config)
+    elif args.command == "broker":
+        from localpilot.broker import serve
+
+        serve(root, config, config_path=args.config)
     elif args.command == "doctor":
         raise SystemExit(_show_doctor(console, config, root))
     elif args.command == "status":

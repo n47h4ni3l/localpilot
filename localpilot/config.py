@@ -60,6 +60,16 @@ class GitHubConfig:
 
 
 @dataclass(slots=True)
+class DesktopConfig:
+    """Loopback-only desktop chat and broker settings."""
+
+    host: str = "127.0.0.1"
+    port: int = 8765
+    chat_database: str = "chat.sqlite3"
+    runtime_restart_limit: int = 5
+
+
+@dataclass(slots=True)
 class SelfDevConfig:
     enabled: bool = True
     # This is deliberately distinct from model.name. If it is unavailable,
@@ -111,6 +121,7 @@ class Config:
     resource: ResourceConfig = field(default_factory=ResourceConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
+    desktop: DesktopConfig = field(default_factory=DesktopConfig)
     selfdev: SelfDevConfig = field(default_factory=SelfDevConfig)
     source_path: Path | None = None
 
@@ -182,6 +193,7 @@ def load_config(path: str | Path | None = None) -> Config:
         _apply(cfg.resource, raw.get("resource", {}))
         _apply(cfg.safety, raw.get("safety", {}))
         _apply(cfg.github, raw.get("github", {}))
+        _apply(cfg.desktop, raw.get("desktop", {}))
         selfdev_raw = raw.get("selfdev", {})
         _apply(cfg.selfdev, selfdev_raw)
         legacy_limit = selfdev_raw.get("max_files_per_cycle")
@@ -225,4 +237,22 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ValueError("candidate ZIP limits must be positive")
     if cfg.selfdev.candidate_resource_quota_gb <= 0 or cfg.selfdev.max_resource_file_mb < 1:
         raise ValueError("candidate resource limits must be positive")
+    if cfg.desktop.host not in {"127.0.0.1", "localhost"}:
+        raise ValueError("desktop.host must remain loopback-only")
+    cfg.desktop.port = int(cfg.desktop.port)
+    if not 1 <= cfg.desktop.port <= 65535:
+        raise ValueError("desktop.port must be between 1 and 65535")
+    desktop_database = Path(str(cfg.desktop.chat_database).strip())
+    if (
+        not desktop_database.name
+        or desktop_database.is_absolute()
+        or len(desktop_database.parts) != 1
+    ):
+        raise ValueError("desktop.chat_database must be one local filename")
+    if desktop_database.name.casefold() == Path(cfg.selfdev.learning_database).name.casefold():
+        raise ValueError("desktop.chat_database must remain separate from learning_database")
+    cfg.desktop.chat_database = desktop_database.name
+    cfg.desktop.runtime_restart_limit = int(cfg.desktop.runtime_restart_limit)
+    if cfg.desktop.runtime_restart_limit < 1:
+        raise ValueError("desktop.runtime_restart_limit must be positive")
     return cfg

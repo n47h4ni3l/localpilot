@@ -19,3 +19,12 @@ Candidate path rules:
 - stable is never overwritten by the candidate loop.
 
 These are foundations for future full PC autonomy, not a statement that LocalPilot should remain read-only.
+
+Desktop boundary rules:
+
+- the broker accepts only loopback configuration and authenticates API requests with a per-install token under ignored local data;
+- the desktop persists visible user/assistant turns and presentation-safe events in `chat.sqlite3`, never in learning facts;
+- hidden reasoning and raw tool results do not cross the worker protocol;
+- the runtime/PowerShell worker is started with an argument vector, UTF-8 pipes, and `shell=False`;
+- a worker restart cannot merge, promote, or weaken candidate confinement; and
+- the CLI continues to use the same `LocalPilotAgent`, tool registry, and safety policy independently of the GUI.

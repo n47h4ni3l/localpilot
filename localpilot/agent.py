@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from localpilot.audit import AuditLog
 from localpilot.config import Config
@@ -117,7 +117,13 @@ class _RecoverableToolCallProtocolError(RuntimeError):
 
 
 class LocalPilotAgent:
-    def __init__(self, config: Config, project_root: str | Path) -> None:
+    def __init__(
+        self,
+        config: Config,
+        project_root: str | Path,
+        *,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
         self.config = config
         self.project_root = Path(project_root).resolve()
         self.policy = SafetyPolicy(
@@ -132,6 +138,7 @@ class LocalPilotAgent:
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
         self.memory = LearningMemory(self.data_dir / config.selfdev.learning_database)
         self._last_stream_runtime: dict[str, Any] = {}
+        self._event_sink = event_sink
         self._observation_sequence = 0
         teachings = self.memory.human_lessons(config.selfdev.lesson_limit)
         self._loaded_human_lesson_ids = {item.id for item in teachings}
@@ -147,6 +154,19 @@ class LocalPilotAgent:
                 }
             )
         self.governor = ResourceGovernor(config.resource)
+
+    def _emit_event(self, event_type: str, **payload: Any) -> None:
+        """Publish presentation-safe observability without coupling agent logic to a UI."""
+        if self._event_sink is None:
+            return
+        try:
+            self._event_sink({"type": event_type, "payload": payload})
+        except Exception as exc:
+            self.audit.write(
+                "operator_event_sink_failed",
+                event_type=event_type,
+                error_type=type(exc).__name__,
+            )
 
     def teach(self, lesson: str, *, topic: str = "general") -> HumanLesson:
         record = self.memory.record_human_lesson(
@@ -816,6 +836,8 @@ class LocalPilotAgent:
         chunk_count = 0
         terminal: dict[str, Any] = {}
         try:
+            announced_thinking = False
+            announced_speaking = False
             for chunk in chat(**kwargs):
                 chunk_count += 1
                 message = chunk.get("message", {}) if isinstance(chunk, dict) else chunk.message
@@ -829,8 +851,14 @@ class LocalPilotAgent:
                     calls = getattr(message, "tool_calls", None) or []
                 if thinking:
                     thinking_parts.append(thinking)
+                    if not announced_thinking:
+                        self._emit_event("runtime.state", state="thinking", phase=phase)
+                        announced_thinking = True
                 if content:
                     content_parts.append(content)
+                    if not announced_speaking:
+                        self._emit_event("runtime.state", state="speaking", phase=phase)
+                        announced_speaking = True
                 if calls:
                     tool_calls.extend(calls)
                 for field in _STREAM_RUNTIME_FIELDS:
@@ -876,6 +904,12 @@ class LocalPilotAgent:
             result["thinking"] = "".join(thinking_parts)
         if tool_calls:
             result["tool_calls"] = tool_calls
+            self._emit_event(
+                "tool.requested",
+                tools=[self._tool_call_parts(call)[0] for call in tool_calls],
+                phase=phase,
+                turn=turn_no,
+            )
 
         prompt_eval_count = _int_or_none(terminal.get("prompt_eval_count"))
         eval_count = _int_or_none(terminal.get("eval_count"))
@@ -1560,6 +1594,7 @@ class LocalPilotAgent:
         except ImportError as exc:
             raise RuntimeError("Ollama Python package is not installed. Run scripts/bootstrap.ps1.") from exc
 
+        self._emit_event("runtime.state", state="thinking", phase="operator")
         learning_context, retrieved_facts = self._learning_context(prompt)
         owner_forbids_tools = bool(
             re.search(r"\bwithout (?:using )?(?:any )?tools\b", prompt, re.IGNORECASE)
@@ -1656,6 +1691,14 @@ class LocalPilotAgent:
                 permitted=True,
                 memory_guided_verification=True,
             )
+            self._emit_event(
+                "tool.started",
+                tool=name,
+                round=-1,
+                evidence_source="trusted repository",
+                memory_guided_verification=True,
+            )
+            self._emit_event("runtime.state", state="working", tool=name)
             try:
                 raw_result = spec.fn(**args)
             except Exception as exc:
@@ -1698,6 +1741,14 @@ class LocalPilotAgent:
                 cache_hit=False,
                 observation_id=observation.observation_id,
                 result_id=observation.result_id,
+                memory_guided_verification=True,
+            )
+            self._emit_event(
+                "tool.completed",
+                tool=name,
+                round=-1,
+                ok=ok,
+                evidence_source="trusted repository",
                 memory_guided_verification=True,
             )
         if learning_verification_messages:
@@ -2028,6 +2079,16 @@ class LocalPilotAgent:
                             permitted=permitted,
                             cache_hit=cache_hit,
                         )
+                        self._emit_event(
+                            "tool.started",
+                            tool=name,
+                            round=turn_no,
+                            evidence_source=evidence_source,
+                            registered=spec is not None,
+                            permitted=permitted,
+                            cache_hit=cache_hit,
+                        )
+                        self._emit_event("runtime.state", state="working", tool=name)
 
                         if cache_hit:
                             _, ok, cached_source, observation = observation_cache[cache_key]
@@ -2090,6 +2151,14 @@ class LocalPilotAgent:
                             cache_hit=cache_hit,
                             observation_id=observation.observation_id,
                             result_id=observation.result_id,
+                        )
+                        self._emit_event(
+                            "tool.completed",
+                            tool=name,
+                            round=turn_no,
+                            ok=ok,
+                            evidence_source=evidence_source,
+                            cache_hit=cache_hit,
                         )
                         self.messages.append({"role": "tool", "tool_name": name, "content": str(result)})
 
@@ -2339,3 +2408,4 @@ class LocalPilotAgent:
                 notebook_entries_retained=0,
             )
             self._scrub_reasoning()
+            self._emit_event("runtime.state", state="idle", phase="operator")

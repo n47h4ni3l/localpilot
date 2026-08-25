@@ -37,6 +37,14 @@ remote = "origin"
 main_branch = "main"
 auto_push_candidates = true
 
+[desktop]
+# The broker intentionally refuses non-loopback hosts. The desktop window and
+# replaceable runtime communicate only through this stable local boundary.
+host = "127.0.0.1"
+port = 8765
+chat_database = "chat.sqlite3"
+runtime_restart_limit = 5
+
 [selfdev]
 enabled = true
 # Used only for research/implementation cycles when installed. Otherwise the

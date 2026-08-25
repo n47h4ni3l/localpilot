@@ -8,6 +8,28 @@ LocalPilot has three isolated roles and two model responsibilities:
 
 Stable is never rewritten in place, candidate code is not executed locally by the autonomous loop, and there is no automatic promotion path.
 
+## Persistent desktop boundary
+
+The desktop path adds presentation and continuity around the stable operator; it does not add another agent implementation:
+
+```text
+Tkinter desktop UI ↔ authenticated loopback broker ↔ supervised runtime worker ↔ LocalPilotAgent ↔ Ollama/tools/PowerShell
+                             ↕
+                  chat.sqlite3 history/events
+```
+
+The desktop window performs presentation, Unicode rendering, session selection, long-poll reconnection and pixel-avatar state changes only. The broker binds only to the configured loopback host, requires a per-install bearer token, owns persistent visible chat records, and stores replayable structured events. It launches the runtime with an argument vector, UTF-8 pipes and `shell=False`. If that child exits, in-flight output becomes a visible failed message, the broker records a restarting state, and a fresh worker is started within a bounded retry policy. The UI stays connected to the broker throughout.
+
+The replaceable worker is a thin JSONL adapter around `LocalPilotAgent`. It does not duplicate prompts, safety policy, tool registration, learning retrieval, auditing, or answer logic. PowerShell-backed observation tools continue to execute under that worker, and the original `localpilot chat` path continues to construct the same agent directly.
+
+Three continuity contracts are deliberately separate:
+
+1. **UI continuity** — the window and broker-owned visible history survive operator-worker restarts.
+2. **Conversation/session continuity** — a fresh worker reconstructs a session from completed visible user/assistant turns. Tool results and hidden reasoning remain transient and are not reconstructed.
+3. **Durable learning continuity** — `LearningMemory`, human teachings, study facts and self-development evidence keep their existing schemas and authority rules. `chat.sqlite3` is a separate store and never writes `knowledge_facts`.
+
+Assistant deltas, tool start/completion, runtime state, restart, success and error events are structured JSON records. Only presentation-safe metadata crosses this boundary; hidden reasoning and raw tool results are excluded.
+
 ## Stable-operator research context
 
 Operator research keeps the owner's request, streamed same-model reasoning, assistant tool calls, and complete raw tool results in one live context through final synthesis. Raw results receive current-turn `obs-NNN` and `result-NNN` identifiers. They are never replaced by a bounded ledger or fresh summary context.
@@ -114,6 +136,8 @@ The schema deliberately has no prompts, transcripts, messages, thinking, or chai
 The existing `ResourceGovernor` remains in charge of self-development eligibility. LocalPilot checks user idle time, CPU, and memory before the cycle and between every model/tool round, lowering its own Windows priority and pausing promptly when the owner returns.
 
 All Git/GitHub/static-check process calls use argument arrays with `shell=False`. Full executable tests remain in GitHub Actions. Stable, developer, and candidate boundaries do not depend on model cooperation: the tool surface enforces them.
+
+The desktop broker applies the same process rule to its runtime worker. It owns child lifetime and bounded restart, while the worker owns Ollama plus any PowerShell-backed operator tools. The broker never gains candidate promotion or merge authority.
 
 
 

@@ -55,6 +55,7 @@ Together these principles imply broad freedom to think and narrow, reviewable au
 - A loopback broker that stays independent of the replaceable operator/PowerShell worker while the CLI remains available as a fallback.
 - Same-context, bounded research in which complete raw tool results remain authoritative.
 - Read-only Windows observation tools for processes, disks, startup entries, power, Defender, and device problems.
+- A complete allow-listed reversible action set for opening selected Windows apps/Settings pages and transactionally changing an installed built-in power plan with verified one-use rollback.
 - Durable owner lessons and a staged study system for repository, Qwen/Ollama, and Python knowledge.
 - Bounded retrieval of relevant study facts into fresh operator turns, including provenance, confidence, verification time, source digest, and staleness.
 - Real TOML configuration, resource gating, process-priority control, and redacted JSONL audit logging.
@@ -69,7 +70,7 @@ LocalPilot does not have a cloud-model or pricing subsystem. GitHub is used for 
 
 ## What does not exist today
 
-LocalPilot does not autonomously merge or promote its own code, execute untrusted candidate code on the owner's PC, control arbitrary desktop applications, or have unrestricted command execution. It does not rewrite its model weights when it studies. A passing test suite or successful benchmark is evidence for a particular claim, not proof of general intelligence.
+LocalPilot does not autonomously merge or promote its own code, execute untrusted candidate code on the owner's PC, control arbitrary desktop applications, terminate processes, or have unrestricted command execution. It does not rewrite its model weights when it studies. A passing test suite or successful benchmark is evidence for a particular claim, not proof of general intelligence.
 
 ## Information authority
 
@@ -354,6 +355,7 @@ localpilot/
   study.py                 staged study curriculum and held-out comparison
   research.py              bounded research and raw-evidence handling
   tools/windows.py         read-only Windows observation tools
+  tools/windows_actions.py allow-listed reversible Windows UI/power actions
   operator.py              guarded argument-based command foundation
   selfdev.py               discovery, candidate, repair, and delivery loop
   evolution.py             proposals, scoring, and evidence gates
@@ -401,7 +403,7 @@ Open a focused branch and PR. Include the observed limitation, alternatives cons
 
 ## Known limitations and open questions
 
-- The stable PC tool registry is observation-only. A guarded command foundation exists, but broad reversible Windows actions are not wired into the operator.
+- Stable PC actions are intentionally narrow: four allow-listed app launches, five Settings destinations, and three installed built-in power-plan targets. There is no arbitrary command, path, PID-termination, or generic settings mutation tool.
 - The project is Windows-first; idle detection, process priorities, scheduling, and CI contracts are Windows-specific.
 - Autonomous candidates are not locally sandboxed strongly enough to execute. GitHub Actions therefore provides the executable evaluation boundary, adding latency and an external-service dependency.
 - The resource model uses system CPU and memory plus Ollama model-size estimates. It does not deeply model GPU pressure, foreground applications, thermal state, power cost, or inference-quality trade-offs.

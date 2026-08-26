@@ -22,8 +22,9 @@ class ToolSpec:
 class SafetyPolicy:
     """Policy scaffold for PC-control tools.
 
-    v0.1 ships only read-only PC tools. Self-development writes are separately
-    sandboxed to candidate workspaces and therefore do not use this policy.
+    Stable tools include observations and a narrow reversible allow-list.
+    Self-development writes are separately sandboxed to candidate workspaces
+    and therefore do not use this policy.
     """
 
     def __init__(

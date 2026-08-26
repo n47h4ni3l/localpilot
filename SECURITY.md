@@ -2,7 +2,21 @@
 
 LocalPilot is a private personal agent, but broad PC access still needs engineering boundaries so a model mistake does not damage the workstation.
 
-v0.1 deliberately keeps **PC system tools read-only** while allowing the developer instance to modify **candidate source code only**.
+PC observation remains read-only. Stable operator mutation is limited to a small explicit
+**reversible action allow-list**, while the developer instance may still modify **candidate source code
+only**.
+
+Stable operator action rules:
+
+- no arbitrary executable, argument, filesystem path, PID, URI, power GUID, or shell command is accepted;
+- app launches and Settings destinations come from fixed typed allow-lists and are reversed by closing the visible window;
+- Settings tools open a page but never change a setting;
+- a power-plan target must be one of three Microsoft built-in GUIDs and must already appear in `powercfg /LIST`;
+- a power change records the exact prior active GUID, verifies the new active GUID, and returns a random one-use in-session rollback token that is redacted from durable audit previews;
+- rollback refuses a stale token when the active plan changed independently, verifies that the prior plan remains installed, and verifies restoration;
+- failed post-change verification triggers a bounded automatic restoration attempt and reports separately if restoration cannot be verified;
+- every process uses argv with `shell=False`, a bounded timeout, and a presentation-safe audit event; and
+- `SafetyPolicy.auto_allow_reversible` gates model visibility. No destructive operator action is registered.
 
 Candidate path rules:
 
@@ -19,7 +33,7 @@ Candidate path rules:
 - full executable tests run in GitHub Actions, with checkout credentials not persisted and repository permissions limited to read;
 - stable is never overwritten by the candidate loop.
 
-These are foundations for future full PC autonomy, not a statement that LocalPilot should remain read-only.
+These are foundations for bounded PC autonomy, not authority for arbitrary or destructive control.
 
 Desktop boundary rules:
 

@@ -13,6 +13,7 @@ Candidate path rules:
 - directories are free inside the isolated candidate; file complexity is reported above 100 files and the configurable 500-file hard ceiling remains enforced;
 - ZIP creation accepts only bounded in-candidate/resource-store inputs and produces normalized non-absolute members without `..`; archives are never extracted or executed;
 - public-HTTPS resources stream through the resource governor into quota-bound storage outside the repository, retain hash/source/task provenance, and block obvious executables/installers;
+- before implementation, a read-only generated claim manifest must resolve against the live candidate tree's paths, AST symbols, configuration fields, existing tests, integration points, and direct call relationships; a malformed or contradicted plan is audited and rejected before write-capable tools are exposed;
 - autonomous local validation compiles/parses candidate source without importing or executing it;
 - `.github/` is protected from autonomous editing so the candidate cannot rewrite its own CI sandbox;
 - full executable tests run in GitHub Actions, with checkout credentials not persisted and repository permissions limited to read;

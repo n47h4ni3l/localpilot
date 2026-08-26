@@ -83,6 +83,7 @@ class GroundingIssue:
 class GroundingReport:
     grounded: bool
     issues: tuple[GroundingIssue, ...]
+    evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,62 +235,255 @@ def benchmark_question_ids(stage: str) -> tuple[str, ...]:
 
 
 class RepositoryGroundingValidator:
-    """Validate explicit candidate claims against the durable self-model."""
+    """Validate explicit candidate claims against durable or live repository truth."""
 
-    def __init__(self, memory: LearningMemory) -> None:
+    def __init__(
+        self,
+        memory: LearningMemory | None = None,
+        *,
+        root: str | Path | None = None,
+    ) -> None:
+        if memory is None and root is None:
+            raise ValueError("Grounding validation requires memory or a repository root.")
         self.memory = memory
+        self.root = Path(root).resolve() if root is not None else None
+
+    def _memory_index(self) -> dict[str, set[str]]:
+        if self.memory is None:
+            raise ValueError("Durable grounding facts are unavailable.")
+        facts = self.memory.knowledge_facts(stage="self")
+        return {
+            "symbols": {fact.subject for fact in facts if fact.fact_type == "symbol"},
+            "configs": {fact.subject for fact in facts if fact.fact_type == "config_field"},
+            "paths": {
+                fact.subject for fact in facts if fact.fact_type in {"file", "script"}
+            },
+            "tests": {
+                fact.subject for fact in facts if fact.fact_type == "test_contract"
+            },
+            "relationships": {
+                fact.subject for fact in facts if fact.fact_type == "call_relationship"
+            },
+            "subsystem_tokens": {
+                token
+                for fact in facts
+                if fact.fact_type in {"owner", "file", "symbol"}
+                for token in fact.subject.lower().replace(":", ".").split(".")
+                if len(token) > 3
+            },
+            "parse_errors": set(),
+        }
+
+    def _live_index(self) -> dict[str, set[str]]:
+        if self.root is None or not self.root.is_dir():
+            raise OSError("Repository root is unavailable.")
+        paths: set[str] = set()
+        symbols: set[str] = set()
+        configs: set[str] = set()
+        tests: set[str] = set()
+        relationships: set[str] = set()
+        parse_errors: set[str] = set()
+        subsystem_tokens: set[str] = set()
+        config_sections = {
+            "AgentConfig": "agent",
+            "ModelConfig": "model",
+            "ResourceConfig": "resource",
+            "SafetyConfig": "safety",
+            "GitHubConfig": "github",
+            "SelfDevConfig": "selfdev",
+            "DesktopConfig": "desktop",
+        }
+
+        files = sorted(
+            path
+            for path in self.root.rglob("*")
+            if path.is_file()
+            and not any(
+                part in _IGNORED_PARTS
+                for part in path.relative_to(self.root).parts
+            )
+        )
+        for path in files:
+            relative = path.relative_to(self.root).as_posix()
+            paths.add(relative)
+            subsystem_tokens.update(
+                token
+                for token in relative.lower().replace("/", ".").split(".")
+                if len(token) > 3
+            )
+            if path.suffix.lower() != ".py":
+                continue
+            try:
+                tree = ast.parse(
+                    path.read_text(encoding="utf-8", errors="replace"),
+                    filename=relative,
+                )
+            except (OSError, SyntaxError):
+                parse_errors.add(relative)
+                continue
+            module = _module_name(self.root, path)
+
+            def index_function(node: ast.FunctionDef | ast.AsyncFunctionDef, owner: str = "") -> None:
+                qualified_name = f"{owner}.{node.name}" if owner else node.name
+                subject = f"{module}:{qualified_name}"
+                symbols.add(subject)
+                subsystem_tokens.add(node.name.lower())
+                if node.name.startswith("test_"):
+                    tests.update((node.name, subject))
+                for call in (
+                    item for item in ast.walk(node) if isinstance(item, ast.Call)
+                ):
+                    called = StudyEngine._call_name(call.func)
+                    if called:
+                        relationships.add(f"{subject}->{called}")
+
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    index_function(node)
+                elif isinstance(node, ast.ClassDef):
+                    subject = f"{module}:{node.name}"
+                    symbols.add(subject)
+                    subsystem_tokens.add(node.name.lower())
+                    for child in node.body:
+                        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            index_function(child, node.name)
+                    section = config_sections.get(node.name)
+                    if section:
+                        for child in node.body:
+                            if isinstance(child, ast.AnnAssign) and isinstance(
+                                child.target, ast.Name
+                            ):
+                                configs.add(f"{section}.{child.target.id}")
+
+        return {
+            "symbols": symbols,
+            "configs": configs,
+            "paths": paths,
+            "tests": tests,
+            "relationships": relationships,
+            "subsystem_tokens": subsystem_tokens,
+            "parse_errors": parse_errors,
+        }
+
+    @staticmethod
+    def _claims(
+        plan: dict[str, Any],
+        name: str,
+        issues: list[GroundingIssue],
+    ) -> tuple[Any, ...]:
+        value = plan.get(name, ())
+        if not isinstance(value, (list, tuple)):
+            issues.append(
+                GroundingIssue("malformed_grounding_plan", f"{name} must be a list.")
+            )
+            return ()
+        return tuple(value)
 
     def validate(self, plan: dict[str, Any]) -> GroundingReport:
-        facts = self.memory.knowledge_facts(stage="self")
-        symbols = {fact.subject for fact in facts if fact.fact_type == "symbol"}
-        configs = {fact.subject for fact in facts if fact.fact_type == "config_field"}
-        paths = {fact.subject for fact in facts if fact.fact_type in {"file", "script"}}
-        tests = {fact.subject for fact in facts if fact.fact_type == "test_contract"}
-        relationships = {
-            fact.subject for fact in facts if fact.fact_type == "call_relationship"
-        }
-        subsystem_tokens = {
-            token
-            for fact in facts
-            if fact.fact_type in {"owner", "file", "symbol"}
-            for token in fact.subject.lower().replace(":", ".").split(".")
-            if len(token) > 3
-        }
         issues: list[GroundingIssue] = []
+        evidence: list[str] = []
+        if not isinstance(plan, dict):
+            return GroundingReport(
+                False,
+                (GroundingIssue("malformed_grounding_plan", "Plan must be an object."),),
+            )
+        try:
+            index = self._live_index() if self.root is not None else self._memory_index()
+        except (OSError, ValueError) as exc:
+            return GroundingReport(
+                False,
+                (GroundingIssue("ground_truth_unavailable", str(exc)),),
+            )
 
-        for symbol in plan.get("referenced_symbols", ()):
+        symbols = index["symbols"]
+        configs = index["configs"]
+        paths = index["paths"]
+        tests = index["tests"]
+        relationships = index["relationships"]
+        subsystem_tokens = index["subsystem_tokens"]
+        parse_errors = index["parse_errors"]
+        referenced_symbols = self._claims(plan, "referenced_symbols", issues)
+        referenced_configs = self._claims(plan, "referenced_config_fields", issues)
+        referenced_paths = self._claims(plan, "referenced_paths", issues)
+        required_tests = self._claims(plan, "required_test_contracts", issues)
+        integration_points = self._claims(plan, "integration_points", issues)
+        expected_relationships = self._claims(
+            plan, "expected_call_relationships", issues
+        )
+        planned_subsystems = self._claims(plan, "planned_subsystems", issues)
+        new_runtime_paths = self._claims(plan, "new_runtime_paths", issues)
+
+        if not referenced_paths:
+            issues.append(
+                GroundingIssue(
+                    "insufficient_grounding_evidence",
+                    "At least one existing repository path must anchor the plan.",
+                )
+            )
+        if not any(
+            (referenced_symbols, referenced_configs, required_tests, integration_points)
+        ):
+            issues.append(
+                GroundingIssue(
+                    "insufficient_grounding_evidence",
+                    "The plan must anchor at least one symbol, config field, test, or integration point.",
+                )
+            )
+
+        for symbol in referenced_symbols:
             if str(symbol) not in symbols:
                 issues.append(GroundingIssue("nonexistent_api", str(symbol)))
-        for field in plan.get("referenced_config_fields", ()):
+            else:
+                evidence.append(f"symbol:{symbol}")
+        for field in referenced_configs:
             if str(field) not in configs:
                 issues.append(GroundingIssue("nonexistent_config_field", str(field)))
-        for path in plan.get("referenced_paths", ()):
+            else:
+                evidence.append(f"config:{field}")
+        for path in referenced_paths:
             normalized = Path(str(path)).as_posix()
             if normalized not in paths:
                 issues.append(GroundingIssue("missing_file_or_command", normalized))
-        for contract in plan.get("required_test_contracts", ()):
+            elif normalized in parse_errors:
+                issues.append(GroundingIssue("unparseable_repository_source", normalized))
+            else:
+                evidence.append(f"path:{normalized}")
+        for contract in required_tests:
             if str(contract) not in tests:
                 issues.append(GroundingIssue("missing_test_contract", str(contract)))
-        for point in plan.get("integration_points", ()):
+            else:
+                evidence.append(f"test:{contract}")
+        for point in integration_points:
             if str(point) not in symbols:
                 issues.append(GroundingIssue("wrong_integration_point", str(point)))
-        for edge in plan.get("expected_call_relationships", ()):
+            else:
+                evidence.append(f"integration:{point}")
+        for edge in expected_relationships:
             if isinstance(edge, (list, tuple)) and len(edge) == 2:
                 subject = f"{edge[0]}->{edge[1]}"
                 if subject not in relationships:
                     issues.append(GroundingIssue("call_graph_mismatch", subject))
-        for name in plan.get("planned_subsystems", ()):
+                else:
+                    evidence.append(f"call:{subject}")
+            else:
+                issues.append(
+                    GroundingIssue(
+                        "malformed_grounding_plan",
+                        "Each expected_call_relationships item must contain caller and callee.",
+                    )
+                )
+        for name in planned_subsystems:
             token = str(name).strip().lower().replace(" ", "_")
             if token and token in subsystem_tokens:
                 issues.append(GroundingIssue("duplicate_existing_subsystem", str(name)))
-        if plan.get("new_runtime_paths") and not plan.get("integration_points"):
+        if new_runtime_paths and not integration_points:
             issues.append(
                 GroundingIssue(
                     "disconnected_code",
                     "New runtime code has no verified integration point.",
                 )
             )
-        return GroundingReport(not issues, tuple(issues))
+        return GroundingReport(not issues, tuple(issues), tuple(evidence[:50]))
 
 
 class StudyEngine:
@@ -797,6 +991,7 @@ class StudyEngine:
                 "SafetyConfig": "safety",
                 "GitHubConfig": "github",
                 "SelfDevConfig": "selfdev",
+                "DesktopConfig": "desktop",
             }
             for node in tree.body:
                 if isinstance(node, ast.ClassDef) and node.name in section_names:

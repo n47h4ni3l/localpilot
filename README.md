@@ -128,12 +128,13 @@ An idle evolution cycle can:
 4. identify a limiting capability and state a falsifiable hypothesis;
 5. research before implementation;
 6. create one isolated candidate workspace;
-7. let the developer model edit only through bounded candidate tools;
-8. run static local validation that does not execute untrusted candidate code;
-9. commit and push the candidate branch;
-10. open a focused pull request;
-11. rely on GitHub Actions for executable tests; and
-12. wait for human review and merge.
+7. generate a structured change-plan manifest with read-only tools and verify every claimed repository path, symbol, config field, existing test, integration point, and call relationship against the live candidate tree;
+8. expose bounded candidate write tools only after that grounding gate passes;
+9. run static local validation that does not execute untrusted candidate code;
+10. commit and push the candidate branch;
+11. open a focused pull request;
+12. rely on GitHub Actions for executable tests; and
+13. wait for human review and merge.
 
 The mission is stable while the capability frontier moves:
 

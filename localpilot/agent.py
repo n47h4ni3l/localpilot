@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from localpilot.audit import AuditLog
+from localpilot.authority import InformationAuthorityReport, InformationAuthorityVerifier
 from localpilot.config import Config
 from localpilot.learning import HumanLesson, KnowledgeFact, LearningMemory
 from localpilot.research import (
@@ -163,6 +164,10 @@ class LocalPilotAgent:
         self.data_dir = (self.project_root / config.agent.data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
+        self.information_authority = InformationAuthorityVerifier(self.project_root)
+        self._last_information_authority_report = InformationAuthorityReport(
+            True, (), (), (), 0
+        )
         embedding_provider = (
             _ollama_memory_embedder(
                 config.model.memory_embedding_model,
@@ -311,6 +316,36 @@ class LocalPilotAgent:
         if asks_for_evidence and pc_specific:
             requirements.add("Windows/PC state")
         return requirements
+
+    @staticmethod
+    def _requires_information_authority_review(prompt: str) -> bool:
+        """Limit the extra review pass to LocalPilot's own current architecture."""
+        text = " ".join(str(prompt).lower().split())
+        if "localpilot" not in text:
+            return False
+        return any(
+            term in text
+            for term in (
+                "architecture",
+                "module",
+                "class",
+                "function",
+                "dependency",
+                "configuration",
+                "config",
+                "integration",
+                "learning",
+                "memory",
+                "study",
+                "self-development",
+                "candidate",
+                "promotion",
+                "merge",
+                "safety",
+                "github actions",
+                "ci",
+            )
+        )
 
     @staticmethod
     def _tool_evidence_source(name: str) -> str | None:
@@ -694,6 +729,21 @@ class LocalPilotAgent:
             for name, expressions in patterns.items()
             if any(re.search(expression, risk_text) for expression in expressions)
         ]
+
+    def _structured_information_authority_risks(self, content: str) -> list[str]:
+        """Cross-check claim classes against live repository evidence."""
+        report = self.information_authority.review(content)
+        self._last_information_authority_report = report
+        self.audit.write(
+            "model_information_authority_crosscheck",
+            accepted=report.accepted,
+            claim_classes=list(report.claim_classes),
+            issue_codes=[issue.code for issue in report.issues],
+            evidence=list(report.evidence[:20]),
+            evidence_count=len(report.evidence),
+            repository_scan_ms=report.repository_scan_ms,
+        )
+        return list(dict.fromkeys(issue.code for issue in report.issues))
 
     @staticmethod
     def _information_authority_gaps(content: str, prompt: str) -> list[str]:
@@ -1168,29 +1218,13 @@ class LocalPilotAgent:
                             "The preceding text is an untrusted draft, not evidence. Perform one strict authority "
                             "review against the original request, bounded learned priors, and complete raw tool "
                             "results still present in this same context. Return the corrected final answer only. "
-                            "Delete every claim whose exact literal or relationship is not established. In "
-                            "particular, a visible record_human_lesson call establishes an explicit teaching path, "
-                            "not automatic learning after each interaction; ordinary operator observations do not "
-                            "flow into durable memory; self-development cycle records are not knowledge_facts; "
-                            "the operator loop never calls upsert_knowledge_facts because the separate StudyEngine "
-                            "owns that staged-study write; record_human_lesson creates a separate HumanLesson, "
-                            "not a knowledge_fact; sharing LearningMemory does not connect those paths; and LocalPilot has no merge or "
-                            "promotion method. Label non-live-checked external learned facts as retained "
-                            "source-linked priors, never as live verification. Do not use blanket claims that all "
-                            "statements are verified, do not say /teach records observations, do not say the normal "
-                            "operator SafetyPolicy governs candidate or all tool paths, do not claim LearningMemory "
-                            "is written or updated only by /teach and study while omitting separate self-development records, "
-                            "do not put GitHub Actions CI after the human merge, and do not place the developer "
-                            "under the normal operator SafetyPolicy, do not say only operator code runs locally, "
-                            "do not say the operator records study knowledge facts, and do not merge operator and "
-                            "CandidateTools safety boundaries, "
-                            "do not put candidate commit or push after human merge, and do not say only the "
-                            "developer runs locally, "
-                            "do not call a scoped record_human_lesson or upsert_knowledge_facts search result the "
-                            "repository-wide only place or exclusive writer, "
-                            "do not say live verification happens only on digest mismatch, "
-                            "and do not end with a test-checklist or validator-facing remark. Preserve exact source literals such as function names and "
-                            "exception behavior, distinguish what is unresolved, and do not request tools."
+                            "Delete every current repository claim whose path, config field, symbol, direct call "
+                            "relationship, information flow, authority boundary, or lifecycle ordering is not "
+                            "established by that evidence. Exact repository literals must remain exact. A shared "
+                            "database or adjacent component is not evidence of a data flow, and CI evidence is not "
+                            "merge authority. Live raw evidence controls retained memory. Mark unresolved claims "
+                            "as unresolved, distinguish proposals from current behavior, do not request tools, and "
+                            "do not add validator-facing boilerplate."
                         ),
                     }
                     self.messages.append(review_instruction)
@@ -1230,7 +1264,7 @@ class LocalPilotAgent:
                         and not self._looks_like_generic_reset(reviewed_content)
                     ):
                         content = reviewed_content
-                    risks = self._information_authority_risks(content)
+                    risks = self._structured_information_authority_risks(content)
                     gaps = self._information_authority_gaps(content, prompt)
                     if gaps and not risks:
                         appendix = self._authority_gap_appendix(gaps)
@@ -1256,6 +1290,10 @@ class LocalPilotAgent:
                                 content = augmented
                                 gaps = []
                     if risks or gaps:
+                        authority_issue_details = "; ".join(
+                            f"{issue.code} [{issue.claim_class}]: {issue.detail}"
+                            for issue in self._last_information_authority_report.issues
+                        )
                         risky_draft = {"role": "assistant", "content": content}
                         self.messages.append(risky_draft)
                         transient.append(risky_draft)
@@ -1263,37 +1301,14 @@ class LocalPilotAgent:
                             "role": "user",
                             "content": (
                                 "The authority postcondition rejected the preceding draft for these unsupported "
-                                f"flow patterns: {', '.join(risks) or '(none)'}. It also found these required "
-                                f"coverage gaps: {', '.join(gaps) or '(none)'}. Correct them now and return only the final "
-                                "answer. The exact boundary is: ordinary operator observations remain turn-local; "
-                                "/teach alone records a separate HumanLesson through the operator, not a "
-                                "knowledge_fact; the separate StudyEngine "
-                                "alone writes staged knowledge_facts through upsert_knowledge_facts; self-development "
-                                "cycle records do not automatically become operator knowledge; CommandRunner is not "
-                                "the wrapper for every tool; GitHub Actions does not merge; LocalPilot has no merge "
-                                "or promotion method. The scheduler invokes self-development while ResourceGovernor "
-                                "only gates eligibility. The developer is also a local process; only candidate code "
-                                "is prohibited from local autonomous execution. Reconciliation preserves candidate "
-                                "branch and GitHub history rather than clearing or deleting it. /teach records owner "
-                                "lesson text, not operator observations. Normal operator tools use SafetyPolicy; "
-                                "CandidateTools enforce separate candidate confinement. LearningMemory also stores "
-                                "separate self-development cycle, review, and experiment records; those are not "
-                                "knowledge_facts. GitHub Actions CI precedes the authorized human merge. The normal "
-                                "operator registry uses SafetyPolicy; self-development uses its bounded research and "
-                                "CandidateTools surfaces. The developer is also a local process, but candidate code "
-                                "is not executed locally. The operator never writes staged knowledge facts. "
-                                "Candidate commit and push precede PR, GitHub Actions CI, and authorized human merge. "
-                                "Both the stable operator and developer are local stable-code processes; candidate code is not. "
-                                "Describe record_human_lesson and upsert_knowledge_facts only as the inspected call paths, "
-                                "not repository-wide exclusive writers. "
-                                "Do not request tools or repeat a rejected claim. For an operator-learning architecture request, explicitly "
-                                "state that search_knowledge_facts selects at most six facts in a 6,000-character "
-                                "turn-local block; a digest match establishes unchanged studied source bytes; stale "
-                                "or mismatched facts require targeted live verification; explicit current-state "
-                                "requests may also justify a narrow live check; "
-                                "and retrieval/verification messages are scrubbed after the turn. For an Ollama "
-                                "streaming request, preserve the exact verified dependency, helper, call, chunk-field "
-                                "and protocol-error literals from raw evidence."
+                                f"claim classes: {', '.join(risks) or '(none)'}. Structured evidence: "
+                                f"{authority_issue_details or '(no claim issue)'}. Required coverage gaps: "
+                                f"{', '.join(gaps) or '(none)'}. Correct them now and return only the final answer. "
+                                "Remove or label unresolved every rejected current-state claim; do not merely change "
+                                "its phrasing. Preserve claims that are established by complete raw results or live "
+                                "repository evidence. Keep operator observations, owner lessons, staged-study facts, "
+                                "self-development records, normal operator safety, candidate confinement, CI, and "
+                                "human promotion as distinct paths. Do not request tools or mention this review."
                             ),
                         }
                         self.messages.append(correction_instruction)
@@ -1306,7 +1321,9 @@ class LocalPilotAgent:
                             turn_no=round_no,
                         )
                         corrected_content = str(corrected.get("content") or "")
-                        corrected_risks = self._information_authority_risks(corrected_content)
+                        corrected_risks = self._structured_information_authority_risks(
+                            corrected_content
+                        )
                         corrected_gaps = self._information_authority_gaps(
                             corrected_content, prompt
                         )
@@ -1320,6 +1337,10 @@ class LocalPilotAgent:
                         )
                         correction_attempts = 1
                         if not accepted_correction and corrected_content.strip():
+                            corrected_issue_details = "; ".join(
+                                f"{issue.code} [{issue.claim_class}]: {issue.detail}"
+                                for issue in self._last_information_authority_report.issues
+                            )
                             second_draft = {
                                 "role": "assistant",
                                 "content": corrected_content,
@@ -1330,29 +1351,13 @@ class LocalPilotAgent:
                                 "role": "user",
                                 "content": (
                                     "One final authority postcondition remains. Return the corrected final answer "
-                                    "only. Remove every mention of CommandRunner if command_runner_wraps_all_tools "
-                                    "is listed. Remove every positive claim that GitHub Actions merges or promotes. "
-                                    "State that the scheduler invokes self-development and ResourceGovernor only "
-                                    "gates eligibility. State that candidate branch/GitHub history is preserved. "
-                                    "State that record_human_lesson creates a separate HumanLesson, not a "
-                                    "knowledge_fact. Never say verification happens only on digest mismatch. "
-                                    "Never say /teach records observations or that the operator SafetyPolicy governs "
-                                    "all tool paths; CandidateTools enforce separate candidate confinement. "
-                                    "Never say LearningMemory is written or updated only by /teach and study: self-development "
-                                    "also writes its separate cycle, review, and experiment records. "
-                                    "State that GitHub Actions CI precedes human merge. Never put the developer under "
-                                    "the normal operator SafetyPolicy; self-development uses bounded research and "
-                                    "CandidateTools surfaces. The developer is a local process; never say only "
-                                    "operator code runs. The operator never writes staged knowledge facts. "
-                                    "Candidate commit and push precede PR, CI, and human merge. Both stable operator "
-                                    "and developer run locally; only candidate code is prohibited. "
-                                    "Never call the inspected lesson/fact call sites repository-wide exclusive writers. "
-                                    "Retain every required coverage item already supplied by the preceding "
-                                    "correction, including search_knowledge_facts, at most six facts, the 6,000 "
-                                    "character limit, digest freshness/targeted verification, and turn-end scrubbing. "
-                                    f"Remaining risks: {', '.join(corrected_risks) or '(none)'}. Remaining gaps: "
-                                    f"{', '.join(corrected_gaps) or '(none)'}. Do not request tools and do not "
-                                    "mention this postcondition, checklist, rejected draft, or validation process."
+                                    "only. Remove or explicitly mark unresolved every current repository literal, "
+                                    "relationship, information flow, authority assignment, or lifecycle order listed "
+                                    "below; a paraphrase of the same claim is not a correction. Preserve established "
+                                    "coverage and exact literals from live evidence. "
+                                    f"Remaining claim issues: {corrected_issue_details or ', '.join(corrected_risks) or '(none)'}. "
+                                    f"Remaining coverage gaps: {', '.join(corrected_gaps) or '(none)'}. Do not request "
+                                    "tools or mention this postcondition, checklist, rejected draft, or validator."
                                 ),
                             }
                             self.messages.append(final_correction_instruction)
@@ -1366,7 +1371,9 @@ class LocalPilotAgent:
                             )
                             final_content = str(final_correction.get("content") or "")
                             final_calls = final_correction.get("tool_calls") or []
-                            final_risks = self._information_authority_risks(final_content)
+                            final_risks = self._structured_information_authority_risks(
+                                final_content
+                            )
                             final_gaps = self._information_authority_gaps(final_content, prompt)
                             final_accepted = bool(
                                 final_content.strip()
@@ -1865,7 +1872,10 @@ class LocalPilotAgent:
                 after_tools=after_tools,
                 hard_limit=hard_limit,
                 think=("low" if retrieved_facts else None),
-                authority_review=bool(retrieved_facts),
+                authority_review=(
+                    bool(retrieved_facts)
+                    or self._requires_information_authority_review(prompt)
+                ),
             )
 
         try:

@@ -35,3 +35,10 @@ and the current retrieval query to the owner's local Ollama service; it does not
 remote embedding service. Cached fact vectors stay in the ignored local learning database, while query
 text and query vectors are not persisted. Semantic ranking cannot bypass stage, provenance, staleness,
 digest, test-evidence, or context-size controls, and any embedding failure falls back to lexical retrieval.
+
+Current repository answers use an in-process information-authority postcondition after synthesis. It
+checks repository literals and direct call claims against a content-digest-invalidated live AST/path/config
+index, while structured high-impact flow/lifecycle contracts are enabled only after their own repository
+anchors pass `RepositoryGroundingValidator`. This adds no tool capability and no research rounds. If live
+ground truth is incomplete, a current repository claim fails closed. Audit output retains issue codes,
+claim classes and bounded repository evidence identifiers, never the rejected draft sentences.

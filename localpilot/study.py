@@ -247,6 +247,7 @@ class RepositoryGroundingValidator:
             raise ValueError("Grounding validation requires memory or a repository root.")
         self.memory = memory
         self.root = Path(root).resolve() if root is not None else None
+        self._live_index_cache: dict[str, set[str]] | None = None
 
     def _memory_index(self) -> dict[str, set[str]]:
         if self.memory is None:
@@ -277,6 +278,8 @@ class RepositoryGroundingValidator:
     def _live_index(self) -> dict[str, set[str]]:
         if self.root is None or not self.root.is_dir():
             raise OSError("Repository root is unavailable.")
+        if self._live_index_cache is not None:
+            return self._live_index_cache
         paths: set[str] = set()
         symbols: set[str] = set()
         configs: set[str] = set()
@@ -355,7 +358,7 @@ class RepositoryGroundingValidator:
                             ):
                                 configs.add(f"{section}.{child.target.id}")
 
-        return {
+        self._live_index_cache = {
             "symbols": symbols,
             "configs": configs,
             "paths": paths,
@@ -363,6 +366,14 @@ class RepositoryGroundingValidator:
             "relationships": relationships,
             "subsystem_tokens": subsystem_tokens,
             "parse_errors": parse_errors,
+        }
+        return self._live_index_cache
+
+    def live_evidence_index(self) -> dict[str, frozenset[str]]:
+        """Expose immutable live ground truth for other repository claim gates."""
+        return {
+            name: frozenset(values)
+            for name, values in self._live_index().items()
         }
 
     @staticmethod

@@ -68,6 +68,22 @@ The information paths remain separate:
 Audit records only a digest of the owner query, selected fact keys, bounded counts and verification
 status. It does not record the query text, retrieved prompts, transcripts, messages or hidden reasoning.
 
+### Structured information-authority postcondition
+
+Repository/architecture answers and answers influenced by durable facts receive one bounded
+low-reasoning review in the existing same-context evidence window. The resulting prose is then
+classified and verified in process: current repository paths, config fields, Python symbols and direct
+call relationships are checked against the live AST/path index; high-impact information-flow,
+safety-authority and promotion-order claims are checked as structured concept groups rather than known
+sentence templates. `RepositoryGroundingValidator` first proves that each contract's source paths,
+symbols and config anchors still exist. Missing ground truth fails closed.
+
+Clearly proposed/future symbols, explicit negations, external-library literals and ordinary non-repository
+answers do not become current-repository claims. The repository fingerprint cache invalidates on path
+or content-digest change. The verifier does not call operator tools, does not widen research budgets, and
+records only claim classes, issue codes and repository evidence identifiers in audit output—not draft
+sentences. At most two bounded corrections are attempted before unsupported prose is withheld.
+
 After the advisory 12-round soft budget, each further unique observation requires a model-authored compact information-gain delta. It contains only a bounded list of bare current-turn `evidence_refs`, one `unresolved_fact`, one `proposed_tool`, `proposed_arguments` as a real object, the result that would change the conclusion, and an optional distinct hypothesis. It has no verified-fact prose, unresolved-question history, or inspected-observation history. Prior inspection state and semantic redundancy are derived internally from `ObservationRecord`.
 
 Semantically similar searches and overlapping reads prompt for the distinct new hypothesis being tested. A justified follow-up remains allowed. Exact duplicate read-only calls retain the existing result cache and consume no unique research round. The hard ceiling remains 24 rounds.

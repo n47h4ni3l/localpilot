@@ -109,5 +109,5 @@ def test_learning_memory_summary_is_registered_read_only(tmp_path):
 
     spec = tools["get_learning_memory_summary"]
     assert spec.risk == RiskLevel.READ_ONLY
-    result = spec.function(stage="python")
+    result = spec.fn(stage="python")
     assert result["counts"] == {"total": 0, "current": 0, "stale": 0}

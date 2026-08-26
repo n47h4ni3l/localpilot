@@ -8,6 +8,26 @@ LocalPilot has three isolated roles and two model responsibilities:
 
 Stable is never rewritten in place, candidate code is not executed locally by the autonomous loop, and there is no automatic promotion path.
 
+### Stable operator actions
+
+The normal operator registry includes read-only observations plus four complete reversible tools:
+`open_windows_app`, `open_windows_settings`, `set_active_power_plan`, and `restore_power_plan`.
+App and Settings arguments are fixed `Literal` allow-lists and launch asynchronously through an argv
+`CommandSpec`; no arbitrary executable, path, URI or argument is accepted. Opening a Settings page does
+not change a setting.
+
+Power-plan changes accept only Microsoft's Balanced, High Performance and Power Saver scheme GUIDs,
+and only when the target is already present in `powercfg /LIST`. The action reads the exact current GUID,
+sets the target with `powercfg /SETACTIVE`, verifies it with `/GETACTIVESCHEME`, and returns a random
+one-use in-session token tied to the exact prior and target GUIDs. The token is returned only in the
+turn-local tool result and is redacted from durable audit previews. Rollback refuses to overwrite an
+independent later plan change, verifies the prior scheme still exists, and verifies restoration. A failed
+post-change check attempts and verifies automatic restoration before reporting failure.
+
+All commands pass through `CommandRunner` as argument arrays with `shell=False`, bounded timeouts and
+presentation-safe audit events. `SafetyPolicy.auto_allow_reversible` controls whether these functions are
+exposed to the model. No destructive operator action is registered.
+
 ## Persistent desktop boundary
 
 The desktop path adds presentation and continuity around the stable operator; it does not add another agent implementation:

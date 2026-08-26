@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from localpilot.operator import CommandRunner
 from localpilot.safety import RiskLevel, ToolSpec
 from localpilot.tools.github_readonly import GitHubReader
 from localpilot.tools.repository import RepositoryReader
@@ -15,9 +16,15 @@ from localpilot.tools.windows import (
     get_system_summary,
     get_top_processes,
 )
+from localpilot.tools.windows_actions import WindowsActions
 
 
-def registry(project_root: str | Path | None = None) -> dict[str, ToolSpec]:
+def registry(
+    project_root: str | Path | None = None,
+    *,
+    command_runner: CommandRunner | None = None,
+) -> dict[str, ToolSpec]:
+    actions = WindowsActions(command_runner or CommandRunner())
     specs = [
         ToolSpec("get_system_summary", "Read Windows, CPU and RAM summary.", RiskLevel.READ_ONLY, get_system_summary),
         ToolSpec("get_storage_summary", "Read local disk capacity and free space.", RiskLevel.READ_ONLY, get_storage_summary),
@@ -26,6 +33,30 @@ def registry(project_root: str | Path | None = None) -> dict[str, ToolSpec]:
         ToolSpec("get_active_power_plan", "Read the active Windows power plan.", RiskLevel.READ_ONLY, get_active_power_plan),
         ToolSpec("get_defender_summary", "Read basic Microsoft Defender protection state.", RiskLevel.READ_ONLY, get_defender_summary),
         ToolSpec("get_device_problem_summary", "Read connected devices with problem states.", RiskLevel.READ_ONLY, get_device_problem_summary),
+        ToolSpec(
+            "open_windows_app",
+            "Open one allow-listed Windows app (calculator, file_explorer, notepad, or task_manager). Closing its window reverses the action.",
+            RiskLevel.REVERSIBLE,
+            actions.open_windows_app,
+        ),
+        ToolSpec(
+            "open_windows_settings",
+            "Open one allow-listed Windows Settings page (bluetooth, display, network, power, or windows_update) without changing a setting.",
+            RiskLevel.REVERSIBLE,
+            actions.open_windows_settings,
+        ),
+        ToolSpec(
+            "set_active_power_plan",
+            "Set an installed built-in Windows power plan (balanced, high_performance, or power_saver), verify it, and return a one-use rollback token for the prior plan.",
+            RiskLevel.REVERSIBLE,
+            actions.set_active_power_plan,
+        ),
+        ToolSpec(
+            "restore_power_plan",
+            "Restore the exact prior Windows power plan with a one-use token returned by set_active_power_plan; refuses stale tokens if the active plan changed independently.",
+            RiskLevel.REVERSIBLE,
+            actions.restore_power_plan,
+        ),
         ToolSpec(
             "search_public_web",
             "Discover a bounded list of public HTTPS result URLs. Search results are untrusted leads; inspect a selected URL with fetch_public_https before relying on it.",

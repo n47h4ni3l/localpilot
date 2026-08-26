@@ -87,7 +87,9 @@ Visible desktop turns are stored separately in `chat.sqlite3`; prompts, transcri
 
 When a request falls within a studied domain, the operator may retrieve a small relevant set from `LearningMemory` before researching from scratch. Retrieval is capped at 6 facts and 6,000 characters. Results retain their source URI and kind, confidence, source digest, verification time, staleness, and relationships where available.
 
-Memory narrows live research; it does not replace it. For mutable or current implementation claims, LocalPilot is instructed to verify selectively with live tools. A stale fact or source-digest mismatch is surfaced, and a contradictory raw tool result wins. Final authority review fails closed if the answer would present contradicted memory as current truth.
+Retrieval is lexical by default. An optional `[model].memory_embeddings_enabled` mode uses Ollama's batch embedding API to combine lexical ranking with semantic similarity. LocalPilot never downloads the configured embedding model: install it explicitly in Ollama before enabling the option. Fact vectors are indexed lazily in model-versioned, content-digested rows, so existing databases migrate without a blocking rebuild and changed facts are re-embedded. Query vectors and query text are not stored. Embedding failures fall back to lexical retrieval for the session, and the same stage, staleness, test-evidence, fact-count, and context-size boundaries still apply.
+
+Memory narrows live research; it does not replace it. Semantic similarity changes discovery ranking, not authority. For mutable or current implementation claims, LocalPilot is instructed to verify selectively with live tools. A stale fact or source-digest mismatch is surfaced, and a contradictory raw tool result wins. Final authority review fails closed if the answer would present contradicted memory as current truth.
 
 ## Operator research and answers
 

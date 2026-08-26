@@ -33,6 +33,15 @@ class ModelConfig:
     # when the model supports much more. Tool-driven agent work needs enough
     # room to retain the owner request plus repository/GitHub observations.
     context_tokens: int = 32768
+    # Optional hybrid durable-memory retrieval. LocalPilot never pulls this
+    # model automatically; unavailable embeddings fall back to lexical search.
+    memory_embeddings_enabled: bool = False
+    memory_embedding_model: str = "embeddinggemma"
+    memory_embedding_keep_alive: float | str = "5m"
+    memory_semantic_weight: float = 12.0
+    memory_semantic_min_similarity: float = 0.2
+    memory_embedding_batch_size: int = 64
+    memory_embedding_migration_limit: int = 512
 
 
 @dataclass(slots=True)
@@ -215,6 +224,37 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg.selfdev.context_tokens = _validate_context_tokens(
         "selfdev.context_tokens", cfg.selfdev.context_tokens
     )
+    if not isinstance(cfg.model.memory_embeddings_enabled, bool):
+        raise ValueError("model.memory_embeddings_enabled must be a boolean")
+    cfg.model.memory_embedding_model = str(cfg.model.memory_embedding_model).strip()
+    if cfg.model.memory_embeddings_enabled and not cfg.model.memory_embedding_model:
+        raise ValueError(
+            "model.memory_embedding_model is required when memory embeddings are enabled"
+        )
+    cfg.model.memory_semantic_weight = float(cfg.model.memory_semantic_weight)
+    cfg.model.memory_semantic_min_similarity = float(
+        cfg.model.memory_semantic_min_similarity
+    )
+    cfg.model.memory_embedding_batch_size = int(
+        cfg.model.memory_embedding_batch_size
+    )
+    cfg.model.memory_embedding_migration_limit = int(
+        cfg.model.memory_embedding_migration_limit
+    )
+    if cfg.model.memory_semantic_weight < 0:
+        raise ValueError("model.memory_semantic_weight cannot be negative")
+    if not -1 <= cfg.model.memory_semantic_min_similarity <= 1:
+        raise ValueError(
+            "model.memory_semantic_min_similarity must be between -1 and 1"
+        )
+    if not 1 <= cfg.model.memory_embedding_batch_size <= 256:
+        raise ValueError(
+            "model.memory_embedding_batch_size must be between 1 and 256"
+        )
+    if not 1 <= cfg.model.memory_embedding_migration_limit <= 5000:
+        raise ValueError(
+            "model.memory_embedding_migration_limit must be between 1 and 5000"
+        )
     cfg.agent.research_soft_tool_rounds = int(cfg.agent.research_soft_tool_rounds)
     cfg.agent.research_hard_tool_rounds = int(cfg.agent.research_hard_tool_rounds)
     if cfg.agent.research_soft_tool_rounds < 1:

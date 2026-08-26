@@ -19,6 +19,8 @@ def test_everyday_and_developer_models_are_separate():
     assert cfg.model.name == "gpt-oss:20b"
     assert cfg.model.think == "high"
     assert cfg.model.context_tokens == 32768
+    assert cfg.model.memory_embeddings_enabled is False
+    assert cfg.model.memory_embedding_model == "embeddinggemma"
     assert cfg.selfdev.developer_model == "qwen2.5:32b"
     assert cfg.selfdev.developer_model_fallbacks == ["qwen2.5:14b"]
     assert cfg.selfdev.ollama_keep_alive == 0
@@ -40,6 +42,39 @@ def test_toml_loads_operator_context_window(tmp_path: Path):
     path.write_text('[model]\ncontext_tokens = 16384\n', encoding="utf-8")
     cfg = load_config(path)
     assert cfg.model.context_tokens == 16384
+
+
+def test_toml_loads_bounded_memory_embedding_options(tmp_path: Path):
+    path = tmp_path / "localpilot.toml"
+    path.write_text(
+        '[model]\nmemory_embeddings_enabled = true\n'
+        'memory_embedding_model = "all-minilm"\n'
+        'memory_semantic_weight = 9.5\n'
+        'memory_semantic_min_similarity = 0.4\n'
+        'memory_embedding_batch_size = 32\n'
+        'memory_embedding_migration_limit = 200\n',
+        encoding="utf-8",
+    )
+
+    cfg = load_config(path)
+
+    assert cfg.model.memory_embeddings_enabled is True
+    assert cfg.model.memory_embedding_model == "all-minilm"
+    assert cfg.model.memory_semantic_weight == 9.5
+    assert cfg.model.memory_semantic_min_similarity == 0.4
+    assert cfg.model.memory_embedding_batch_size == 32
+    assert cfg.model.memory_embedding_migration_limit == 200
+
+
+def test_invalid_memory_embedding_bounds_fail_closed(tmp_path: Path):
+    path = tmp_path / "localpilot.toml"
+    path.write_text(
+        '[model]\nmemory_embeddings_enabled = true\n'
+        'memory_embedding_model = ""\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="memory_embedding_model"):
+        load_config(path)
 
 
 def test_context_window_rejects_accidentally_tiny_or_invalid_values(tmp_path: Path):

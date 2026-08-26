@@ -1,3 +1,5 @@
+from ollama import Client
+
 from localpilot.learning import LearningMemory
 from localpilot.safety import RiskLevel
 from localpilot.tools import registry
@@ -111,3 +113,26 @@ def test_learning_memory_summary_is_registered_read_only(tmp_path):
     assert spec.risk == RiskLevel.READ_ONLY
     result = spec.fn(stage="python")
     assert result["counts"] == {"total": 0, "current": 0, "stale": 0}
+
+
+def test_ollama_client_generates_schema_for_learning_memory_summary(tmp_path, monkeypatch):
+    _memory(tmp_path)
+    request_json = {}
+
+    def fake_request(_client, _response_type, *_args, **kwargs):
+        request_json.update(kwargs["json"])
+        return {}
+
+    monkeypatch.setattr(Client, "_request", fake_request)
+    tool = registry(tmp_path)["get_learning_memory_summary"].fn
+
+    Client().chat(model="test-model", messages=[], tools=[tool])
+
+    schema = request_json["tools"][0]["function"]
+    assert schema["name"] == "get_learning_memory_summary"
+    assert set(schema["parameters"]["properties"]) == {
+        "stage",
+        "fact_type",
+        "sample_limit",
+        "source_limit",
+    }

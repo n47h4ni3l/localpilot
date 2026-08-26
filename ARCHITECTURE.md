@@ -90,19 +90,29 @@ status. It does not record the query text, retrieved prompts, transcripts, messa
 
 ### Structured information-authority postcondition
 
-Repository/architecture answers and answers influenced by durable facts receive one bounded
-low-reasoning review in the existing same-context evidence window. The resulting prose is then
-classified and verified in process: current repository paths, config fields, Python symbols and direct
-call relationships are checked against the live AST/path index; high-impact information-flow,
+Protect the spark; constrain the blast radius. The operator's generative reasoning and decision formation
+run at high reasoning before evidence postvalidation. Durable facts narrow the search but do not downgrade
+final synthesis. The model may notice contradictions, form hypotheses, choose a useful next action, disagree,
+and make clearly provisional judgments without first translating its thought into verifier-shaped prose.
+Let the model think expansively; constrain what it asserts, not what it considers.
+
+After synthesis, current repository paths, config fields, Python symbols and direct call relationships are
+classified and checked in process against the live AST/path index. High-impact information-flow,
 safety-authority and promotion-order claims are checked as structured concept groups rather than known
-sentence templates. `RepositoryGroundingValidator` first proves that each contract's source paths,
+sentence templates. Consequential PC-state claims are separately checked against the specific successful
+observation tool that can establish them; one generic system observation cannot establish disk usage or the
+active power plan. `RepositoryGroundingValidator` first proves that each repository contract's source paths,
 symbols and config anchors still exist. Missing ground truth fails closed.
 
 Clearly proposed/future symbols, explicit negations, external-library literals and ordinary non-repository
 answers do not become current-repository claims. The repository fingerprint cache invalidates on path
 or content-digest change. The verifier does not call operator tools, does not widen research budgets, and
 records only claim classes, issue codes and repository evidence identifiers in audit output—not draft
-sentences. At most two bounded corrections are attempted before unsupported prose is withheld.
+sentences. A passing postcondition preserves the generated prose byte-for-byte apart from removal of known
+validator boilerplate. No generic model review runs. Only a concrete failed claim triggers a bounded
+low-reasoning correction, which is instructed to alter the rejected assertion while preserving useful
+judgment, hypotheses, initiative and natural organization. At most two corrections are attempted before
+unsupported prose is withheld. Verification corrects the agent; it does not replace the agent.
 
 After the advisory 12-round soft budget, each further unique observation requires a model-authored compact information-gain delta. It contains only a bounded list of bare current-turn `evidence_refs`, one `unresolved_fact`, one `proposed_tool`, `proposed_arguments` as a real object, the result that would change the conclusion, and an optional distinct hypothesis. It has no verified-fact prose, unresolved-question history, or inspected-observation history. Prior inspection state and semantic redundancy are derived internally from `ObservationRecord`.
 

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 from localpilot.agent import LocalPilotAgent
-from localpilot.authority import InformationAuthorityVerifier
+from localpilot.authority import InformationAuthorityVerifier, TurnEvidenceVerifier
 from localpilot.config import Config
 
 
@@ -15,6 +16,10 @@ def _chunk(content: str):
     return SimpleNamespace(
         message=SimpleNamespace(content=content, thinking="", tool_calls=[])
     )
+
+
+def _call(name: str, arguments: dict[str, object]):
+    return SimpleNamespace(function=SimpleNamespace(name=name, arguments=arguments))
 
 
 def test_novel_information_flow_phrasings_are_checked_against_grounded_contracts():
@@ -116,7 +121,6 @@ def test_real_answer_path_self_corrects_an_unseen_authority_claim(tmp_path: Path
     agent.information_authority = InformationAuthorityVerifier(PROJECT_ROOT)
     streams = iter(
         [
-            [_chunk("Initial draft.")],
             [_chunk("CI has the final say on whether a candidate ships to stable.")],
             [_chunk("CI validates the candidate; promotion still requires a human merge.")],
         ]
@@ -139,3 +143,112 @@ def test_real_answer_path_self_corrects_an_unseen_authority_claim(tmp_path: Path
     assert event["remaining_risks"] == []
     crosscheck = agent.audit.latest("model_information_authority_crosscheck")
     assert crosscheck["accepted"] is True
+
+
+def test_postvalidation_preserves_a_grounded_draft_without_a_rewrite(tmp_path: Path):
+    agent = LocalPilotAgent(Config(), tmp_path)
+    streams = []
+    draft = (
+        "I think the most useful next step is to inspect the contradiction directly, "
+        "because another option menu would only hand the decision back to you."
+    )
+
+    def fake_chat(**kwargs):
+        streams.append(kwargs)
+        return iter([_chunk(draft)])
+
+    answer = agent._continue_high_reasoning_answer(
+        fake_chat,
+        prompt="What do you think is the most useful thing to do next, and why?",
+        round_no=1,
+        after_tools=False,
+        authority_review=True,
+    )
+
+    assert answer == draft
+    assert len(streams) == 1
+    event = agent.audit.latest("model_same_context_postvalidation_complete")
+    assert event["accepted"] is True
+    assert event["prose_rewritten"] is False
+
+
+def test_live_state_postcondition_requires_claim_specific_evidence():
+    verifier = TurnEvidenceVerifier()
+
+    rejected = verifier.review(
+        "Disk space is healthy, the Balanced power plan is active, and there are no known critical bugs.",
+        successful_tools=frozenset({"get_system_summary"}),
+    )
+    scoped = verifier.review(
+        "CPU and memory look normal in the system summary. Disk and power-plan state were not checked, "
+        "so I cannot say there are no critical bugs.",
+        successful_tools=frozenset({"get_system_summary"}),
+    )
+    guidance = verifier.review(
+        "Open File Explorer to check disk usage, then open Power Options to inspect the active power plan."
+    )
+
+    assert {issue.code for issue in rejected.issues} == {
+        "storage_state_without_storage_evidence",
+        "power_plan_without_power_evidence",
+        "unsupported_blanket_health_claim",
+    }
+    assert scoped.accepted is True
+    assert guidance.accepted is True
+
+
+def test_quick_health_check_corrects_only_claims_missing_specific_observations(
+    tmp_path: Path, monkeypatch
+):
+    config = Config()
+    agent = LocalPilotAgent(config, tmp_path)
+    agent.governor = SimpleNamespace(
+        sample=lambda interval: SimpleNamespace(background_allowed=False),
+        apply_process_priority=lambda idle: None,
+    )
+    streams = iter(
+        [
+            [
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="",
+                        thinking="",
+                        tool_calls=[_call("get_system_summary", {})],
+                    )
+                )
+            ],
+            [_chunk("The system summary is ready.")],
+            [
+                _chunk(
+                    "Memory use looks normal in the system summary. Disk space is healthy, "
+                    "the Balanced power plan is active, and there are no known critical bugs."
+                )
+            ],
+            [
+                _chunk(
+                    "Memory use looks normal in the system summary. Disk usage and the active "
+                    "power plan were not checked, and I cannot say there are no critical bugs."
+                )
+            ],
+        ]
+    )
+    calls = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+    answer = agent.ask("Give me a quick health check.")
+
+    assert "Memory use looks normal" in answer
+    assert "were not checked" in answer
+    correction = agent.audit.latest("model_same_context_authority_correction_complete")
+    assert correction["original_risks"] == [
+        "storage_state_without_storage_evidence",
+        "power_plan_without_power_evidence",
+        "unsupported_blanket_health_claim",
+    ]
+    assert correction["accepted"] is True
+    assert calls[-2]["think"] == "high"
+    assert calls[-1]["think"] == "low"

@@ -25,7 +25,7 @@ class LearningMemoryReader:
         if not self.database.is_file():
             raise FileNotFoundError("LocalPilot durable learning database does not exist yet.")
         connection = sqlite3.connect(
-            f"file:{self.database.as_posix()}?mode=ro",
+            self.database.as_uri() + "?mode=ro",
             uri=True,
         )
         connection.row_factory = sqlite3.Row

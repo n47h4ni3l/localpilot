@@ -14,12 +14,7 @@ class LearningMemoryReader:
         config_path = Path(configured) if configured else self.project_root / "localpilot.toml"
         self.config = load_config(config_path)
         data_dir = (self.project_root / self.config.agent.data_dir).resolve()
-        database = (data_dir / self.config.selfdev.learning_database).resolve()
-        try:
-            database.relative_to(data_dir)
-        except ValueError as exc:
-            raise ValueError("Learning database must remain inside the configured data directory.") from exc
-        self.database = database
+        self.database = (data_dir / self.config.selfdev.learning_database).resolve()
 
     def _connect(self) -> sqlite3.Connection:
         if not self.database.is_file():

@@ -5,6 +5,7 @@ from pathlib import Path
 from localpilot.operator import CommandRunner
 from localpilot.safety import RiskLevel, ToolSpec
 from localpilot.tools.github_readonly import GitHubReader
+from localpilot.tools.learning_readonly import LearningMemoryReader
 from localpilot.tools.repository import RepositoryReader
 from localpilot.tools.web import fetch_public_https, search_public_web
 from localpilot.tools.windows import (
@@ -73,8 +74,15 @@ def registry(
     if project_root is not None:
         repository = RepositoryReader(project_root)
         github = GitHubReader(project_root)
+        learning = LearningMemoryReader(project_root)
         specs.extend(
             [
+                ToolSpec(
+                    "get_learning_memory_summary",
+                    "Read bounded current/stale durable knowledge-fact counts, fact types, source summaries, and stale samples from LocalPilot's local learning store without mutating it.",
+                    RiskLevel.READ_ONLY,
+                    learning.get_learning_memory_summary,
+                ),
                 ToolSpec(
                     "list_repository_tree",
                     "List a bounded tree of the trusted LocalPilot repository without following symlinks.",

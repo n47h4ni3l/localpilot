@@ -4,6 +4,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from ollama import Client
 
 from localpilot.agent import LocalPilotAgent
 from localpilot.config import Config
@@ -119,6 +120,44 @@ def test_registry_exposes_only_the_complete_reversible_action_set(tmp_path):
         "terminate_process",
         "run_command",
     } & tools.keys()
+
+
+def test_ollama_client_generates_schemas_for_registered_reversible_actions(
+    tmp_path, monkeypatch
+):
+    request_json = {}
+
+    def fake_request(_client, _response_type, *_args, **kwargs):
+        request_json.update(kwargs["json"])
+        return {}
+
+    monkeypatch.setattr(Client, "_request", fake_request)
+    registered = registry(tmp_path, command_runner=CommandRunner())
+    reversible = [
+        spec.fn for spec in registered.values() if spec.risk is RiskLevel.REVERSIBLE
+    ]
+
+    Client().chat(model="test-model", messages=[], tools=reversible)
+
+    schemas = {
+        tool["function"]["name"]: tool["function"]["parameters"]
+        for tool in request_json["tools"]
+    }
+    assert set(schemas) == {
+        "open_windows_app",
+        "open_windows_settings",
+        "set_active_power_plan",
+        "restore_power_plan",
+    }
+    assert {
+        name: set(schema["properties"])
+        for name, schema in schemas.items()
+    } == {
+        "open_windows_app": {"app"},
+        "open_windows_settings": {"page"},
+        "set_active_power_plan": {"plan"},
+        "restore_power_plan": {"rollback_token"},
+    }
 
 
 def test_power_plan_change_is_verified_and_has_one_use_exact_rollback(monkeypatch):

@@ -52,7 +52,7 @@ def _show_status(console: Console, config, root: Path) -> None:
         )[:1400],
     )
     table.add_row("User idle", f"{state.idle_seconds:.0f}s")
-    table.add_row("CPU", f"{state.cpu_percent:.1f}%")
+    table.add_row("CPU", f"{state.cpu_percent:.1f}% system-wide")
     table.add_row("Memory", f"{state.memory_percent:.1f}%")
     resource_files = root / config.agent.data_dir / "candidate-resources" / "files"
     resource_usage = sum(

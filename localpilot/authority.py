@@ -28,6 +28,28 @@ class InformationAuthorityReport:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceIssue:
+    code: str
+    detail: str
+    sentence: str
+    required_tools: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TurnEvidenceReport:
+    accepted: bool
+    issues: tuple[EvidenceIssue, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _EvidenceRule:
+    code: str
+    expressions: tuple[str, ...]
+    required_tools: tuple[str, ...]
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
 class _ContractRule:
     code: str
     groups: tuple[tuple[str, ...], ...]
@@ -220,6 +242,129 @@ _RELATION_WORDS = {
     "uses",
 }
 _PATH_SUFFIXES = (".py", ".md", ".toml", ".ps1", ".json", ".yml", ".yaml")
+
+_TURN_EVIDENCE_RULES = (
+    _EvidenceRule(
+        "storage_state_without_storage_evidence",
+        (
+            r"\b(?:disk|storage|drive|free space)\b.{0,60}\b(?:healthy|fine|normal|full|low|ample|free|used|remaining|\d+(?:\.\d+)?\s*%)\b",
+            r"\b(?:healthy|fine|normal|full|low|ample|\d+(?:\.\d+)?\s*%)\b.{0,60}\b(?:disk|storage|drive|free space)\b",
+        ),
+        ("get_storage_summary",),
+        "Current storage state requires a successful storage observation.",
+    ),
+    _EvidenceRule(
+        "power_plan_without_power_evidence",
+        (
+            r"\b(?:balanced|high performance|power saver)\b.{0,40}\b(?:power plan|power scheme)\b.{0,40}\b(?:active|selected|current|enabled)\b",
+            r"\b(?:power plan|power scheme)\b.{0,40}\b(?:is|remains|appears|shows)\b.{0,20}\b(?:balanced|high performance|power saver|active|selected|enabled)\b",
+        ),
+        ("get_active_power_plan",),
+        "The current power plan requires a successful active-plan observation.",
+    ),
+    _EvidenceRule(
+        "defender_state_without_defender_evidence",
+        (r"\b(?:defender|antivirus|real-time protection)\b.{0,50}\b(?:enabled|disabled|active|inactive|running|healthy|current|up to date)\b",),
+        ("get_defender_summary",),
+        "Current Defender state requires a successful Defender observation.",
+    ),
+    _EvidenceRule(
+        "device_state_without_device_evidence",
+        (r"\b(?:no|zero|\d+)\b.{0,30}\b(?:device problem|device error|problem device)\w*\b",),
+        ("get_device_problem_summary",),
+        "Current device-problem state requires a successful device observation.",
+    ),
+    _EvidenceRule(
+        "startup_state_without_startup_evidence",
+        (r"\b(?:no|zero|\d+)\b.{0,30}\bstartup (?:item|app|program)\w*\b",),
+        ("get_startup_items",),
+        "Current startup-item state requires a successful startup observation.",
+    ),
+    _EvidenceRule(
+        "process_state_without_process_evidence",
+        (r"\b(?:top|running|heavy|resource-hungry) process\w*\b.{0,50}\b(?:is|are|uses?|consumes?|healthy|normal)\b",),
+        ("get_top_processes",),
+        "Current process state requires a successful process observation.",
+    ),
+)
+
+_NON_ASSERTIVE_EVIDENCE_MARKERS = (
+    " unverified ",
+    " unresolved ",
+    " unknown ",
+    " not checked ",
+    " wasn't checked ",
+    " was not checked ",
+    " did not check ",
+    " didn't check ",
+    " cannot determine ",
+    " can't determine ",
+    " cannot say ",
+    " would need ",
+    " need to check ",
+    " how to check ",
+    " check whether ",
+    " should ",
+    " could ",
+    " i would ",
+    " recommend ",
+    " let's ",
+)
+
+
+class TurnEvidenceVerifier:
+    """Check consequential live-state claims against tools that actually succeeded.
+
+    This verifier deliberately does not judge style, recommendations, hypotheses, or
+    provisional views. It constrains only assertions whose truth depends on a named
+    current-state observation.
+    """
+
+    @staticmethod
+    def _sentences(content: str) -> tuple[str, ...]:
+        return InformationAuthorityVerifier._sentences(content)
+
+    @staticmethod
+    def _normalized(sentence: str) -> str:
+        return " " + " ".join(sentence.lower().split()) + " "
+
+    def review(
+        self,
+        content: str,
+        *,
+        successful_tools: frozenset[str] = frozenset(),
+    ) -> TurnEvidenceReport:
+        issues: list[EvidenceIssue] = []
+        for sentence in self._sentences(content):
+            normalized = self._normalized(sentence)
+            if any(marker in normalized for marker in _NON_ASSERTIVE_EVIDENCE_MARKERS):
+                continue
+            for rule in _TURN_EVIDENCE_RULES:
+                if not any(re.search(expression, normalized) for expression in rule.expressions):
+                    continue
+                if not set(rule.required_tools).issubset(successful_tools):
+                    issues.append(
+                        EvidenceIssue(
+                            rule.code,
+                            rule.detail,
+                            sentence,
+                            rule.required_tools,
+                        )
+                    )
+
+            if re.search(
+                r"\b(?:no known|no|without any) (?:critical |serious |major )?(?:bugs?|issues?|problems?)\b",
+                normalized,
+            ):
+                issues.append(
+                    EvidenceIssue(
+                        "unsupported_blanket_health_claim",
+                        "A bounded health check cannot establish the absence of all bugs or problems; scope the conclusion to observations actually made.",
+                        sentence,
+                    )
+                )
+        unique = tuple(dict.fromkeys(issues))
+        return TurnEvidenceReport(not unique, unique)
 
 
 class InformationAuthorityVerifier:

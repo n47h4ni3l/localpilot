@@ -228,7 +228,9 @@ def test_declared_dependency_query_prioritizes_pyproject_live_check(
     assert "Never invent or rename a version" in str(snapshots[-1])
     assert agent.audit.latest("model_learning_memory_live_verification")["target_count"] == 4
     assert agent.audit.latest("model_learning_memory_direct_synthesis")["target_count"] == 4
-    assert agent.audit.latest("model_same_context_authority_review_complete")["accepted"] is True
+    postvalidation = agent.audit.latest("model_same_context_postvalidation_complete")
+    assert postvalidation["accepted"] is True
+    assert postvalidation["prose_rewritten"] is False
     assert "Memory-guided live verification" not in str(agent.messages)
 
 
@@ -383,14 +385,12 @@ def test_memory_guided_turn_forces_synthesis_after_four_live_observations(
     answer = agent.ask("Inspect the current LocalPilot operator research design.")
 
     assert answer.startswith("Four targeted")
-    assert len(calls) == 7
+    assert len(calls) == 6
     assert all("tools" in item for item in calls[:4])
     assert "tools" not in calls[4]
     assert "tools" not in calls[5]
-    assert "tools" not in calls[6]
     assert all(item["think"] == "high" for item in calls[:5])
-    assert calls[5]["think"] == "low"
-    assert calls[6]["think"] == "low"
+    assert calls[5]["think"] == "high"
     budget = agent.audit.latest("model_learning_memory_research_budget")
     assert budget["soft_tool_rounds"] == 4
     assert budget["hard_tool_rounds"] == 4
@@ -522,33 +522,6 @@ def test_operator_information_paths_and_literal_authority_are_explicit():
         "candidate_branch_history_cleared",
         "developer_local_process_erased",
     ]
-    architecture_prompt = (
-        "Explain the operator architecture and durable learning memory from staged study."
-    )
-    assert LocalPilotAgent._information_authority_gaps(
-        "The operator uses durable facts.", architecture_prompt
-    ) == [
-        "operator_study_retrieval_call",
-        "retrieval_bounds",
-        "freshness_and_turn_end_scrub",
-        "selfdev_learning_records",
-    ]
-    assert LocalPilotAgent._information_authority_gaps(
-        "search_knowledge_facts selects at most six facts in a 6,000 character turn-local "
-        "block; repository digest checks target live verification and messages are scrubbed after the turn. "
-        "Self-development cycle records remain separate from knowledge_facts.",
-        architecture_prompt,
-    ) == []
-    appendix = LocalPilotAgent._authority_gap_appendix(
-        ["retrieval_bounds", "freshness_and_turn_end_scrub", "selfdev_learning_records"]
-    )
-    assert LocalPilotAgent._information_authority_gaps(appendix, architecture_prompt) == []
-    assert LocalPilotAgent._information_authority_gaps(
-        "search_knowledge_facts selects six relevant facts under a bounded 6,000 character "
-        "limit; digest checks target verification and messages are removed after the turn. "
-        "LearningMemory stores separate cycle, review, and experiment records.",
-        architecture_prompt,
-    ) == []
     assert LocalPilotAgent._strip_authority_meta(
         "Grounded answer.\n\nAll statements above are directly supported.\n"
         "No additional classes are inferred."

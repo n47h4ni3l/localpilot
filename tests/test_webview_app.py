@@ -74,6 +74,12 @@ def test_collapse_resizes_to_the_compact_size(tmp_path):
     assert (width, height) == webview_app.COMPACT_SIZE
 
 
+def test_compact_window_is_small_avatar_sized():
+    assert webview_app.COMPACT_SIZE == (144, 144)
+    assert webview_app.MIN_SIZE[0] <= webview_app.COMPACT_SIZE[0]
+    assert webview_app.MIN_SIZE[1] <= webview_app.COMPACT_SIZE[1]
+
+
 def test_set_always_on_top_sets_the_real_window_property(tmp_path):
     window = FakeWindow()
     bridge = webview_app.WindowBridge(window, tmp_path, None)
@@ -148,21 +154,68 @@ def test_initial_position_degrades_gracefully_without_a_display_backend():
 def test_position_on_screen_preserves_negative_virtual_desktop_origin():
     screen = FakeScreen(x=-1920, y=160, width=1920, height=1080)
     x, y = webview_app._position_on_screen(screen, *webview_app.COMPACT_SIZE)
-    assert x == -192
-    assert y == 996
+    assert x == -168
+    assert y == 1072
     assert x < 0
 
 
 def test_position_on_screen_includes_positive_nonzero_origin():
     screen = FakeScreen(x=2560, y=-200, width=1920, height=1080)
     x, y = webview_app._position_on_screen(screen, *webview_app.COMPACT_SIZE)
-    assert x == 4288
-    assert y == 636
+    assert x == 4312
+    assert y == 712
 
 
 def test_initial_position_uses_supplied_screen_without_clamping():
     screen = FakeScreen(x=-1600, y=-900, width=1600, height=900)
-    assert webview_app._initial_position(*webview_app.COMPACT_SIZE, screen=screen) == (-192, -244)
+    assert webview_app._initial_position(*webview_app.COMPACT_SIZE, screen=screen) == (-168, -168)
+
+
+def test_desktop_python_executable_prefers_pythonw_on_windows(tmp_path):
+    python = tmp_path / "python.exe"
+    pythonw = tmp_path / "pythonw.exe"
+    python.write_text("", encoding="utf-8")
+    pythonw.write_text("", encoding="utf-8")
+
+    assert webview_app._desktop_python_executable(python, platform_name="nt") == pythonw.resolve()
+    assert webview_app._desktop_python_executable(python, platform_name="posix") == python.resolve()
+
+
+def test_console_script_detaches_only_for_normal_windows_desktop_entrypoint():
+    assert webview_app._should_detach_gui(r"C:\\venv\\Scripts\\localpilot.exe", platform_name="nt")
+    assert not webview_app._should_detach_gui(r"C:\\venv\\Scripts\\python.exe", platform_name="nt")
+    assert not webview_app._should_detach_gui("localpilot", platform_name="posix")
+
+
+def test_detached_launcher_uses_pythonw_and_no_stdio(tmp_path, monkeypatch):
+    pythonw = tmp_path / "pythonw.exe"
+    pythonw.write_text("", encoding="utf-8")
+    captured = {}
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(webview_app, "_desktop_python_executable", lambda: pythonw)
+    monkeypatch.setattr(webview_app.subprocess, "Popen", fake_popen)
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    assert webview_app._launch_detached(root, None) is True
+    assert captured["argv"] == [
+        str(pythonw),
+        "-m",
+        "localpilot.webview_app",
+        "--root",
+        str(root),
+    ]
+    assert captured["kwargs"]["cwd"] == root
+    assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
+    assert captured["kwargs"]["stdout"] is subprocess.DEVNULL
+    assert captured["kwargs"]["stderr"] is subprocess.DEVNULL
+    assert captured["kwargs"]["shell"] is False
+    assert captured["kwargs"]["close_fds"] is True
 
 
 def test_build_parser_requires_root_and_defaults_config_to_none():
@@ -233,6 +286,18 @@ def test_frontend_is_fully_local_and_uses_a_strict_csp():
     assert ".style." not in javascript
     assert "PID 18422" not in index
     assert "restarts: 0" not in index
+
+
+def test_compact_frontend_has_no_card_chrome():
+    css = (webview_app.WEBVIEW_DIR / "app.css").read_text(encoding="utf-8")
+    start = css.index("  .dock {")
+    end = css.index("\n  }", start)
+    dock = css[start:end]
+    assert "width: 128px; min-height: 128px;" in dock
+    assert "background: transparent;" in dock
+    assert "border: none;" in dock
+    assert "box-shadow: none;" in dock
+    assert ".preview-line { display: none; }" in css
 
 
 def test_pywebview_dependency_is_constrained_to_the_verified_major_range():

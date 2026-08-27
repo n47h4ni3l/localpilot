@@ -37,12 +37,66 @@ from localpilot.desktop import BrokerClient, ensure_broker
 WEBVIEW_DIR = Path(__file__).resolve().parent / "webview"
 INDEX_HTML = WEBVIEW_DIR / "index.html"
 
-COMPACT_SIZE = (168, 220)
+# Compact mode is intentionally only the avatar plus a small transparent hit
+# target/glow margin. The full chrome appears only after the owner opens chat.
+COMPACT_SIZE = (144, 144)
 EXPANDED_SIZE = (420, 640)
-MIN_SIZE = (160, 160)
+MIN_SIZE = (120, 120)
 EDGE_INSET = 24
 
 _ANCHOR_BOTTOM_RIGHT = FixPoint.SOUTH | FixPoint.EAST
+
+
+def _desktop_python_executable(
+    executable: str | Path | None = None,
+    *,
+    platform_name: str | None = None,
+) -> Path:
+    """Prefer ``pythonw.exe`` for the persistent Windows GUI host.
+
+    Normal ``localpilot desktop`` should not leave a console window behind.
+    Explicit ``python -m localpilot.webview_app`` remains a foreground/debug
+    path and therefore keeps its console and diagnostics.
+    """
+    platform_name = os.name if platform_name is None else platform_name
+    current = Path(executable or sys.executable).resolve()
+    if platform_name != "nt" or current.name.lower() == "pythonw.exe":
+        return current
+    pythonw = current.with_name("pythonw.exe")
+    return pythonw if pythonw.exists() else current
+
+
+def _should_detach_gui(argv0: str, *, platform_name: str | None = None) -> bool:
+    """Detach only the normal Windows console-script entry point."""
+    platform_name = os.name if platform_name is None else platform_name
+    return platform_name == "nt" and Path(argv0).stem.lower() == "localpilot"
+
+
+def _launch_detached(root: Path, config_path: str | None) -> bool:
+    """Relaunch the WebView host under pythonw so normal desktop use is consoleless."""
+    executable = _desktop_python_executable()
+    if executable.name.lower() != "pythonw.exe":
+        return False
+
+    argv = [str(executable), "-m", "localpilot.webview_app", "--root", str(root)]
+    if config_path:
+        argv.extend(["--config", str(Path(config_path).resolve())])
+
+    creationflags = (
+        getattr(subprocess, "DETACHED_PROCESS", 0)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    )
+    subprocess.Popen(
+        argv,
+        cwd=root,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        shell=False,
+        creationflags=creationflags,
+        close_fds=True,
+    )
+    return True
 
 
 def _startup_shortcut_path() -> Path:
@@ -61,7 +115,7 @@ def _write_startup_shortcut(target: Path, root: Path, config_path: str | None) -
     operations (see tools/windows.py, tools/windows_actions.py) instead of
     pulling in a new third-party package for one small piece of behaviour.
     """
-    exe = str(Path(sys.executable).resolve())
+    exe = str(_desktop_python_executable())
     argv = ["-m", "localpilot.webview_app", "--root", str(root.resolve())]
     if config_path:
         argv.extend(["--config", str(Path(config_path).resolve())])
@@ -205,6 +259,13 @@ def _initial_position(
 
 def main(root: str | Path, config_path: str | None = None) -> None:
     root = Path(root).resolve()
+
+    # The normal `localpilot desktop` console-script invocation relaunches the
+    # long-lived GUI under pythonw and returns immediately to the owner's shell.
+    # Direct module execution stays foreground so failures remain diagnosable.
+    if _should_detach_gui(sys.argv[0]) and _launch_detached(root, config_path):
+        return
+
     config = load_config(config_path)
     client = ensure_broker(root, config, config_path=config_path)
 
@@ -223,6 +284,7 @@ def main(root: str | Path, config_path: str | None = None) -> None:
         min_size=MIN_SIZE,
         frameless=True,
         easy_drag=False,  # dragging is scoped to .pywebview-drag-region elements only
+        shadow=False,
         on_top=True,
         background_color="#0B121D",
         transparent=True,

@@ -1,0 +1,48 @@
+/* Small expanded-chat chrome refinements after the native-avatar handoff.
+   Keep the original panel design; this file only restores breathing room around
+   the additional window control introduced by the frameless desktop host. */
+
+.panel-header {
+  min-height: 64px;
+  gap: 8px;
+  padding: 11px 12px 11px 14px;
+}
+
+.panel-header .avatar-canvas {
+  margin-right: 2px;
+}
+
+.header-text {
+  min-width: 88px;
+}
+
+.panel-header .icon-btn {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+}
+
+#close-app-btn {
+  margin-left: -2px;
+  font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  font-size: 20px;
+  font-weight: 300;
+  line-height: 1;
+  color: var(--text-tertiary);
+}
+
+#close-app-btn:hover {
+  color: var(--error-core);
+  background: rgba(255, 107, 107, 0.08);
+}
+
+/* Preserve the original clean shell while making the border read crisply on
+   light wallpapers. */
+.panel {
+  border-radius: 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.42), 0 0 0 1px rgba(255, 255, 255, 0.015);
+}
+
+.composer-wrap {
+  padding-top: 14px;
+}

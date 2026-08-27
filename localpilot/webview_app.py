@@ -162,19 +162,44 @@ def _bridge_payload(client: BrokerClient, config_path: str | None) -> dict[str, 
     return {"baseUrl": client.base_url, "token": client.token, "hasConfigPath": bool(config_path)}
 
 
-def _initial_position(width: int, height: int) -> tuple[int | None, int | None]:
-    """Anchor the initial window to the bottom-right of the primary screen.
-
-    Best-effort: if screen enumeration isn't available in this environment,
-    fall back to letting the OS/window manager choose a position rather than
-    failing to launch.
-    """
+def _initial_screen() -> Any | None:
+    """Return pywebview's first screen, or None when display discovery is unavailable."""
     try:
-        screen = webview.screens[0]
-        x = max(0, screen.width - width - EDGE_INSET)
-        y = max(0, screen.height - height - EDGE_INSET)
-        return x, y
+        return webview.screens[0]
     except Exception:
+        return None
+
+
+def _position_on_screen(screen: Any, width: int, height: int) -> tuple[int, int]:
+    """Place the companion at a screen's bottom-right using virtual-desktop coordinates.
+
+    ``Screen.x``/``Screen.y`` may be negative or non-zero on multi-monitor
+    Windows layouts. They are part of the absolute logical-pixel coordinate,
+    so they must not be discarded or clamped.
+    """
+    return (
+        int(screen.x + screen.width - width - EDGE_INSET),
+        int(screen.y + screen.height - height - EDGE_INSET),
+    )
+
+
+def _initial_position(
+    width: int,
+    height: int,
+    screen: Any | None = None,
+) -> tuple[int | None, int | None]:
+    """Anchor the initial window to the bottom-right of the selected screen.
+
+    Best-effort: if screen enumeration or geometry is unavailable in this
+    environment, fall back to letting the OS/window manager choose a position
+    rather than failing to launch.
+    """
+    screen = _initial_screen() if screen is None else screen
+    if screen is None:
+        return None, None
+    try:
+        return _position_on_screen(screen, width, height)
+    except (AttributeError, TypeError, ValueError):
         return None, None
 
 
@@ -184,7 +209,8 @@ def main(root: str | Path, config_path: str | None = None) -> None:
     client = ensure_broker(root, config, config_path=config_path)
 
     width, height = COMPACT_SIZE
-    x, y = _initial_position(width, height)
+    screen = _initial_screen()
+    x, y = _initial_position(width, height, screen)
 
     window = webview.create_window(
         "LocalPilot",
@@ -193,6 +219,7 @@ def main(root: str | Path, config_path: str | None = None) -> None:
         height=height,
         x=x,
         y=y,
+        screen=screen,
         min_size=MIN_SIZE,
         frameless=True,
         easy_drag=False,  # dragging is scoped to .pywebview-drag-region elements only

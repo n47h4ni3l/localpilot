@@ -1,48 +1,66 @@
-/* Small expanded-chat chrome refinements after the native-avatar handoff.
-   Keep the original panel design; this file only restores breathing room around
-   the additional window control introduced by the frameless desktop host. */
+/* Expanded-chat chrome refinements after the native-avatar handoff.
+   The original three-control header remains visually primary. The desktop-exit
+   control is deliberately demoted to a small corner affordance so it does not
+   crowd LocalPilot's title bar. */
+
+.panel {
+  border-radius: 16px;
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.44), 0 0 0 1px rgba(255, 255, 255, 0.018);
+}
 
 .panel-header {
+  position: relative;
   min-height: 64px;
-  gap: 8px;
-  padding: 11px 12px 11px 14px;
+  gap: 12px;
+  padding: 12px 42px 12px 16px;
 }
 
 .panel-header .avatar-canvas {
-  margin-right: 2px;
+  margin-right: 0;
 }
 
 .header-text {
-  min-width: 88px;
+  min-width: 0;
 }
 
-.panel-header .icon-btn {
-  width: 30px;
-  height: 30px;
-  flex: 0 0 30px;
+.panel-header .icon-btn:not(#close-app-btn) {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
 }
 
+/* Exit remains available, but no longer participates in the toolbar's flex
+   layout. This restores the clean history/settings/collapse rhythm from the
+   original companion design. */
 #close-app-btn {
-  margin-left: -2px;
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0;
+  margin: 0;
+  border-radius: 7px;
   font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 300;
   line-height: 1;
   color: var(--text-tertiary);
+  opacity: 0.45;
+  transition: opacity 150ms ease, color 150ms ease, background 150ms ease;
+}
+
+.panel-header:hover #close-app-btn {
+  opacity: 0.72;
 }
 
 #close-app-btn:hover {
+  opacity: 1;
   color: var(--error-core);
-  background: rgba(255, 107, 107, 0.08);
-}
-
-/* Preserve the original clean shell while making the border read crisply on
-   light wallpapers. */
-.panel {
-  border-radius: 16px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.42), 0 0 0 1px rgba(255, 255, 255, 0.015);
+  background: rgba(255, 107, 107, 0.09);
 }
 
 .composer-wrap {
-  padding-top: 14px;
+  padding: 15px 16px 16px;
 }

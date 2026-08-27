@@ -46,6 +46,14 @@ class FakeWindow:
         self.on_top_value = value
 
 
+class FakeScreen:
+    def __init__(self, *, x: int, y: int, width: int, height: int) -> None:
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+
+
 def test_expand_resizes_to_the_expanded_size_anchored_bottom_right(tmp_path):
     window = FakeWindow()
     bridge = webview_app.WindowBridge(window, tmp_path, None)
@@ -135,6 +143,26 @@ def test_initial_position_degrades_gracefully_without_a_display_backend():
     # failure mode itself is what's being verified.
     x, y = webview_app._initial_position(*webview_app.COMPACT_SIZE)
     assert (x is None and y is None) or (isinstance(x, int) and isinstance(y, int))
+
+
+def test_position_on_screen_preserves_negative_virtual_desktop_origin():
+    screen = FakeScreen(x=-1920, y=160, width=1920, height=1080)
+    x, y = webview_app._position_on_screen(screen, *webview_app.COMPACT_SIZE)
+    assert x == -192
+    assert y == 996
+    assert x < 0
+
+
+def test_position_on_screen_includes_positive_nonzero_origin():
+    screen = FakeScreen(x=2560, y=-200, width=1920, height=1080)
+    x, y = webview_app._position_on_screen(screen, *webview_app.COMPACT_SIZE)
+    assert x == 4288
+    assert y == 636
+
+
+def test_initial_position_uses_supplied_screen_without_clamping():
+    screen = FakeScreen(x=-1600, y=-900, width=1600, height=900)
+    assert webview_app._initial_position(*webview_app.COMPACT_SIZE, screen=screen) == (-192, -244)
 
 
 def test_build_parser_requires_root_and_defaults_config_to_none():

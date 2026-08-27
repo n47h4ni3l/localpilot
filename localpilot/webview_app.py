@@ -1,21 +1,12 @@
-"""WebView2-hosted desktop companion.
+"""WebView2-hosted expanded chat for the LocalPilot desktop companion.
 
-This is the production replacement for the Tkinter proof of concept in
-``desktop.py``. It reuses ``BrokerClient``/``ensure_broker`` from that module
-so both entry points share one broker-lifecycle implementation.
+The browser surface is intentionally used only for the full conversation UI.
+Compact mode is a separate native Windows/Tk avatar window because a real
+Windows smoke test showed that transparent EdgeChromium surfaces still painted
+an opaque rectangular backing area on the owner's desktop.
 
-Division of responsibility, on purpose:
-
-- All conversation data (sessions, messages, the event stream) flows through
-  the real broker HTTP API, fetched directly by the frontend in
-  ``webview/app.js``. This module never touches that data.
-- This module's only jobs are: get the broker running, get a token, open a
-  webview window, and hand the frontend that token. It also exposes a small
-  ``js_api`` bridge for the few things that are properties of this OS window
-  rather than of LocalPilot's agent state — resizing/moving the window,
-  toggling always-on-top, and registering a Windows Startup entry. None of
-  those have a broker endpoint, and none of them should: they're not
-  LocalPilot state, they're this process's window-manager state.
+Conversation data remains entirely on the authenticated loopback broker. This
+module owns only the expanded WebView window and the small OS-window bridge.
 """
 
 from __future__ import annotations
@@ -33,15 +24,14 @@ from webview.window import FixPoint
 
 from localpilot.config import load_config
 from localpilot.desktop import BrokerClient, ensure_broker
+from localpilot.desktop_state import DesktopUIState
 
 WEBVIEW_DIR = Path(__file__).resolve().parent / "webview"
 INDEX_HTML = WEBVIEW_DIR / "index.html"
 
-# Compact mode is intentionally only the avatar plus a small transparent hit
-# target/glow margin. The full chrome appears only after the owner opens chat.
-COMPACT_SIZE = (144, 144)
 EXPANDED_SIZE = (420, 640)
-MIN_SIZE = (120, 120)
+MIN_SIZE = (360, 480)
+NATIVE_AVATAR_SIZE = 128
 EDGE_INSET = 24
 
 _ANCHOR_BOTTOM_RIGHT = FixPoint.SOUTH | FixPoint.EAST
@@ -52,12 +42,7 @@ def _desktop_python_executable(
     *,
     platform_name: str | None = None,
 ) -> Path:
-    """Prefer ``pythonw.exe`` for the persistent Windows GUI host.
-
-    Normal ``localpilot desktop`` should not leave a console window behind.
-    Explicit ``python -m localpilot.webview_app`` remains a foreground/debug
-    path and therefore keeps its console and diagnostics.
-    """
+    """Prefer ``pythonw.exe`` for persistent Windows GUI processes."""
     platform_name = os.name if platform_name is None else platform_name
     current = Path(executable or sys.executable).resolve()
     if platform_name != "nt" or current.name.lower() == "pythonw.exe":
@@ -72,31 +57,61 @@ def _should_detach_gui(argv0: str, *, platform_name: str | None = None) -> bool:
     return platform_name == "nt" and Path(argv0).stem.lower() == "localpilot"
 
 
-def _launch_detached(root: Path, config_path: str | None) -> bool:
-    """Relaunch the WebView host under pythonw so normal desktop use is consoleless."""
+def _launch_module_detached(
+    module: str,
+    root: Path,
+    config_path: str | None,
+    *,
+    x: int | None = None,
+    y: int | None = None,
+) -> bool:
     executable = _desktop_python_executable()
-    if executable.name.lower() != "pythonw.exe":
+    if os.name == "nt" and executable.name.lower() != "pythonw.exe":
         return False
 
-    argv = [str(executable), "-m", "localpilot.webview_app", "--root", str(root)]
+    argv = [str(executable), "-m", module, "--root", str(root)]
     if config_path:
         argv.extend(["--config", str(Path(config_path).resolve())])
+    if x is not None and y is not None:
+        argv.extend(["--x", str(int(x)), "--y", str(int(y))])
 
-    creationflags = (
-        getattr(subprocess, "DETACHED_PROCESS", 0)
-        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    )
-    subprocess.Popen(
-        argv,
-        cwd=root,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        shell=False,
-        creationflags=creationflags,
-        close_fds=True,
-    )
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    try:
+        subprocess.Popen(
+            argv,
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            creationflags=creationflags,
+            close_fds=True,
+        )
+    except OSError:
+        return False
     return True
+
+
+def _launch_detached(root: Path, config_path: str | None) -> bool:
+    """Normal ``localpilot desktop`` starts the native avatar, not a WebView box."""
+    return _launch_module_detached("localpilot.native_avatar", root, config_path)
+
+
+def _launch_native_avatar(
+    root: Path,
+    config_path: str | None,
+    *,
+    x: int | None = None,
+    y: int | None = None,
+) -> bool:
+    return _launch_module_detached(
+        "localpilot.native_avatar", root, config_path, x=x, y=y
+    )
 
 
 def _startup_shortcut_path() -> Path:
@@ -107,23 +122,15 @@ def _startup_shortcut_path() -> Path:
 
 
 def _write_startup_shortcut(target: Path, root: Path, config_path: str | None) -> None:
-    """Create a .lnk that relaunches the desktop companion at login.
-
-    Uses a PowerShell one-shot against the WScript.Shell COM object rather
-    than adding a binary .lnk-writing dependency, consistent with how the
-    rest of this codebase reaches for PowerShell for narrow Windows-native
-    operations (see tools/windows.py, tools/windows_actions.py) instead of
-    pulling in a new third-party package for one small piece of behaviour.
-    """
+    """Create a .lnk that starts the native companion avatar at login."""
     exe = str(_desktop_python_executable())
-    argv = ["-m", "localpilot.webview_app", "--root", str(root.resolve())]
+    argv = ["-m", "localpilot.native_avatar", "--root", str(root.resolve())]
     if config_path:
         argv.extend(["--config", str(Path(config_path).resolve())])
     arguments = subprocess.list2cmdline(argv)
 
-    # The script is constant: paths and arguments cross the process boundary
-    # only as environment values, so apostrophes, quotes and PowerShell
-    # metacharacters can never become source code.
+    # Paths cross the PowerShell boundary only as environment values so quotes,
+    # apostrophes and metacharacters can never become script source.
     ps = (
         "$s = New-Object -ComObject WScript.Shell; "
         "$sc = $s.CreateShortcut([Environment]::GetEnvironmentVariable('LOCALPILOT_SHORTCUT_PATH')); "
@@ -151,29 +158,76 @@ def _write_startup_shortcut(target: Path, root: Path, config_path: str | None) -
 
 
 class WindowBridge:
-    """The js_api surface exposed to the frontend — window chrome only.
-
-    Every method here is a native-window or OS operation with no broker
-    equivalent. Conversation data never passes through this object.
-    """
+    """Window-manager bridge only; conversation data remains on the broker."""
 
     def __init__(self, window: webview.Window, root: Path, config_path: str | None) -> None:
         self._window = window
         self._root = root
         self._config_path = config_path
+        self._state = DesktopUIState(root / load_config(config_path).agent.data_dir)
+        self._avatar_spawned = False
+        self._exit_requested = False
+
+    @property
+    def exit_requested(self) -> bool:
+        return self._exit_requested
 
     def expand(self) -> dict[str, Any]:
+        # The WebView process exists only while chat is expanded. Retain this
+        # method for the existing frontend bridge contract.
         w, h = EXPANDED_SIZE
         self._window.resize(w, h, fix_point=_ANCHOR_BOTTOM_RIGHT)
         return {"ok": True}
 
+    def _avatar_position(self) -> tuple[int | None, int | None]:
+        # The avatar has a stable "home" position persisted before chat opens.
+        # Prefer that over deriving a new position from the chat window every
+        # time; the latter caused the companion to walk around the desktop on
+        # repeated avatar -> chat -> avatar transitions.
+        values = self._state.read()
+        saved_x = values.get("avatar_x")
+        saved_y = values.get("avatar_y")
+        if isinstance(saved_x, int) and isinstance(saved_y, int):
+            return saved_x, saved_y
+        try:
+            x = int(self._window.x + self._window.width - NATIVE_AVATAR_SIZE)
+            y = int(self._window.y + self._window.height - NATIVE_AVATAR_SIZE)
+            return x, y
+        except Exception:
+            return None, None
+
+    def ensure_avatar(self) -> bool:
+        if self._avatar_spawned:
+            return True
+        x, y = self._avatar_position()
+        if _launch_native_avatar(self._root, self._config_path, x=x, y=y):
+            self._avatar_spawned = True
+            if isinstance(x, int) and isinstance(y, int):
+                self._state.update(avatar_x=x, avatar_y=y)
+            return True
+        return False
+
     def collapse(self) -> dict[str, Any]:
-        w, h = COMPACT_SIZE
-        self._window.resize(w, h, fix_point=_ANCHOR_BOTTOM_RIGHT)
+        if not self.ensure_avatar():
+            return {"ok": False, "reason": "native-avatar-launch-failed"}
+        self._window.destroy()
         return {"ok": True}
 
+    def exit_companion(self) -> dict[str, Any]:
+        """Close the desktop UI without respawning the compact companion."""
+        self._exit_requested = True
+        self._window.destroy()
+        return {"ok": True}
+
+    def mark_native_close(self, *_args: Any) -> None:
+        """Alt+F4/native close means exit, while explicit collapse means avatar."""
+        if not self._avatar_spawned:
+            self._exit_requested = True
+
     def set_always_on_top(self, value: bool) -> dict[str, Any]:
-        self._window.on_top = bool(value)
+        enabled = bool(value)
+        self._window.on_top = enabled
+        self._state.update(always_on_top=enabled)
         return {"ok": True}
 
     def get_start_with_windows(self) -> dict[str, Any]:
@@ -213,24 +267,34 @@ class WindowBridge:
 
 
 def _bridge_payload(client: BrokerClient, config_path: str | None) -> dict[str, Any]:
-    return {"baseUrl": client.base_url, "token": client.token, "hasConfigPath": bool(config_path)}
+    return {
+        "baseUrl": client.base_url,
+        "token": client.token,
+        "hasConfigPath": bool(config_path),
+    }
 
 
 def _initial_screen() -> Any | None:
-    """Return pywebview's first screen, or None when display discovery is unavailable."""
     try:
         return webview.screens[0]
     except Exception:
         return None
 
 
-def _position_on_screen(screen: Any, width: int, height: int) -> tuple[int, int]:
-    """Place the companion at a screen's bottom-right using virtual-desktop coordinates.
+def _screen_for_position(x: int, y: int) -> Any | None:
+    try:
+        for screen in webview.screens:
+            if (
+                int(screen.x) <= x < int(screen.x + screen.width)
+                and int(screen.y) <= y < int(screen.y + screen.height)
+            ):
+                return screen
+    except Exception:
+        return None
+    return None
 
-    ``Screen.x``/``Screen.y`` may be negative or non-zero on multi-monitor
-    Windows layouts. They are part of the absolute logical-pixel coordinate,
-    so they must not be discarded or clamped.
-    """
+
+def _position_on_screen(screen: Any, width: int, height: int) -> tuple[int, int]:
     return (
         int(screen.x + screen.width - width - EDGE_INSET),
         int(screen.y + screen.height - height - EDGE_INSET),
@@ -242,12 +306,6 @@ def _initial_position(
     height: int,
     screen: Any | None = None,
 ) -> tuple[int | None, int | None]:
-    """Anchor the initial window to the bottom-right of the selected screen.
-
-    Best-effort: if screen enumeration or geometry is unavailable in this
-    environment, fall back to letting the OS/window manager choose a position
-    rather than failing to launch.
-    """
     screen = _initial_screen() if screen is None else screen
     if screen is None:
         return None, None
@@ -257,43 +315,86 @@ def _initial_position(
         return None, None
 
 
-def main(root: str | Path, config_path: str | None = None) -> None:
+def _install_expanded_window_chrome(window: webview.Window) -> None:
+    """Install a drag affordance and visible close button without remote assets."""
+    script = r"""
+(() => {
+  const header = document.querySelector('.panel-header');
+  if (!header) return;
+  const title = document.querySelector('.header-text');
+  const avatar = document.getElementById('avatar-header');
+  if (title) title.classList.add('pywebview-drag-region');
+  if (avatar) avatar.classList.add('pywebview-drag-region');
+  if (document.getElementById('close-app-btn')) return;
+  const button = document.createElement('button');
+  button.className = 'icon-btn';
+  button.id = 'close-app-btn';
+  button.type = 'button';
+  button.setAttribute('aria-label', 'Close LocalPilot');
+  button.textContent = '×';
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.exit_companion) {
+      window.pywebview.api.exit_companion();
+    }
+  });
+  header.appendChild(button);
+})();
+"""
+    window.evaluate_js(script)
+
+
+def main(
+    root: str | Path,
+    config_path: str | None = None,
+    *,
+    x: int | None = None,
+    y: int | None = None,
+) -> None:
     root = Path(root).resolve()
 
-    # The normal `localpilot desktop` console-script invocation relaunches the
-    # long-lived GUI under pythonw and returns immediately to the owner's shell.
-    # Direct module execution stays foreground so failures remain diagnosable.
+    # The normal console command starts the real native floating body. Direct
+    # module execution remains a foreground full-chat diagnostic path.
     if _should_detach_gui(sys.argv[0]) and _launch_detached(root, config_path):
         return
 
     config = load_config(config_path)
     client = ensure_broker(root, config, config_path=config_path)
 
-    width, height = COMPACT_SIZE
-    screen = _initial_screen()
-    x, y = _initial_position(width, height, screen)
+    width, height = EXPANDED_SIZE
+    if x is not None and y is not None:
+        screen = _screen_for_position(int(x), int(y))
+        window_x, window_y = int(x), int(y)
+    else:
+        screen = _initial_screen()
+        window_x, window_y = _initial_position(width, height, screen)
 
+    ui_state = DesktopUIState(root / config.agent.data_dir).read()
     window = webview.create_window(
         "LocalPilot",
         url=str(INDEX_HTML),
         width=width,
         height=height,
-        x=x,
-        y=y,
+        x=window_x,
+        y=window_y,
         screen=screen,
         min_size=MIN_SIZE,
         frameless=True,
-        easy_drag=False,  # dragging is scoped to .pywebview-drag-region elements only
-        shadow=False,
-        on_top=True,
+        # Easy drag restores a broad native movement affordance immediately;
+        # the header also receives explicit drag-region classes on load.
+        easy_drag=True,
+        shadow=True,
+        on_top=bool(ui_state.get("always_on_top", True)),
         background_color="#0B121D",
-        transparent=True,
+        transparent=False,
     )
 
     bridge = WindowBridge(window, root, config_path)
     window.expose(
         bridge.expand,
         bridge.collapse,
+        bridge.exit_companion,
         bridge.set_always_on_top,
         bridge.get_start_with_windows,
         bridge.set_start_with_windows,
@@ -301,24 +402,41 @@ def main(root: str | Path, config_path: str | None = None) -> None:
     )
 
     def on_loaded() -> None:
+        # The WebView is expanded-only. Reuse the existing frontend by
+        # selecting its expanded layout before handing it the broker payload.
+        window.evaluate_js("document.getElementById('app').classList.add('is-expanded')")
+        _install_expanded_window_chrome(window)
         payload = _bridge_payload(client, config_path)
         window.evaluate_js(f"window.__initLocalPilot({json.dumps(payload)})")
 
     window.events.loaded += on_loaded
+    try:
+        window.events.closing += bridge.mark_native_close
+    except AttributeError:
+        # Older/non-native test backends may not expose the closing event.
+        pass
 
-    webview.start(gui="edgechromium" if os.name == "nt" else None, debug=False)
+    try:
+        webview.start(gui="edgechromium" if os.name == "nt" else None, debug=False)
+    finally:
+        # Explicit collapse already spawns the avatar. Alt+F4 or the injected
+        # close button is an actual exit and must not resurrect the companion.
+        if not bridge.exit_requested:
+            bridge.ensure_avatar()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="localpilot-desktop")
+    parser = argparse.ArgumentParser(prog="localpilot-desktop-chat")
     parser.add_argument("--root", required=True, help="LocalPilot project root")
     parser.add_argument("--config", default=None, help="Path to localpilot.toml")
+    parser.add_argument("--x", type=int, default=None)
+    parser.add_argument("--y", type=int, default=None)
     return parser
 
 
 def cli_main() -> None:
     args = build_parser().parse_args()
-    main(args.root, args.config)
+    main(args.root, args.config, x=args.x, y=args.y)
 
 
 if __name__ == "__main__":

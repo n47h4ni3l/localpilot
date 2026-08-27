@@ -1,9 +1,9 @@
 """WebView2-hosted expanded chat for the LocalPilot desktop companion.
 
 The browser surface is intentionally used only for the full conversation UI.
-Compact mode is now a separate native Windows/Tk avatar window, because a
-real Windows smoke test showed that transparent EdgeChromium surfaces still
-painted an opaque rectangular backing area on the owner's desktop.
+Compact mode is a separate native Windows/Tk avatar window because a real
+Windows smoke test showed that transparent EdgeChromium surfaces still painted
+an opaque rectangular backing area on the owner's desktop.
 
 Conversation data remains entirely on the authenticated loopback broker. This
 module owns only the expanded WebView window and the small OS-window bridge.
@@ -166,6 +166,11 @@ class WindowBridge:
         self._config_path = config_path
         self._state = DesktopUIState(root / load_config(config_path).agent.data_dir)
         self._avatar_spawned = False
+        self._exit_requested = False
+
+    @property
+    def exit_requested(self) -> bool:
+        return self._exit_requested
 
     def expand(self) -> dict[str, Any]:
         # The WebView process exists only while chat is expanded. Retain this
@@ -175,13 +180,21 @@ class WindowBridge:
         return {"ok": True}
 
     def _avatar_position(self) -> tuple[int | None, int | None]:
+        # The avatar has a stable "home" position persisted before chat opens.
+        # Prefer that over deriving a new position from the chat window every
+        # time; the latter caused the companion to walk around the desktop on
+        # repeated avatar -> chat -> avatar transitions.
+        values = self._state.read()
+        saved_x = values.get("avatar_x")
+        saved_y = values.get("avatar_y")
+        if isinstance(saved_x, int) and isinstance(saved_y, int):
+            return saved_x, saved_y
         try:
             x = int(self._window.x + self._window.width - NATIVE_AVATAR_SIZE)
             y = int(self._window.y + self._window.height - NATIVE_AVATAR_SIZE)
             return x, y
         except Exception:
-            values = self._state.read()
-            return values.get("avatar_x"), values.get("avatar_y")
+            return None, None
 
     def ensure_avatar(self) -> bool:
         if self._avatar_spawned:
@@ -199,6 +212,17 @@ class WindowBridge:
             return {"ok": False, "reason": "native-avatar-launch-failed"}
         self._window.destroy()
         return {"ok": True}
+
+    def exit_companion(self) -> dict[str, Any]:
+        """Close the desktop UI without respawning the compact companion."""
+        self._exit_requested = True
+        self._window.destroy()
+        return {"ok": True}
+
+    def mark_native_close(self, *_args: Any) -> None:
+        """Alt+F4/native close means exit, while explicit collapse means avatar."""
+        if not self._avatar_spawned:
+            self._exit_requested = True
 
     def set_always_on_top(self, value: bool) -> dict[str, Any]:
         enabled = bool(value)
@@ -291,6 +315,36 @@ def _initial_position(
         return None, None
 
 
+def _install_expanded_window_chrome(window: webview.Window) -> None:
+    """Install a drag affordance and visible close button without remote assets."""
+    script = r"""
+(() => {
+  const header = document.querySelector('.panel-header');
+  if (!header) return;
+  const title = document.querySelector('.header-text');
+  const avatar = document.getElementById('avatar-header');
+  if (title) title.classList.add('pywebview-drag-region');
+  if (avatar) avatar.classList.add('pywebview-drag-region');
+  if (document.getElementById('close-app-btn')) return;
+  const button = document.createElement('button');
+  button.className = 'icon-btn';
+  button.id = 'close-app-btn';
+  button.type = 'button';
+  button.setAttribute('aria-label', 'Close LocalPilot');
+  button.textContent = '×';
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.exit_companion) {
+      window.pywebview.api.exit_companion();
+    }
+  });
+  header.appendChild(button);
+})();
+"""
+    window.evaluate_js(script)
+
+
 def main(
     root: str | Path,
     config_path: str | None = None,
@@ -327,7 +381,9 @@ def main(
         screen=screen,
         min_size=MIN_SIZE,
         frameless=True,
-        easy_drag=False,
+        # Easy drag restores a broad native movement affordance immediately;
+        # the header also receives explicit drag-region classes on load.
+        easy_drag=True,
         shadow=True,
         on_top=bool(ui_state.get("always_on_top", True)),
         background_color="#0B121D",
@@ -338,6 +394,7 @@ def main(
     window.expose(
         bridge.expand,
         bridge.collapse,
+        bridge.exit_companion,
         bridge.set_always_on_top,
         bridge.get_start_with_windows,
         bridge.set_start_with_windows,
@@ -345,20 +402,27 @@ def main(
     )
 
     def on_loaded() -> None:
-        # The WebView is now expanded-only. Reuse the existing frontend by
+        # The WebView is expanded-only. Reuse the existing frontend by
         # selecting its expanded layout before handing it the broker payload.
         window.evaluate_js("document.getElementById('app').classList.add('is-expanded')")
+        _install_expanded_window_chrome(window)
         payload = _bridge_payload(client, config_path)
         window.evaluate_js(f"window.__initLocalPilot({json.dumps(payload)})")
 
     window.events.loaded += on_loaded
+    try:
+        window.events.closing += bridge.mark_native_close
+    except AttributeError:
+        # Older/non-native test backends may not expose the closing event.
+        pass
 
     try:
         webview.start(gui="edgechromium" if os.name == "nt" else None, debug=False)
     finally:
-        # Alt+F4 or another native close should return to the companion body in
-        # the same way as the frontend collapse button.
-        bridge.ensure_avatar()
+        # Explicit collapse already spawns the avatar. Alt+F4 or the injected
+        # close button is an actual exit and must not resurrect the companion.
+        if not bridge.exit_requested:
+            bridge.ensure_avatar()
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -8,6 +8,7 @@ from localpilot.safety import RiskLevel, ToolSpec
 from localpilot.tools.github_readonly import GitHubReader
 from localpilot.tools.learning_readonly import LearningMemoryReader
 from localpilot.tools.library import LocalLibrary
+from localpilot.tools.reading_notes import LibraryReadingNotesReader
 from localpilot.tools.repository import RepositoryReader
 from localpilot.tools.web import fetch_public_https, search_public_web
 from localpilot.tools.windows import (
@@ -160,6 +161,7 @@ def registry(
                 config.library,
                 root / config.agent.data_dir / config.library.index_database,
             )
+            reading_notes = LibraryReadingNotesReader(root, config.agent.data_dir)
             specs.extend(
                 [
                     ToolSpec(
@@ -179,6 +181,12 @@ def registry(
                         "Read a bounded cited passage from an indexed owner-provided library source. Source files remain read-only and results do not enter durable memory automatically.",
                         RiskLevel.READ_ONLY,
                         library.read_library_passage,
+                    ),
+                    ToolSpec(
+                        "get_recent_library_reading_notes",
+                        "Read bounded recent autonomous library-reading notes. Notes are provisional reflections with library citations, not authoritative durable knowledge facts.",
+                        RiskLevel.READ_ONLY,
+                        reading_notes.get_recent_library_reading_notes,
                     ),
                 ]
             )

@@ -7,7 +7,6 @@ import queue
 import subprocess
 import sys
 import threading
-import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -20,6 +19,7 @@ from localpilot.webview_app import EXPANDED_SIZE, _desktop_python_executable
 AVATAR_SIZE = 128
 EDGE_INSET = 24
 _TRANSPARENT_KEY = "#010203"
+_CHAT_START_GRACE_MS = 1600
 _STATE_COLORS = {
     "idle": "#63d9b8",
     "listening": "#7eead1",
@@ -35,24 +35,76 @@ _STATE_COLORS = {
 }
 
 
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_ulong),
+        ("rcMonitor", _RECT),
+        ("rcWork", _RECT),
+        ("dwFlags", ctypes.c_ulong),
+    ]
+
+
+def _enable_per_monitor_dpi_awareness(*, platform_name: str | None = None) -> None:
+    """Best-effort DPI setup before Tk creates any HWNDs.
+
+    The desktop companion exchanges only Windows screen coordinates inside the
+    native avatar process. Declaring DPI awareness before Tk starts prevents
+    Windows from silently virtualising one side of those calculations.
+    """
+
+    platform_name = os.name if platform_name is None else platform_name
+    if platform_name != "nt":
+        return
+    try:
+        user32 = ctypes.windll.user32
+        setter = user32.SetProcessDpiAwarenessContext
+        setter.argtypes = [ctypes.c_void_p]
+        setter.restype = ctypes.c_bool
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (HANDLE)-4
+        if setter(ctypes.c_void_p(-4)):
+            return
+    except (AttributeError, OSError, ValueError):
+        pass
+    try:
+        user32 = ctypes.windll.user32
+        user32.SetProcessDPIAware.argtypes = []
+        user32.SetProcessDPIAware.restype = ctypes.c_bool
+        user32.SetProcessDPIAware()
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 def _primary_work_area(*, platform_name: str | None = None) -> tuple[int, int, int, int] | None:
     """Return the primary Windows work area as absolute virtual-desktop coordinates."""
+
     platform_name = os.name if platform_name is None else platform_name
     if platform_name != "nt":
         return None
-
-    class RECT(ctypes.Structure):
-        _fields_ = [
-            ("left", ctypes.c_long),
-            ("top", ctypes.c_long),
-            ("right", ctypes.c_long),
-            ("bottom", ctypes.c_long),
-        ]
-
-    rect = RECT()
+    rect = _RECT()
     try:
-        ok = ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
-    except (AttributeError, OSError):
+        user32 = ctypes.windll.user32
+        user32.SystemParametersInfoW.argtypes = [
+            ctypes.c_uint,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.c_uint,
+        ]
+        user32.SystemParametersInfoW.restype = ctypes.c_bool
+        ok = user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
+    except (AttributeError, OSError, ValueError):
         return None
     if not ok:
         return None
@@ -65,39 +117,25 @@ def _monitor_work_area_for_point(
     *,
     platform_name: str | None = None,
 ) -> tuple[int, int, int, int] | None:
-    """Return the Windows monitor work area containing an absolute desktop point."""
+    """Return the nearest Windows monitor work area for an absolute point."""
+
     platform_name = os.name if platform_name is None else platform_name
     if platform_name != "nt":
         return None
-
-    class POINT(ctypes.Structure):
-        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-    class RECT(ctypes.Structure):
-        _fields_ = [
-            ("left", ctypes.c_long),
-            ("top", ctypes.c_long),
-            ("right", ctypes.c_long),
-            ("bottom", ctypes.c_long),
-        ]
-
-    class MONITORINFO(ctypes.Structure):
-        _fields_ = [
-            ("cbSize", ctypes.c_ulong),
-            ("rcMonitor", RECT),
-            ("rcWork", RECT),
-            ("dwFlags", ctypes.c_ulong),
-        ]
-
     try:
-        # MONITOR_DEFAULTTONEAREST keeps placement recoverable even if a saved
-        # coordinate is a few pixels outside a monitor after a display change.
-        monitor = ctypes.windll.user32.MonitorFromPoint(POINT(int(x), int(y)), 2)
+        user32 = ctypes.windll.user32
+        user32.MonitorFromPoint.argtypes = [_POINT, ctypes.c_uint]
+        user32.MonitorFromPoint.restype = ctypes.c_void_p
+        user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFO)]
+        user32.GetMonitorInfoW.restype = ctypes.c_bool
+        # MONITOR_DEFAULTTONEAREST also recovers stale coordinates after a
+        # monitor is unplugged or the virtual desktop arrangement changes.
+        monitor = user32.MonitorFromPoint(_POINT(int(x), int(y)), 2)
         if not monitor:
             return None
-        info = MONITORINFO()
+        info = _MONITORINFO()
         info.cbSize = ctypes.sizeof(info)
-        if not ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
             return None
         work = info.rcWork
         return int(work.left), int(work.top), int(work.right), int(work.bottom)
@@ -114,7 +152,7 @@ def _initial_avatar_position(
     if isinstance(saved_x, int) and isinstance(saved_y, int):
         return saved_x, saved_y
     if work_area is not None:
-        left, top, right, bottom = work_area
+        _left, _top, right, bottom = work_area
         return right - AVATAR_SIZE - EDGE_INSET, bottom - AVATAR_SIZE - EDGE_INSET
     return EDGE_INSET, EDGE_INSET
 
@@ -137,12 +175,25 @@ def _clamp_position(
     )
 
 
+def _recover_avatar_position(x: int, y: int) -> tuple[int, int]:
+    """Guarantee that the complete avatar is visible on some current monitor."""
+
+    work_area = _monitor_work_area_for_point(
+        int(x) + AVATAR_SIZE // 2,
+        int(y) + AVATAR_SIZE // 2,
+    )
+    if work_area is None:
+        work_area = _primary_work_area()
+    return _clamp_position(x, y, AVATAR_SIZE, AVATAR_SIZE, work_area)
+
+
 def _chat_position_from_avatar(
     x: int,
     y: int,
     work_area: tuple[int, int, int, int] | None = None,
 ) -> tuple[int, int]:
-    """Anchor chat near the avatar, then keep the full window inside its monitor."""
+    """Pure geometry helper retained for tests/future same-coordinate hosts."""
+
     width, height = EXPANDED_SIZE
     raw_x = int(x) + AVATAR_SIZE - width
     raw_y = int(y) + AVATAR_SIZE - height
@@ -158,9 +209,17 @@ def _launch_webview(
     root: Path,
     config_path: str | None,
     *,
-    x: int,
-    y: int,
-) -> bool:
+    x: int | None = None,
+    y: int | None = None,
+) -> subprocess.Popen[Any] | None:
+    """Start expanded chat and retain a process handle for fail-safe handoff.
+
+    Native Tk and WebView2 can use different DPI coordinate spaces. Normal
+    avatar clicks therefore let WebView place itself using its own screen
+    model rather than forwarding Tk coordinates across process/toolkit bounds.
+    Explicit coordinates remain available for diagnostics and tests.
+    """
+
     executable = _desktop_python_executable()
     argv = [
         str(executable),
@@ -168,13 +227,11 @@ def _launch_webview(
         "localpilot.webview_app",
         "--root",
         str(root),
-        "--x",
-        str(int(x)),
-        "--y",
-        str(int(y)),
     ]
     if config_path:
         argv.extend(["--config", str(Path(config_path).resolve())])
+    if x is not None and y is not None:
+        argv.extend(["--x", str(int(x)), "--y", str(int(y))])
     creationflags = 0
     if os.name == "nt":
         creationflags = (
@@ -182,7 +239,7 @@ def _launch_webview(
             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         )
     try:
-        subprocess.Popen(
+        return subprocess.Popen(
             argv,
             cwd=root,
             stdin=subprocess.DEVNULL,
@@ -193,42 +250,70 @@ def _launch_webview(
             close_fds=True,
         )
     except OSError:
-        return False
-    return True
+        return None
 
 
 def _top_level_hwnd(root: Any) -> int:
-    """Resolve Tk's client HWND to its real top-level Windows wrapper HWND."""
+    """Resolve Tk's client HWND to its pointer-sized top-level wrapper HWND."""
+
     hwnd = int(root.winfo_id())
     if os.name != "nt":
         return hwnd
     try:
-        parent = int(ctypes.windll.user32.GetParent(hwnd) or 0)
+        user32 = ctypes.windll.user32
+        user32.GetParent.argtypes = [ctypes.c_void_p]
+        user32.GetParent.restype = ctypes.c_void_p
+        parent = user32.GetParent(ctypes.c_void_p(hwnd))
         if parent:
-            hwnd = parent
+            hwnd = int(parent)
     except (AttributeError, OSError, ValueError):
         pass
     return hwnd
 
 
-def _set_window_position(root: Any, x: int, y: int) -> None:
+def _set_window_position(root: Any, x: int, y: int) -> bool:
     """Move by absolute virtual-desktop coordinates without changing z-order."""
+
     if os.name == "nt":
         try:
             root.update_idletasks()
             hwnd = _top_level_hwnd(root)
-            # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE. In particular, do
-            # not accidentally turn every dragged avatar into a TOPMOST HWND.
+            user32 = ctypes.windll.user32
+            user32.SetWindowPos.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_uint,
+            ]
+            user32.SetWindowPos.restype = ctypes.c_bool
+            # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
             flags = 0x0001 | 0x0004 | 0x0010
-            ctypes.windll.user32.SetWindowPos(hwnd, 0, int(x), int(y), 0, 0, flags)
-            return
+            if user32.SetWindowPos(
+                ctypes.c_void_p(hwnd),
+                None,
+                int(x),
+                int(y),
+                0,
+                0,
+                flags,
+            ):
+                return True
         except (AttributeError, OSError, ValueError):
             pass
-    root.geometry(f"{AVATAR_SIZE}x{AVATAR_SIZE}{int(x):+d}{int(y):+d}")
+    # Tk geometry is reliable for non-negative coordinates and non-Windows
+    # fallback environments. Negative Tk positions mean offsets from the far
+    # edge, so Windows multi-monitor negatives stay on the Win32 path above.
+    if os.name != "nt" or (int(x) >= 0 and int(y) >= 0):
+        root.geometry(f"{AVATAR_SIZE}x{AVATAR_SIZE}{int(x):+d}{int(y):+d}")
+        return True
+    return False
 
 
 class NativeAvatarApp:
-    """Small Windows-native transparent companion; WebView is used only for chat."""
+    """Small native transparent companion; WebView is used only for chat."""
 
     def __init__(
         self,
@@ -240,6 +325,7 @@ class NativeAvatarApp:
         initial_x: int | None = None,
         initial_y: int | None = None,
     ) -> None:
+        _enable_per_monitor_dpi_awareness()
         import tkinter as tk
 
         self.tk = tk
@@ -252,8 +338,12 @@ class NativeAvatarApp:
         if initial_x is not None and initial_y is not None:
             stored["avatar_x"] = int(initial_x)
             stored["avatar_y"] = int(initial_y)
-        self.x, self.y = _initial_avatar_position(stored, _primary_work_area())
+        initial = _initial_avatar_position(stored, _primary_work_area())
+        self.x, self.y = _recover_avatar_position(*initial)
         self.always_on_top = bool(stored.get("always_on_top", True))
+        # Repair stale/off-screen state immediately so future handoffs inherit a
+        # visible coordinate even if this process later crashes.
+        self.state_store.update(avatar_x=self.x, avatar_y=self.y)
 
         self.root = tk.Tk()
         self.root.title(config.agent.name)
@@ -281,6 +371,7 @@ class NativeAvatarApp:
         self.frame = 0
         self._drag_origin: tuple[int, int, int, int] | None = None
         self._dragged = False
+        self._opening_chat = False
         self._stop = threading.Event()
         self._events: queue.Queue[str] = queue.Queue()
         self._after_event_id = 0
@@ -308,22 +399,27 @@ class NativeAvatarApp:
         self._dragged = False
 
     def _drag(self, event: Any) -> None:
-        if self._drag_origin is None:
+        if self._drag_origin is None or self._opening_chat:
             return
         mouse_x, mouse_y, start_x, start_y = self._drag_origin
         dx = int(event.x_root) - mouse_x
         dy = int(event.y_root) - mouse_y
-        if abs(dx) + abs(dy) >= 4:
+        if abs(dx) + abs(dy) >= 3:
             self._dragged = True
-        self.x = start_x + dx
-        self.y = start_y + dy
-        _set_window_position(self.root, self.x, self.y)
+        next_x = start_x + dx
+        next_y = start_y + dy
+        if _set_window_position(self.root, next_x, next_y):
+            self.x = next_x
+            self.y = next_y
 
     def _release(self, _event: Any) -> None:
-        self.state_store.update(avatar_x=self.x, avatar_y=self.y)
         self._drag_origin = None
-        if not self._dragged:
-            self.open_chat()
+        if self._dragged:
+            self.x, self.y = _recover_avatar_position(self.x, self.y)
+            _set_window_position(self.root, self.x, self.y)
+            self.state_store.update(avatar_x=self.x, avatar_y=self.y)
+            return
+        self.open_chat()
 
     def _show_menu(self, event: Any) -> None:
         try:
@@ -381,8 +477,6 @@ class NativeAvatarApp:
         offset = (AVATAR_SIZE - cell * cols) // 2
         cx, cy = 7.5, 7.9
 
-        # Sparse square motes make a pixel glow without introducing an opaque
-        # backing surface. They are intentionally actual pixels, not alpha blur.
         if self.runtime_state not in {"offline", "error"}:
             mote_phase = self.frame % 6
             for mx, my in ((1 + mote_phase // 2, 4), (13 - mote_phase // 2, 9), (5, 1)):
@@ -435,24 +529,40 @@ class NativeAvatarApp:
                 )
 
     def open_chat(self) -> None:
-        chat_x, chat_y = _chat_position_from_avatar(self.x, self.y)
+        if self._opening_chat or self._stop.is_set():
+            return
+        self.x, self.y = _recover_avatar_position(self.x, self.y)
+        _set_window_position(self.root, self.x, self.y)
         self.state_store.update(avatar_x=self.x, avatar_y=self.y)
-        if _launch_webview(
-            self.project_root,
-            self.config_path,
-            x=chat_x,
-            y=chat_y,
-        ):
-            self.close()
-        else:
+        process = _launch_webview(self.project_root, self.config_path)
+        if process is None:
             self.runtime_state = "error"
             self._draw()
+            return
+        self._opening_chat = True
+        self.runtime_state = "working"
+        self._draw()
+        # Do not disappear immediately. A detached launcher can fail after
+        # Popen succeeds; keeping the avatar visible during this grace window
+        # gives the owner a usable recovery surface instead of an empty desktop.
+        self.root.after(_CHAT_START_GRACE_MS, lambda: self._finish_chat_handoff(process))
+
+    def _finish_chat_handoff(self, process: subprocess.Popen[Any]) -> None:
+        if self._stop.is_set():
+            return
+        if process.poll() is not None:
+            self._opening_chat = False
+            self.runtime_state = "error"
+            self._draw()
+            return
+        self.close()
 
     def close(self) -> None:
         if self._stop.is_set():
             return
         self._stop.set()
         try:
+            self.x, self.y = _recover_avatar_position(self.x, self.y)
             self.state_store.update(avatar_x=self.x, avatar_y=self.y)
         finally:
             self.root.destroy()

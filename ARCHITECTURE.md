@@ -249,3 +249,25 @@ project paths importing those APIs.
 Optional peer-model comparison runs identical transfer scenarios through two installed Ollama
 models and records scores, latency/resource cost, and concise lessons. Model size is not a scoring
 input, raw responses are not retained, and no comparison changes configuration or promotion state.
+
+## Owner-managed local library
+
+The optional local library is a separate evidence path for owner-provided books, manuals, and notes. Source
+files live outside the repository, are never modified by LocalPilot, and are never followed through symlinks.
+PDF and UTF-8 text extraction is bounded by configured document, file-size, page, page-character, refresh, and
+result limits. A disposable SQLite FTS index lives under `agent.data_dir`; deleting it loses no source data.
+
+The operator may autonomously search this library when it is relevant. It consults relevant local material
+before public-web discovery, then augments from the web only when the library is missing coverage, stale,
+contradictory, or the question inherently requires current information. An explicit library request is routed
+to library tools first; a successful passage read closes acquisition for that source and triggers synthesis.
+Search and passage tools return
+`library://` path/page/passage citations, and retrieved content is treated as untrusted evidence rather than
+instructions. Library observations participate in the same turn evidence ledger as web and repository reads.
+They remain turn-local and do not implicitly call `LearningMemory.upsert_knowledge_facts` or modify model
+weights.
+
+Library-backed learning should progress in distinct, reviewable layers: retrieval first; then bounded factual
+distillation with exact provenance, source digests, confidence and staleness; only then optional weight
+adaptation using reviewed records, held-out evaluation and rollback. This preserves a clean distinction between
+being able to consult a source, retaining a sourced fact, and changing the model itself.

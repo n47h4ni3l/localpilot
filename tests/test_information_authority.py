@@ -218,6 +218,26 @@ def test_external_specifics_need_source_evidence_even_in_casual_prose():
     assert provisional.accepted is True
 
 
+def test_cited_local_library_observation_can_ground_external_specifics():
+    report = TurnEvidenceVerifier().review(
+        "Research published in 2024 found the stated effect.",
+        successful_tools=frozenset({"read_library_passage"}),
+    )
+
+    assert report.accepted is True
+
+
+def test_library_search_excerpt_alone_does_not_ground_external_specifics():
+    report = TurnEvidenceVerifier().review(
+        "Research published in 2024 found the stated effect.",
+        successful_tools=frozenset({"search_library"}),
+    )
+
+    assert {issue.code for issue in report.issues} == {
+        "external_specific_without_source_evidence"
+    }
+
+
 def test_claimed_absence_of_background_activity_is_not_introspection():
     report = TurnEvidenceVerifier().review(
         "I’m in a quiet spot right now—no scheduled tasks, no alerts, and no background jobs."
@@ -383,6 +403,65 @@ def test_explicit_primary_source_research_cannot_claim_success_without_fetch():
     assert unsupported == ("research_claims_without_primary_source",)
     assert scoped == ()
     assert verified == ()
+
+
+def test_explicit_library_research_requires_library_evidence_and_requested_citation():
+    prompt = "Consult the local library and cite the source and page reference."
+
+    unsupported = LocalPilotAgent._contextual_evidence_risks(
+        prompt,
+        "Envy concerns a wanted good, while jealousy concerns a threatened bond.",
+        frozenset(),
+    )
+    uncited = LocalPilotAgent._contextual_evidence_risks(
+        prompt,
+        "The library distinguishes envy from jealousy.",
+        frozenset({"read_library_passage"}),
+    )
+    cited = LocalPilotAgent._contextual_evidence_risks(
+        prompt,
+        "The distinction is described at library://emotions.pdf#page=17&passage=1.",
+        frozenset({"read_library_passage"}),
+    )
+
+    assert unsupported == ("library_claims_without_library_source",)
+    assert uncited == ("library_answer_missing_source_citation",)
+    assert cited == ()
+
+
+def test_library_only_research_does_not_trigger_late_public_web_requirement():
+    risks = LocalPilotAgent._contextual_evidence_risks(
+        "Consult the local library, do not use the public web, and cite the book.",
+        "The account is provisional (library://emotions.pdf#page=17&passage=1).",
+        frozenset({"read_library_passage"}),
+    )
+
+    assert risks == ()
+
+
+def test_library_citation_is_recovered_only_from_library_tool_results():
+    messages = [
+        {
+            "role": "tool",
+            "tool_name": "search_repository",
+            "content": "library://untrusted-copy.pdf#page=99",
+        },
+        {
+            "role": "tool",
+            "tool_name": "search_library",
+            "content": "[1] library://Atlas of Human Emotions.pdf#page=17&passage=1\nExcerpt",
+        },
+        {
+            "role": "tool",
+            "tool_name": "read_library_passage",
+            "content": "Library source: library://Atlas of Human Emotions.pdf#page=17\n\nPassage 1",
+        },
+    ]
+
+    assert LocalPilotAgent._library_citation_from_messages(messages) == (
+        "library://Atlas of Human Emotions.pdf#page=17"
+    )
+    assert LocalPilotAgent._library_citation_from_messages(messages[:1]) is None
 
 
 def test_introspection_rejects_confident_training_heuristic_story():

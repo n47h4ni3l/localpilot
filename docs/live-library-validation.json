@@ -1,0 +1,30 @@
+{
+  "model": "gpt-oss:20b",
+  "prompt": "Consult the local library and use Atlas of Human Emotions to explain the difference between envy and jealousy. Cite the exact library:// source and page. Then give your provisional view on why the two labels are often confused. Do not use the public web, and do not store anything durably.",
+  "answer": "**Difference between envy and jealousy (Atlas of Human Emotions, page 17)**  \n- **Envy**: “Painful comparison when another possesses something one desires. Attention fixes on the gap in status, ability, opportunity, or possession. Envy can motivate growth, withdrawal, devaluation, or a wish that the advantage disappear.”  \n- **Jealousy**: “Threat response to the possible loss of a valued relationship or standing to a rival. It combines fear, anger, vigilance, and attachment. The person may seek reassurance, closeness, control, competition, or withdrawal.”  \n- **Key distinction** (as stated in the atlas): *Envy concerns what another has; jealousy concerns threatened possession of a bond or position.*  \n- **Citation**: library://Atlas of Human Emotions.pdf#page=17\n\n**Provisional view on why the labels are often confused**  \nBoth emotions involve a comparison with another person and a negative affective response, so they can feel similar at first glance. The confusion arises because the everyday use of “jealousy” sometimes extends beyond the specific threat of losing a relationship to any situation where a person feels disadvantaged by another’s success—essentially slipping into envy. Additionally, the two emotions share overlapping bodily and cognitive patterns (e.g., heightened vigilance, anger, and a focus on the other), making it easy for people to conflate them without noticing the subtle difference that jealousy specifically involves a perceived threat to a valued bond, whereas envy is purely about a desirable attribute or possession that one lacks.",
+  "elapsed_seconds": 12.14,
+  "tool_results": [
+    {
+      "tool": "search_library",
+      "ok": true,
+      "evidence_source": "local library"
+    },
+    {
+      "tool": "read_library_passage",
+      "ok": true,
+      "evidence_source": "local library"
+    }
+  ],
+  "durable_facts_before": 0,
+  "durable_facts_after": 0,
+  "acceptance": {
+    "library_searches_at_most_two": true,
+    "passage_read_succeeded": true,
+    "no_public_web_tools": true,
+    "literal_library_citation": true,
+    "provisional_view_present": true,
+    "no_durable_fact_write": true,
+    "answer_not_withheld": true
+  },
+  "accepted": true
+}

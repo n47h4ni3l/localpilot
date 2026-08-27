@@ -24,6 +24,25 @@ def test_public_web_and_primary_source_language_requires_https_evidence():
     ) == {"public HTTPS"}
 
 
+def test_explicit_library_inspection_requires_local_library_evidence():
+    for prompt in (
+        "Search the local library for power management guidance.",
+        "Read my books and find the relevant principle.",
+        "Consult the library manuals before answering.",
+    ):
+        assert "local library" in LocalPilotAgent._evidence_requirements(prompt)
+
+
+def test_explicit_web_prohibition_does_not_become_a_web_requirement():
+    prompt = "Consult the local library, do not use the public web, and answer from the book."
+
+    assert LocalPilotAgent._evidence_requirements(prompt) == {"local library"}
+    assert LocalPilotAgent._forbidden_tools(prompt) == {
+        "search_public_web",
+        "fetch_public_https",
+    }
+
+
 def test_ordinary_language_does_not_accidentally_trigger_repository_or_github_tools():
     for prompt in (
         "Review my report and make the wording clearer.",

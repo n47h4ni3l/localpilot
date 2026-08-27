@@ -55,6 +55,19 @@ port = 8765
 chat_database = "chat.sqlite3"
 runtime_restart_limit = 5
 
+[library]
+# Owner-managed source files. LocalPilot never edits this tree; it writes only a
+# disposable extracted-text index under agent.data_dir.
+enabled = false
+root = "E:\\LLM_HOME\\library"
+index_database = "library-index.sqlite3"
+max_documents = 2000
+max_refresh_files = 50
+max_file_size_mb = 256
+max_pages_per_document = 2000
+max_chars_per_page = 30000
+max_search_results = 8
+
 [selfdev]
 enabled = true
 # Used only for research/implementation cycles when installed. Otherwise the

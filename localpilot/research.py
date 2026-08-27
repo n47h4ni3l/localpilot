@@ -292,13 +292,25 @@ class TransientResearchNotebook:
         if tool != prior.tool:
             return False
         old = prior.arguments
-        if tool in {"search_repository", "search_public_web"}:
+        if tool in {"search_repository", "search_public_web", "search_library"}:
             return cls._queries_similar(arguments.get("query", ""), old.get("query", ""))
         if tool == "read_repository_file":
             if str(arguments.get("path", "")).lower() != str(old.get("path", "")).lower():
                 return False
             new_start, new_end = cls._line_window(arguments)
             old_start, old_end = cls._line_window(old)
+            return max(new_start, old_start) <= min(new_end, old_end)
+        if tool == "read_library_passage":
+            if str(arguments.get("path", "")).casefold() != str(
+                old.get("path", "")
+            ).casefold():
+                return False
+            if int(arguments.get("page", 1)) != int(old.get("page", 1)):
+                return False
+            new_start = max(1, int(arguments.get("start_passage", 1)))
+            old_start = max(1, int(old.get("start_passage", 1)))
+            new_end = new_start + max(1, int(arguments.get("max_passages", 3))) - 1
+            old_end = old_start + max(1, int(old.get("max_passages", 3))) - 1
             return max(new_start, old_start) <= min(new_end, old_end)
         if tool == "list_repository_tree":
             if str(arguments.get("path", ".")).lower() != str(old.get("path", ".")).lower():

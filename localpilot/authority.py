@@ -317,6 +317,8 @@ _EXTERNAL_SPECIFICITY_PATTERNS = (
     r"\b(?:studies|research)\s+(?:show|shows|found|finds|demonstrate|demonstrates)\b",
 )
 
+_EXTERNAL_SOURCE_TOOLS = frozenset({"fetch_public_https", "read_library_passage"})
+
 _REPOSITORY_EVIDENCE_TOOLS = frozenset(
     {
         "list_repository_tree",
@@ -419,7 +421,7 @@ class TurnEvidenceVerifier:
                     )
                 )
             if (
-                "fetch_public_https" not in successful_tools
+                not _EXTERNAL_SOURCE_TOOLS.intersection(successful_tools)
                 and re.search(
                     r"\b(?:within (?:its|the) elastic limit|distributes? (?:the )?stress (?:evenly|uniformly)|"
                     r"won['’]?t permanently deform)\b",
@@ -431,11 +433,11 @@ class TurnEvidenceVerifier:
                         "specific_scientific_mechanism_without_source_evidence",
                         "A specific scientific mechanism or material-behavior claim needs a successful authoritative HTTPS read or must be softened as a hypothesis.",
                         sentence,
-                        ("fetch_public_https",),
+                        tuple(sorted(_EXTERNAL_SOURCE_TOOLS)),
                     )
                 )
             if (
-                "fetch_public_https" not in successful_tools
+                not _EXTERNAL_SOURCE_TOOLS.intersection(successful_tools)
                 and any(
                     re.search(expression, normalized)
                     for expression in _EXTERNAL_SPECIFICITY_PATTERNS
@@ -446,7 +448,7 @@ class TurnEvidenceVerifier:
                         "external_specific_without_source_evidence",
                         "A precise external historical, attribution, or research claim needs a successful authoritative HTTPS read or must be removed/scoped as unverified.",
                         sentence,
-                        ("fetch_public_https",),
+                        tuple(sorted(_EXTERNAL_SOURCE_TOOLS)),
                     )
                 )
         unique = tuple(dict.fromkeys(issues))

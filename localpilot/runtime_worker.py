@@ -23,7 +23,7 @@ class RuntimeWorker:
         self._active_request_id: str | None = None
         self._active_session_id: str | None = None
         self._background_stop = threading.Event()
-        self._background_reader = BackgroundLibraryReader(self.config, self.root)
+        self._background_reader: BackgroundLibraryReader | None = None
         self._background_thread: threading.Thread | None = None
 
     def _write(self, message: dict[str, Any]) -> None:
@@ -127,8 +127,16 @@ class RuntimeWorker:
         if self._background_thread is not None and self._background_thread.is_alive():
             return
         self._background_stop.clear()
+        try:
+            reader = BackgroundLibraryReader(self.config, self.root)
+        except Exception:
+            # Background reading is optional and must never prevent the stable
+            # operator worker from starting. The reader records later runtime
+            # failures itself once successfully constructed.
+            return
+        self._background_reader = reader
         self._background_thread = threading.Thread(
-            target=self._background_reader.run_forever,
+            target=reader.run_forever,
             args=(self._background_stop,),
             name="localpilot-background-library-reader",
             daemon=True,

@@ -66,9 +66,6 @@
   body {
     display: flex; align-items: center; justify-content: center;
     overflow: hidden;
-    /* The native window is transparent (see webview_app.py) and sized with
-       margin beyond the dock/panel so glow can bloom without being clipped
-       at the OS window edge — see WINDOW_MARGIN in webview_app.py. */
   }
   button { font-family: inherit; }
   button.is-activated { opacity: 0.55; }
@@ -77,35 +74,30 @@
     overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
   }
 
-  /* ============ Compact companion dock — §2.1 ============ */
+  /* ============ Compact companion — avatar only until chat opens ============ */
   .dock {
-    width: 168px; min-height: 168px;
+    position: relative;
+    width: 128px; min-height: 128px;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: var(--space-2);
-    padding: var(--space-4) var(--space-3);
-    background: var(--surface-glass);
-    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-    border: 1px solid var(--border-hairline);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-dock), 0 0 32px var(--accent-glow);
+    padding: var(--space-2);
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
     cursor: pointer;
-    transition: box-shadow 400ms ease-out, transform 320ms cubic-bezier(0.2,0.8,0.2,1),
-                opacity 260ms ease;
+    transition: transform 240ms cubic-bezier(0.2,0.8,0.2,1), opacity 220ms ease;
   }
-  .dock:focus-visible { outline: 2px solid var(--accent-core); outline-offset: 3px; }
+  .dock:hover { transform: translateY(-1px) scale(1.02); }
+  .dock:focus-visible { outline: 2px solid var(--accent-core); outline-offset: 2px; }
   .dock .drag-handle {
-    position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+    position: absolute; top: 2px; left: 50%; transform: translateX(-50%);
     display: flex; gap: 3px; opacity: 0; transition: opacity 200ms ease;
   }
-  .dock:hover .drag-handle { opacity: 0.5; }
+  .dock:hover .drag-handle { opacity: 0.35; }
   .drag-handle span { width: 3px; height: 3px; border-radius: 50%; background: var(--text-tertiary); }
 
-  .preview-line {
-    font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);
-    max-width: 140px; text-align: center; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; height: 0; opacity: 0; transition: height 200ms ease, opacity 200ms ease;
-  }
-  .preview-line.is-visible { height: 14px; opacity: 1; }
+  /* State/tool activity is expressed by the avatar itself in compact mode. */
+  .preview-line { display: none; }
 
   .app.is-expanded .dock { opacity: 0; pointer-events: none; position: absolute; }
   .app:not(.is-expanded) .panel { opacity: 0; pointer-events: none; position: absolute; }

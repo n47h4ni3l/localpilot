@@ -131,6 +131,44 @@ def test_runtime_exit_preserves_ui_history_and_marks_only_inflight_answer_failed
     )
 
 
+def test_broker_startup_closes_abandoned_streaming_records(tmp_path):
+    store = ChatStore(tmp_path / "localpilot-data" / "chat.sqlite3")
+    session = store.create_session()
+    message = store.add_message(session["id"], "assistant", "", status="streaming")
+
+    app = BrokerApp(tmp_path, Config())
+
+    recovered = app.store.message(message["id"])
+    assert recovered["status"] == "error"
+    assert "broker restarted" in recovered["content"]
+    assert any(
+        event["type"] == "message.failed"
+        and event["payload"].get("reason") == "broker_restart_recovery"
+        for event in app.store.events_after(0)
+    )
+
+
+def test_broker_request_timeout_fails_message_and_restarts_owned_runtime(tmp_path):
+    config = Config()
+    config.desktop.request_timeout_seconds = 60
+    app = BrokerApp(tmp_path, config)
+    app.runtime = _FakeRuntime()
+    session = app.store.create_session()
+    submitted = app.submit(session["id"], "A bounded request")
+
+    app._expire_request(submitted["request_id"])
+
+    failed = app.store.message(submitted["assistant"]["id"])
+    assert failed["status"] == "error"
+    assert "timed out after 60 seconds" in failed["content"]
+    assert app.runtime.running is False
+    assert any(
+        event["payload"].get("reason") == "request_timeout"
+        for event in app.store.events_after(0)
+        if event["type"] == "message.failed"
+    )
+
+
 def test_runtime_worker_uses_agent_once_and_streams_structured_visible_deltas(tmp_path, monkeypatch):
     observed = []
 

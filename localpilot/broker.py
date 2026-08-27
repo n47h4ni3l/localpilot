@@ -56,6 +56,13 @@ class BrokerApp:
             restart_limit=config.desktop.runtime_restart_limit,
             on_message=self._on_runtime_message,
         )
+        recovered = self.store.fail_streaming_messages("the broker restarted before completion")
+        for message in recovered:
+            self._event(
+                "message.failed",
+                {"message": message, "reason": "broker_restart_recovery"},
+                session_id=str(message["session_id"]),
+            )
 
     def start(self) -> None:
         self.runtime.start()
@@ -86,11 +93,18 @@ class BrokerApp:
         user_message = self.store.add_message(session_id, "user", content.strip())
         assistant_message = self.store.add_message(session_id, "assistant", "", status="streaming")
         request_id = str(uuid.uuid4())
+        timer = threading.Timer(
+            float(self.config.desktop.request_timeout_seconds),
+            self._expire_request,
+            args=(request_id,),
+        )
+        timer.daemon = True
         with self._lock:
             self._pending[request_id] = {
                 "session_id": session_id,
                 "message_id": assistant_message["id"],
                 "content": "",
+                "timer": timer,
             }
         self._event("message.created", {"message": user_message}, session_id=session_id)
         self._event("message.created", {"message": assistant_message}, session_id=session_id)
@@ -104,9 +118,12 @@ class BrokerApp:
                     "history": history,
                 }
             )
+            timer.start()
         except Exception as exc:
             with self._lock:
-                self._pending.pop(request_id, None)
+                pending = self._pending.pop(request_id, None)
+            if pending is not None:
+                pending["timer"].cancel()
             marker = f"[LocalPilot runtime unavailable: {type(exc).__name__}: {exc}]"
             failed = self.store.update_message(assistant_message["id"], marker, status="error")
             self._event(
@@ -117,11 +134,28 @@ class BrokerApp:
             raise
         return {"request_id": request_id, "user": user_message, "assistant": assistant_message}
 
+    def _expire_request(self, request_id: str) -> None:
+        with self._lock:
+            pending = self._pending.pop(request_id, None)
+        if pending is None:
+            return
+        seconds = float(self.config.desktop.request_timeout_seconds)
+        marker = f"[LocalPilot answer timed out after {seconds:g} seconds; the runtime is restarting.]"
+        failed = self.store.update_message(pending["message_id"], marker, status="error")
+        self._event(
+            "message.failed",
+            {"message": failed, "reason": "request_timeout", "timeout_seconds": seconds},
+            session_id=pending["session_id"],
+        )
+        self._event("runtime.state", {"state": "restarting"}, session_id=pending["session_id"])
+        self.runtime.restart()
+
     def _fail_pending(self, reason: str) -> None:
         with self._lock:
             pending = list(self._pending.values())
             self._pending.clear()
         for item in pending:
+            item["timer"].cancel()
             marker = f"[LocalPilot runtime restarted before this answer completed: {reason}]"
             failed = self.store.update_message(item["message_id"], marker, status="error")
             self._event(
@@ -172,6 +206,7 @@ class BrokerApp:
                 pending = self._pending.pop(request_id, None)
             if pending is None:
                 return
+            pending["timer"].cancel()
             answer = str(message.get("answer") or pending["content"])
             completed = self.store.update_message(pending["message_id"], answer, status="complete")
             self._event("message.completed", {"message": completed}, session_id=session_id)
@@ -187,6 +222,7 @@ class BrokerApp:
                 "message": "The local runtime reported an error.",
             }
             if pending is not None:
+                pending["timer"].cancel()
                 marker = f"[LocalPilot error: {payload['error_type']}: {payload['message']}]"
                 failed = self.store.update_message(pending["message_id"], marker, status="error")
                 payload["message_record"] = failed

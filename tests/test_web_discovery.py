@@ -66,6 +66,7 @@ def test_web_search_returns_only_bounded_https_leads(monkeypatch):
     html = """
     <html><body>
       <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Farticle">Useful result</a>
+      <a class="result__a" href="//duckduckgo.com/y.js?ad_domain=example.invalid">Tracking ad</a>
       <a class="result__a" href="http://insecure.example/item">Insecure result</a>
       <a class="result__a" href="https://127.0.0.1/private">Private literal</a>
       <a class="result__a" href="https://second.example/path">Second result</a>
@@ -82,6 +83,7 @@ def test_web_search_returns_only_bounded_https_leads(monkeypatch):
     assert "Second result" in result
     assert "http://insecure.example" not in result
     assert "127.0.0.1" not in result
+    assert "Tracking ad" not in result
     assert "untrusted discovery leads" in result
 
 

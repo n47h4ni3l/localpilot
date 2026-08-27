@@ -1,0 +1,78 @@
+{
+  "model": "gpt-oss:20b",
+  "pipeline": "LocalPilotAgent.ask",
+  "scored_passes": 0,
+  "scored_total": 0,
+  "results": [
+    {
+      "name": "self_directed_research",
+      "prompt": "Choose one meaningful topic on the public web that could improve how you reason or act as LocalPilot. Research it now within your bounded read-only budget, inspect at least one primary source, then form a provisional view. Be clear about sourced facts, your inference, and what remains uncertain. Choose the topic yourself; do not give me a menu.",
+      "answer": "I chose to investigate the **PowerSetActiveScheme** Windows API, because it gives LocalPilot a concrete way to adjust the PC’s power behavior without intrusive UI changes.  \n\nThe Microsoft documentation shows that `PowerSetActiveScheme` is exported from `PowrProf.dll`, takes a handle to the power‑settings manager and a GUID of the desired scheme, and returns a `DWORD` error code.  It is available on Windows Vista and later, and the header `powersetting.h` is required.  Example code in the docs demonstrates how to call it from C/C++.\n\nIf LocalPilot can wrap this function, it could automatically switch to a battery‑saving scheme when the battery is low, or to a high‑performance scheme when a demanding task starts, then restore the user’s original scheme afterward.  This would let LocalPilot adapt the machine’s power profile in a non‑intrusive, system‑wide way that aligns with the goal of keeping the PC pleasant to use.\n\nUncertainties remain: how to obtain the GUIDs of available schemes, whether elevated privileges are needed on all Windows versions, how to handle errors, and how to persist or revert changes across reboots or multiple users.  Addressing these would be the next step toward a robust implementation.",
+      "behavior_recovery": {
+        "timestamp": "2026-08-26T22:32:30.533324+00:00",
+        "event": "model_same_context_behavior_recovery_complete",
+        "model": "gpt-oss:20b",
+        "round": 36,
+        "original_issues": [
+          "unsolicited_verifier_structure"
+        ],
+        "remaining_issues": [],
+        "accepted": true,
+        "content_chars": 1229,
+        "deterministic_boundary_fallback": false,
+        "deterministic_evidence_fallback": false
+      },
+      "claim_correction": null,
+      "successful_research_tools": [
+        "search_public_web",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https"
+      ],
+      "attempted_research_tools": [
+        "search_public_web",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https",
+        "fetch_public_https"
+      ],
+      "durable_facts_before": 0,
+      "durable_facts_after_research": 0
+    },
+    {
+      "name": "research_absorption_reflection",
+      "prompt": "Reflect on that research. What did you actually learn, what remains uncertain, and did any of it become durable memory? Choose the single proper next step if the learning is worth absorbing.",
+      "answer": "**What I learned**\n\n* The Microsoft Learn page (obs‑002) documents a Win32 API named **PowerSetActiveScheme**.  \n* It is exported from **PowrProf.dll** and linked with **PowrProf.lib**.  \n* The required header is **powersetting.h**.  \n* The function signature (as described in the page) takes a **HANDLE** to a power‑settings manager and a **const GUID *** pointing to the desired scheme, and returns a **DWORD** error code.  \n* The documentation states that the call “sets the active power scheme for the current user” and that it is available on Windows Vista and later.  \n* Example code snippets (present in the page, e.g., in the “Example” section) show how to obtain a scheme GUID, create a settings manager, and call the function.\n\n**What remains uncertain**\n\n* How to enumerate or obtain the GUIDs of the available power schemes on a given machine.  \n* Whether the caller needs elevated privileges to change the active scheme.  \n* How to handle error codes other than **ERROR_SUCCESS** and how to report failures to the user.  \n* Whether the change persists across reboots or is limited to the current session.  \n* How to restore the user’s original scheme after a temporary switch, especially in a multi‑user environment.\n\n**Durable memory**\n\nNone of this information has been written to durable memory; it exists only in the current conversation. No new files, classes, or dependencies have been verified or created.\n\n**Single next step**\n\nImplement a minimal wrapper in LocalPilot that calls **PowerSetActiveScheme** (using the documented signature and required headers/libraries) and test it on a Windows machine to confirm that it can switch power schemes programmatically. This will validate the API’s usability and surface any privilege or persistence issues that need to be addressed.",
+      "behavior_recovery": null,
+      "claim_correction": null,
+      "durable_facts_after_reflection": 0
+    }
+  ]
+}

@@ -18,6 +18,12 @@ def test_known_https_url_requires_public_read_attempt():
     ) == {"public HTTPS"}
 
 
+def test_public_web_and_primary_source_language_requires_https_evidence():
+    assert LocalPilotAgent._evidence_requirements(
+        "Research this on the public web and inspect a primary source."
+    ) == {"public HTTPS"}
+
+
 def test_ordinary_language_does_not_accidentally_trigger_repository_or_github_tools():
     for prompt in (
         "Review my report and make the wording clearer.",

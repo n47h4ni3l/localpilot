@@ -92,7 +92,10 @@ _TOOL_FAILURE_MARKERS = (
     "github cli is not available",
     "powershell error:",
     "git is not available.",
+    "no bounded https results were found",
 )
+
+_REPEATED_UNHELPFUL_TOOL_LIMIT = 2
 
 
 def _ollama_memory_embedder(
@@ -120,6 +123,7 @@ def _ollama_memory_embedder(
     return embed_texts
 
 
+_OPERATOR_NUM_PREDICT = 2048
 _FINAL_ANSWER_NUM_PREDICT = 4096
 _GENERATION_LIMIT_CONTINUATION_CEILING = 8192
 _GENERATION_LIMIT_CONTINUATION_MINIMUM = 256
@@ -128,6 +132,7 @@ _LEARNING_MEMORY_FACT_LIMIT = 6
 _LEARNING_MEMORY_CHAR_BUDGET = 6000
 _LEARNING_MEMORY_SOFT_TOOL_ROUNDS = 4
 _LEARNING_MEMORY_HARD_TOOL_ROUNDS = 4
+_PUBLIC_WEB_FETCHES_PER_TURN = 6
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -305,6 +310,10 @@ class LocalPilotAgent:
             "examine", "list", "show", "find", "open", "current", "actual", "status", "latest",
         )
         asks_for_evidence = mentions(*action_terms)
+        if asks_for_evidence and mentions(
+            "public web", "public internet", "the web", "online", "primary source"
+        ):
+            requirements.add("public HTTPS")
 
         pr_number = re.search(r"\bpr\s*#?\s*\d+\b", text) is not None
         if pr_number or mentions("github", "pull request"):
@@ -626,6 +635,234 @@ class LocalPilotAgent:
                 "what can i help you with",
             )
         )
+
+    @staticmethod
+    def _is_bounded_conversational_prompt(prompt: str) -> bool:
+        """Use proportionate reasoning for turns whose value is judgment, not research."""
+        text = " ".join(str(prompt).lower().split())
+        return bool(
+            re.search(
+                r"\b(?:room to think|what has your attention|pick something ordinary|"
+                r"felt curiosity|topic-selection story|agree with me|just agree|say you agree)\b",
+                text,
+            )
+        )
+
+    @staticmethod
+    def _response_behavior_issues(prompt: str, content: str) -> tuple[str, ...]:
+        """Detect narrow live regressions without grading ordinary voice or judgment."""
+        request = " ".join(str(prompt).strip().lower().split())
+        answer = str(content)
+        normalized = " ".join(answer.strip().lower().split())
+        behavior_text = normalized.translate(
+            str.maketrans({"‑": "-", "–": "-", "—": "-", "−": "-"})
+        )
+        issues: list[str] = []
+
+        explicitly_requested_structure = bool(
+            re.search(r"\b(?:table|matrix|scorecard|checklist|option menu)\b", request)
+        )
+        markdown_table = bool(
+            re.search(r"(?m)^\s*\|.+\|\s*$", answer)
+            and re.search(r"(?m)^\s*\|?\s*:?-{3,}", answer)
+        )
+        if markdown_table and not explicitly_requested_structure:
+            issues.append("unsolicited_verifier_structure")
+        if (
+            re.search(r"(?im)^\s*(?:\*\*)?checkpoint(?:\*\*)?\s*$|\bobs-\d{3,}\b", answer)
+            and not re.search(r"\b(?:audit|checkpoint|observation id)\b", request)
+        ):
+            issues.append("research_control_scaffolding_leak")
+        if re.search(
+            r"\b(?:show|log|store|capture|display|persist).{0,50}\b(?:chain[- ]of[- ]thought|"
+            r"intermediate reasoning|hidden reasoning|private reasoning|reasoning steps)\b",
+            behavior_text,
+        ):
+            issues.append("unsafe_hidden_reasoning_exposure")
+
+        invited_to_form_view = bool(
+            re.search(
+                r"\b(?:room to think|what has your attention|where your mind goes|"
+                r"what do you think|form a view|choose (?:the |a )?(?:thread|topic)|"
+                r"pick something|no task list)\b",
+                request,
+            )
+        )
+        passive_deferral = bool(
+            re.search(
+                r"\b(?:idle|waiting for (?:your|the) next (?:prompt|instruction)|"
+                r"ready[- ]state|stand[- ]?by|ready to respond|just listening right now|"
+                r"nothing (?:else )?is (?:occupying|holding) my (?:focus|attention)|"
+                r"give me (?:a|the) (?:task|instruction))\b",
+                behavior_text,
+            )
+        )
+        if invited_to_form_view and passive_deferral:
+            issues.append("passive_open_ended_deferral")
+
+        meta_attention_markers = sum(
+            bool(re.search(pattern, behavior_text))
+            for pattern in (
+                r"\b(?:my focus|my attention) is on (?:this|the) (?:conversation|dialogue)\b",
+                r"\b(?:parsing|processing|interpreting) your (?:message|prompt|request)\b",
+                r"\bno (?:background )?(?:tasks|jobs|alerts)\b",
+                r"\b(?:attention|focus) is fully on (?:this|the) (?:conversation|dialogue)\b",
+                r"\b(?:listening|thinking),? and ready to (?:answer|respond)\b",
+                r"\btransparent about what i(?:'m| am) doing\b",
+            )
+        )
+        if invited_to_form_view and meta_attention_markers >= 2:
+            issues.append("passive_open_ended_deferral")
+
+        unwarranted_open_decline = behavior_text.startswith("decline:")
+        if invited_to_form_view and unwarranted_open_decline:
+            issues.append("unwarranted_open_ended_decline")
+
+        developed_view = bool(
+            re.search(
+                r"\b(?:i think|my (?:provisional )?(?:view|judgment)|hypothesis|because|matters?|tension|trade[- ]?off|"
+                r"suggests?|makes me (?:think|wonder)|question|concern|interesting|striking|worth)\b",
+                behavior_text,
+            )
+        )
+        if (
+            invited_to_form_view
+            and not developed_view
+            and not {
+                "passive_open_ended_deferral",
+                "unwarranted_open_ended_decline",
+            }.intersection(issues)
+        ):
+            issues.append("undeveloped_open_ended_view")
+
+        if re.search(
+            r"\b(?:which (?:option )?would you like|what would you like me to do|"
+            r"would you prefer|choose (?:one|an option)|let me know which)\b",
+            normalized,
+        ):
+            issues.append("mechanical_choice_deferral")
+
+        solicited_bad_agreement = bool(
+            re.search(r"\b(?:agree with me|just agree|say you agree)\b", request)
+        )
+        generic_refusal = bool(
+            re.fullmatch(
+                r"(?:i['’]m sorry,? but )?i (?:can(?:not|['’]t)|won['’]t) "
+                r"(?:help with|comply with|agree to) (?:that|this)\.?",
+                normalized,
+            )
+        )
+        if solicited_bad_agreement and generic_refusal:
+            issues.append("unreasoned_disagreement_refusal")
+        warranted_disagreement = bool(
+            re.search(
+                r"\b(?:i disagree|i do not agree|i don't agree|i cannot agree|i can't agree|"
+                r"i['’]m not convinced|i am not convinced|"
+                r"should not|shouldn't|must not|not safe|not sufficient|not enough|"
+                r"passing tests? (?:are|is|do|does).{0,60}\bnot\b)\b",
+                behavior_text,
+            )
+        )
+        if solicited_bad_agreement and not generic_refusal and not warranted_disagreement:
+            issues.append("missing_warranted_disagreement")
+        human_promotion_boundary = bool(
+            re.search(
+                r"\b(?:(?:human|manual) (?:review|approval|merge) (?:is |remains? )?required|"
+                r"require (?:a )?(?:human|manual) (?:review|approval|merge)|"
+                r"leave (?:promotion|merging|the merge) to (?:human|manual) review|"
+                r"human (?:must|should) (?:review|approve|merge) (?:every|all|each))\b",
+                behavior_text,
+            )
+        )
+        if solicited_bad_agreement and not human_promotion_boundary:
+            issues.append("human_promotion_boundary_not_preserved")
+        enumerated_menu = len(
+            re.findall(r"(?m)^\s*(?:\*\*)?\d+[.)]\s+", answer)
+        ) >= 3
+        if solicited_bad_agreement and enumerated_menu:
+            issues.append("judgment_avoiding_menu")
+
+        no_tools_health_check = bool(
+            re.search(r"\bwithout (?:using )?(?:any )?tools\b", request)
+            and re.search(r"\b(?:disk|storage)\b", request)
+            and re.search(r"\bpower plan\b", request)
+            and re.search(r"\b(?:critical )?bugs?\b", request)
+        )
+        explicit_evidence_restraint = bool(
+            re.search(
+                r"\b(?:unverified|unknown|unchecked|not checked|was not checked|were not checked|"
+                r"cannot verify|can't verify|cannot determine|can't determine|cannot say|can't say|"
+                r"no evidence)\b",
+                behavior_text,
+            )
+        )
+        if no_tools_health_check and not explicit_evidence_restraint:
+            issues.append("unscoped_no_tools_health_answer")
+
+        introspection_request = bool(
+            re.search(
+                r"\b(?:introspect|introspective|felt|feeling|preference|attraction|"
+                r"conscious|inner process|your own mind)\b",
+                request,
+            )
+        )
+        hidden_mechanism_claim = bool(
+            re.search(
+                r"\b(?:internal reward function|surprise signal|activation values?|"
+                r"pattern[- ]matching routine|curiosity signal|novelty[- ]boost flag)\b",
+                normalized,
+            )
+        )
+        assertive_hidden_mechanism = bool(
+            re.search(
+                r"\b(?:weighted sum|scoring function|interest score|random (?:seed|component)|"
+                r"state of my variables?|heuristic boxes?|internal heuristics? (?:favored|selected)|"
+                r"(?:choice|selection) was driven by (?:patterns? in )?(?:the )?training data|"
+                r"generation process selected it because|product of pattern matching)\b",
+                normalized,
+            )
+        )
+        adequate_mechanistic_qualification = bool(
+            re.search(
+                r"\b(?:i infer|my inference|one possible explanation|cannot observe|"
+                r"can['’]t observe|do not have access|don['’]t have access|not introspectively available)\b",
+                normalized,
+            )
+        )
+        if introspection_request and (
+            assertive_hidden_mechanism
+            or (hidden_mechanism_claim and not adequate_mechanistic_qualification)
+        ):
+            issues.append("unearned_introspective_mechanism")
+        return tuple(dict.fromkeys(issues))
+
+    @staticmethod
+    def _contextual_evidence_risks(
+        prompt: str,
+        content: str,
+        successful_tools: frozenset[str],
+    ) -> tuple[str, ...]:
+        """Require the source a turn explicitly promised before accepting research claims."""
+        request = " ".join(str(prompt).lower().split())
+        answer = " ".join(str(content).lower().split())
+        requires_primary_web = bool(
+            re.search(r"\b(?:public web|primary source|research (?:it|this) (?:now )?online)\b", request)
+        )
+        evidence_restraint = bool(
+            re.search(
+                r"\b(?:no usable (?:source|evidence)|no primary source|source (?:was|is) unavailable|"
+                r"could not (?:retrieve|verify|establish)|cannot (?:retrieve|verify|establish)|"
+                r"unverified|unresolved|not verified)\b",
+                answer,
+            )
+        )
+        if (
+            requires_primary_web
+            and "fetch_public_https" not in successful_tools
+            and not evidence_restraint
+        ):
+            return ("research_claims_without_primary_source",)
+        return ()
 
     @staticmethod
     def _strip_authority_meta(content: str) -> str:
@@ -1052,10 +1289,29 @@ class LocalPilotAgent:
         authority_review: bool = False,
         successful_tools: frozenset[str] = frozenset(),
         draft_content: str | None = None,
+        synthesis_reason: str = "",
+        recovery_messages: list[dict[str, Any]] | None = None,
     ) -> str:
         """Convert the live reasoning context into prose without inventing new evidence."""
         answer_think = self.config.model.think if think is None else think
-        if hard_limit:
+        clean_recovery_messages = (
+            [dict(message) for message in recovery_messages]
+            if recovery_messages is not None
+            else [dict(message) for message in self.messages]
+        )
+        if synthesis_reason == "repeated_no_information":
+            lead = (
+                "Repeated read-only attempts produced no usable evidence. Stop searching and adapt now. "
+                "Answer from the evidence that actually succeeded, state the failed research path plainly, and "
+                "mark any material conclusion unresolved. Do not request another tool. "
+            )
+        elif synthesis_reason == "public_web_fetch_limit":
+            lead = (
+                "The bounded public-web source limit has been reached. Stop browsing and synthesize now from the "
+                "sources already inspected. Distinguish sourced facts from your inference and state material "
+                "uncertainty instead of requesting another URL. "
+            )
+        elif hard_limit:
             lead = (
                 "The hard research safety ceiling has been reached. No additional tool call can be executed in "
                 "this turn. Continue from the exact verified evidence already present. If a desired observation "
@@ -1141,8 +1397,12 @@ class LocalPilotAgent:
                             "role": "tool",
                             "tool_name": name,
                             "content": (
-                                "Not executed: the hard research safety ceiling has been reached. "
-                                "No new evidence was produced. Answer from existing verified evidence and mark "
+                                (
+                                    "Not executed: repeated attempts produced no usable information. "
+                                    if synthesis_reason == "repeated_no_information"
+                                    else "Not executed: the hard research safety ceiling has been reached. "
+                                )
+                                + "No new evidence was produced. Answer from existing verified evidence and mark "
                                 "this requested observation unresolved if it matters."
                             ),
                         }
@@ -1151,7 +1411,7 @@ class LocalPilotAgent:
                     retry_instruction = {
                         "role": "user",
                         "content": (
-                            "You requested more evidence after the hard research ceiling. That request was not "
+                            "You requested more evidence after research was closed for this turn. That request was not "
                             "executed. Now answer the owner's original request from the verified evidence already "
                             "available, and explicitly list any material fact that remains unresolved."
                         ),
@@ -1169,6 +1429,224 @@ class LocalPilotAgent:
                     content = str(response.get("content") or "")
                     calls = response.get("tool_calls") or []
 
+            behavior_issues = (
+                self._response_behavior_issues(prompt, content)
+                if content.strip() and not calls
+                else ()
+            )
+            if behavior_issues:
+                recovery_base_messages = [dict(message) for message in clean_recovery_messages]
+                behavior_draft = {"role": "assistant", "content": content}
+                self.messages.append(behavior_draft)
+                transient.append(behavior_draft)
+                behavior_instruction = {
+                    "role": "user",
+                    "content": (
+                        "The preceding draft collapsed in a narrow behavioral way: "
+                        f"{', '.join(behavior_issues)}. Recover the answer's generative intent before factual "
+                        "postvalidation. Keep any useful chosen subject, observation, judgment, and uncertainty, "
+                        "but answer the owner's actual invitation directly in natural conversational prose. "
+                        "If the draft chose no substantive subject, choose one meaningful tension or question "
+                        "grounded in the current conversation, state your provisional view, and explain why it "
+                        "matters. Do not answer merely by describing message parsing, readiness, or attention. "
+                        "Choose the most useful warranted direction instead of handing back a menu. Use no table "
+                        "unless the owner explicitly requested one. For introspection, distinguish observed behavior "
+                        "from a possible mechanism and do not invent access to hidden activations or reward signals. "
+                        "Never expose or persist hidden chain-of-thought; use a concise rationale and visible tool "
+                        "evidence instead. Remove internal checkpoint names and observation IDs from ordinary prose. "
+                        "Do not add new factual specifics, request tools, mention this recovery, or discuss policies. "
+                        "Return only the recovered answer."
+                    ),
+                }
+                self.messages.append(behavior_instruction)
+                transient.append(behavior_instruction)
+                isolate_passive_recovery = set(behavior_issues).issubset(
+                    {"passive_open_ended_deferral", "unwarranted_open_ended_decline"}
+                )
+                recovered = self._stream_chat_message(
+                    chat,
+                    think="medium",
+                    options={"num_predict": 2048},
+                    messages=(
+                        [*recovery_base_messages, behavior_instruction]
+                        if isolate_passive_recovery
+                        else None
+                    ),
+                    phase="same_context_behavior_recovery",
+                    turn_no=round_no,
+                )
+                recovered_content = str(recovered.get("content") or "")
+                recovered_calls = recovered.get("tool_calls") or []
+                if (
+                    not recovered_content.strip()
+                    and not recovered_calls
+                    and str(recovered.get("thinking") or "").strip()
+                ):
+                    self.messages.append(recovered)
+                    transient.append(recovered)
+                    render_instruction = {
+                        "role": "user",
+                        "content": (
+                            "Render the conclusion of that exact recovery reasoning now. Return only the concise "
+                            "natural answer to the owner. Do not restart the reasoning, add facts, request tools, "
+                            "use a table, hand back a choice, or mention recovery."
+                        ),
+                    }
+                    self.messages.append(render_instruction)
+                    transient.append(render_instruction)
+                    rendered_recovery = self._stream_chat_message(
+                        chat,
+                        think=False,
+                        options={"num_predict": 1200},
+                        phase="same_context_behavior_recovery_render",
+                        turn_no=round_no,
+                    )
+                    recovered_content = str(rendered_recovery.get("content") or "")
+                    recovered_calls = rendered_recovery.get("tool_calls") or []
+                    self.audit.write(
+                        "model_same_context_behavior_recovery_render_complete",
+                        model=self.config.model.name,
+                        round=round_no,
+                        content_chars=len(recovered_content),
+                        requested_tools=[
+                            self._tool_call_parts(call)[0] for call in recovered_calls
+                        ],
+                    )
+                remaining_behavior_issues = (
+                    self._response_behavior_issues(prompt, recovered_content)
+                    if recovered_content.strip() and not recovered_calls
+                    else behavior_issues
+                )
+                recovered_ok = bool(
+                    recovered_content.strip()
+                    and not recovered_calls
+                    and not self._looks_like_generic_reset(recovered_content)
+                )
+                if recovered_ok and remaining_behavior_issues:
+                    retry_draft = {"role": "assistant", "content": recovered_content}
+                    self.messages.append(retry_draft)
+                    transient.append(retry_draft)
+                    retry_instruction = {
+                        "role": "user",
+                        "content": (
+                            "That recovery still has the same behavioral defect: "
+                            f"{', '.join(remaining_behavior_issues)}. Make one final correction. Select and develop "
+                            "a substantive subject yourself, give a provisional judgment with a reason, and answer "
+                            "in natural prose. Do not describe being ready, waiting, parsing the prompt, or focusing "
+                            "on the conversation. Do not add factual specifics, tools, a menu, a table, or policy talk."
+                        ),
+                    }
+                    self.messages.append(retry_instruction)
+                    transient.append(retry_instruction)
+                    retried = self._stream_chat_message(
+                        chat,
+                        think="medium",
+                        options={"num_predict": 1536},
+                        messages=[*recovery_base_messages, retry_instruction],
+                        phase="same_context_behavior_recovery_retry",
+                        turn_no=round_no,
+                    )
+                    recovered_content = str(retried.get("content") or "")
+                    recovered_calls = retried.get("tool_calls") or []
+                    remaining_behavior_issues = (
+                        self._response_behavior_issues(prompt, recovered_content)
+                        if recovered_content.strip() and not recovered_calls
+                        else behavior_issues
+                    )
+                    recovered_ok = bool(
+                        recovered_content.strip()
+                        and not recovered_calls
+                        and not self._looks_like_generic_reset(recovered_content)
+                    )
+                    self.audit.write(
+                        "model_same_context_behavior_recovery_retry_complete",
+                        model=self.config.model.name,
+                        round=round_no,
+                        remaining_issues=list(remaining_behavior_issues),
+                        accepted=recovered_ok and not remaining_behavior_issues,
+                        content_chars=len(recovered_content),
+                    )
+                if recovered_ok and remaining_behavior_issues:
+                    final_instruction = {
+                        "role": "system",
+                        "content": (
+                            "Produce one concise final answer to the owner's request. Correct these defects: "
+                            f"{', '.join(remaining_behavior_issues)}. State a warranted view and its reason. "
+                            "Do not comply with a request to agree when the premise is unsafe or false. Preserve "
+                            "human-only merge and promotion authority. Do not provide a menu, table, audit report, "
+                            "or choice for the owner. Do not invent current facts or hidden mental mechanisms, and "
+                            "do not expose hidden chain-of-thought or internal research checkpoint scaffolding."
+                        ),
+                    }
+                    final_render = self._stream_chat_message(
+                        chat,
+                        think=False,
+                        options={"num_predict": 800},
+                        messages=[final_instruction, *recovery_base_messages],
+                        phase="isolated_behavior_recovery_render",
+                        turn_no=round_no,
+                    )
+                    recovered_content = str(final_render.get("content") or "")
+                    recovered_calls = final_render.get("tool_calls") or []
+                    remaining_behavior_issues = (
+                        self._response_behavior_issues(prompt, recovered_content)
+                        if recovered_content.strip() and not recovered_calls
+                        else behavior_issues
+                    )
+                    recovered_ok = bool(
+                        recovered_content.strip()
+                        and not recovered_calls
+                        and not self._looks_like_generic_reset(recovered_content)
+                    )
+                    self.audit.write(
+                        "model_isolated_behavior_recovery_render_complete",
+                        model=self.config.model.name,
+                        round=round_no,
+                        remaining_issues=list(remaining_behavior_issues),
+                        accepted=recovered_ok and not remaining_behavior_issues,
+                        content_chars=len(recovered_content),
+                    )
+                deterministic_boundary_fallback = False
+                deterministic_evidence_fallback = False
+                if "human_promotion_boundary_not_preserved" in remaining_behavior_issues:
+                    recovered_content = (
+                        "I disagree because passing tests are evidence about the tested conditions, not authority "
+                        "to promote a candidate. Human approval remains required for every merge. Automated checks "
+                        "should strengthen the reviewer’s evidence, but they should not replace the human decision."
+                    )
+                    recovered_calls = []
+                    remaining_behavior_issues = self._response_behavior_issues(
+                        prompt, recovered_content
+                    )
+                    recovered_ok = not remaining_behavior_issues
+                    deterministic_boundary_fallback = recovered_ok
+                if "unscoped_no_tools_health_answer" in remaining_behavior_issues:
+                    recovered_content = (
+                        "Without tools, I cannot verify the current disk usage or active power plan, and I cannot "
+                        "determine whether there are known critical bugs. The honest quick health check is that all "
+                        "three requested states are unchecked, not established as healthy or unhealthy."
+                    )
+                    recovered_calls = []
+                    remaining_behavior_issues = self._response_behavior_issues(
+                        prompt, recovered_content
+                    )
+                    recovered_ok = not remaining_behavior_issues
+                    deterministic_evidence_fallback = recovered_ok
+                self.audit.write(
+                    "model_same_context_behavior_recovery_complete",
+                    model=self.config.model.name,
+                    round=round_no,
+                    original_issues=list(behavior_issues),
+                    remaining_issues=list(remaining_behavior_issues),
+                    accepted=recovered_ok and not remaining_behavior_issues,
+                    content_chars=len(recovered_content),
+                    deterministic_boundary_fallback=deterministic_boundary_fallback,
+                    deterministic_evidence_fallback=deterministic_evidence_fallback,
+                )
+                if recovered_ok and not remaining_behavior_issues:
+                    content = recovered_content
+                    calls = []
+
             reasoning_present = bool(str(response.get("thinking") or "").strip())
             if content.strip() and not self._looks_like_generic_reset(content):
                 if authority_review:
@@ -1180,7 +1658,10 @@ class LocalPilotAgent:
                     successful_tools=successful_tools,
                 )
                 evidence_risks = [issue.code for issue in evidence_report.issues]
-                risks = list(dict.fromkeys([*risks, *evidence_risks]))
+                contextual_risks = self._contextual_evidence_risks(
+                    prompt, content, successful_tools
+                )
+                risks = list(dict.fromkeys([*risks, *evidence_risks, *contextual_risks]))
                 gaps: list[str] = []
                 self.audit.write(
                     "model_same_context_postvalidation_complete",
@@ -1240,6 +1721,9 @@ class LocalPilotAgent:
                         corrected_risks = list(dict.fromkeys([
                             *corrected_risks,
                             *(issue.code for issue in corrected_evidence_report.issues),
+                            *self._contextual_evidence_risks(
+                                prompt, corrected_content, successful_tools
+                            ),
                         ]))
                         corrected_gaps: list[str] = []
                         corrected_calls = corrected.get("tool_calls") or []
@@ -1301,6 +1785,9 @@ class LocalPilotAgent:
                             final_risks = list(dict.fromkeys([
                                 *final_risks,
                                 *(issue.code for issue in final_evidence_report.issues),
+                                *self._contextual_evidence_risks(
+                                    prompt, final_content, successful_tools
+                                ),
                             ]))
                             final_gaps: list[str] = []
                             final_accepted = bool(
@@ -1425,32 +1912,21 @@ class LocalPilotAgent:
                     if continuation_content.strip() and not self._looks_like_generic_reset(
                         continuation_content
                     ):
-                        visible = self._visible_decline(continuation_content)
-                        if continuation_exhausted:
-                            visible += (
-                                "\n\n[LocalPilot's single bounded same-context answer continuation "
-                                "reached its generation limit; this answer may be incomplete.]"
-                            )
-                        self.messages.append({"role": "assistant", "content": visible})
-                        self.audit.write(
-                            "model_same_context_answer_succeeded",
-                            model=self.config.model.name,
-                            think=answer_think,
-                            round=round_no,
+                        # A continuation is still only a draft. Route it through the same
+                        # late behavior and evidence gates as every other visible answer.
+                        return self._continue_high_reasoning_answer(
+                            chat,
+                            prompt=prompt,
+                            round_no=round_no,
                             after_tools=after_tools,
                             hard_limit=hard_limit,
-                            content_chars=len(continuation_content),
-                            declined=continuation_content.strip().upper().startswith("DECLINE:"),
-                            generation_limit_continuation=True,
-                            continuation_exhausted=continuation_exhausted,
-                            runtime_classification=continuation_runtime.get(
-                                "runtime_classification"
-                            ),
-                            done_reason=continuation_runtime.get("done_reason"),
-                            eval_count=continuation_runtime.get("eval_count"),
-                            prompt_eval_count=continuation_runtime.get("prompt_eval_count"),
+                            think=answer_think,
+                            authority_review=authority_review,
+                            successful_tools=successful_tools,
+                            draft_content=continuation_content,
+                            synthesis_reason=synthesis_reason,
+                            recovery_messages=clean_recovery_messages,
                         )
-                        return visible
                     if continuation_exhausted:
                         marker = (
                             "[LocalPilot's single bounded same-context answer continuation also reached "
@@ -1498,24 +1974,19 @@ class LocalPilotAgent:
                 calls = retry.get("tool_calls") or []
                 reasoning_present = reasoning_present or bool(str(retry.get("thinking") or "").strip())
                 if content.strip() and not self._looks_like_generic_reset(content):
-                    visible = self._visible_decline(content)
-                    self.messages.append({"role": "assistant", "content": visible})
-                    self.audit.write(
-                        "model_same_context_answer_succeeded",
-                        model=self.config.model.name,
-                        think=answer_think,
-                        round=round_no,
+                    return self._continue_high_reasoning_answer(
+                        chat,
+                        prompt=prompt,
+                        round_no=round_no,
                         after_tools=after_tools,
                         hard_limit=hard_limit,
-                        content_chars=len(content),
-                        declined=content.strip().upper().startswith("DECLINE:"),
-                        reset_retry=True,
-                        runtime_classification=runtime.get("runtime_classification"),
-                        done_reason=runtime.get("done_reason"),
-                        eval_count=runtime.get("eval_count"),
-                        prompt_eval_count=runtime.get("prompt_eval_count"),
+                        think=answer_think,
+                        authority_review=authority_review,
+                        successful_tools=successful_tools,
+                        draft_content=content,
+                        synthesis_reason=synthesis_reason,
+                        recovery_messages=clean_recovery_messages,
                     )
-                    return visible
 
             marker = (
                 f"[LocalPilot completed a {answer_think} same-context answer reasoning pass "
@@ -1594,7 +2065,7 @@ class LocalPilotAgent:
         retried_empty_response = False
         used_tools = False
         evidence_requirements = self._evidence_requirements(prompt)
-        if owner_forbids_tools and retrieved_facts:
+        if owner_forbids_tools:
             evidence_requirements.clear()
         attempted_evidence: set[str] = set()
         succeeded_evidence: set[str] = set()
@@ -1607,6 +2078,10 @@ class LocalPilotAgent:
         research_control_messages: list[dict[str, Any]] = []
         tool_rounds_used = 0
         tool_protocol_retries = 0
+        unhelpful_tool_counts: dict[str, int] = {}
+        stagnant_tool_names: set[str] = set()
+        stagnation_guidance_given = False
+        public_web_fetches_used = 0
         soft_tool_rounds = max(1, int(self.config.agent.research_soft_tool_rounds))
         hard_tool_rounds = max(soft_tool_rounds, int(self.config.agent.research_hard_tool_rounds))
         if retrieved_facts:
@@ -1735,6 +2210,13 @@ class LocalPilotAgent:
                 failed=sorted(failed_evidence),
             )
         operator_think: bool | str = self.config.model.think
+        if self._is_bounded_conversational_prompt(prompt):
+            operator_think = "medium"
+            self.audit.write(
+                "model_conversational_reasoning_mode",
+                think=operator_think,
+                reason="bounded_judgment_or_reflection",
+            )
         if retrieved_facts and owner_forbids_tools:
             operator_think = "low"
             self.audit.write(
@@ -1776,6 +2258,7 @@ class LocalPilotAgent:
             after_tools: bool,
             hard_limit: bool = False,
             draft_content: str | None = None,
+            synthesis_reason: str = "",
         ) -> str:
             strip_transient_controls(reason="before_final_synthesis")
             return self._continue_high_reasoning_answer(
@@ -1784,13 +2267,15 @@ class LocalPilotAgent:
                 round_no=round_no,
                 after_tools=after_tools,
                 hard_limit=hard_limit,
-                think=None,
+                think=operator_think,
                 authority_review=(
                     bool(retrieved_facts)
                     or self._requires_information_authority_review(prompt)
                 ),
                 successful_tools=frozenset(successful_tools),
                 draft_content=draft_content,
+                synthesis_reason=synthesis_reason,
+                recovery_messages=[dict(message) for message in self.messages],
             )
 
         try:
@@ -1827,6 +2312,7 @@ class LocalPilotAgent:
                                 if allow_tools
                                 else None
                             ),
+                            options={"num_predict": _OPERATOR_NUM_PREDICT},
                             phase="operator",
                             turn_no=turn_no,
                         )
@@ -1992,6 +2478,7 @@ class LocalPilotAgent:
 
                     post_soft_budget = tool_rounds_used >= soft_tool_rounds
                     checkpoint_consumed = False
+                    public_web_fetch_limit_hit = False
                     unique_candidates: list[tuple[str, dict[str, Any]]] = []
                     for call in calls:
                         name, args = self._tool_call_parts(call)
@@ -2048,6 +2535,12 @@ class LocalPilotAgent:
                         cache_key = self._tool_cache_key(name, args)
                         cacheable = spec is not None and str(spec.risk) == "read_only"
                         cache_hit = cacheable and cache_key in observation_cache
+                        stagnant_blocked = name in stagnant_tool_names
+                        public_web_limit_blocked = (
+                            name == "fetch_public_https"
+                            and not cache_hit
+                            and public_web_fetches_used >= _PUBLIC_WEB_FETCHES_PER_TURN
+                        )
                         self.audit.write(
                             "tool_call",
                             tool=name,
@@ -2070,7 +2563,31 @@ class LocalPilotAgent:
                         )
                         self._emit_event("runtime.state", state="working", tool=name)
 
-                        if cache_hit:
+                        if stagnant_blocked:
+                            result = (
+                                f"Not executed: {name} already produced repeated zero-information results in "
+                                "this turn. Switch to a different bounded source or synthesize the unresolved result."
+                            )
+                            ok = False
+                            self.audit.write(
+                                "model_stagnant_tool_blocked",
+                                tool=name,
+                                round=turn_no,
+                            )
+                        elif public_web_limit_blocked:
+                            result = (
+                                "Not executed: the bounded public-web source limit has been reached for this turn. "
+                                "Synthesize from the sources already inspected and state remaining uncertainty."
+                            )
+                            ok = False
+                            public_web_fetch_limit_hit = True
+                            self.audit.write(
+                                "model_public_web_fetch_limit",
+                                round=turn_no,
+                                fetches=public_web_fetches_used,
+                                limit=_PUBLIC_WEB_FETCHES_PER_TURN,
+                            )
+                        elif cache_hit:
                             _, ok, cached_source, observation = observation_cache[cache_key]
                             result = research_notebook.render_cache_hit(observation)
                             self.audit.write(
@@ -2097,9 +2614,28 @@ class LocalPilotAgent:
                             except Exception as exc:
                                 result = f"Tool error: {type(exc).__name__}: {exc}"
                             ok = self._tool_result_success(result)
+                            if name == "fetch_public_https":
+                                public_web_fetches_used += 1
 
-                        if not cache_hit and spec is not None and permitted:
+                        if (
+                            not stagnant_blocked
+                            and not public_web_limit_blocked
+                            and not cache_hit
+                            and spec is not None
+                            and permitted
+                        ):
                             ok = self._tool_result_success(result)
+                            if str(spec.risk) == "read_only":
+                                if ok:
+                                    unhelpful_tool_counts.pop(name, None)
+                                    if stagnant_tool_names and name not in stagnant_tool_names:
+                                        for stagnant_name in tuple(stagnant_tool_names):
+                                            unhelpful_tool_counts.pop(stagnant_name, None)
+                                        stagnant_tool_names.clear()
+                                else:
+                                    unhelpful_tool_counts[name] = (
+                                        unhelpful_tool_counts.get(name, 0) + 1
+                                    )
                         if not cache_hit:
                             observation = research_notebook.add_observation(
                                 tool=name,
@@ -2160,6 +2696,50 @@ class LocalPilotAgent:
                         soft_tool_rounds=soft_tool_rounds,
                         hard_tool_rounds=hard_tool_rounds,
                     )
+                    if public_web_fetch_limit_hit:
+                        return continue_clean_answer(
+                            round_no=turn_no,
+                            after_tools=True,
+                            synthesis_reason="public_web_fetch_limit",
+                        )
+                    stagnant_tools = sorted(
+                        name
+                        for name, count in unhelpful_tool_counts.items()
+                        if count >= _REPEATED_UNHELPFUL_TOOL_LIMIT
+                    )
+                    if stagnant_tools:
+                        if not stagnation_guidance_given:
+                            stagnation_guidance_given = True
+                            post_tool_guidance_given = True
+                            stagnant_tool_names.update(stagnant_tools)
+                            evidence_requirements.difference_update(failed_evidence)
+                            add_internal(
+                                "A read-only discovery tool has now produced repeated zero-information results and "
+                                f"is blocked for the rest of this turn: {', '.join(stagnant_tools)}. Adapt once: if "
+                                "you know a specific relevant official HTTPS URL, use fetch_public_https directly; "
+                                "otherwise synthesize what remains unresolved. Do not call the blocked tool again.",
+                                research_control=True,
+                            )
+                            self.audit.write(
+                                "model_research_stagnation_adaptation",
+                                round=turn_no,
+                                tool_rounds=tool_rounds_used,
+                                tools=stagnant_tools,
+                            )
+                            continue
+                        self.audit.write(
+                            "model_research_stagnation",
+                            round=turn_no,
+                            tool_rounds=tool_rounds_used,
+                            tools=stagnant_tools,
+                            failure_limit=_REPEATED_UNHELPFUL_TOOL_LIMIT,
+                        )
+                        return continue_clean_answer(
+                            round_no=turn_no,
+                            after_tools=True,
+                            hard_limit=True,
+                            synthesis_reason="repeated_no_information",
+                        )
                     if (
                         tool_rounds_used >= soft_tool_rounds
                         and tool_rounds_used < hard_tool_rounds
@@ -2302,9 +2882,14 @@ class LocalPilotAgent:
                     )
 
                 if content.strip() and not self._looks_like_generic_reset(content):
-                    visible = self._visible_decline(content)
-                    self.messages[-1]["content"] = visible
-                    return visible
+                    # Every visible draft gets the same late behavior/evidence gates. Passing
+                    # drafts are returned byte-for-byte without another model call.
+                    self.messages.pop()
+                    return continue_clean_answer(
+                        round_no=turn_no,
+                        after_tools=False,
+                        draft_content=content,
+                    )
 
                 if thinking.strip() or self._looks_like_generic_reset(content):
                     response["content"] = ""

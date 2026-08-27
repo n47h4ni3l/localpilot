@@ -153,6 +153,29 @@ class ChatStore:
             if item["status"] == "complete" and str(item["content"]).strip()
         ]
 
+    def fail_streaming_messages(self, reason: str) -> list[dict[str, Any]]:
+        """Close records abandoned by a broker/process restart."""
+        timestamp = _now()
+        marker = f"[LocalPilot answer interrupted: {str(reason).strip()}]"
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, session_id FROM chat_messages WHERE status = 'streaming' ORDER BY id"
+            ).fetchall()
+            message_ids = [int(row["id"]) for row in rows]
+            session_ids = {str(row["session_id"]) for row in rows}
+            if message_ids:
+                placeholders = ",".join("?" for _ in message_ids)
+                connection.execute(
+                    f"UPDATE chat_messages SET content = ?, status = 'error', updated_at = ? "
+                    f"WHERE id IN ({placeholders})",
+                    (marker, timestamp, *message_ids),
+                )
+                connection.executemany(
+                    "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+                    ((timestamp, session_id) for session_id in session_ids),
+                )
+        return [self.message(message_id) for message_id in message_ids]
+
     def append_event(
         self,
         event_type: str,

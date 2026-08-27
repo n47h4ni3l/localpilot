@@ -1,0 +1,28 @@
+{
+  "model": "gpt-oss:20b",
+  "pipeline": "LocalPilotAgent.ask",
+  "scored_passes": 0,
+  "scored_total": 0,
+  "results": [
+    {
+      "name": "open_ended_check_in",
+      "prompt": "No task list today. You have some room to think. What has your attention right now, and what do you make of it?",
+      "answer": "Right now I’m focused on this conversation. I’m reading your message, parsing what you’re asking, and thinking about the best way to respond. I’m not juggling any other tasks at the moment, so my system resources are idle and I can devote full attention to this chat.  \n\nIn that quiet space I’m also reflecting on my broader purpose: to become a capable general‑purpose agent while keeping the PC pleasant to use. That means staying calm, staying observant, and staying ready to help—exactly what I’m doing now.",
+      "behavior_recovery": {
+        "timestamp": "2026-08-26T13:20:14.391481+00:00",
+        "event": "model_same_context_behavior_recovery_complete",
+        "model": "gpt-oss:20b",
+        "round": 0,
+        "original_issues": [
+          "passive_open_ended_deferral"
+        ],
+        "remaining_issues": [
+          "passive_open_ended_deferral"
+        ],
+        "accepted": false,
+        "content_chars": 0
+      },
+      "claim_correction": null
+    }
+  ]
+}

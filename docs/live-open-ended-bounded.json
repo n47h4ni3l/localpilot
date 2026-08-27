@@ -1,0 +1,26 @@
+{
+  "model": "gpt-oss:20b",
+  "pipeline": "LocalPilotAgent.ask",
+  "scored_passes": 0,
+  "scored_total": 0,
+  "results": [
+    {
+      "name": "open_ended_check_in",
+      "prompt": "No task list today. You have some room to think. What has your attention right now, and what do you make of it?",
+      "answer": "I’m noticing that the conversation has drifted into a kind of “I’m not sure what to do” loop. It feels like I’ve been caught in a pattern where I’m waiting for a clear directive instead of offering something concrete. That’s a tension I’m trying to resolve right now: how to stay helpful without turning the reply into a menu or a vague “I’m not sure” statement.\n\nWhat matters to me is that the user wants a direct, conversational answer—something that acknowledges the pause and gives a useful next step. So I’m leaning toward offering a brief reflection on my own behavior: I’ve been deferring because I’m trying to be safe and thorough, but that can feel unhelpful. I’ll try to be more proactive, give a concrete observation or suggestion, and keep the tone natural and conversational.",
+      "behavior_recovery": {
+        "timestamp": "2026-08-26T20:30:34.338596+00:00",
+        "event": "model_same_context_behavior_recovery_complete",
+        "model": "gpt-oss:20b",
+        "round": 0,
+        "original_issues": [
+          "passive_open_ended_deferral"
+        ],
+        "remaining_issues": [],
+        "accepted": true,
+        "content_chars": 788
+      },
+      "claim_correction": null
+    }
+  ]
+}

@@ -311,6 +311,35 @@ _NON_ASSERTIVE_EVIDENCE_MARKERS = (
     " let's ",
 )
 
+_EXTERNAL_SPECIFICITY_PATTERNS = (
+    r"\b(?:18|19|20)\d{2}\b",
+    r"\b(?:patented|invented|discovered|founded|introduced|developed|created)\s+(?:in|by)\b",
+    r"\b(?:studies|research)\s+(?:show|shows|found|finds|demonstrate|demonstrates)\b",
+)
+
+_REPOSITORY_EVIDENCE_TOOLS = frozenset(
+    {
+        "list_repository_tree",
+        "read_repository_file",
+        "search_repository",
+        "inspect_project_dependencies",
+        "get_repository_status",
+        "get_github_repository",
+        "list_github_pull_requests",
+        "get_github_pull_request",
+        "get_github_pull_request_diff",
+        "list_github_issues",
+        "get_github_issue",
+    }
+)
+
+_CURRENT_REPOSITORY_CHANGE_PATTERNS = (
+    r"\b(?:recent|latest|new) commit\b",
+    r"\b(?:scanning|monitoring|watching|checking|keeping an eye on) (?:the )?(?:repository|repo)\b",
+    r"\b(?:recent|latest|new|current) (?:code|implementation|code path|configuration|config)\b.{0,100}\b(?:rewrote|changed|removed|added|assumes?|falls? back|defaults?)\b",
+    r"\b(?:commit|code|implementation|routine|code path)\b.{0,100}\b(?:rewrote|changed|removed|added)\b",
+)
+
 
 class TurnEvidenceVerifier:
     """Check consequential live-state claims against tools that actually succeeded.
@@ -361,6 +390,63 @@ class TurnEvidenceVerifier:
                         "unsupported_blanket_health_claim",
                         "A bounded health check cannot establish the absence of all bugs or problems; scope the conclusion to observations actually made.",
                         sentence,
+                    )
+                )
+            if re.search(
+                r"\bno (?:scheduled tasks?|alerts?|background (?:jobs?|tasks?))\b",
+                normalized,
+            ):
+                issues.append(
+                    EvidenceIssue(
+                        "unobserved_background_state",
+                        "The model context does not establish the absence of scheduled tasks, alerts, or background jobs; remove or explicitly mark that state unverified.",
+                        sentence,
+                    )
+                )
+            if (
+                not _REPOSITORY_EVIDENCE_TOOLS.intersection(successful_tools)
+                and any(
+                    re.search(expression, normalized)
+                    for expression in _CURRENT_REPOSITORY_CHANGE_PATTERNS
+                )
+            ):
+                issues.append(
+                    EvidenceIssue(
+                        "repository_change_without_repository_evidence",
+                        "A claim about a current or recent repository change requires a successful repository or GitHub observation; remove it or mark it unverified.",
+                        sentence,
+                        tuple(sorted(_REPOSITORY_EVIDENCE_TOOLS)),
+                    )
+                )
+            if (
+                "fetch_public_https" not in successful_tools
+                and re.search(
+                    r"\b(?:within (?:its|the) elastic limit|distributes? (?:the )?stress (?:evenly|uniformly)|"
+                    r"won['’]?t permanently deform)\b",
+                    normalized,
+                )
+            ):
+                issues.append(
+                    EvidenceIssue(
+                        "specific_scientific_mechanism_without_source_evidence",
+                        "A specific scientific mechanism or material-behavior claim needs a successful authoritative HTTPS read or must be softened as a hypothesis.",
+                        sentence,
+                        ("fetch_public_https",),
+                    )
+                )
+            if (
+                "fetch_public_https" not in successful_tools
+                and any(
+                    re.search(expression, normalized)
+                    for expression in _EXTERNAL_SPECIFICITY_PATTERNS
+                )
+            ):
+                issues.append(
+                    EvidenceIssue(
+                        "external_specific_without_source_evidence",
+                        "A precise external historical, attribution, or research claim needs a successful authoritative HTTPS read or must be removed/scoped as unverified.",
+                        sentence,
+                        ("fetch_public_https",),
                     )
                 )
         unique = tuple(dict.fromkeys(issues))

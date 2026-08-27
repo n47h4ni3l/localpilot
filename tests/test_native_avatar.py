@@ -19,30 +19,54 @@ def test_unsaved_avatar_anchors_inside_primary_work_area():
     assert y == 880 - native_avatar.AVATAR_SIZE - native_avatar.EDGE_INSET
 
 
-def test_chat_keeps_bottom_right_anchor_to_avatar():
-    x, y = native_avatar._chat_position_from_avatar(1700, 820)
+def test_clamp_position_recovers_avatar_fully_inside_monitor():
+    assert native_avatar._clamp_position(
+        1900,
+        -90,
+        native_avatar.AVATAR_SIZE,
+        native_avatar.AVATAR_SIZE,
+        (0, 0, 1920, 1040),
+    ) == (1792, 0)
+
+
+def test_recover_avatar_position_uses_nearest_monitor_work_area(monkeypatch):
+    monkeypatch.setattr(
+        native_avatar,
+        "_monitor_work_area_for_point",
+        lambda x, y: (-1920, 0, 0, 1040),
+    )
+    assert native_avatar._recover_avatar_position(-2050, -50) == (-1920, 0)
+
+
+def test_chat_keeps_bottom_right_anchor_to_avatar_when_same_coordinate_space_is_explicit():
+    x, y = native_avatar._chat_position_from_avatar(
+        1700,
+        820,
+        (0, 0, 1920, 1080),
+    )
     width, height = native_avatar.EXPANDED_SIZE
-    assert x + width == 1700 + native_avatar.AVATAR_SIZE
-    assert y + height == 820 + native_avatar.AVATAR_SIZE
+    assert 0 <= x <= 1920 - width
+    assert 0 <= y <= 1080 - height
 
 
-def test_launch_webview_uses_detached_gui_process_and_absolute_coordinates(tmp_path, monkeypatch):
+def test_launch_webview_can_use_explicit_diagnostic_coordinates(tmp_path, monkeypatch):
     pythonw = tmp_path / "pythonw.exe"
     pythonw.write_text("", encoding="utf-8")
     captured = {}
+    process = object()
 
     monkeypatch.setattr(native_avatar, "_desktop_python_executable", lambda: pythonw)
 
     def fake_popen(argv, **kwargs):
         captured["argv"] = argv
         captured["kwargs"] = kwargs
-        return object()
+        return process
 
     monkeypatch.setattr(native_avatar.subprocess, "Popen", fake_popen)
     root = tmp_path / "repo"
     root.mkdir()
 
-    assert native_avatar._launch_webview(root, None, x=-500, y=240) is True
+    assert native_avatar._launch_webview(root, None, x=-500, y=240) is process
     assert captured["argv"] == [
         str(pythonw),
         "-m",
@@ -58,6 +82,25 @@ def test_launch_webview_uses_detached_gui_process_and_absolute_coordinates(tmp_p
     assert captured["kwargs"]["stdout"] is subprocess.DEVNULL
     assert captured["kwargs"]["stderr"] is subprocess.DEVNULL
     assert captured["kwargs"]["shell"] is False
+
+
+def test_normal_avatar_click_does_not_forward_tk_coordinates_to_webview(tmp_path, monkeypatch):
+    pythonw = tmp_path / "pythonw.exe"
+    pythonw.write_text("", encoding="utf-8")
+    captured = {}
+
+    monkeypatch.setattr(native_avatar, "_desktop_python_executable", lambda: pythonw)
+    monkeypatch.setattr(
+        native_avatar.subprocess,
+        "Popen",
+        lambda argv, **kwargs: captured.update(argv=argv, kwargs=kwargs) or object(),
+    )
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    assert native_avatar._launch_webview(root, None) is not None
+    assert "--x" not in captured["argv"]
+    assert "--y" not in captured["argv"]
 
 
 def test_desktop_ui_state_round_trips_avatar_position_and_on_top(tmp_path):
@@ -76,3 +119,10 @@ def test_native_avatar_uses_windows_transparent_color_not_webview_transparency()
     assert 'wm_attributes("-transparentcolor", _TRANSPARENT_KEY)' in source
     assert "overrideredirect(True)" in source
     assert "webview.create_window" not in source
+
+
+def test_native_win32_calls_declare_pointer_sized_handle_types():
+    source = Path(native_avatar.__file__).read_text(encoding="utf-8")
+    assert "GetParent.restype = ctypes.c_void_p" in source
+    assert "MonitorFromPoint.restype = ctypes.c_void_p" in source
+    assert "SetWindowPos.argtypes" in source

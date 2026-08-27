@@ -21,6 +21,7 @@ from localpilot.mission import mission_context
 from localpilot.resource import ResourceGovernor
 from localpilot.selfdev import CandidateRejectionError, CandidateRetryError, SelfDeveloper
 from localpilot.study import STAGES, StudyEngine
+from localpilot.tools.library import LocalLibrary
 
 
 _FAILED_EVOLVE_STATUSES = {"failed", "sync_blocked", "candidate_needs_work"}
@@ -490,6 +491,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inspect any public HTTPS source transiently without promoting it to knowledge",
     )
     research.add_argument("url", help="Public HTTPS source to inspect read-only")
+    library = sub.add_parser(
+        "library",
+        help="Refresh, inspect, or search the owner-managed local reference library",
+    )
+    library_sub = library.add_subparsers(dest="library_action")
+    library_sub.add_parser("status", help="Refresh the index and show library coverage")
+    library_sub.add_parser("index", help="Refresh the disposable extracted-text index")
+    library_search = library_sub.add_parser(
+        "search", help="Search indexed PDF and text passages without invoking a model"
+    )
+    library_search.add_argument("query", help="Words or phrase to find")
+    library_search.add_argument("--max-results", type=int, default=6)
     parser.add_argument("--config", default=None, help="Path to localpilot.toml")
     return parser
 
@@ -588,6 +601,28 @@ def main() -> None:
             "and relevant future implementation cycles. This is durable context "
             "learning, not a model-weight update."
         )
+    elif args.command == "library":
+        library = LocalLibrary(
+            config.library,
+            root / config.agent.data_dir / config.library.index_database,
+        )
+        action = args.library_action or "status"
+        if action == "search":
+            console.print(
+                _console_safe_text(
+                    console,
+                    library.search_library(args.query, max_results=args.max_results),
+                ),
+                markup=False,
+            )
+        elif action == "index":
+            result = library.refresh_index()
+            console.print_json(data=result)
+        else:
+            console.print(
+                _console_safe_text(console, library.get_library_summary()),
+                markup=False,
+            )
     elif args.command == "study":
         memory = LearningMemory(root / config.agent.data_dir / config.selfdev.learning_database)
         action = args.study_action or "status"

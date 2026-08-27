@@ -287,6 +287,9 @@ localpilot evolve            Run one guarded evolution cycle
 localpilot reject            Record a human rejection for a candidate
 localpilot retry             Start a lineage-preserving retry
 localpilot teach             Save an explicit owner lesson
+localpilot library status    Refresh and summarize the local reference library
+localpilot library index     Refresh the disposable full-text index
+localpilot library search    Search cited PDF/text passages without invoking a model
 localpilot study status      Show study progress
 localpilot study baseline    Run a stage baseline
 localpilot study run         Research and learn a stage
@@ -326,12 +329,17 @@ The task does not bypass LocalPilot's own idle, resource, candidate, or trusted-
 - `[resource]` — idle, CPU, memory, and priority gates;
 - `[selfdev]` — developer models, candidate limits, GitHub delivery, and checkpoints;
 - `[desktop]` — loopback broker port, separate chat database, and runtime restart ceiling;
+- `[library]` — optional owner-managed PDF/text source root and bounded disposable-index limits;
 - `[github]` — trusted remote, main branch, and candidate delivery; and
 - `[safety]` — the normal operator command-policy foundation.
 
 The learning database name, owner-lesson limit, and candidate resource settings currently live under `[selfdev]`. Audit logging has no separate TOML section yet.
 
 Read [config.example.toml](config.example.toml) before changing limits. Security-critical ceilings should be changed only with corresponding tests and a clear threat-model justification.
+
+When enabled, the owner-managed library is checked before public-web discovery when its local books or manuals
+are relevant. See [docs/library-folder-readme.md](docs/library-folder-readme.md) for supported formats, privacy
+boundaries, indexing behavior, and the distinction between retrieval, durable learning, and model training.
 
 ## Local data and privacy
 
@@ -356,6 +364,7 @@ localpilot/
   research.py              bounded research and raw-evidence handling
   tools/windows.py         read-only Windows observation tools
   tools/windows_actions.py allow-listed reversible Windows UI/power actions
+  tools/library.py         bounded read-only PDF/text library indexing and retrieval
   operator.py              guarded argument-based command foundation
   selfdev.py               discovery, candidate, repair, and delivery loop
   evolution.py             proposals, scoring, and evidence gates

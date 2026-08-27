@@ -80,6 +80,21 @@ class DesktopConfig:
 
 
 @dataclass(slots=True)
+class LibraryConfig:
+    """Owner-managed, read-only source library with a disposable local index."""
+
+    enabled: bool = False
+    root: str = r"E:\LLM_HOME\library"
+    index_database: str = "library-index.sqlite3"
+    max_documents: int = 2000
+    max_refresh_files: int = 50
+    max_file_size_mb: int = 256
+    max_pages_per_document: int = 2000
+    max_chars_per_page: int = 30_000
+    max_search_results: int = 8
+
+
+@dataclass(slots=True)
 class SelfDevConfig:
     enabled: bool = True
     # This is deliberately distinct from model.name. If it is unavailable,
@@ -132,6 +147,7 @@ class Config:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
     desktop: DesktopConfig = field(default_factory=DesktopConfig)
+    library: LibraryConfig = field(default_factory=LibraryConfig)
     selfdev: SelfDevConfig = field(default_factory=SelfDevConfig)
     source_path: Path | None = None
 
@@ -204,6 +220,7 @@ def load_config(path: str | Path | None = None) -> Config:
         _apply(cfg.safety, raw.get("safety", {}))
         _apply(cfg.github, raw.get("github", {}))
         _apply(cfg.desktop, raw.get("desktop", {}))
+        _apply(cfg.library, raw.get("library", {}))
         selfdev_raw = raw.get("selfdev", {})
         _apply(cfg.selfdev, selfdev_raw)
         legacy_limit = selfdev_raw.get("max_files_per_cycle")
@@ -299,4 +316,38 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg.desktop.request_timeout_seconds = float(cfg.desktop.request_timeout_seconds)
     if not 1 <= cfg.desktop.request_timeout_seconds <= 3600:
         raise ValueError("desktop.request_timeout_seconds must be between 1 and 3600")
+    if not isinstance(cfg.library.enabled, bool):
+        raise ValueError("library.enabled must be a boolean")
+    cfg.library.root = str(cfg.library.root).strip()
+    if cfg.library.enabled and not cfg.library.root:
+        raise ValueError("library.root is required when the local library is enabled")
+    library_database = Path(str(cfg.library.index_database).strip())
+    if (
+        not library_database.name
+        or library_database.is_absolute()
+        or len(library_database.parts) != 1
+    ):
+        raise ValueError("library.index_database must be one local filename")
+    reserved_databases = {
+        Path(cfg.desktop.chat_database).name.casefold(),
+        Path(cfg.selfdev.learning_database).name.casefold(),
+    }
+    if library_database.name.casefold() in reserved_databases:
+        raise ValueError("library.index_database must remain separate from chat and learning databases")
+    cfg.library.index_database = library_database.name
+    library_bounds = {
+        "max_documents": 100_000,
+        "max_refresh_files": 2_000,
+        "max_file_size_mb": 1_024,
+        "max_pages_per_document": 10_000,
+        "max_chars_per_page": 200_000,
+        "max_search_results": 50,
+    }
+    for field_name, maximum in library_bounds.items():
+        value = int(getattr(cfg.library, field_name))
+        if not 1 <= value <= maximum:
+            raise ValueError(
+                f"library.{field_name} must be between 1 and {maximum}"
+            )
+        setattr(cfg.library, field_name, value)
     return cfg

@@ -59,6 +59,52 @@ def _primary_work_area(*, platform_name: str | None = None) -> tuple[int, int, i
     return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
 
 
+def _monitor_work_area_for_point(
+    x: int,
+    y: int,
+    *,
+    platform_name: str | None = None,
+) -> tuple[int, int, int, int] | None:
+    """Return the Windows monitor work area containing an absolute desktop point."""
+    platform_name = os.name if platform_name is None else platform_name
+    if platform_name != "nt":
+        return None
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+    class RECT(ctypes.Structure):
+        _fields_ = [
+            ("left", ctypes.c_long),
+            ("top", ctypes.c_long),
+            ("right", ctypes.c_long),
+            ("bottom", ctypes.c_long),
+        ]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", ctypes.c_ulong),
+            ("rcMonitor", RECT),
+            ("rcWork", RECT),
+            ("dwFlags", ctypes.c_ulong),
+        ]
+
+    try:
+        # MONITOR_DEFAULTTONEAREST keeps placement recoverable even if a saved
+        # coordinate is a few pixels outside a monitor after a display change.
+        monitor = ctypes.windll.user32.MonitorFromPoint(POINT(int(x), int(y)), 2)
+        if not monitor:
+            return None
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(info)
+        if not ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return None
+        work = info.rcWork
+        return int(work.left), int(work.top), int(work.right), int(work.bottom)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
 def _initial_avatar_position(
     state: dict[str, Any],
     work_area: tuple[int, int, int, int] | None,
@@ -73,10 +119,39 @@ def _initial_avatar_position(
     return EDGE_INSET, EDGE_INSET
 
 
-def _chat_position_from_avatar(x: int, y: int) -> tuple[int, int]:
-    """Keep the expanded chat's bottom-right corner anchored to the avatar."""
+def _clamp_position(
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    work_area: tuple[int, int, int, int] | None,
+) -> tuple[int, int]:
+    if work_area is None:
+        return int(x), int(y)
+    left, top, right, bottom = work_area
+    max_x = max(left, right - int(width))
+    max_y = max(top, bottom - int(height))
+    return (
+        min(max(int(x), left), max_x),
+        min(max(int(y), top), max_y),
+    )
+
+
+def _chat_position_from_avatar(
+    x: int,
+    y: int,
+    work_area: tuple[int, int, int, int] | None = None,
+) -> tuple[int, int]:
+    """Anchor chat near the avatar, then keep the full window inside its monitor."""
     width, height = EXPANDED_SIZE
-    return x + AVATAR_SIZE - width, y + AVATAR_SIZE - height
+    raw_x = int(x) + AVATAR_SIZE - width
+    raw_y = int(y) + AVATAR_SIZE - height
+    if work_area is None:
+        work_area = _monitor_work_area_for_point(
+            int(x) + AVATAR_SIZE // 2,
+            int(y) + AVATAR_SIZE // 2,
+        )
+    return _clamp_position(raw_x, raw_y, width, height, work_area)
 
 
 def _launch_webview(
@@ -122,14 +197,30 @@ def _launch_webview(
     return True
 
 
+def _top_level_hwnd(root: Any) -> int:
+    """Resolve Tk's client HWND to its real top-level Windows wrapper HWND."""
+    hwnd = int(root.winfo_id())
+    if os.name != "nt":
+        return hwnd
+    try:
+        parent = int(ctypes.windll.user32.GetParent(hwnd) or 0)
+        if parent:
+            hwnd = parent
+    except (AttributeError, OSError, ValueError):
+        pass
+    return hwnd
+
+
 def _set_window_position(root: Any, x: int, y: int) -> None:
-    """Move by absolute virtual-desktop coordinates; Tk's negative geometry is ambiguous."""
+    """Move by absolute virtual-desktop coordinates without changing z-order."""
     if os.name == "nt":
         try:
             root.update_idletasks()
-            hwnd = int(root.winfo_id())
-            flags = 0x0001 | 0x0010  # SWP_NOSIZE | SWP_NOACTIVATE
-            ctypes.windll.user32.SetWindowPos(hwnd, -1, int(x), int(y), 0, 0, flags)
+            hwnd = _top_level_hwnd(root)
+            # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE. In particular, do
+            # not accidentally turn every dragged avatar into a TOPMOST HWND.
+            flags = 0x0001 | 0x0004 | 0x0010
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, int(x), int(y), 0, 0, flags)
             return
         except (AttributeError, OSError, ValueError):
             pass
@@ -194,9 +285,17 @@ class NativeAvatarApp:
         self._events: queue.Queue[str] = queue.Queue()
         self._after_event_id = 0
 
+        self.menu = tk.Menu(self.root, tearoff=0)
+        self.menu.add_command(label="Open chat", command=self.open_chat)
+        self.menu.add_command(label="Toggle always on top", command=self.toggle_always_on_top)
+        self.menu.add_separator()
+        self.menu.add_command(label="Exit LocalPilot", command=self.close)
+
         self.canvas.bind("<ButtonPress-1>", self._press)
         self.canvas.bind("<B1-Motion>", self._drag)
         self.canvas.bind("<ButtonRelease-1>", self._release)
+        self.canvas.bind("<Button-3>", self._show_menu)
+        self.root.bind("<Escape>", lambda _event: self.close())
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
         self._draw()
@@ -225,6 +324,17 @@ class NativeAvatarApp:
         self._drag_origin = None
         if not self._dragged:
             self.open_chat()
+
+    def _show_menu(self, event: Any) -> None:
+        try:
+            self.menu.tk_popup(int(event.x_root), int(event.y_root))
+        finally:
+            self.menu.grab_release()
+
+    def toggle_always_on_top(self) -> None:
+        self.always_on_top = not self.always_on_top
+        self.root.wm_attributes("-topmost", self.always_on_top)
+        self.state_store.update(always_on_top=self.always_on_top)
 
     def _poll_events(self) -> None:
         while not self._stop.is_set():

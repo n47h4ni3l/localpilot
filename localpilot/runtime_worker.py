@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from localpilot.agent import LocalPilotAgent
+from localpilot.background_reading import BackgroundLibraryReader
 from localpilot.config import load_config
 
 
@@ -21,6 +22,9 @@ class RuntimeWorker:
         self._write_lock = threading.Lock()
         self._active_request_id: str | None = None
         self._active_session_id: str | None = None
+        self._background_stop = threading.Event()
+        self._background_reader = BackgroundLibraryReader(self.config, self.root)
+        self._background_thread: threading.Thread | None = None
 
     def _write(self, message: dict[str, Any]) -> None:
         encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":"), default=str)
@@ -119,21 +123,37 @@ class RuntimeWorker:
             self._active_request_id = None
             self._active_session_id = None
 
+    def _start_background_reader(self) -> None:
+        if self._background_thread is not None and self._background_thread.is_alive():
+            return
+        self._background_stop.clear()
+        self._background_thread = threading.Thread(
+            target=self._background_reader.run_forever,
+            args=(self._background_stop,),
+            name="localpilot-background-library-reader",
+            daemon=True,
+        )
+        self._background_thread.start()
+
     def run(self) -> None:
         self._write({"kind": "ready", "pid": __import__("os").getpid()})
-        for line in sys.stdin:
-            if not line.strip():
-                continue
-            try:
-                self.handle(json.loads(line))
-            except Exception as exc:
-                self._write(
-                    {
-                        "kind": "protocol_error",
-                        "error_type": type(exc).__name__,
-                        "message": str(exc),
-                    }
-                )
+        self._start_background_reader()
+        try:
+            for line in sys.stdin:
+                if not line.strip():
+                    continue
+                try:
+                    self.handle(json.loads(line))
+                except Exception as exc:
+                    self._write(
+                        {
+                            "kind": "protocol_error",
+                            "error_type": type(exc).__name__,
+                            "message": str(exc),
+                        }
+                    )
+        finally:
+            self._background_stop.set()
 
 
 def build_parser() -> argparse.ArgumentParser:

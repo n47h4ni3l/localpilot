@@ -17,6 +17,29 @@ from localpilot.config import Config, load_config
 from localpilot.runtime_supervisor import RuntimeSupervisor
 
 
+def _loopback_webview_origin(value: str | None) -> str | None:
+    """Return an exact pywebview origin, rejecting remote or malformed origins."""
+    if not value:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost"}
+        or port is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return value
+
+
 def broker_token_path(root: str | Path, config: Config) -> Path:
     return (Path(root).resolve() / config.agent.data_dir / "broker-token").resolve()
 
@@ -252,14 +275,50 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         return
 
+    def _cors_origin(self) -> str | None:
+        return _loopback_webview_origin(self.headers.get("Origin"))
+
+    def _cors_headers(self, origin: str) -> None:
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Vary", "Origin")
+
     def _json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         encoded = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(status)
+        origin = self._cors_origin()
+        if origin:
+            self._cors_headers(origin)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(encoded)
+
+    def do_OPTIONS(self) -> None:
+        """Permit only pywebview's loopback page to preflight broker requests."""
+        origin = self._cors_origin()
+        requested_method = self.headers.get("Access-Control-Request-Method", "").upper()
+        requested_headers = {
+            item.strip().lower()
+            for item in self.headers.get("Access-Control-Request-Headers", "").split(",")
+            if item.strip()
+        }
+        if (
+            origin is None
+            or requested_method not in {"GET", "POST"}
+            or not requested_headers <= {"authorization", "content-type"}
+        ):
+            self.send_response(HTTPStatus.FORBIDDEN)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self._cors_headers(origin)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _authorized(self) -> bool:
         expected = f"Bearer {self.server.app.token}"

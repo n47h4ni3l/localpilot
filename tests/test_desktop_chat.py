@@ -1,13 +1,15 @@
 import io
+import http.client
 import json
 import sqlite3
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from localpilot.broker import BrokerApp, load_or_create_broker_token
+from localpilot.broker import BrokerApp, BrokerHTTPServer, load_or_create_broker_token
 from localpilot.chat_store import ChatStore
 from localpilot.config import Config, load_config
 from localpilot.agent import LocalPilotAgent
@@ -38,6 +40,66 @@ def _broker(tmp_path):
     app = BrokerApp(tmp_path, config)
     app.runtime = _FakeRuntime()
     return app
+
+
+def test_broker_cors_allows_only_loopback_webview_origins(tmp_path):
+    app = _broker(tmp_path)
+    server = BrokerHTTPServer(("127.0.0.1", 0), app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        origin = "http://127.0.0.1:43123"
+        connection.request(
+            "OPTIONS",
+            "/v1/sessions",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "Authorization",
+            },
+        )
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 204
+        assert response.getheader("Access-Control-Allow-Origin") == origin
+        assert response.getheader("Access-Control-Allow-Headers") == "Authorization, Content-Type"
+
+        connection.request("GET", "/health", headers={"Origin": origin})
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 200
+        assert response.getheader("Access-Control-Allow-Origin") == origin
+
+        connection.request(
+            "GET",
+            "/v1/sessions",
+            headers={"Origin": origin, "Authorization": f"Bearer {app.token}"},
+        )
+        response = connection.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+        assert response.status == 200
+        assert payload == {"sessions": []}
+        assert response.getheader("Access-Control-Allow-Origin") == origin
+
+        connection.request(
+            "OPTIONS",
+            "/v1/sessions",
+            headers={
+                "Origin": "https://example.com",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "Authorization",
+            },
+        )
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 403
+        assert response.getheader("Access-Control-Allow-Origin") is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_chat_history_is_unicode_safe_persistent_and_separate_from_learning(tmp_path):

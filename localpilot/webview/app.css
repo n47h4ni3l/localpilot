@@ -1,0 +1,316 @@
+
+  :root {
+    /* Surfaces & text — §1/§6 */
+    --surface-base: #0B121D;
+    --surface-panel: #131B29;
+    --surface-raised: #1A2434;
+    --surface-glass: rgba(19,27,41,0.72);
+    --border-hairline: #243046;
+    --text-primary: #EDF2F9;
+    --text-secondary: #8FA0B8;
+    --text-tertiary: #5B6B82;
+
+    /* State cores + glows — §1 */
+    --idle-core: #63D9B8;      --idle-glow: rgba(99,217,184,0.35);
+    --listening-core: #7EEAD1; --listening-glow: rgba(126,234,209,0.4);
+    --thinking-core: #F0C24E;  --thinking-glow: rgba(240,194,78,0.35);
+    --working-core: #5FA8FF;   --working-glow: rgba(95,168,255,0.35);
+    --speaking-core: #B98CFF;  --speaking-glow: rgba(185,140,255,0.35);
+    --success-core: #6FDE8E;   --success-glow: rgba(111,222,142,0.4);
+    --uncertain-core: #F0A24E; --uncertain-glow: rgba(240,162,78,0.35);
+    --error-core: #FF6B6B;     --error-glow: rgba(255,107,107,0.4);
+    --restarting-core: #8592A8;--restarting-glow: rgba(133,146,168,0.3);
+    --sleeping-core: #63D9B8;  --sleeping-glow: rgba(99,217,184,0.12);
+    --offline-core: #4B5568;   --offline-glow: rgba(0,0,0,0);
+
+    /* Spacing — §6 */
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+    --space-5: 24px; --space-6: 32px; --space-7: 48px;
+
+    /* Radius — §6 */
+    --radius-sm: 8px; --radius-md: 12px; --radius-lg: 16px; --radius-full: 999px;
+
+    /* Shadow — §6 */
+    --shadow-panel: 0 16px 40px rgba(0,0,0,0.45);
+    --shadow-dock: 0 8px 24px rgba(0,0,0,0.35);
+
+    /* Type — §1 */
+    --font-display: 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
+    --font-body: 'Segoe UI Variable Text', 'Segoe UI', sans-serif;
+    --font-mono: 'Cascadia Mono', 'Consolas', monospace;
+
+    --accent-core: var(--idle-core);
+    --accent-glow: var(--idle-glow);
+  }
+
+  :root[data-state="idle"]       { --accent-core: var(--idle-core);       --accent-glow: var(--idle-glow); }
+  :root[data-state="listening"]  { --accent-core: var(--listening-core);  --accent-glow: var(--listening-glow); }
+  :root[data-state="thinking"]   { --accent-core: var(--thinking-core);   --accent-glow: var(--thinking-glow); }
+  :root[data-state="working"]    { --accent-core: var(--working-core);    --accent-glow: var(--working-glow); }
+  :root[data-state="speaking"]   { --accent-core: var(--speaking-core);   --accent-glow: var(--speaking-glow); }
+  :root[data-state="success"]    { --accent-core: var(--success-core);    --accent-glow: var(--success-glow); }
+  :root[data-state="uncertain"]  { --accent-core: var(--uncertain-core);  --accent-glow: var(--uncertain-glow); }
+  :root[data-state="error"]      { --accent-core: var(--error-core);      --accent-glow: var(--error-glow); }
+  :root[data-state="restarting"] { --accent-core: var(--restarting-core); --accent-glow: var(--restarting-glow); }
+  :root[data-state="sleeping"]   { --accent-core: var(--sleeping-core);   --accent-glow: var(--sleeping-glow); }
+  :root[data-state="offline"]    { --accent-core: var(--offline-core);    --accent-glow: var(--offline-glow); }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: transparent;
+    font-family: var(--font-body);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+    /* The native window is transparent (see webview_app.py) and sized with
+       margin beyond the dock/panel so glow can bloom without being clipped
+       at the OS window edge — see WINDOW_MARGIN in webview_app.py. */
+  }
+  button { font-family: inherit; }
+  button.is-activated { opacity: 0.55; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+  }
+
+  /* ============ Compact companion dock — §2.1 ============ */
+  .dock {
+    width: 168px; min-height: 168px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: var(--space-2);
+    padding: var(--space-4) var(--space-3);
+    background: var(--surface-glass);
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-dock), 0 0 32px var(--accent-glow);
+    cursor: pointer;
+    transition: box-shadow 400ms ease-out, transform 320ms cubic-bezier(0.2,0.8,0.2,1),
+                opacity 260ms ease;
+  }
+  .dock:focus-visible { outline: 2px solid var(--accent-core); outline-offset: 3px; }
+  .dock .drag-handle {
+    position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 3px; opacity: 0; transition: opacity 200ms ease;
+  }
+  .dock:hover .drag-handle { opacity: 0.5; }
+  .drag-handle span { width: 3px; height: 3px; border-radius: 50%; background: var(--text-tertiary); }
+
+  .preview-line {
+    font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);
+    max-width: 140px; text-align: center; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; height: 0; opacity: 0; transition: height 200ms ease, opacity 200ms ease;
+  }
+  .preview-line.is-visible { height: 14px; opacity: 1; }
+
+  .app.is-expanded .dock { opacity: 0; pointer-events: none; position: absolute; }
+  .app:not(.is-expanded) .panel { opacity: 0; pointer-events: none; position: absolute; }
+
+  /* ============ Expanded panel — §2.2 ============ */
+  .panel {
+    position: relative;
+    width: 420px; height: 640px;
+    display: flex; flex-direction: column;
+    background: var(--surface-panel);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-panel);
+    overflow: hidden;
+    opacity: 1;
+    transition: opacity 260ms ease-out;
+  }
+
+  .panel-header {
+    display: flex; align-items: center; gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border-hairline);
+    background: var(--surface-raised);
+    flex-shrink: 0;
+  }
+  .header-text { flex: 1; min-width: 0; }
+  .header-title { font-family: var(--font-display); font-weight: 600; font-size: 15px; line-height: 1.2; }
+  .header-state {
+    font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);
+    text-transform: capitalize; margin-top: 2px;
+  }
+  .icon-btn {
+    width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+    background: transparent; border: none; border-radius: var(--radius-sm);
+    color: var(--text-secondary); cursor: pointer; transition: background 150ms ease, color 150ms ease;
+    position: relative;
+  }
+  .icon-btn:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); }
+  .icon-btn:focus-visible { outline: 2px solid var(--accent-core); outline-offset: 1px; }
+  .icon-btn svg { width: 17px; height: 17px; }
+
+  /* ============ Message stream — §2.2 / §4 ============ */
+  .message-stream {
+    flex: 1; overflow-y: auto; padding: var(--space-5) var(--space-4);
+    display: flex; flex-direction: column; gap: var(--space-5);
+    scrollbar-width: thin; scrollbar-color: var(--border-hairline) transparent;
+  }
+  .message-stream::-webkit-scrollbar { width: 5px; }
+  .message-stream::-webkit-scrollbar-thumb { background: var(--border-hairline); border-radius: var(--radius-full); }
+
+  .turn { display: flex; flex-direction: column; gap: var(--space-1); animation: turn-in 260ms ease-out; }
+  @keyframes turn-in { from { opacity: 0; transform: translateY(6px);} to { opacity: 1; transform: translateY(0);} }
+  .turn--user { align-items: flex-end; }
+  .turn--assistant { align-items: flex-start; }
+  .turn-label {
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .bubble {
+    max-width: 80%; padding: var(--space-3) var(--space-4);
+    background: var(--surface-raised); border-radius: var(--radius-md);
+    font-size: 14px; line-height: 1.5;
+  }
+  .turn--assistant .bubble-plain {
+    max-width: 100%; padding: 0; background: transparent; border-radius: 0;
+    font-size: 14px; line-height: 1.55; color: var(--text-primary);
+  }
+  .caret {
+    display: inline-block; width: 2px; height: 15px; background: var(--speaking-core);
+    margin-left: 1px; vertical-align: text-bottom; animation: blink 900ms steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .activity-chip {
+    margin-top: var(--space-2); display: inline-flex; align-items: center; gap: var(--space-1);
+    font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);
+    background: var(--surface-raised); border: 1px solid var(--border-hairline);
+    padding: 4px 10px; border-radius: var(--radius-full); cursor: pointer; width: fit-content;
+  }
+  .activity-chip:hover { color: var(--text-primary); }
+
+  .failed-notice {
+    font-size: 13px; color: var(--text-secondary);
+    border-left: 2px solid var(--error-core); padding-left: var(--space-3);
+  }
+  .failed-notice button {
+    background: none; border: none; color: var(--error-core); font-family: var(--font-body);
+    font-size: 13px; font-weight: 500; cursor: pointer; padding: 0; margin-left: 6px; text-decoration: underline;
+  }
+
+  /* ============ Activity strip — §5 ============ */
+  .activity-strip {
+    flex-shrink: 0; margin: 0 var(--space-4);
+    display: flex; align-items: center; gap: var(--space-2);
+    font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+    background: var(--surface-raised); border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3);
+    margin-bottom: var(--space-3);
+    opacity: 0; transform: translateY(4px); height: 0; overflow: hidden;
+    transition: opacity 200ms ease, transform 200ms ease;
+  }
+  .activity-strip.is-visible { opacity: 1; transform: translateY(0); height: auto; padding: var(--space-2) var(--space-3); }
+  .activity-strip .gear { flex-shrink: 0; animation: spin 2.4s linear infinite; color: var(--working-core); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .activity-strip .steps { margin-left: auto; letter-spacing: 2px; flex-shrink: 0; color: var(--working-core); }
+
+  /* ============ Composer — §4 ============ */
+  .composer-wrap { flex-shrink: 0; padding: var(--space-4); border-top: 1px solid var(--border-hairline); }
+  .composer {
+    display: flex; align-items: flex-end; gap: var(--space-2);
+    background: var(--surface-raised); border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-md); padding: 10px var(--space-3);
+    transition: border-color 250ms ease, box-shadow 250ms ease;
+  }
+  .composer.is-focused { border-color: var(--accent-core); box-shadow: 0 0 0 3px var(--accent-glow); }
+  .composer.is-busy { opacity: 0.7; }
+  #composer-input {
+    flex: 1; resize: none; border: none; outline: none; background: transparent;
+    color: var(--text-primary); font-family: var(--font-body); font-size: 14px; line-height: 1.4;
+    field-sizing: content; min-height: 20px; max-height: 120px; overflow-y: auto; padding: 2px 0;
+  }
+  #composer-input::placeholder { color: var(--text-tertiary); }
+  #send-btn {
+    flex-shrink: 0; width: 30px; height: 30px; border-radius: var(--radius-full);
+    border: none; background: transparent; color: var(--text-tertiary);
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+    transition: color 200ms ease, box-shadow 200ms ease; font-size: 15px;
+  }
+  #send-btn.is-ready { color: var(--idle-core); box-shadow: 0 0 14px var(--idle-glow); }
+  #send-btn:focus-visible { outline: 2px solid var(--accent-core); }
+
+  /* ============ Avatar canvas wrapper ============ */
+  .avatar-canvas { display: block; image-rendering: pixelated; }
+  .dock .avatar-canvas { width: 112px; height: 112px; }
+  .panel-header .avatar-canvas { width: 40px; height: 40px; flex-shrink: 0; }
+
+  /* ============ History sheet — §2.3 ============ */
+  .history-sheet {
+    position: absolute; top: 0; right: 0; bottom: 0; width: 260px;
+    background: var(--surface-panel); border-left: 1px solid var(--border-hairline);
+    box-shadow: -12px 0 32px rgba(0,0,0,0.35);
+    transform: translateX(100%); transition: transform 260ms ease-out;
+    display: flex; flex-direction: column; z-index: 5;
+  }
+  .history-sheet.is-open { transform: translateX(0); }
+  .history-sheet__header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: var(--space-4); border-bottom: 1px solid var(--border-hairline);
+    font-family: var(--font-display); font-weight: 600; font-size: 14px;
+  }
+  .history-close { width: 26px; height: 26px; }
+  .history-list { flex: 1; overflow-y: auto; padding: var(--space-2); }
+  .session-row {
+    display: flex; align-items: flex-start; gap: var(--space-2);
+    padding: var(--space-3); border-radius: var(--radius-sm); cursor: pointer;
+    transition: background 150ms ease;
+  }
+  .session-row:hover { background: rgba(255,255,255,0.04); }
+  .session-row .dot {
+    width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; flex-shrink: 0;
+    background: var(--text-tertiary);
+  }
+  .session-row.is-active .dot { background: var(--idle-core); box-shadow: 0 0 8px var(--idle-glow); }
+  .session-row__title { font-size: 13px; color: var(--text-primary); line-height: 1.3; }
+  .session-row__time { font-family: var(--font-mono); font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+
+  /* ============ Settings popover — §2.4 ============ */
+  .settings-popover {
+    position: absolute; top: 54px; right: 84px; width: 240px;
+    background: var(--surface-raised); border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-md); box-shadow: var(--shadow-panel);
+    opacity: 0; transform: translateY(-6px) scale(0.98); pointer-events: none;
+    transition: opacity 180ms ease, transform 180ms ease;
+    z-index: 6; overflow: hidden;
+  }
+  .settings-popover.is-open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+  .settings-popover section { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border-hairline); }
+  .settings-popover section:last-child { border-bottom: none; }
+  .settings-popover h4 {
+    margin: 0 0 var(--space-2); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-tertiary); font-weight: 500;
+  }
+  .status-row { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .status-row .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--idle-core); box-shadow: 0 0 8px var(--idle-glow); }
+  .settings-popover button.action {
+    width: 100%; margin-top: var(--space-2); text-align: left; background: transparent;
+    border: 1px solid var(--border-hairline); border-radius: var(--radius-sm);
+    color: var(--text-primary); font-size: 12.5px; padding: 7px 10px; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between;
+    transition: border-color 150ms ease;
+  }
+  .settings-popover button.action:hover { border-color: var(--text-secondary); }
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; font-size: 13px; padding: 4px 0; }
+  .switch { width: 30px; height: 17px; border-radius: var(--radius-full); background: var(--border-hairline); position: relative; cursor: pointer; border: none; flex-shrink: 0; }
+  .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: var(--text-secondary); transition: transform 160ms ease, background 160ms ease; }
+  .switch.is-on { background: var(--idle-glow); }
+  .switch.is-on::after { transform: translateX(13px); background: var(--idle-core); }
+
+  /* Drag region: elements with class "pywebview-drag-region" become native-
+     window drag handles via pywebview's own injected JS (verified in its
+     installed source — see delivery notes). No CSS property needed here;
+     this comment marks why none is added. */
+
+  @media (prefers-reduced-motion: reduce) {
+    .turn { animation: none; }
+    .caret { animation: none; opacity: 1; }
+    .activity-strip .gear { animation: none; }
+  }

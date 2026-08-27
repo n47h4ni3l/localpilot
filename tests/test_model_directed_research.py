@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from ollama import ResponseError
 
-from localpilot.agent import LocalPilotAgent
+from localpilot.agent import LocalPilotAgent, _PUBLIC_WEB_FETCHES_PER_TURN
 from localpilot.audit import AuditLog
 from localpilot.config import Config
 from localpilot.research import (
@@ -75,6 +75,86 @@ def test_model_can_request_more_evidence_after_post_tool_review(tmp_path, monkey
         for message in agent.messages
         if isinstance(message, dict)
     )
+
+
+def test_repeated_zero_information_searches_stop_early_and_synthesize(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path, soft=12, hard=24)
+    original = agent.tools["search_public_web"]
+    invocations = 0
+
+    def empty_search(**kwargs):
+        nonlocal invocations
+        invocations += 1
+        return "Public web search: query\nNo bounded HTTPS results were found."
+
+    agent.tools["search_public_web"] = SimpleNamespace(
+        risk=original.risk,
+        fn=empty_search,
+    )
+    streams = iter(
+        [
+            [_chunk(tool_calls=[_call("search_public_web", {"query": "semantic memory"})])],
+            [_chunk(tool_calls=[_call("search_public_web", {"query": "knowledge retrieval"})])],
+            [_chunk(content="I should stop the empty search path and synthesize the unresolved result.")],
+            [_chunk(content="The two searches produced no usable sources, so I cannot establish the research claim. My current hypothesis remains unresolved rather than something I should decorate with invented facts.")],
+        ]
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ollama",
+        SimpleNamespace(chat=lambda **kwargs: iter(next(streams))),
+    )
+    answer = agent.ask("Research a useful topic on the public web and form a view.")
+
+    assert "no usable sources" in answer
+    assert invocations == 2
+    stagnation = agent.audit.latest("model_research_stagnation_adaptation")
+    assert stagnation["tools"] == ["search_public_web"]
+    assert agent.audit.latest("model_research_soft_budget") is None
+
+
+def test_public_web_fetches_have_a_source_limit_below_the_general_hard_budget(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path, soft=12, hard=24)
+    original = agent.tools["fetch_public_https"]
+    invocations = 0
+
+    def successful_fetch(**kwargs):
+        nonlocal invocations
+        invocations += 1
+        return f"Public HTTPS source: {kwargs['url']}\nVerified source text."
+
+    agent.tools["fetch_public_https"] = SimpleNamespace(
+        risk=original.risk,
+        fn=successful_fetch,
+    )
+    tool_turns = [
+        [_chunk(tool_calls=[_call("fetch_public_https", {"url": f"https://example.com/{index}"})])]
+        for index in range(_PUBLIC_WEB_FETCHES_PER_TURN + 1)
+    ]
+    streams = iter(
+        [
+            *tool_turns,
+            [_chunk(content="I think the inspected sources are sufficient; anything beyond them remains uncertain.")],
+        ]
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "ollama",
+        SimpleNamespace(chat=lambda **kwargs: iter(next(streams))),
+    )
+
+    answer = agent.ask("Research this topic on the public web and form a provisional view.")
+
+    assert answer.startswith("I think the inspected sources are sufficient")
+    assert invocations == _PUBLIC_WEB_FETCHES_PER_TURN
+    limit = agent.audit.latest("model_public_web_fetch_limit")
+    assert limit is not None
+    assert limit["fetches"] == limit["limit"] == _PUBLIC_WEB_FETCHES_PER_TURN
 
 
 def test_hard_research_ceiling_blocks_remembered_tool_call(tmp_path, monkeypatch):
@@ -788,6 +868,54 @@ def test_generation_limited_final_reasoning_continues_once_in_same_raw_context(
     assert first_final_runtime["reasoning_chars"] == 18611
     assert first_final_runtime["content_chars"] == 0
     assert first_final_runtime["tool_calls"] == 0
+
+
+def test_generation_limit_continuation_is_still_behavior_postvalidated(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path)
+    calls = []
+    streams = iter(
+        [
+            [_chunk(thinking="initial reasoning")],
+            [
+                _chunk(
+                    thinking="long final reasoning",
+                    done=True,
+                    done_reason="length",
+                    prompt_eval_count=1000,
+                    eval_count=4096,
+                )
+            ],
+            [
+                _chunk(
+                    content="DECLINE: No raw tool outputs are available.",
+                    done=True,
+                    done_reason="stop",
+                    prompt_eval_count=5200,
+                    eval_count=80,
+                )
+            ],
+            [_chunk(content="The tension I keep returning to is initiative without overreach. My provisional view is that small reversible investigations are the best way to preserve both.")],
+        ]
+    )
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "No task list today. You have room to think. What has your attention right now?"
+    )
+
+    assert "initiative without overreach" in answer
+    recovery = agent.audit.latest("model_same_context_behavior_recovery_complete")
+    assert recovery["original_issues"] == ["unwarranted_open_ended_decline"]
+    assert recovery["accepted"] is True
+    recovery_context = str(calls[-1]["messages"])
+    assert "long final reasoning" not in recovery_context
+    assert "Finish the owner's answer now" not in recovery_context
 
 
 def test_second_generation_limit_returns_visible_marker_without_loop(tmp_path, monkeypatch):

@@ -12,6 +12,10 @@ _MAX_DOWNLOAD_BYTES = 512 * 1024
 _DEFAULT_MAX_CHARS = 30_000
 _MAX_SEARCH_BYTES = 256 * 1024
 _SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/"
+_SEARCH_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 LocalPilot/0.2"
+)
 _ALLOWED_CONTENT_TYPES = {
     "application/json",
     "application/ld+json",
@@ -154,6 +158,9 @@ class _SearchResultParser(HTMLParser):
             target = urllib.parse.parse_qs(parsed.query).get("uddg", [])
             if target:
                 absolute = target[0]
+            else:
+                # Ad/tracking and navigation endpoints are not source leads.
+                return
         safe = _safe_search_result_url(absolute)
         if safe and all(existing_url != safe for _, existing_url in self.results):
             self.results.append((title, safe))
@@ -173,8 +180,8 @@ def search_public_web(query: str, max_results: int = 5) -> str:
     request = urllib.request.Request(
         search_url,
         headers={
-            "User-Agent": "LocalPilot/0.2 read-only research",
-            "Accept": "text/html",
+            "User-Agent": _SEARCH_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml",
         },
         method="GET",
     )

@@ -76,6 +76,7 @@ class DesktopConfig:
     port: int = 8765
     chat_database: str = "chat.sqlite3"
     runtime_restart_limit: int = 5
+    request_timeout_seconds: float = 600.0
 
 
 @dataclass(slots=True)
@@ -295,4 +296,7 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg.desktop.runtime_restart_limit = int(cfg.desktop.runtime_restart_limit)
     if cfg.desktop.runtime_restart_limit < 1:
         raise ValueError("desktop.runtime_restart_limit must be positive")
+    cfg.desktop.request_timeout_seconds = float(cfg.desktop.request_timeout_seconds)
+    if not 1 <= cfg.desktop.request_timeout_seconds <= 3600:
+        raise ValueError("desktop.request_timeout_seconds must be between 1 and 3600")
     return cfg

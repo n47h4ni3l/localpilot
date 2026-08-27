@@ -406,7 +406,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="localpilot")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("chat", help="Start the interactive agent")
-    sub.add_parser("desktop", help="Open the persistent desktop chat UI")
+    desktop = sub.add_parser("desktop", help="Open the persistent desktop companion")
+    desktop.add_argument(
+        "--tkinter",
+        action="store_true",
+        help="Use the legacy Tkinter desktop UI instead of the WebView companion",
+    )
     sub.add_parser("broker", help="Run the loopback desktop broker in the foreground")
     sub.add_parser("doctor", help="Check prerequisites and GitHub/model readiness")
     sub.add_parser("status", help="Show resource and Git status")
@@ -516,7 +521,10 @@ def main() -> None:
     if args.command in {None, "chat"}:
         _chat(console, config, root)
     elif args.command == "desktop":
-        from localpilot.desktop import main as desktop_main
+        if args.tkinter:
+            from localpilot.desktop import main as desktop_main
+        else:
+            from localpilot.webview_app import main as desktop_main
 
         desktop_main(root, args.config)
     elif args.command == "broker":

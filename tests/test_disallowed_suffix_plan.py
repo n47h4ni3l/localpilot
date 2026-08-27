@@ -137,10 +137,20 @@ def test_static_checks_accept_existing_human_owned_hook_script(tmp_path: Path):
 
 def test_allowed_suffixes_still_apply(tmp_path: Path):
     tools = _tools(tmp_path, max_files=len(_ALLOWED_SUFFIXES))
-    changes = tuple(
-        _change(f"generated/file{suffix}")
-        for suffix in sorted(_ALLOWED_SUFFIXES - {".gitignore"})
-    ) + (_change("generated/.gitignore"),)
+    source_frontend = Path(__file__).resolve().parents[1] / "localpilot" / "webview"
+    frontend = {
+        ".html": ("localpilot/webview/index.html", source_frontend / "index.html"),
+        ".css": ("localpilot/webview/app.css", source_frontend / "app.css"),
+        ".js": ("localpilot/webview/app.js", source_frontend / "app.js"),
+    }
+    changes = []
+    for suffix in sorted(_ALLOWED_SUFFIXES - {".gitignore"}):
+        if suffix in frontend:
+            path, source = frontend[suffix]
+            changes.append(_change(path, source.read_text(encoding="utf-8")))
+        else:
+            changes.append(_change(f"generated/file{suffix}"))
+    changes.append(_change("generated/.gitignore"))
 
     apply_change_plan(_plan(*changes), tools)
 

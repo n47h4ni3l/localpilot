@@ -58,8 +58,8 @@ Together these principles imply broad freedom to think and narrow, reviewable au
 - Read-only Windows observation tools for processes, disks, startup entries, power, Defender, and device problems.
 - A complete allow-listed reversible action set for opening selected Windows apps/Settings pages and transactionally changing an installed built-in power plan with verified one-use rollback.
 - Durable owner lessons and a staged study system for repository, Qwen/Ollama, and Python knowledge.
-- Progressive idle-time library reading with per-source cursors, bounded contiguous sections, and provisional private notes that report the exact range and progress.
-- Bounded retrieval of relevant study facts into fresh operator turns, including provenance, confidence, verification time, source digest, and staleness.
+- Progressive idle-time library education: read, reflect, extract a few candidates, verify them against the exact passage and digest, persist typed learning, retrieve/use it, and measure capability improvement.
+- Bounded retrieval of relevant study facts and typed library learnings into fresh operator turns, including provenance, epistemic type, confidence, verification time, source digest, and staleness.
 - Real TOML configuration, resource gating, process-priority control, and redacted JSONL audit logging.
 - Separate stable operator, idle-time developer, and isolated candidate responsibilities.
 - Mission-directed capability discovery with falsifiable hypotheses, baselines, and evaluation plans.
@@ -82,13 +82,14 @@ LocalPilot deliberately keeps five kinds of information on separate paths:
 | --- | --- | --- | --- |
 | Raw operator observations | Current turn | Inspect the live PC, repository, or other tool-visible state | Authoritative for what the tool actually returned |
 | Human lessons | Durable | Preserve explicit owner guidance entered with `/teach` or `localpilot teach` | Trusted guidance, but not a substitute for current evidence |
-| Study knowledge facts | Durable | Retain researched facts with provenance and freshness metadata | Prior knowledge that must yield to fresher contradictory evidence |
+| Study and library knowledge facts | Durable | Retain researched or source-attributed facts with provenance and freshness metadata | Prior knowledge that must yield to fresher contradictory evidence |
+| Typed library learnings | Durable | Retain verified heuristics, questions, self-development hypotheses, and provisional opinions without calling them facts | Non-factual prior context; type remains explicit and consequential action stays gated |
 | Self-development records | Durable | Track cycles, hypotheses, experiments, checkpoints, reviews, and failures | Evidence about development history, not operator knowledge by default |
 | Desktop chat history | Durable UI/session record | Repaint the window and restore completed visible turns after runtime restart | Conversation context only; never promoted into learning facts |
 
 Visible desktop turns are stored separately in `chat.sqlite3`; prompts, transcripts, tool results, and hidden reasoning are never stored as knowledge facts. Retrieved facts are turn-local and are not written back as new learning merely because they were retrieved.
 
-When a request falls within a studied domain, the operator may retrieve a small relevant set from `LearningMemory` before researching from scratch. Retrieval is capped at 6 facts and 6,000 characters. Results retain their source URI and kind, confidence, source digest, verification time, staleness, and relationships where available.
+When a request falls within a studied domain, the operator may retrieve a small relevant set from `LearningMemory` before researching from scratch. Retrieval is capped at 6 items and 6,000 characters. Results retain their source URI and kind, confidence, source digest, verification time, staleness, and relationships where available. Heuristics, questions, hypotheses, and opinions carry `objective_fact=false` and must not be flattened into factual claims.
 
 Retrieval is lexical by default. An optional `[model].memory_embeddings_enabled` mode uses Ollama's batch embedding API to combine lexical ranking with semantic similarity. LocalPilot never downloads the configured embedding model: install it explicitly in Ollama before enabling the option. Fact vectors are indexed lazily in model-versioned, content-digested rows, so existing databases migrate without a blocking rebuild and changed facts are re-embedded. Query vectors and query text are not stored. Embedding failures fall back to lexical retrieval for the session, and the same stage, staleness, test-evidence, fact-count, and context-size boundaries still apply.
 

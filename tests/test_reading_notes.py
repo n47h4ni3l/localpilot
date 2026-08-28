@@ -90,6 +90,15 @@ def test_reader_reports_exact_section_and_progress_without_inflation(tmp_path):
                 },
                 "provisional_opinion": "The section offers a useful feedback-loop framing.",
                 "questions_raised": ["How could the framing be evaluated?"],
+                "durable_learning": {
+                    "persisted_count": 2,
+                    "corrected_count": 1,
+                    "rejected_count": 1,
+                    "persisted": [
+                        {"learning_type": "source_concept"},
+                        {"learning_type": "heuristic"},
+                    ],
+                },
                 "wants_to_continue": True,
                 "follow_related_source": False,
             }
@@ -101,6 +110,7 @@ def test_reader_reports_exact_section_and_progress_without_inflation(tmp_path):
     assert "bounded sections only" in text
     assert "Section actually read: library://Systems Book.pdf#page=10&passage=1 through" in text
     assert "18/90 indexed passages (20.0%); source not complete" in text
+    assert "Durable learning: 2 persisted (heuristic, source_concept); 1 corrected; 1 rejected" in text
     assert "Next preference: continue this source" in text
     assert "read the book" not in text.casefold()
     assert "afternoon" not in text.casefold()

@@ -234,7 +234,7 @@ def registry(
                     ),
                     ToolSpec(
                         "get_recent_library_reading_notes",
-                        "Read bounded recent autonomous library-reading notes. Notes are provisional reflections with library citations, not authoritative durable knowledge facts.",
+                        "Read bounded recent autonomous library-reading notes and verified-learning status. Notes remain provisional; durable items retain their separate epistemic types.",
                         RiskLevel.READ_ONLY,
                         reading_notes.get_recent_library_reading_notes,
                     ),

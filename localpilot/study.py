@@ -295,6 +295,7 @@ class RepositoryGroundingValidator:
             "GitHubConfig": "github",
             "SelfDevConfig": "selfdev",
             "DesktopConfig": "desktop",
+            "LibraryConfig": "library",
         }
 
         files = sorted(

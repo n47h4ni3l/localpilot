@@ -13,7 +13,8 @@ def _repository(root: Path) -> None:
     (root / "localpilot").mkdir(parents=True)
     (root / "tests").mkdir()
     (root / "localpilot" / "config.py").write_text(
-        "class AgentConfig:\n    timeout: int = 20\n",
+        "class AgentConfig:\n    timeout: int = 20\n\n"
+        "class LibraryConfig:\n    enabled: bool = False\n",
         encoding="utf-8",
     )
     (root / "localpilot" / "sample.py").write_text(
@@ -91,6 +92,17 @@ def test_live_grounding_uses_repository_not_durable_memory(tmp_path: Path):
     assert report.grounded
     assert "symbol:localpilot.sample:Runner.execute" in report.evidence
     assert "call:localpilot.sample:Runner.execute->helper" in report.evidence
+
+
+def test_live_grounding_recognizes_library_config_fields(tmp_path: Path):
+    _repository(tmp_path)
+
+    report = RepositoryGroundingValidator(root=tmp_path).validate(
+        _plan(referenced_config_fields=["library.enabled"])
+    )
+
+    assert report.grounded
+    assert "config:library.enabled" in report.evidence
 
 
 def test_live_grounding_reports_false_claims_with_evidence(tmp_path: Path):

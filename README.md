@@ -274,7 +274,7 @@ Or open the persistent desktop window:
 localpilot desktop
 ```
 
-The desktop command starts a detached loopback broker when needed. The window reconnects to that broker, while the broker supervises a replaceable operator worker that owns Ollama and the existing PowerShell-backed tools. Closing the window does not stop the broker; `localpilot chat` remains the independent fallback.
+The desktop command starts a detached loopback broker when needed. The window reconnects to that broker, while the broker supervises a replaceable operator worker that owns Ollama and the existing PowerShell-backed tools. The expanded chat includes a read-only SystemSense glance panel for current health, resource pressure, inference performance and active signals; it reads only a bounded authenticated broker summary and never controls the machine. Closing the window does not stop the broker; `localpilot chat` remains the independent fallback.
 
 ## Command reference
 

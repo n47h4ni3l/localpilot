@@ -25,6 +25,10 @@
           <div class="header-title">LocalPilot</div>
           <div class="header-state" id="state-label">Idle</div>
         </div>
+        <button class="icon-btn system-toggle" id="system-toggle" aria-label="System status: checking" aria-expanded="false" aria-controls="system-panel">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12h4l2-6 4 12 2-6h6"/><path d="M4 5a9 9 0 1016 0" opacity="0.35"/></svg>
+          <span class="system-health-dot is-unknown" id="system-health-dot" aria-hidden="true"></span>
+        </button>
         <button class="icon-btn" id="history-toggle" aria-label="Conversation history">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
         </button>
@@ -35,6 +39,65 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
         </button>
       </header>
+
+      <!-- Read-only SystemSense glance panel -->
+      <section class="system-panel" id="system-panel" aria-hidden="true" aria-labelledby="system-panel-title">
+        <div class="system-panel__header">
+          <div>
+            <div class="system-eyebrow">Passive awareness</div>
+            <h2 id="system-panel-title">SystemSense</h2>
+          </div>
+          <button class="icon-btn" id="system-close" aria-label="Return to chat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <div class="system-loading" id="system-loading">Reading the latest passive sample…</div>
+        <div class="system-content" id="system-content" hidden>
+          <div class="system-hero">
+            <div class="system-hero__state">
+              <span class="system-hero__dot is-unknown" id="system-hero-dot" aria-hidden="true"></span>
+              <div>
+                <strong id="system-health-label">Waiting for data</strong>
+                <p id="system-health-summary">SystemSense is establishing the current state.</p>
+              </div>
+            </div>
+            <span class="system-updated" id="system-updated">Not sampled yet</span>
+          </div>
+
+          <div class="system-metric-grid" aria-label="Current system metrics">
+            <article class="system-metric"><span>CPU</span><strong id="system-cpu-value">—</strong><small id="system-cpu-detail">Current load</small></article>
+            <article class="system-metric"><span>GPU</span><strong id="system-gpu-value">—</strong><small id="system-gpu-detail">Current load</small></article>
+            <article class="system-metric"><span>Memory</span><strong id="system-memory-value">—</strong><small id="system-memory-detail">System RAM</small></article>
+            <article class="system-metric"><span>Temperature</span><strong id="system-temperature-value">—</strong><small id="system-temperature-detail">Warmest sensor</small></article>
+            <article class="system-metric"><span>Storage</span><strong id="system-storage-value">—</strong><small id="system-storage-detail">Lowest free volume</small></article>
+            <article class="system-metric"><span>VRAM</span><strong id="system-vram-value">—</strong><small id="system-vram-detail">Used graphics memory</small></article>
+          </div>
+
+          <section class="system-section">
+            <h3>Model performance</h3>
+            <div class="system-inference-row">
+              <strong id="system-inference-value">Learning baseline</strong>
+              <span id="system-inference-detail">No completed inference samples yet</span>
+            </div>
+          </section>
+
+          <section class="system-section">
+            <h3>Current signals</h3>
+            <ul class="system-signal-list" id="system-signal-list"></ul>
+          </section>
+
+          <section class="system-section">
+            <h3>Background pressure</h3>
+            <div class="system-process-list" id="system-process-list"></div>
+          </section>
+        </div>
+
+        <div class="system-panel__footer">
+          <span>Read-only · local telemetry</span>
+          <button id="system-refresh">Refresh</button>
+        </div>
+      </section>
 
       <div class="message-stream" id="message-stream"></div>
 

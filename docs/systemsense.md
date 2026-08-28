@@ -111,6 +111,14 @@ All six registered surfaces are `READ_ONLY`, bounded, and expose no raw SQL:
 The intended flow is summary first, one narrow inventory/history query second,
 and raw telemetry only when needed to resolve a specific question.
 
+The expanded desktop chat also has a SystemSense quick-glance panel. Its header
+indicator refreshes at a low background cadence; opening the panel shows the
+latest health state, six core metrics, inference speed versus baseline, current
+signals, and bounded background-process pressure. The WebView reads only the
+authenticated `GET /v1/systemsense/summary` broker route. The broker reads the
+existing telemetry store without starting a collector, and there is no matching
+write route or hardware-control action.
+
 ## Configuration and privacy
 
 The `[systemsense]` section controls the database name, sample/inventory

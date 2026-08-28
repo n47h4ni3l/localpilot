@@ -286,6 +286,7 @@
      DOM references
      ====================================================================== */
   const app = document.getElementById("app");
+  const panelEl = document.getElementById("panel");
   const dockEl = document.getElementById("dock");
   const previewLine = document.getElementById("preview-line");
   const stateLabel = document.getElementById("state-label");
@@ -310,6 +311,33 @@
   const openConfigBtn = document.getElementById("open-config");
   const settingsStatusText = document.getElementById("settings-status-text");
   const settingsDot = document.getElementById("settings-dot");
+  const systemToggle = document.getElementById("system-toggle");
+  const systemHealthDot = document.getElementById("system-health-dot");
+  const systemPanel = document.getElementById("system-panel");
+  const systemClose = document.getElementById("system-close");
+  const systemLoading = document.getElementById("system-loading");
+  const systemContent = document.getElementById("system-content");
+  const systemHeroDot = document.getElementById("system-hero-dot");
+  const systemHealthLabel = document.getElementById("system-health-label");
+  const systemHealthSummary = document.getElementById("system-health-summary");
+  const systemUpdated = document.getElementById("system-updated");
+  const systemCpuValue = document.getElementById("system-cpu-value");
+  const systemCpuDetail = document.getElementById("system-cpu-detail");
+  const systemGpuValue = document.getElementById("system-gpu-value");
+  const systemGpuDetail = document.getElementById("system-gpu-detail");
+  const systemMemoryValue = document.getElementById("system-memory-value");
+  const systemMemoryDetail = document.getElementById("system-memory-detail");
+  const systemTemperatureValue = document.getElementById("system-temperature-value");
+  const systemTemperatureDetail = document.getElementById("system-temperature-detail");
+  const systemStorageValue = document.getElementById("system-storage-value");
+  const systemStorageDetail = document.getElementById("system-storage-detail");
+  const systemVramValue = document.getElementById("system-vram-value");
+  const systemVramDetail = document.getElementById("system-vram-detail");
+  const systemInferenceValue = document.getElementById("system-inference-value");
+  const systemInferenceDetail = document.getElementById("system-inference-detail");
+  const systemSignalList = document.getElementById("system-signal-list");
+  const systemProcessList = document.getElementById("system-process-list");
+  const systemRefresh = document.getElementById("system-refresh");
 
   const dockAvatar = new Avatar(document.getElementById("avatar-dock"));
   const headerAvatar = new Avatar(document.getElementById("avatar-header"));
@@ -371,6 +399,7 @@
     bridge("collapse");
     closeSettings();
     closeHistory();
+    closeSystemPanel();
   }
   dockEl.addEventListener("click", expand);
   dockEl.addEventListener("keydown", function (e) {
@@ -381,7 +410,7 @@
   /* ======================================================================
      History sheet (§2.3) — backed by the real /v1/sessions list.
      ====================================================================== */
-  function openHistory() { historySheet.classList.add("is-open"); historySheet.setAttribute("aria-hidden", "false"); loadSessionList(); }
+  function openHistory() { closeSystemPanel(); historySheet.classList.add("is-open"); historySheet.setAttribute("aria-hidden", "false"); loadSessionList(); }
   function closeHistory() { historySheet.classList.remove("is-open"); historySheet.setAttribute("aria-hidden", "true"); }
   historyToggle.addEventListener("click", function () {
     if (historySheet.classList.contains("is-open")) closeHistory();
@@ -443,7 +472,7 @@
      Settings popover (§2.4) — status from /health, restart via the real
      endpoint, window-chrome toggles via the bridge, config via the bridge.
      ====================================================================== */
-  function openSettings() { settingsPopover.classList.add("is-open"); }
+  function openSettings() { closeSystemPanel(); settingsPopover.classList.add("is-open"); }
   function closeSettings() { settingsPopover.classList.remove("is-open"); }
   settingsToggle.addEventListener("click", function () {
     if (settingsPopover.classList.contains("is-open")) closeSettings();
@@ -486,6 +515,265 @@
       console.warn("LocalPilot: restart request failed", e);
       settingsStatusText.textContent = "Restart request failed";
     }
+  });
+
+  /* ======================================================================
+     SystemSense glance panel — authenticated, bounded summary only. The
+     runtime owns collection; this UI never starts a collector or exposes a
+     control surface. Poll quickly only while the panel is visible.
+     ====================================================================== */
+  const SYSTEM_HEALTH_CLASSES = ["is-good", "is-degraded", "is-critical", "is-unknown"];
+  const SYSTEM_HEALTH_LABELS = {
+    good: "Healthy",
+    degraded: "Needs attention",
+    critical: "Critical",
+    unknown: "Waiting for data",
+  };
+  const SYSTEM_METRIC_LABELS = {
+    "cpu.percent": "CPU load",
+    "cpu.frequency_mhz": "CPU frequency",
+    "memory.percent": "memory use",
+    "memory.available_gb": "available memory",
+    "storage.read_mb_s": "storage reads",
+    "storage.write_mb_s": "storage writes",
+    "network.send_mbps": "network upload",
+    "network.receive_mbps": "network download",
+    "gpu.utilization_percent": "GPU load",
+    "thermal.max_c": "temperature",
+    "vram.used_mb": "VRAM use",
+  };
+  let systemPanelOpen = false;
+  let systemRefreshTimer = null;
+  let systemRefreshInFlight = false;
+  let lastSystemSummary = null;
+
+  function finiteNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function setSystemHealthClass(element, health) {
+    SYSTEM_HEALTH_CLASSES.forEach(function (name) { element.classList.remove(name); });
+    element.classList.add("is-" + (SYSTEM_HEALTH_LABELS[health] ? health : "unknown"));
+  }
+
+  function setSystemMetric(valueElement, detailElement, value, suffix, detail, digits) {
+    const number = finiteNumber(value);
+    if (number === null) {
+      valueElement.textContent = "—";
+      detailElement.textContent = "Not reported";
+      return;
+    }
+    valueElement.textContent = number.toFixed(digits || 0) + suffix;
+    detailElement.textContent = detail;
+  }
+
+  function relativeSampleTime(value) {
+    const when = new Date(value).getTime();
+    if (!Number.isFinite(when)) return "No passive sample yet";
+    const seconds = Math.max(0, Math.round((Date.now() - when) / 1000));
+    if (seconds < 10) return "Updated just now";
+    if (seconds < 60) return "Updated " + seconds + "s ago";
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return "Updated " + minutes + "m ago";
+    return "Updated " + Math.round(minutes / 60) + "h ago";
+  }
+
+  function healthDescription(summary, health) {
+    if (!summary.enabled) return "Passive environmental awareness is disabled in configuration.";
+    if (!summary.captured_at) return "SystemSense is waiting for its first passive sample.";
+    if (health === "critical") return "One or more current readings need immediate attention.";
+    if (health === "degraded") return "SystemSense found pressure, an anomaly, or a device issue worth reviewing.";
+    if (health === "good") return "No unusual pressure or hardware issues are visible in the latest sample.";
+    return "The current health state could not be derived from the available sensors.";
+  }
+
+  function addSystemSignal(text, className) {
+    const item = document.createElement("li");
+    item.textContent = text;
+    if (className) item.classList.add(className);
+    systemSignalList.appendChild(item);
+  }
+
+  function renderSystemSignals(summary, health) {
+    systemSignalList.replaceChildren();
+    if (!summary.enabled) {
+      addSystemSignal("SystemSense is disabled; no passive telemetry is being presented.", "is-warning");
+      return;
+    }
+    if (!summary.captured_at) {
+      addSystemSignal("Waiting for the runtime's first passive sample.", "is-warning");
+      return;
+    }
+    if (summary.throttling_detected) {
+      addSystemSignal("Processor performance limiting is currently detected.", "is-critical");
+    }
+    const deviceProblems = finiteNumber(summary.device_problems) || 0;
+    if (deviceProblems > 0) {
+      addSystemSignal(deviceProblems + " device" + (deviceProblems === 1 ? " has" : "s have") + " a reported problem.", "is-warning");
+    }
+    (summary.anomalies || []).slice(0, 3).forEach(function (anomaly) {
+      const label = SYSTEM_METRIC_LABELS[anomaly.metric] || anomaly.metric || "A reading";
+      const current = finiteNumber(anomaly.current);
+      const baseline = finiteNumber(anomaly.baseline_median);
+      let text = label + " is " + (anomaly.direction === "low" ? "below" : "above") + " its rolling baseline";
+      if (current !== null && baseline !== null) text += " (" + current.toFixed(1) + " vs " + baseline.toFixed(1) + ")";
+      addSystemSignal(text + ".", health === "critical" ? "is-critical" : "is-warning");
+    });
+    (summary.probable_causes || []).slice(0, 3).forEach(function (cause) {
+      addSystemSignal(String(cause) + ".", "is-warning");
+    });
+    if (!systemSignalList.children.length) {
+      addSystemSignal("No unusual pressure or active hardware warnings detected.", "is-good");
+    }
+  }
+
+  function renderSystemProcesses(processes) {
+    systemProcessList.replaceChildren();
+    const rows = Array.isArray(processes) ? processes.slice(0, 4) : [];
+    if (!rows.length) {
+      const empty = document.createElement("div");
+      empty.className = "system-empty";
+      empty.textContent = "No background-process sample is available yet.";
+      systemProcessList.appendChild(empty);
+      return;
+    }
+    rows.forEach(function (process) {
+      const row = document.createElement("div");
+      row.className = "system-process";
+      const name = document.createElement("strong");
+      name.textContent = process.name || "Unknown process";
+      const values = document.createElement("span");
+      const cpu = finiteNumber(process.cpu_percent) || 0;
+      const ram = finiteNumber(process.ram_mb) || 0;
+      values.textContent = cpu.toFixed(0) + "% CPU · " + ram.toFixed(0) + " MB";
+      row.appendChild(name);
+      row.appendChild(values);
+      systemProcessList.appendChild(row);
+    });
+  }
+
+  function renderSystemSummary(summary) {
+    lastSystemSummary = summary || {};
+    const health = SYSTEM_HEALTH_LABELS[lastSystemSummary.system_health]
+      ? lastSystemSummary.system_health : "unknown";
+    const healthLabel = SYSTEM_HEALTH_LABELS[health];
+    setSystemHealthClass(systemHealthDot, health);
+    setSystemHealthClass(systemHeroDot, health);
+    systemToggle.setAttribute("aria-label", "System status: " + healthLabel.toLowerCase());
+    systemHealthLabel.textContent = healthLabel;
+    systemHealthSummary.textContent = healthDescription(lastSystemSummary, health);
+    systemUpdated.textContent = relativeSampleTime(lastSystemSummary.captured_at);
+
+    setSystemMetric(systemCpuValue, systemCpuDetail, lastSystemSummary.cpu_percent, "%", (lastSystemSummary.compute_pressure || "unknown") + " compute pressure", 0);
+    setSystemMetric(systemGpuValue, systemGpuDetail, lastSystemSummary.gpu_percent, "%", (lastSystemSummary.compute_pressure || "unknown") + " compute pressure", 0);
+    setSystemMetric(systemMemoryValue, systemMemoryDetail, lastSystemSummary.memory_percent, "%", (lastSystemSummary.memory_pressure || "unknown") + " memory pressure", 0);
+    setSystemMetric(systemTemperatureValue, systemTemperatureDetail, lastSystemSummary.max_temperature_c, "°", (lastSystemSummary.thermal_state || "unknown") + " thermal state", 0);
+    setSystemMetric(systemStorageValue, systemStorageDetail, lastSystemSummary.minimum_volume_free_percent, "%", "Lowest free volume", 0);
+
+    const vram = finiteNumber(lastSystemSummary.vram_used_mb);
+    if (vram === null) {
+      systemVramValue.textContent = "—";
+      systemVramDetail.textContent = "Not reported";
+    } else if (vram >= 1024) {
+      systemVramValue.textContent = (vram / 1024).toFixed(1) + " GB";
+      systemVramDetail.textContent = "Used graphics memory";
+    } else {
+      systemVramValue.textContent = vram.toFixed(0) + " MB";
+      systemVramDetail.textContent = "Used graphics memory";
+    }
+
+    const inference = lastSystemSummary.inference || {};
+    const speed = finiteNumber(inference.current_tokens_per_second);
+    const baseline = finiteNumber(inference.baseline_tokens_per_second);
+    const deviation = finiteNumber(inference.deviation_percent);
+    if (speed === null) {
+      systemInferenceValue.textContent = "Learning baseline";
+      systemInferenceDetail.textContent = "No completed inference samples yet";
+    } else {
+      systemInferenceValue.textContent = speed.toFixed(1) + " tokens/s";
+      let detail = baseline === null ? "Current generation speed" : "Typical " + baseline.toFixed(1) + " tokens/s";
+      if (deviation !== null) detail += " · " + (deviation >= 0 ? "+" : "") + deviation.toFixed(1) + "%";
+      systemInferenceDetail.textContent = detail;
+    }
+
+    renderSystemSignals(lastSystemSummary, health);
+    renderSystemProcesses(lastSystemSummary.background_resource_contention);
+    systemLoading.hidden = true;
+    systemContent.hidden = false;
+  }
+
+  function renderSystemUnavailable() {
+    setSystemHealthClass(systemHealthDot, "unknown");
+    setSystemHealthClass(systemHeroDot, "unknown");
+    systemToggle.setAttribute("aria-label", "System status unavailable");
+    systemHealthLabel.textContent = "Status unavailable";
+    systemHealthSummary.textContent = "The local broker could not read the latest SystemSense summary.";
+    systemUpdated.textContent = "Will retry automatically";
+    systemLoading.hidden = true;
+    systemContent.hidden = false;
+    systemSignalList.replaceChildren();
+    addSystemSignal("Telemetry remains local; no fallback or remote service was used.", "is-warning");
+    renderSystemProcesses([]);
+  }
+
+  function scheduleSystemRefresh() {
+    clearTimeout(systemRefreshTimer);
+    systemRefreshTimer = setTimeout(loadSystemSummary, systemPanelOpen ? 15000 : 60000);
+  }
+
+  async function loadSystemSummary() {
+    if (!BASE_URL || systemRefreshInFlight) return;
+    systemRefreshInFlight = true;
+    systemRefresh.disabled = true;
+    if (systemPanelOpen && !lastSystemSummary) {
+      systemLoading.hidden = false;
+      systemContent.hidden = true;
+    }
+    try {
+      const data = await api("GET", "/v1/systemsense/summary");
+      renderSystemSummary(data.summary || {});
+    } catch (e) {
+      console.warn("LocalPilot: failed to load SystemSense summary", e);
+      renderSystemUnavailable();
+    } finally {
+      systemRefreshInFlight = false;
+      systemRefresh.disabled = false;
+      scheduleSystemRefresh();
+    }
+  }
+
+  function openSystemPanel() {
+    closeHistory();
+    closeSettings();
+    systemPanelOpen = true;
+    panelEl.classList.add("is-system-open");
+    systemPanel.setAttribute("aria-hidden", "false");
+    systemToggle.classList.add("is-active");
+    systemToggle.setAttribute("aria-expanded", "true");
+    clearTimeout(systemRefreshTimer);
+    loadSystemSummary();
+    systemClose.focus();
+  }
+
+  function closeSystemPanel() {
+    if (!systemPanelOpen) return;
+    systemPanelOpen = false;
+    panelEl.classList.remove("is-system-open");
+    systemPanel.setAttribute("aria-hidden", "true");
+    systemToggle.classList.remove("is-active");
+    systemToggle.setAttribute("aria-expanded", "false");
+    scheduleSystemRefresh();
+  }
+
+  systemToggle.addEventListener("click", function () {
+    if (systemPanelOpen) closeSystemPanel();
+    else openSystemPanel();
+  });
+  systemClose.addEventListener("click", function () { closeSystemPanel(); systemToggle.focus(); });
+  systemRefresh.addEventListener("click", function () {
+    clearTimeout(systemRefreshTimer);
+    loadSystemSummary();
   });
 
   /* ======================================================================
@@ -887,6 +1175,7 @@
       .then(function () { pollEvents(); })
       .catch(function (e) { console.error("LocalPilot: failed to bootstrap session", e); });
 
+    loadSystemSummary();
     healthLoop();
     armSleepTimer();
   };

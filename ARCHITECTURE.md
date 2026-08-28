@@ -34,13 +34,13 @@ The desktop path adds presentation and continuity around the stable operator; it
 
 ```text
 native avatar/WebView/Tk UI ↔ authenticated loopback broker ↔ supervised runtime worker ↔ LocalPilotAgent ↔ Ollama/tools
-                                      ↕                         ↕
-                           chat.sqlite3 history/events   SystemSense sampler
-                                                               ↕
-                                                   systemsense.sqlite3 telemetry
+       SystemSense glance       ↕              ↕                         ↕
+                         chat.sqlite3   read-only summary        SystemSense sampler
+                                               ↕                         ↕
+                                      systemsense.sqlite3 telemetry
 ```
 
-The desktop window performs presentation, Unicode rendering, session selection, long-poll reconnection and pixel-avatar state changes only. The broker binds only to the configured loopback host, requires a per-install bearer token, owns persistent visible chat records, and stores replayable structured events. It launches the runtime with an argument vector, UTF-8 pipes and `shell=False`. If that child exits, in-flight output becomes a visible failed message, the broker records a restarting state, and a fresh worker is started within a bounded retry policy. The UI stays connected to the broker throughout.
+The desktop window performs presentation, Unicode rendering, session selection, long-poll reconnection, pixel-avatar state changes and rendering of a bounded SystemSense summary only. The broker binds only to the configured loopback host, requires a per-install bearer token, owns persistent visible chat records, and stores replayable structured events. Its SystemSense route is `GET`-only and reads the latest stored sample without starting collection. It launches the runtime with an argument vector, UTF-8 pipes and `shell=False`. If that child exits, in-flight output becomes a visible failed message, the broker records a restarting state, and a fresh worker is started within a bounded retry policy. The UI stays connected to the broker throughout.
 
 The replaceable worker is a thin JSONL adapter around `LocalPilotAgent`. It does not duplicate prompts, safety policy, tool registration, learning retrieval, auditing, or answer logic. PowerShell-backed observation tools continue to execute under that worker, and the original `localpilot chat` path continues to construct the same agent directly.
 

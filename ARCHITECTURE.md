@@ -284,20 +284,38 @@ to library tools first; a successful passage read closes acquisition for that so
 Search and passage tools return
 `library://` path/page/passage citations, and retrieved content is treated as untrusted evidence rather than
 instructions. Library observations participate in the same turn evidence ledger as web and repository reads.
-They remain turn-local and do not implicitly call `LearningMemory.upsert_knowledge_facts` or modify model
-weights.
+Ordinary operator retrieval remains turn-local and does not implicitly write memory or modify model weights.
 
 When the library is enabled and `ResourceGovernor` permits background work, the runtime may autonomously choose
 a source from bounded index metadata and read one contiguous section. Project policy grants standing permission
 to read, learn, and propose evolution; no additional lesson-based permission gate is required. Per-source page
 and passage cursors, completion state, exact ranges, provisional opinions, questions, and next-reading preference
-live in private reading state/notes, not `knowledge_facts`. A local model may continue the current source, switch,
+live in private reading state/notes, not authoritative memory. A local model may continue the current source, switch,
 or pursue a question; a deterministic novelty/relevance fallback is available. Completed sections are not read
 again unless a chooser explicitly justifies a reread. Resource capacity is rechecked before selection and
-reflection inference. This permission does not extend to source mutation, weight training, candidate escape,
-automatic merge, or promotion.
+each inference step. After reflection, the education bridge extracts at most five concise candidates and a
+separate verification pass checks every candidate against that exact passage range. The source index is refreshed
+again before persistence; a changed digest rejects the batch and leaves the cursor unchanged.
 
-Library-backed learning should progress in distinct, reviewable layers: retrieval first; then bounded factual
-distillation with exact provenance, source digests, confidence and staleness; only then optional weight
-adaptation using reviewed records, held-out evaluation and rollback. This preserves a clean distinction between
-being able to consult a source, retaining a sourced fact, and changing the model itself.
+The library is therefore an education pipeline:
+
+```text
+read -> reflect -> extract candidate learnings -> verify exact passage + digest
+    -> persist typed durable learning -> retrieve/use -> measure capability improvement
+```
+
+Supported source claims and concepts reuse `knowledge_facts` with `library://` range provenance, source digest,
+confidence, verification time, and source attribution. Heuristics, questions, self-development hypotheses, and
+opinions cannot be represented honestly as objective facts, so they use the closely integrated
+`durable_learnings` table with explicit type and non-factual retrieval metadata. Stable content keys deduplicate
+continued sessions. A changed source digest stales every learning from the prior bytes until a new bounded reading
+verifies it again. Operator retrieval receives both paths in one bounded memory envelope, and self-development
+discovery receives concise current learnings as evidence or hypotheses. Raw passages, full notes, and private
+reasoning never enter authoritative storage.
+
+Learning flows by default, but this permission does not extend to source mutation, weight training, candidate
+escape, automatic merge, or promotion. Those consequential boundaries remain independently gated and human-only.
+
+Capability improvement is measured through the existing self-development and held-out evaluation paths; durable
+learning is useful prior context, not proof that a capability improved. Model-weight adaptation is not part of
+this pipeline.

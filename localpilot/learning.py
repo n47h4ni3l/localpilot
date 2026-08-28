@@ -149,6 +149,21 @@ class KnowledgeFact:
 
 
 @dataclass(frozen=True, slots=True)
+class DurableLearning:
+    learning_key: str
+    learning_type: str
+    subject: str
+    summary: str
+    source_uri: str
+    source_kind: str
+    source_digest: str
+    provenance: str
+    confidence: float
+    last_verified_at: str
+    stale: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RetrievalDiagnostics:
     mode: str = "lexical"
     embedding_model: str = ""
@@ -361,6 +376,26 @@ class LearningMemory:
                     ON knowledge_facts(source_uri, stale);
                 CREATE INDEX IF NOT EXISTS knowledge_stage_idx
                     ON knowledge_facts(stage, stale, fact_type);
+                CREATE TABLE IF NOT EXISTS durable_learnings (
+                    learning_key TEXT PRIMARY KEY,
+                    learning_type TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    source_uri TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_digest TEXT NOT NULL,
+                    provenance TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    last_verified_at TEXT NOT NULL,
+                    stale INTEGER NOT NULL DEFAULT 0,
+                    CHECK (learning_type IN (
+                        'heuristic', 'question', 'selfdev_hypothesis', 'opinion'
+                    ))
+                );
+                CREATE INDEX IF NOT EXISTS durable_learning_source_idx
+                    ON durable_learnings(source_uri, stale);
+                CREATE INDEX IF NOT EXISTS durable_learning_type_idx
+                    ON durable_learnings(learning_type, stale);
                 CREATE TABLE IF NOT EXISTS knowledge_fact_embeddings (
                     stage TEXT NOT NULL,
                     fact_key TEXT NOT NULL,
@@ -1644,6 +1679,7 @@ class LearningMemory:
                 }
                 for item in teachings
             ],
+            "library_learnings": self.library_learning_context(limit=limit),
         }
 
     def reusable_lessons(
@@ -1652,13 +1688,16 @@ class LearningMemory:
         *,
         query: str | None = None,
     ) -> list[str]:
-        """Return bounded validated cycle lessons plus explicit owner teachings."""
+        """Return bounded validated lessons, teachings, and relevant library learning."""
         limit = max(0, min(int(limit), 50))
         if not limit:
             return []
         human_limit = min(limit, max(1, (limit + 1) // 2))
         human = self.human_lessons(human_limit, query=query)
         remaining = max(0, limit - len(human))
+        library_limit = max(1, (remaining + 1) // 2) if remaining else 0
+        library = self.library_learning_context(query=query, limit=library_limit)
+        remaining = max(0, remaining - len(library))
         rows = []
         if remaining:
             with self._connect() as connection:
@@ -1671,6 +1710,10 @@ class LearningMemory:
                     (remaining,),
                 ).fetchall()
         result = [f"Human teaching [{item.topic}]: {item.lesson}" for item in human]
+        result.extend(
+            f"Library {item['learning_type']} [{item['source_uri']}]: {item['summary']}"
+            for item in library
+        )
         result.extend(str(row["reusable_lesson"]) for row in rows)
         return result
 
@@ -1787,6 +1830,211 @@ class LearningMemory:
                 (source_uri, current_digest),
             )
             return int(cursor.rowcount)
+
+    @staticmethod
+    def _durable_learning(row: sqlite3.Row) -> DurableLearning:
+        return DurableLearning(
+            learning_key=str(row["learning_key"]),
+            learning_type=str(row["learning_type"]),
+            subject=str(row["subject"]),
+            summary=str(row["summary"]),
+            source_uri=str(row["source_uri"]),
+            source_kind=str(row["source_kind"]),
+            source_digest=str(row["source_digest"]),
+            provenance=str(row["provenance"]),
+            confidence=float(row["confidence"]),
+            last_verified_at=str(row["last_verified_at"]),
+            stale=bool(row["stale"]),
+        )
+
+    def upsert_durable_learning(
+        self,
+        *,
+        learning_key: str,
+        learning_type: str,
+        subject: str,
+        summary: str,
+        source_uri: str,
+        source_kind: str,
+        source_digest: str,
+        provenance: str,
+        confidence: float,
+    ) -> None:
+        """Persist one verified, explicitly non-factual learning record."""
+        allowed = {"heuristic", "question", "selfdev_hypothesis", "opinion"}
+        chosen_type = str(learning_type).strip().casefold()
+        if chosen_type not in allowed:
+            raise ValueError(f"Unsupported durable learning type: {learning_type}")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO durable_learnings (
+                    learning_key, learning_type, subject, summary, source_uri,
+                    source_kind, source_digest, provenance, confidence,
+                    last_verified_at, stale
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                ON CONFLICT(learning_key) DO UPDATE SET
+                    learning_type = excluded.learning_type,
+                    subject = excluded.subject,
+                    summary = excluded.summary,
+                    source_uri = excluded.source_uri,
+                    source_kind = excluded.source_kind,
+                    source_digest = excluded.source_digest,
+                    provenance = excluded.provenance,
+                    confidence = excluded.confidence,
+                    last_verified_at = excluded.last_verified_at,
+                    stale = 0
+                """,
+                (
+                    str(learning_key)[:500],
+                    chosen_type,
+                    str(subject)[:500],
+                    str(summary)[:1200],
+                    str(source_uri)[:1000],
+                    str(source_kind)[:80],
+                    str(source_digest)[:128],
+                    str(provenance)[:500],
+                    max(0.0, min(float(confidence), 1.0)),
+                    _now(),
+                ),
+            )
+
+    def invalidate_library_source(self, source_path: str, current_digest: str) -> int:
+        """Stale every prior learning from revised bytes of one library source."""
+        path = str(source_path).split("#", 1)[0]
+        escaped = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        prefix = f"library://{escaped}#%"
+        with self._connect() as connection:
+            fact_cursor = connection.execute(
+                """
+                UPDATE knowledge_facts SET stale = 1
+                WHERE source_uri LIKE ? ESCAPE '\\'
+                  AND source_digest != ? AND stale = 0
+                """,
+                (prefix, str(current_digest)),
+            )
+            learning_cursor = connection.execute(
+                """
+                UPDATE durable_learnings SET stale = 1
+                WHERE source_uri LIKE ? ESCAPE '\\'
+                  AND source_digest != ? AND stale = 0
+                """,
+                (prefix, str(current_digest)),
+            )
+            return int(fact_cursor.rowcount) + int(learning_cursor.rowcount)
+
+    def durable_learnings(
+        self,
+        *,
+        learning_type: str | None = None,
+        include_stale: bool = False,
+    ) -> list[DurableLearning]:
+        clauses: list[str] = []
+        values: list[object] = []
+        if learning_type is not None:
+            clauses.append("learning_type = ?")
+            values.append(str(learning_type))
+        if not include_stale:
+            clauses.append("stale = 0")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM durable_learnings {where} "
+                "ORDER BY last_verified_at DESC, learning_key",
+                values,
+            ).fetchall()
+        return [self._durable_learning(row) for row in rows]
+
+    def search_durable_learnings(
+        self,
+        query: str,
+        *,
+        limit: int = 6,
+        include_stale: bool = True,
+    ) -> list[DurableLearning]:
+        """Return bounded lexical matches without collapsing them into facts."""
+        limit = max(0, min(int(limit), 12))
+        query_tokens = self._knowledge_tokens(query)
+        if not limit or not query_tokens:
+            return []
+        scored: list[tuple[int, float, str, DurableLearning]] = []
+        for item in self.durable_learnings(include_stale=include_stale):
+            fields = self._knowledge_tokens(
+                " ".join((item.learning_type, item.subject, item.summary, item.provenance))
+            )
+            overlap = len(query_tokens & fields)
+            if overlap < 2 and item.subject.casefold() not in str(query).casefold():
+                continue
+            scored.append(
+                (
+                    overlap - (2 if item.stale else 0),
+                    item.confidence,
+                    item.last_verified_at,
+                    item,
+                )
+            )
+        scored.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
+        return [row[3] for row in scored[:limit]]
+
+    def library_learning_context(
+        self,
+        *,
+        query: str | None = None,
+        limit: int = 6,
+    ) -> list[dict[str, Any]]:
+        """Expose concise current library learning to self-development discovery."""
+        limit = max(0, min(int(limit), 20))
+        if not limit:
+            return []
+        query_text = str(query or "library learning self development capability")
+        query_tokens = self._knowledge_tokens(query_text)
+        rows: list[tuple[int, str, dict[str, Any]]] = []
+        for fact in self.knowledge_facts(stage="library", include_stale=False):
+            tokens = self._knowledge_tokens(
+                " ".join((fact.fact_type, fact.subject, fact.summary))
+            )
+            overlap = len(query_tokens & tokens) if query else 1
+            if query and overlap < 1:
+                continue
+            rows.append(
+                (
+                    overlap,
+                    fact.last_verified_at,
+                    {
+                        "learning_type": fact.fact_type.removeprefix("library_"),
+                        "subject": fact.subject,
+                        "summary": fact.summary,
+                        "source_uri": fact.source_uri,
+                        "source_digest": fact.source_digest,
+                        "confidence": fact.confidence,
+                        "objective_fact": True,
+                    },
+                )
+            )
+        for item in self.durable_learnings(include_stale=False):
+            tokens = self._knowledge_tokens(
+                " ".join((item.learning_type, item.subject, item.summary))
+            )
+            overlap = len(query_tokens & tokens) if query else 1
+            if query and overlap < 1:
+                continue
+            rows.append(
+                (
+                    overlap,
+                    item.last_verified_at,
+                    {
+                        "learning_type": item.learning_type,
+                        "subject": item.subject,
+                        "summary": item.summary,
+                        "source_uri": item.source_uri,
+                        "source_digest": item.source_digest,
+                        "confidence": item.confidence,
+                        "objective_fact": False,
+                    },
+                )
+            )
+        rows.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        return [row[2] for row in rows[:limit]]
 
     def knowledge_facts(
         self,
@@ -2483,6 +2731,7 @@ class LearningMemory:
                 "capability_experiments",
                 "mission_frontiers",
                 "knowledge_facts",
+                "durable_learnings",
                 "knowledge_fact_embeddings",
                 "study_runs",
                 "curriculum_stage_state",

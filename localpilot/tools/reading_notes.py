@@ -63,6 +63,29 @@ class LibraryReadingNotesReader:
             questions = row.get("questions_raised")
             if not isinstance(questions, list):
                 questions = []
+            learning = (
+                row.get("durable_learning")
+                if isinstance(row.get("durable_learning"), dict)
+                else {}
+            )
+            persisted = (
+                learning.get("persisted")
+                if isinstance(learning.get("persisted"), list)
+                else []
+            )
+            learned_types = sorted(
+                {
+                    str(item.get("learning_type") or "")
+                    for item in persisted
+                    if isinstance(item, dict) and item.get("learning_type")
+                }
+            )
+            learning_text = (
+                f"{learning.get('persisted_count', 0)} persisted"
+                f" ({', '.join(learned_types) or 'none'}); "
+                f"{learning.get('corrected_count', 0)} corrected; "
+                f"{learning.get('rejected_count', 0)} rejected"
+            )
             if source_path and row.get("citation_start"):
                 completed = bool(progress.get("completed"))
                 progress_text = (
@@ -84,6 +107,7 @@ class LibraryReadingNotesReader:
                     f"  Progress: {progress_text}\n"
                     f"  Provisional opinion: {opinion or '(none recorded)'}\n"
                     f"  Questions: {'; '.join(str(item)[:400] for item in questions[:3]) or '(none recorded)'}\n"
+                    f"  Durable learning: {learning_text}\n"
                     f"  Next preference: {intent}"
                 )
             else:

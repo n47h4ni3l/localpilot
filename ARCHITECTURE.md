@@ -33,14 +33,34 @@ exposed to the model. No destructive operator action is registered.
 The desktop path adds presentation and continuity around the stable operator; it does not add another agent implementation:
 
 ```text
-Tkinter desktop UI ↔ authenticated loopback broker ↔ supervised runtime worker ↔ LocalPilotAgent ↔ Ollama/tools/PowerShell
-                             ↕
-                  chat.sqlite3 history/events
+native avatar/WebView/Tk UI ↔ authenticated loopback broker ↔ supervised runtime worker ↔ LocalPilotAgent ↔ Ollama/tools
+                                      ↕                         ↕
+                           chat.sqlite3 history/events   SystemSense sampler
+                                                               ↕
+                                                   systemsense.sqlite3 telemetry
 ```
 
 The desktop window performs presentation, Unicode rendering, session selection, long-poll reconnection and pixel-avatar state changes only. The broker binds only to the configured loopback host, requires a per-install bearer token, owns persistent visible chat records, and stores replayable structured events. It launches the runtime with an argument vector, UTF-8 pipes and `shell=False`. If that child exits, in-flight output becomes a visible failed message, the broker records a restarting state, and a fresh worker is started within a bounded retry policy. The UI stays connected to the broker throughout.
 
 The replaceable worker is a thin JSONL adapter around `LocalPilotAgent`. It does not duplicate prompts, safety policy, tool registration, learning retrieval, auditing, or answer logic. PowerShell-backed observation tools continue to execute under that worker, and the original `localpilot chat` path continues to construct the same agent directly.
+
+## Passive SystemSense boundary
+
+The runtime worker owns one daemon sampler shared by all session agents in that
+process. Cheap dynamic counters run on the configured short cadence; slow
+hardware/firmware/PnP/driver inventory runs separately. Native COM/WMI/CIM,
+psutil, a fixed read-only PnPUtil argument vector, and an optional
+LibreHardwareMonitor/OpenHardwareMonitor WMI sensor namespace feed a private
+SQLite store. Collector failure is isolated from the operator lifecycle.
+
+The LLM normally receives only a transient compact derived state. Six bounded
+`READ_ONLY` tools expose summary, hardware inventory, conservative driver
+classifications, metric history, workload correlations and raw drill-down.
+They expose neither raw SQL nor control operations. Driver orphan/duplicate
+labels are review candidates and always retain `safe_to_delete=false`;
+correlations are explicitly non-causal. No SystemSense observation is written
+to learning facts, desktop chat history, reading notes or self-development
+memory. Full source and safety details are in `docs/systemsense.md`.
 
 Three continuity contracts are deliberately separate:
 

@@ -10,6 +10,7 @@ from localpilot.tools.learning_readonly import LearningMemoryReader
 from localpilot.tools.library import LocalLibrary
 from localpilot.tools.reading_notes import LibraryReadingNotesReader
 from localpilot.tools.repository import RepositoryReader
+from localpilot.tools.systemsense import SystemSenseReader
 from localpilot.tools.web import fetch_public_https, search_public_web
 from localpilot.tools.windows import (
     get_active_power_plan,
@@ -21,6 +22,7 @@ from localpilot.tools.windows import (
     get_top_processes,
 )
 from localpilot.tools.windows_actions import WindowsActions
+from localpilot.systemsense import SystemSense, get_system_sense
 
 
 def registry(
@@ -28,6 +30,7 @@ def registry(
     *,
     command_runner: CommandRunner | None = None,
     config: Config | None = None,
+    systemsense: SystemSense | None = None,
 ) -> dict[str, ToolSpec]:
     actions = WindowsActions(command_runner or CommandRunner())
     specs = [
@@ -80,6 +83,11 @@ def registry(
         repository = RepositoryReader(project_root)
         github = GitHubReader(project_root)
         learning = LearningMemoryReader(project_root)
+        sense = systemsense
+        if sense is None and config is not None:
+            sense = get_system_sense(
+                config.systemsense, root / config.agent.data_dir
+            )
         specs.extend(
             [
                 ToolSpec(
@@ -156,6 +164,48 @@ def registry(
                 ),
             ]
         )
+        if sense is not None and sense.enabled:
+            reader = SystemSenseReader(sense)
+            specs.extend(
+                [
+                    ToolSpec(
+                        "get_system_sense_summary",
+                        "Read the compact passive SystemSense health state, rolling-baseline anomalies, contention and model-inference performance.",
+                        RiskLevel.READ_ONLY,
+                        reader.get_system_sense_summary,
+                    ),
+                    ToolSpec(
+                        "inspect_hardware_inventory",
+                        "Drill into one bounded Windows hardware, firmware, identifier, network, storage or PnP-device inventory section after reading the summary.",
+                        RiskLevel.READ_ONLY,
+                        reader.inspect_hardware_inventory,
+                    ),
+                    ToolSpec(
+                        "inspect_driver_inventory",
+                        "Read bounded driver/device associations and conservative classifications: active/bound, inactive, problematic, unknown, or review-only orphan/older candidates. Never establishes safe deletion.",
+                        RiskLevel.READ_ONLY,
+                        reader.inspect_driver_inventory,
+                    ),
+                    ToolSpec(
+                        "get_system_sense_history",
+                        "Read bounded history for one allow-listed SystemSense metric without raw SQL access.",
+                        RiskLevel.READ_ONLY,
+                        reader.get_system_sense_history,
+                    ),
+                    ToolSpec(
+                        "get_workload_correlations",
+                        "Read bounded observational correlations between model inference speed and environmental metrics; correlations do not prove causality.",
+                        RiskLevel.READ_ONLY,
+                        reader.get_workload_correlations,
+                    ),
+                    ToolSpec(
+                        "inspect_raw_system_sense",
+                        "Drill into bounded raw dynamic, LibreHardwareMonitor-style sensor, or Windows inventory telemetry when the compact state is insufficient.",
+                        RiskLevel.READ_ONLY,
+                        reader.inspect_raw_system_sense,
+                    ),
+                ]
+            )
         if config is not None and config.library.enabled:
             library = LocalLibrary(
                 config.library,

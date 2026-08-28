@@ -353,6 +353,7 @@ def _chat(console: Console, config, root: Path) -> None:
         "Commands: /status /doctor /evolve /teach <lesson> /quit\n"
     )
     agent = LocalPilotAgent(config, root)
+    agent.systemsense.start()
     while True:
         try:
             prompt = console.input("[bold cyan]you>[/bold cyan] ").strip()

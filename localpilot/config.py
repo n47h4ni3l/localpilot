@@ -95,6 +95,21 @@ class LibraryConfig:
 
 
 @dataclass(slots=True)
+class SystemSenseConfig:
+    """Passive, read-only environmental telemetry settings."""
+
+    enabled: bool = True
+    database: str = "systemsense.sqlite3"
+    sample_interval_seconds: float = 5.0
+    inventory_interval_seconds: float = 900.0
+    retention_days: int = 30
+    baseline_window_hours: int = 24
+    correlation_window_days: int = 14
+    max_processes: int = 12
+    compact_context_enabled: bool = True
+
+
+@dataclass(slots=True)
 class SelfDevConfig:
     enabled: bool = True
     # This is deliberately distinct from model.name. If it is unavailable,
@@ -148,6 +163,7 @@ class Config:
     github: GitHubConfig = field(default_factory=GitHubConfig)
     desktop: DesktopConfig = field(default_factory=DesktopConfig)
     library: LibraryConfig = field(default_factory=LibraryConfig)
+    systemsense: SystemSenseConfig = field(default_factory=SystemSenseConfig)
     selfdev: SelfDevConfig = field(default_factory=SelfDevConfig)
     source_path: Path | None = None
 
@@ -221,6 +237,7 @@ def load_config(path: str | Path | None = None) -> Config:
         _apply(cfg.github, raw.get("github", {}))
         _apply(cfg.desktop, raw.get("desktop", {}))
         _apply(cfg.library, raw.get("library", {}))
+        _apply(cfg.systemsense, raw.get("systemsense", {}))
         selfdev_raw = raw.get("selfdev", {})
         _apply(cfg.selfdev, selfdev_raw)
         legacy_limit = selfdev_raw.get("max_files_per_cycle")
@@ -350,4 +367,49 @@ def load_config(path: str | Path | None = None) -> Config:
                 f"library.{field_name} must be between 1 and {maximum}"
             )
         setattr(cfg.library, field_name, value)
+
+    if not isinstance(cfg.systemsense.enabled, bool):
+        raise ValueError("systemsense.enabled must be a boolean")
+    if not isinstance(cfg.systemsense.compact_context_enabled, bool):
+        raise ValueError("systemsense.compact_context_enabled must be a boolean")
+    systemsense_database = Path(str(cfg.systemsense.database).strip())
+    if (
+        not systemsense_database.name
+        or systemsense_database.is_absolute()
+        or len(systemsense_database.parts) != 1
+    ):
+        raise ValueError("systemsense.database must be one local filename")
+    if systemsense_database.name.casefold() in reserved_databases | {
+        library_database.name.casefold()
+    }:
+        raise ValueError("systemsense.database must remain separate from other databases")
+    cfg.systemsense.database = systemsense_database.name
+    cfg.systemsense.sample_interval_seconds = float(cfg.systemsense.sample_interval_seconds)
+    cfg.systemsense.inventory_interval_seconds = float(
+        cfg.systemsense.inventory_interval_seconds
+    )
+    cfg.systemsense.retention_days = int(cfg.systemsense.retention_days)
+    cfg.systemsense.baseline_window_hours = int(cfg.systemsense.baseline_window_hours)
+    cfg.systemsense.correlation_window_days = int(
+        cfg.systemsense.correlation_window_days
+    )
+    cfg.systemsense.max_processes = int(cfg.systemsense.max_processes)
+    if not 1 <= cfg.systemsense.sample_interval_seconds <= 300:
+        raise ValueError("systemsense.sample_interval_seconds must be between 1 and 300")
+    if not 60 <= cfg.systemsense.inventory_interval_seconds <= 86_400:
+        raise ValueError(
+            "systemsense.inventory_interval_seconds must be between 60 and 86400"
+        )
+    if not 1 <= cfg.systemsense.retention_days <= 3650:
+        raise ValueError("systemsense.retention_days must be between 1 and 3650")
+    if not 1 <= cfg.systemsense.baseline_window_hours <= 720:
+        raise ValueError(
+            "systemsense.baseline_window_hours must be between 1 and 720"
+        )
+    if not 1 <= cfg.systemsense.correlation_window_days <= 3650:
+        raise ValueError(
+            "systemsense.correlation_window_days must be between 1 and 3650"
+        )
+    if not 1 <= cfg.systemsense.max_processes <= 50:
+        raise ValueError("systemsense.max_processes must be between 1 and 50")
     return cfg

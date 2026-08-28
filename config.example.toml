@@ -68,6 +68,20 @@ max_pages_per_document = 2000
 max_chars_per_page = 30000
 max_search_results = 8
 
+[systemsense]
+# Passive read-only telemetry lives below the LLM. The model receives a compact
+# derived state and can drill into bounded inventory/history tools when needed.
+enabled = true
+database = "systemsense.sqlite3"
+sample_interval_seconds = 5
+# Hardware, firmware, device and driver inventory changes much less frequently.
+inventory_interval_seconds = 900
+retention_days = 30
+baseline_window_hours = 24
+correlation_window_days = 14
+max_processes = 12
+compact_context_enabled = true
+
 [selfdev]
 enabled = true
 # Used only for research/implementation cycles when installed. Otherwise the

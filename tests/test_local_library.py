@@ -49,6 +49,39 @@ def test_text_library_indexes_searches_and_reads_with_source_citations(tmp_path)
     assert "durable memory" in summary
 
 
+def test_progressive_library_read_returns_metadata_range_and_next_cursor(tmp_path):
+    root, library = _library(tmp_path)
+    page_one = " ".join(f"alpha{index}" for index in range(900))
+    page_two = " ".join(f"beta{index}" for index in range(900))
+    (root / "book.txt").write_text(page_one + "\f" + page_two, encoding="utf-8")
+
+    sources = library.list_indexed_sources()
+    first = library.read_progressive_section(
+        "book.txt", page=1, passage=1, max_passages=3, max_chars=5000
+    )
+    second = library.read_progressive_section(
+        "book.txt",
+        page=int(first["next_page"]),
+        passage=int(first["next_passage"]),
+        max_passages=3,
+        max_chars=5000,
+    )
+
+    assert sources[0]["path"] == "book.txt"
+    assert sources[0]["passage_count"] > 3
+    assert sources[0]["source_digest"]
+    assert first["available"] is True
+    assert first["start_page"] == 1
+    assert first["start_passage"] == 1
+    assert first["passages_read"] <= 3
+    assert first["chars_read"] <= 5000
+    assert first["completed"] is False
+    assert (second["start_page"], second["start_passage"]) == (
+        first["next_page"],
+        first["next_passage"],
+    )
+
+
 def test_refresh_reindexes_changed_files_and_removes_deleted_sources(tmp_path):
     root, library = _library(tmp_path)
     source = root / "notes.md"

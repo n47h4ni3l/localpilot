@@ -27,5 +27,12 @@ Future library study may distill bounded, source-linked claims into durable lear
 staleness handling, held-out evaluation, and rollback. Raw source bodies and private reasoning do not belong in
 durable memory.
 
+When the library is enabled, idle-time reading needs no separate standing-permission lesson. Existing resource
+gates decide when a session may run. Each session reads a strict, contiguous passage/character budget, saves a
+per-source cursor, and records the exact page/passage range, progress, provisional opinion, questions, and next
+preference in private reading notes. Later sessions can continue, switch sources, or pursue a question. These
+notes do not become authoritative knowledge facts, alter source files, train model weights, merge candidates, or
+promote code.
+
 Only add material you are entitled to store and use. The library remains local unless you explicitly send its
 contents through another tool or service.

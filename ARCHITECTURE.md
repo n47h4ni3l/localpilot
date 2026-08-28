@@ -287,6 +287,16 @@ instructions. Library observations participate in the same turn evidence ledger 
 They remain turn-local and do not implicitly call `LearningMemory.upsert_knowledge_facts` or modify model
 weights.
 
+When the library is enabled and `ResourceGovernor` permits background work, the runtime may autonomously choose
+a source from bounded index metadata and read one contiguous section. Project policy grants standing permission
+to read, learn, and propose evolution; no additional lesson-based permission gate is required. Per-source page
+and passage cursors, completion state, exact ranges, provisional opinions, questions, and next-reading preference
+live in private reading state/notes, not `knowledge_facts`. A local model may continue the current source, switch,
+or pursue a question; a deterministic novelty/relevance fallback is available. Completed sections are not read
+again unless a chooser explicitly justifies a reread. Resource capacity is rechecked before selection and
+reflection inference. This permission does not extend to source mutation, weight training, candidate escape,
+automatic merge, or promotion.
+
 Library-backed learning should progress in distinct, reviewable layers: retrieval first; then bounded factual
 distillation with exact provenance, source digests, confidence and staleness; only then optional weight
 adaptation using reviewed records, held-out evaluation and rollback. This preserves a clean distinction between

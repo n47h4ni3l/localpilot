@@ -143,12 +143,19 @@ if (-not $verifiedProcess) {
     throw "The hidden worker did not reach a verified windowless running state and begin an evolve cycle. The replacement was removed and the legacy task was left unchanged."
 }
 
-if ($legacy -and $LegacyTaskName -ne $TaskName) {
-    Disable-ScheduledTask -TaskName $LegacyTaskName | Out-Null
-}
-
 Write-Host "Started hidden worker '$TaskName' (PID $($verifiedProcess.ProcessId)); it polls every $PollSeconds second(s)." -ForegroundColor Green
 if ($legacy -and $LegacyTaskName -ne $TaskName) {
+    try {
+        if ($legacy.Settings.Enabled) {
+            Disable-ScheduledTask -TaskName $LegacyTaskName -ErrorAction Stop | Out-Null
+        }
+        $verifiedLegacy = Get-ScheduledTask -TaskName $LegacyTaskName -ErrorAction Stop
+        if ($verifiedLegacy.Settings.Enabled) {
+            throw "Windows still reports the legacy task as enabled."
+        }
+    } catch {
+        throw "The hidden worker is verified and remains running, but '$LegacyTaskName' could not be disabled. Run Disable-ScheduledTask for that exact task from an administrator PowerShell session. Cause: $($_.Exception.Message)"
+    }
     Write-Host "Disabled legacy repeating task '$LegacyTaskName' only after the replacement was verified."
 }
 Write-Host "The worker calls SelfDeveloper.run_once(force=False); all existing safety, authority, idle, resource, persistence, and recovery gates remain authoritative."

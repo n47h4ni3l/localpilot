@@ -18,6 +18,9 @@ _MAX_QUERY_CHARS = 300
 _PASSAGE_CHARS = 1800
 _PASSAGE_OVERLAP = 200
 _MAX_TOOL_OUTPUT_CHARS = 16_000
+_MAX_PROGRESSIVE_SOURCES = 200
+_MAX_PROGRESSIVE_PASSAGES = 8
+_MAX_PROGRESSIVE_CHARS = 12_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,6 +404,176 @@ class LocalLibrary:
             output.append(f"[{index}] {citation}\n{excerpt}")
         rendered = "\n\n".join(output)
         return rendered[:_MAX_TOOL_OUTPUT_CHARS]
+
+    def list_indexed_sources(self, max_sources: int = 200) -> list[dict[str, int | str]]:
+        """Return bounded metadata for autonomous source selection.
+
+        This is an internal structured view over the disposable index. It does
+        not expose or mutate library source files and is not registered as an
+        operator tool.
+        """
+        refresh = self.refresh_index()
+        if not refresh.get("available"):
+            return []
+        limit = max(1, min(int(max_sources), _MAX_PROGRESSIVE_SOURCES))
+        with self._connect() as connection:
+            documents = connection.execute(
+                """
+                SELECT path, kind, page_count, source_digest
+                FROM library_documents
+                WHERE error = ''
+                ORDER BY path COLLATE NOCASE
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            sources: list[dict[str, int | str]] = []
+            for document in documents:
+                aggregate = connection.execute(
+                    """
+                    SELECT COUNT(*) AS passage_count
+                    FROM library_passages
+                    WHERE path = ?
+                    """,
+                    (document["path"],),
+                ).fetchone()
+                first = connection.execute(
+                    """
+                    SELECT text
+                    FROM library_passages
+                    WHERE path = ?
+                    ORDER BY CAST(page AS INTEGER), CAST(passage AS INTEGER)
+                    LIMIT 1
+                    """,
+                    (document["path"],),
+                ).fetchone()
+                passage_count = int(aggregate["passage_count"] if aggregate else 0)
+                if passage_count <= 0:
+                    continue
+                sources.append(
+                    {
+                        "path": str(document["path"]),
+                        "kind": str(document["kind"]),
+                        "page_count": int(document["page_count"]),
+                        "passage_count": passage_count,
+                        "source_digest": str(document["source_digest"]),
+                        "opening_excerpt": self._normalize_text(
+                            str(first["text"] if first else "")
+                        )[:500],
+                    }
+                )
+        return sources
+
+    def read_progressive_section(
+        self,
+        path: str,
+        *,
+        page: int = 1,
+        passage: int = 1,
+        max_passages: int = 6,
+        max_chars: int = 9000,
+    ) -> dict[str, int | str | bool | None]:
+        """Read one contiguous, bounded section and return its next cursor."""
+        unavailable = self._availability_error()
+        if unavailable:
+            return {"available": False, "message": unavailable}
+        _, relative = self._resolve_source(path)
+        self.refresh_index()
+        start_page = max(1, int(page))
+        start_passage = max(1, int(passage))
+        passage_limit = max(1, min(int(max_passages), _MAX_PROGRESSIVE_PASSAGES))
+        char_limit = max(1, min(int(max_chars), _MAX_PROGRESSIVE_CHARS))
+        with self._connect() as connection:
+            document = connection.execute(
+                """
+                SELECT page_count, source_digest, error
+                FROM library_documents
+                WHERE path = ?
+                """,
+                (relative,),
+            ).fetchone()
+            rows = connection.execute(
+                """
+                SELECT page, passage, text
+                FROM library_passages
+                WHERE path = ?
+                  AND (
+                    CAST(page AS INTEGER) > ?
+                    OR (
+                        CAST(page AS INTEGER) = ?
+                        AND CAST(passage AS INTEGER) >= ?
+                    )
+                  )
+                ORDER BY CAST(page AS INTEGER), CAST(passage AS INTEGER)
+                LIMIT ?
+                """,
+                (relative, start_page, start_page, start_passage, passage_limit + 1),
+            ).fetchall()
+            total = connection.execute(
+                "SELECT COUNT(*) AS count FROM library_passages WHERE path = ?",
+                (relative,),
+            ).fetchone()
+        if document is None or str(document["error"]):
+            message = str(document["error"] if document else "source is not indexed")
+            return {"available": False, "message": message}
+        if not rows:
+            return {
+                "available": True,
+                "source_path": relative,
+                "source_digest": str(document["source_digest"]),
+                "page_count": int(document["page_count"]),
+                "total_passages": int(total["count"] if total else 0),
+                "passages_read": 0,
+                "chars_read": 0,
+                "text": "",
+                "completed": True,
+                "next_page": None,
+                "next_passage": None,
+            }
+
+        selected: list[dict[str, int | str]] = []
+        chars_read = 0
+        for raw_row in rows[:passage_limit]:
+            row: dict[str, int | str] = {
+                "page": int(raw_row["page"]),
+                "passage": int(raw_row["passage"]),
+                "text": str(raw_row["text"]),
+            }
+            text = str(row["text"])
+            if selected and chars_read + len(text) > char_limit:
+                break
+            if not selected and len(text) > char_limit:
+                row["text"] = text[:char_limit]
+                selected.append(row)
+                chars_read = len(str(row["text"]))
+                break
+            selected.append(row)
+            chars_read += len(text)
+
+        consumed = len(selected)
+        next_row = rows[consumed] if consumed < len(rows) else None
+        end = selected[-1]
+        rendered = "\n\n".join(
+            f"Page {int(row['page'])}, passage {int(row['passage'])}:\n{row['text']}"
+            for row in selected
+        )
+        return {
+            "available": True,
+            "source_path": relative,
+            "source_digest": str(document["source_digest"]),
+            "page_count": int(document["page_count"]),
+            "total_passages": int(total["count"] if total else 0),
+            "start_page": int(selected[0]["page"]),
+            "start_passage": int(selected[0]["passage"]),
+            "end_page": int(end["page"]),
+            "end_passage": int(end["passage"]),
+            "passages_read": consumed,
+            "chars_read": chars_read,
+            "text": rendered,
+            "completed": next_row is None,
+            "next_page": int(next_row["page"]) if next_row is not None else None,
+            "next_passage": int(next_row["passage"]) if next_row is not None else None,
+        }
 
     def read_library_passage(
         self,

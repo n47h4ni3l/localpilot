@@ -58,6 +58,7 @@ Together these principles imply broad freedom to think and narrow, reviewable au
 - Read-only Windows observation tools for processes, disks, startup entries, power, Defender, and device problems.
 - A complete allow-listed reversible action set for opening selected Windows apps/Settings pages and transactionally changing an installed built-in power plan with verified one-use rollback.
 - Durable owner lessons and a staged study system for repository, Qwen/Ollama, and Python knowledge.
+- Progressive idle-time library reading with per-source cursors, bounded contiguous sections, and provisional private notes that report the exact range and progress.
 - Bounded retrieval of relevant study facts into fresh operator turns, including provenance, confidence, verification time, source digest, and staleness.
 - Real TOML configuration, resource gating, process-priority control, and redacted JSONL audit logging.
 - Separate stable operator, idle-time developer, and isolated candidate responsibilities.
@@ -340,8 +341,12 @@ The learning database name, owner-lesson limit, and candidate resource settings 
 Read [config.example.toml](config.example.toml) before changing limits. Security-critical ceilings should be changed only with corresponding tests and a clear threat-model justification.
 
 When enabled, the owner-managed library is checked before public-web discovery when its local books or manuals
-are relevant. See [docs/library-folder-readme.md](docs/library-folder-readme.md) for supported formats, privacy
-boundaries, indexing behavior, and the distinction between retrieval, durable learning, and model training.
+are relevant. During idle capacity, LocalPilot may also choose and progressively read bounded contiguous
+sections without a separate standing-permission record. This is a durable project policy for reading, learning,
+and proposing evolution only: resource gates, source immutability, isolated candidates, human-only merge and
+promotion, and the ban on automatic weight training remain unchanged. See
+[docs/library-folder-readme.md](docs/library-folder-readme.md) for supported formats, privacy boundaries,
+indexing behavior, and the distinction between retrieval, durable learning, and model training.
 
 ## Local data and privacy
 

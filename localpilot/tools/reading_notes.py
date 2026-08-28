@@ -46,17 +46,54 @@ class LibraryReadingNotesReader:
             return "No autonomous local-library reading notes have been recorded yet."
 
         output = [
-            "Recent autonomous library reading notes (provisional reflections; not durable knowledge facts):"
+            "Recent autonomous library reading sessions (bounded sections only; provisional "
+            "reflections; not durable knowledge facts):"
         ]
         for row in reversed(rows):
             timestamp = str(row.get("timestamp") or "unknown time")[:80]
-            citation = str(row.get("citation") or "uncited")[:600]
-            query = str(row.get("query") or "")[:300]
-            reflection = str(row.get("reflection") or "").strip()[:_MAX_REFLECTION_CHARS]
-            output.append(
-                f"- {timestamp}\n"
-                f"  Citation: {citation}\n"
-                f"  Selection theme: {query or '(not recorded)'}\n"
-                f"  Note: {reflection or '(no reflection recorded)'}"
-            )
+            source_path = str(row.get("source_path") or "")[:600]
+            citation_start = str(
+                row.get("citation_start") or row.get("citation") or "uncited"
+            )[:600]
+            citation_end = str(row.get("citation_end") or citation_start)[:600]
+            progress = row.get("progress") if isinstance(row.get("progress"), dict) else {}
+            opinion = str(
+                row.get("provisional_opinion") or row.get("reflection") or ""
+            ).strip()[:_MAX_REFLECTION_CHARS]
+            questions = row.get("questions_raised")
+            if not isinstance(questions, list):
+                questions = []
+            if source_path and row.get("citation_start"):
+                completed = bool(progress.get("completed"))
+                progress_text = (
+                    f"{progress.get('passages_read', '?')}/{progress.get('total_passages', '?')} "
+                    f"indexed passages ({progress.get('percent', '?')}%); "
+                    + ("source complete" if completed else "source not complete")
+                )
+                intent = (
+                    "follow a related source"
+                    if row.get("follow_related_source")
+                    else "continue this source"
+                    if row.get("wants_to_continue")
+                    else "choose afresh next session"
+                )
+                output.append(
+                    f"- {timestamp}\n"
+                    f"  Source: {source_path}\n"
+                    f"  Section actually read: {citation_start} through {citation_end}\n"
+                    f"  Progress: {progress_text}\n"
+                    f"  Provisional opinion: {opinion or '(none recorded)'}\n"
+                    f"  Questions: {'; '.join(str(item)[:400] for item in questions[:3]) or '(none recorded)'}\n"
+                    f"  Next preference: {intent}"
+                )
+            else:
+                # Preserve bounded visibility for notes written by the earlier
+                # passage-retrieval implementation without overstating them.
+                query = str(row.get("query") or "")[:300]
+                output.append(
+                    f"- {timestamp}\n"
+                    f"  Citation: {citation_start} (legacy bounded passage)\n"
+                    f"  Legacy selection theme: {query or '(not recorded)'}\n"
+                    f"  Provisional note: {opinion or '(none recorded)'}"
+                )
         return "\n".join(output)[:_MAX_OUTPUT_CHARS]

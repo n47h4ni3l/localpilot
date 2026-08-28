@@ -71,6 +71,41 @@ def test_reader_caps_requested_note_count(tmp_path):
     assert text.count("Citation:") == 12
 
 
+def test_reader_reports_exact_section_and_progress_without_inflation(tmp_path):
+    reader = LibraryReadingNotesReader(tmp_path, "data")
+    _write(
+        reader.path,
+        [
+            {
+                "kind": "background_library_reading",
+                "timestamp": "2026-08-29T03:00:00+00:00",
+                "source_path": "Systems Book.pdf",
+                "citation_start": "library://Systems Book.pdf#page=10&passage=1",
+                "citation_end": "library://Systems Book.pdf#page=12&passage=2",
+                "progress": {
+                    "passages_read": 18,
+                    "total_passages": 90,
+                    "percent": 20.0,
+                    "completed": False,
+                },
+                "provisional_opinion": "The section offers a useful feedback-loop framing.",
+                "questions_raised": ["How could the framing be evaluated?"],
+                "wants_to_continue": True,
+                "follow_related_source": False,
+            }
+        ],
+    )
+
+    text = reader.get_recent_library_reading_notes()
+
+    assert "bounded sections only" in text
+    assert "Section actually read: library://Systems Book.pdf#page=10&passage=1 through" in text
+    assert "18/90 indexed passages (20.0%); source not complete" in text
+    assert "Next preference: continue this source" in text
+    assert "read the book" not in text.casefold()
+    assert "afternoon" not in text.casefold()
+
+
 def test_library_enabled_registry_exposes_reading_notes_as_read_only(tmp_path):
     config = Config()
     config.library.enabled = True

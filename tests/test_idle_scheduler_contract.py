@@ -20,6 +20,8 @@ def test_idle_scheduler_preserves_evolve_safety_contract():
     assert "MainWindowHandle -eq 0" in script
     assert "background_worker_cycle_start" in script
     assert "Disable-ScheduledTask" in script
+    assert "Disable-ScheduledTask -TaskName $LegacyTaskName -ErrorAction Stop" in script
+    assert "verifiedLegacy.Settings.Enabled" in script
     assert "TaskName and LegacyTaskName must be different" in script
     assert script.index("background_worker_cycle_start") < script.index("Disable-ScheduledTask")
     assert "--force" not in script.split("Register-ScheduledTask", 1)[0]

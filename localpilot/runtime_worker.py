@@ -10,6 +10,7 @@ from typing import Any
 from localpilot.agent import LocalPilotAgent
 from localpilot.background_reading import BackgroundLibraryReader
 from localpilot.config import load_config
+from localpilot.systemsense import get_system_sense
 
 
 class RuntimeWorker:
@@ -18,6 +19,10 @@ class RuntimeWorker:
     def __init__(self, root: str | Path, config_path: str | Path | None = None) -> None:
         self.root = Path(root).resolve()
         self.config = load_config(config_path)
+        self.systemsense = get_system_sense(
+            self.config.systemsense,
+            self.root / self.config.agent.data_dir,
+        )
         self._agents: dict[str, LocalPilotAgent] = {}
         self._write_lock = threading.Lock()
         self._active_request_id: str | None = None
@@ -47,6 +52,8 @@ class RuntimeWorker:
         agent = self._agents.get(session_id)
         if agent is not None:
             return agent
+        # LocalPilotAgent resolves the same process-local SystemSense singleton
+        # by database path, preserving its established constructor surface.
         agent = LocalPilotAgent(self.config, self.root, event_sink=self._event_sink)
         for message in history:
             role = str(message.get("role") or "")
@@ -145,6 +152,7 @@ class RuntimeWorker:
 
     def run(self) -> None:
         self._write({"kind": "ready", "pid": __import__("os").getpid()})
+        self.systemsense.start()
         self._start_background_reader()
         try:
             for line in sys.stdin:
@@ -162,6 +170,7 @@ class RuntimeWorker:
                     )
         finally:
             self._background_stop.set()
+            self.systemsense.stop()
 
 
 def build_parser() -> argparse.ArgumentParser:

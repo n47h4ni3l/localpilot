@@ -1,1 +1,2 @@
 *.pdf binary
+pyproject.toml text eol=lf

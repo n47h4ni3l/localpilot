@@ -44,6 +44,16 @@ Desktop boundary rules:
 - a worker restart cannot merge, promote, or weaken candidate confinement; and
 - the CLI continues to use the same `LocalPilotAgent`, tool registry, and safety policy independently of the GUI.
 
+SystemSense boundary rules:
+
+- collectors perform observation only through psutil, native COM/WMI/CIM, an optional read-only hardware-monitor WMI namespace, and a fixed PnPUtil enumeration argv;
+- SystemSense exposes six bounded `READ_ONLY` tools and no raw SQL, device control, fan/clock/voltage control, driver installation/removal, or process termination;
+- inactive, orphan and older driver-package classifications are review signals, always report `safe_to_delete=false`, and cannot authorize removal;
+- correlations are explicitly observational and cannot establish causal authority for a setting or hardware change;
+- compact context is transient and raw serials, process rows, sensor inventories and device topology remain outside normal prompts;
+- `systemsense.sqlite3` is local private data with bounded retention and is distinct from chat, learning and library databases; and
+- collector/provider failure is isolated from operator startup and records no exception text or command output in model context.
+
 Learning retrieval is lexical by default. Optional semantic retrieval sends only bounded fact documents
 and the current retrieval query to the owner's local Ollama service; it does not download models or call a
 remote embedding service. Cached fact vectors stay in the ignored local learning database, while query

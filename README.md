@@ -54,6 +54,7 @@ Together these principles imply broad freedom to think and narrow, reviewable au
 - A persistent Windows desktop chat with Unicode-safe history, replayable runtime/tool events, and a runtime-driven pixel LocalPilot body.
 - A loopback broker that stays independent of the replaceable operator/PowerShell worker while the CLI remains available as a fallback.
 - Same-context, bounded research in which complete raw tool results remain authoritative.
+- Passive SystemSense environmental awareness: low-overhead hardware/software telemetry, rolling baselines, anomaly detection, model-performance correlation, compact derived state, and bounded read-only drill-down into sensors, firmware, device IDs, drivers and history.
 - Read-only Windows observation tools for processes, disks, startup entries, power, Defender, and device problems.
 - A complete allow-listed reversible action set for opening selected Windows apps/Settings pages and transactionally changing an installed built-in power plan with verified one-use rollback.
 - Durable owner lessons and a staged study system for repository, Qwen/Ollama, and Python knowledge.
@@ -121,7 +122,7 @@ LocalPilot separates three responsibilities:
 
 Stable is never rewritten in place. The developer and candidate path is intentionally separate from normal operator tool policy because it has a different responsibility and a stricter promotion boundary.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the lifecycle and [SECURITY.md](SECURITY.md) for the enforced boundaries.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the lifecycle and [SECURITY.md](SECURITY.md) for the enforced boundaries. See [docs/systemsense.md](docs/systemsense.md) for telemetry sources, driver semantics, query surfaces, privacy, and coverage limits.
 
 ## Self-development
 
@@ -330,6 +331,7 @@ The task does not bypass LocalPilot's own idle, resource, candidate, or trusted-
 - `[selfdev]` — developer models, candidate limits, GitHub delivery, and checkpoints;
 - `[desktop]` — loopback broker port, separate chat database, and runtime restart ceiling;
 - `[library]` — optional owner-managed PDF/text source root and bounded disposable-index limits;
+- `[systemsense]` — passive sample/inventory cadence, private telemetry database, retention, baseline/correlation windows, and compact context injection;
 - `[github]` — trusted remote, main branch, and candidate delivery; and
 - `[safety]` — the normal operator command-policy foundation.
 
@@ -343,7 +345,7 @@ boundaries, indexing behavior, and the distinction between retrieval, durable le
 
 ## Local data and privacy
 
-By default, local state lives under `localpilot-data/`. It may include redacted audit events, learning memory, desktop chat history/events, evolution records, checkpoints, a broker authentication token, and machine-specific status. Repository candidates live in isolated worktrees or workspaces outside the stable checkout.
+By default, local state lives under `localpilot-data/`. It may include redacted audit events, learning memory, desktop chat history/events, SystemSense telemetry, evolution records, checkpoints, a broker authentication token, and machine-specific status. Repository candidates live in isolated worktrees or workspaces outside the stable checkout.
 
 LocalPilot redacts common secret-shaped values from audit output and does not intentionally persist hidden reasoning. Nevertheless, local databases and logs should be treated as private because observations and owner-provided lessons may contain sensitive context.
 
@@ -359,12 +361,15 @@ localpilot/
   desktop.py               native Windows chat window and pixel avatar
   runtime_supervisor.py    replaceable worker process supervision
   runtime_worker.py        JSONL adapter around the authoritative operator
+  systemsense.py           telemetry store, baselines, derived state and queries
+  systemsense_collectors.py native Windows, psutil and sensor collectors
   learning.py              lessons, grounded facts, retrieval, and study memory
   study.py                 staged study curriculum and held-out comparison
   research.py              bounded research and raw-evidence handling
   tools/windows.py         read-only Windows observation tools
   tools/windows_actions.py allow-listed reversible Windows UI/power actions
   tools/library.py         bounded read-only PDF/text library indexing and retrieval
+  tools/systemsense.py     bounded summary-first telemetry drill-down
   operator.py              guarded argument-based command foundation
   selfdev.py               discovery, candidate, repair, and delivery loop
   evolution.py             proposals, scoring, and evidence gates

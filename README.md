@@ -260,6 +260,19 @@ Copy-Item config.example.toml localpilot.toml
 
 Keep `localpilot.toml`, `localpilot-data/`, audit logs, learning databases, and credentials private. They are intentionally excluded from version control.
 
+### Hidden autonomous worker on Windows
+
+Run `scripts\install-idle-evolve-task.ps1` from a clean trusted `main` checkout to replace the legacy repeating evolve task. The installer starts one windowless `pythonw.exe` worker at user logon, verifies that it is running with no main window, and only then disables `LocalPilot Idle Evolve`. A one-minute Task Scheduler watchdog trigger is ignored while that process remains active (`MultipleInstances=IgnoreNew`) and relaunches it after a hard crash. The worker itself runs the established unforced evolve entry point every 30 seconds without overlapping cycles.
+
+The worker uses an OS-backed lock plus PID metadata in `localpilot-data`, so duplicate launches exit harmlessly and a lock left by a crash is recovered automatically. Worker lifecycle, cadence, duplicate, recovery, and cycle diagnostics are written to the existing `localpilot-data/audit.jsonl`. Disable the watchdog first, then request a clean stop with:
+
+```powershell
+Disable-ScheduledTask -TaskName "LocalPilot Background Worker"
+.\.venv\Scripts\python.exe -m localpilot.background_worker --root . --config .\localpilot.toml --stop
+```
+
+Shutdown waits for an active evolve cycle to reach its existing safe boundary. The worker always calls `SelfDeveloper.run_once(force=False)`; it does not bypass trusted-main synchronization, idle/resource checks, authority policy, candidate review, checkpointing, or audit logging.
+
 Check the environment and start chat:
 
 ```powershell

@@ -48,6 +48,7 @@ SystemSense boundary rules:
 
 - collectors perform observation only through psutil, native COM/WMI/CIM, an optional read-only hardware-monitor WMI namespace, and a fixed PnPUtil enumeration argv;
 - SystemSense exposes six bounded `READ_ONLY` tools and no raw SQL, device control, fan/clock/voltage control, driver installation/removal, or process termination;
+- the desktop glance panel uses one bearer-authenticated loopback `GET` summary route; it cannot trigger collection and has no corresponding mutation route;
 - inactive, orphan and older driver-package classifications are review signals, always report `safe_to_delete=false`, and cannot authorize removal;
 - correlations are explicitly observational and cannot establish causal authority for a setting or hardware change;
 - compact context is transient and raw serials, process rows, sensor inventories and device topology remain outside normal prompts;

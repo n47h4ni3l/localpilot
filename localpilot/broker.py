@@ -15,6 +15,7 @@ from typing import Any
 from localpilot.chat_store import ChatStore
 from localpilot.config import Config, load_config
 from localpilot.runtime_supervisor import RuntimeSupervisor
+from localpilot.systemsense import get_system_sense
 
 
 def _loopback_webview_origin(value: str | None) -> str | None:
@@ -69,6 +70,10 @@ class BrokerApp:
         self.config = config
         data_dir = (self.root / config.agent.data_dir).resolve()
         self.store = ChatStore(data_dir / config.desktop.chat_database)
+        # The runtime worker remains the sole owner of passive collection. The
+        # broker opens the same local store only to serve a bounded, read-only
+        # summary to the authenticated desktop UI.
+        self.systemsense = get_system_sense(config.systemsense, data_dir)
         self.token = load_or_create_broker_token(self.root, config)
         self._condition = threading.Condition()
         self._lock = threading.RLock()
@@ -92,6 +97,18 @@ class BrokerApp:
 
     def stop(self) -> None:
         self.runtime.stop()
+
+    def systemsense_summary(self) -> dict[str, Any]:
+        """Return a fail-soft GUI summary without exposing raw telemetry."""
+        try:
+            return self.systemsense.summary(collect_if_missing=False)
+        except Exception as exc:
+            return {
+                "enabled": bool(self.config.systemsense.enabled),
+                "system_health": "unknown",
+                "available": False,
+                "error_type": type(exc).__name__,
+            }
 
     def _event(
         self,
@@ -349,6 +366,12 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
                 return
             if parts == ["v1", "sessions"]:
                 self._json(HTTPStatus.OK, {"sessions": self.server.app.store.sessions()})
+                return
+            if parts == ["v1", "systemsense", "summary"]:
+                self._json(
+                    HTTPStatus.OK,
+                    {"summary": self.server.app.systemsense_summary()},
+                )
                 return
             if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "messages":
                 self.server.app.store.session(parts[2])

@@ -204,6 +204,37 @@ def test_dynamic_collection_derives_compact_health_and_raw_sensor_state(tmp_path
     assert count == 1
 
 
+def test_passive_summary_never_collects_when_the_runtime_has_not_sampled(tmp_path):
+    dynamic = FakeDynamicCollector()
+    calls = []
+    original_collect = dynamic.collect
+
+    def collect():
+        calls.append(True)
+        return original_collect()
+
+    dynamic.collect = collect
+    sense = SystemSense(
+        SystemSenseConfig(),
+        tmp_path,
+        psutil_collector=dynamic,
+        performance_collector=FakePerformanceCollector(),
+        sensor_collector=FakeSensorCollector(),
+        inventory_collector=FakeInventoryCollector(),
+    )
+
+    passive = sense.summary(collect_if_missing=False)
+
+    assert passive["system_health"] == "unknown"
+    assert passive["captured_at"] is None
+    assert calls == []
+    assert sense.store.latest_snapshot("dynamic") is None
+
+    active = sense.summary()
+    assert active["system_health"] == "good"
+    assert calls == [True]
+
+
 def test_inventory_exposes_ids_errors_hidden_devices_and_conservative_driver_classes(tmp_path):
     sense = make_sense(tmp_path)
     inventory = sense.collect_inventory()

@@ -243,6 +243,23 @@ def test_frontend_is_fully_local_and_uses_strict_csp():
     assert ".innerHTML" not in javascript
 
 
+def test_systemsense_glance_panel_uses_authenticated_summary_surface_only():
+    index = webview_app.INDEX_HTML.read_text(encoding="utf-8")
+    javascript = (webview_app.WEBVIEW_DIR / "app.js").read_text(encoding="utf-8")
+    stylesheet = (webview_app.WEBVIEW_DIR / "app.css").read_text(encoding="utf-8")
+
+    assert 'id="system-toggle"' in index
+    assert 'aria-controls="system-panel"' in index
+    assert 'id="system-panel"' in index
+    assert 'aria-hidden="true"' in index
+    assert "Read-only · local telemetry" in index
+    assert 'api("GET", "/v1/systemsense/summary")' in javascript
+    assert 'api("POST", "/v1/systemsense' not in javascript
+    assert "collect_if_missing" not in javascript
+    assert ".panel.is-system-open .system-panel" in stylesheet
+    assert ".panel.is-system-open .composer-wrap" in stylesheet
+
+
 def test_webview_is_expanded_chat_only_not_compact_avatar():
     source = Path(webview_app.__file__).read_text(encoding="utf-8")
     assert "width, height = EXPANDED_SIZE" in source

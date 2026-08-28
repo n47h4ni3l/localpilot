@@ -102,6 +102,76 @@ def test_broker_cors_allows_only_loopback_webview_origins(tmp_path):
         thread.join(timeout=5)
 
 
+def test_broker_exposes_authenticated_read_only_systemsense_summary(tmp_path):
+    app = _broker(tmp_path)
+    calls = []
+
+    def summary(*, collect_if_missing=True):
+        calls.append(collect_if_missing)
+        return {
+            "enabled": True,
+            "captured_at": "2026-08-28T04:00:00+00:00",
+            "system_health": "good",
+            "cpu_percent": 23.0,
+        }
+
+    app.systemsense = SimpleNamespace(summary=summary)
+    server = BrokerHTTPServer(("127.0.0.1", 0), app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request("GET", "/v1/systemsense/summary")
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 401
+        assert calls == []
+
+        connection.request(
+            "GET",
+            "/v1/systemsense/summary",
+            headers={"Authorization": f"Bearer {app.token}"},
+        )
+        response = connection.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+        assert response.status == 200
+        assert payload["summary"]["system_health"] == "good"
+        assert payload["summary"]["cpu_percent"] == 23.0
+        assert calls == [False]
+
+        connection.request(
+            "POST",
+            "/v1/systemsense/summary",
+            headers={"Authorization": f"Bearer {app.token}"},
+        )
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 404
+        assert calls == [False]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_broker_systemsense_summary_fails_soft_without_leaking_details(tmp_path):
+    app = _broker(tmp_path)
+
+    def fail_summary(*, collect_if_missing=True):
+        raise sqlite3.OperationalError("private database path")
+
+    app.systemsense = SimpleNamespace(summary=fail_summary)
+    result = app.systemsense_summary()
+
+    assert result == {
+        "enabled": True,
+        "system_health": "unknown",
+        "available": False,
+        "error_type": "OperationalError",
+    }
+
+
 def test_chat_history_is_unicode_safe_persistent_and_separate_from_learning(tmp_path):
     path = tmp_path / "localpilot-data" / "chat.sqlite3"
     store = ChatStore(path)

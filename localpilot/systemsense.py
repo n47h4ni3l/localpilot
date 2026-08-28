@@ -688,11 +688,25 @@ class SystemSense:
         anomalies.sort(key=lambda row: abs(row["robust_z"]), reverse=True)
         return anomalies[:5]
 
-    def summary(self) -> dict[str, Any]:
+    def summary(self, *, collect_if_missing: bool = True) -> dict[str, Any]:
         if not self.enabled:
             return {"enabled": False, "system_health": "unknown"}
-        dynamic = self._ensure_dynamic() or {}
+        dynamic = (
+            self._ensure_dynamic()
+            if collect_if_missing
+            else self.store.latest_snapshot("dynamic")
+        ) or {}
         inventory = self.store.latest_snapshot("inventory") or {}
+        if not dynamic:
+            return {
+                "enabled": True,
+                "captured_at": None,
+                "system_health": "unknown",
+                "inference": self.inference_summary(),
+                "anomalies": [],
+                "probable_causes": [],
+                "background_resource_contention": [],
+            }
         metrics = {key: value for key, value, _unit, _source in self._metric_rows(dynamic)}
         baseline = self.baselines()
         anomalies = self._anomalies(metrics, baseline)

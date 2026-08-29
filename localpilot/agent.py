@@ -2401,7 +2401,7 @@ class LocalPilotAgent:
         retried_empty_response = False
         used_tools = False
         evidence_requirements = self._evidence_requirements(prompt)
-        if owner_forbids_tools:
+        if owner_forbids_tools or operational_self_status:
             evidence_requirements.clear()
         attempted_evidence: set[str] = set()
         succeeded_evidence: set[str] = set()

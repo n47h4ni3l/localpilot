@@ -82,7 +82,8 @@ def test_operational_self_status_uses_passive_evidence_without_memory_or_tools(
     monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
 
     answer = agent.ask(
-        "LocalPilot, what have you learned and changed through your autonomous evolution progress?"
+        "LocalPilot, what is your current branch and commit, why did your runtime restart, and what "
+        "have you learned or changed through autonomous evolution progress?"
     )
 
     assert "latest cycle deferred" in answer

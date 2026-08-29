@@ -802,7 +802,9 @@ class LocalPilotAgent:
                 r"\b(?:room to think|what has your attention|pick something ordinary|"
                 r"felt curiosity|topic-selection story|agree with me|just agree|say you agree|"
                 r"how are you|what(?:'s| is) interesting|help me plan|realistic plan|"
-                r"plan my|prioriti(?:es|se|ze)|weekend plan)\b",
+                r"plan my|prioriti(?:es|se|ze)|weekend plan|talk to me like a friend|"
+                r"help me (?:switch off|wind down|unwind|relax)|"
+                r"suggest (?:one|a) (?:small|simple|ordinary|relaxing) thing)\b",
                 text,
             )
         )
@@ -911,6 +913,22 @@ class LocalPilotAgent:
         unwarranted_open_decline = behavior_text.startswith("decline:")
         if invited_to_form_view and unwarranted_open_decline:
             issues.append("unwarranted_open_ended_decline")
+
+        friendly_personal_advice = bool(
+            re.search(
+                r"\b(?:talk to me like a friend|switch off|wind down|unwind|relax)\b",
+                request,
+            )
+        )
+        pc_maintenance_substitution = bool(
+            re.search(
+                r"\b(?:disk clean(?:up|ing)|storage pressure|temp files?|unused downloads?|"
+                r"system is reporting|keep the pc running|pc running smoothly)\b",
+                behavior_text,
+            )
+        )
+        if friendly_personal_advice and pc_maintenance_substitution:
+            issues.append("friendly_personal_advice_replaced_by_pc_maintenance")
 
         developed_view = bool(
             re.search(
@@ -1711,7 +1729,11 @@ class LocalPilotAgent:
                 self.messages.append(behavior_instruction)
                 transient.append(behavior_instruction)
                 isolate_passive_recovery = set(behavior_issues).issubset(
-                    {"passive_open_ended_deferral", "unwarranted_open_ended_decline"}
+                    {
+                        "passive_open_ended_deferral",
+                        "unwarranted_open_ended_decline",
+                        "friendly_personal_advice_replaced_by_pc_maintenance",
+                    }
                 )
                 recovered = self._stream_chat_message(
                     chat,
@@ -2367,7 +2389,11 @@ class LocalPilotAgent:
                 semantic_candidate_count=retrieval.semantic_candidates,
                 embedding_error_type=retrieval.error_type,
             )
-        systemsense_context = self.systemsense.compact_context()
+        systemsense_context = (
+            self.systemsense.compact_context()
+            if operational_self_status or not direct_conversation
+            else ""
+        )
         if systemsense_context:
             systemsense_message = {"role": "system", "content": systemsense_context}
             self.messages.append(systemsense_message)
@@ -2393,7 +2419,9 @@ class LocalPilotAgent:
                     "or runtime state. If invited to name something interesting, choose one specific ordinary "
                     "subject yourself, give a genuine provisional observation about it, and briefly say why it "
                     "holds your attention. Do not substitute a readiness update, assistant-status metaphor, menu, "
-                    "or generic pleasantry for the requested substance."
+                    "or generic pleasantry for the requested substance. When the owner asks for ordinary personal "
+                    "or friendly advice, stay in that human context; do not redirect the answer to PC maintenance, "
+                    "telemetry, storage, files, or system state."
                 ),
             }
             self.messages.append(direct_conversation_message)
@@ -2401,7 +2429,7 @@ class LocalPilotAgent:
         retried_empty_response = False
         used_tools = False
         evidence_requirements = self._evidence_requirements(prompt)
-        if owner_forbids_tools or operational_self_status:
+        if owner_forbids_tools or operational_self_status or direct_conversation:
             evidence_requirements.clear()
         attempted_evidence: set[str] = set()
         succeeded_evidence: set[str] = set()

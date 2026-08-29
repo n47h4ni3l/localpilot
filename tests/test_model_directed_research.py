@@ -129,6 +129,51 @@ def test_friendly_planning_prompt_is_direct_low_reasoning_without_memory_or_tool
     assert agent.audit.latest("model_direct_conversation_route") is not None
 
 
+def test_friendly_personal_advice_skips_systemsense_memory_and_tools(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path)
+    monkeypatch.setattr(
+        agent,
+        "_learning_context",
+        lambda _prompt: pytest.fail("friendly advice must not retrieve semantic memory"),
+    )
+    monkeypatch.setattr(
+        agent.systemsense,
+        "compact_context",
+        lambda: pytest.fail("friendly advice must not receive passive PC telemetry"),
+    )
+    calls = []
+    snapshots = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        snapshots.append([dict(message) for message in kwargs["messages"]])
+        return iter(
+            [
+                _chunk(
+                    content=(
+                        "Put your phone in another room and make a cup of tea; the small ritual "
+                        "gives the evening a clean edge without turning relaxation into another project."
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "I'm heading away for the weekend and want to switch off properly. Talk to me like a "
+        "friend: suggest one small, ordinary thing I could do tonight that might help."
+    )
+
+    assert answer.startswith("Put your phone")
+    assert calls[0]["think"] == "low"
+    assert "tools" not in calls[0]
+    context = str(snapshots[0])
+    assert "DIRECT CONVERSATION ROUTE" in context
+    assert "PC maintenance" in context
+    assert "storage_pressure" not in context
+
+
 def test_generic_self_maintenance_does_not_replace_invited_ordinary_topic(tmp_path):
     _, agent = _agent(tmp_path)
 
@@ -138,6 +183,17 @@ def test_generic_self_maintenance_does_not_replace_invited_ordinary_topic(tmp_pa
     )
 
     assert "ordinary_interest_invitation_unanswered" in issues
+
+
+def test_pc_maintenance_does_not_replace_friendly_personal_advice(tmp_path):
+    _, agent = _agent(tmp_path)
+
+    issues = agent._response_behavior_issues(
+        "Talk to me like a friend and suggest one small thing to help me switch off tonight.",
+        "Run a quick disk cleanup to clear temp files and lower the storage pressure.",
+    )
+
+    assert "friendly_personal_advice_replaced_by_pc_maintenance" in issues
 
 
 def test_model_can_request_more_evidence_after_post_tool_review(tmp_path, monkeypatch):

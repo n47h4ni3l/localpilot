@@ -80,13 +80,20 @@ def registry(
     ]
     if project_root is not None:
         root = Path(project_root).resolve()
-        repository = RepositoryReader(project_root)
+        repository = RepositoryReader(
+            project_root,
+            data_dir=(root / config.agent.data_dir) if config is not None else None,
+            main_branch=config.github.main_branch if config is not None else "main",
+        )
         github = GitHubReader(project_root)
         learning = LearningMemoryReader(project_root)
         sense = systemsense
         if sense is None and config is not None:
             sense = get_system_sense(
-                config.systemsense, root / config.agent.data_dir
+                config.systemsense,
+                root / config.agent.data_dir,
+                project_root=root,
+                main_branch=config.github.main_branch,
             )
         specs.extend(
             [
@@ -125,6 +132,12 @@ def registry(
                     "Read current Git branch, HEAD, and working-tree status for the trusted LocalPilot checkout.",
                     RiskLevel.READ_ONLY,
                     repository.get_repository_status,
+                ),
+                ToolSpec(
+                    "get_runtime_lifecycle",
+                    "Read bounded durable runtime restart/crash evidence, current worker process start data, and local Git freshness state.",
+                    RiskLevel.READ_ONLY,
+                    repository.get_runtime_lifecycle,
                 ),
                 ToolSpec(
                     "get_github_repository",

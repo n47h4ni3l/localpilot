@@ -60,9 +60,11 @@ The follow-up acceptance set therefore evaluates both the draft and the complete
 drafts remain byte-for-byte unchanged. A narrowly detected trajectory collapse gets one same-context
 generative recovery before claim validation. Precise external history/attribution claims require an actual
 authoritative HTTPS read. Two zero-information results from the same read-only tool close research for that
-turn and force an unresolved synthesis. The desktop closes abandoned records on startup and restarts its
-owned worker after the configured request timeout. None of these paths grants new write authority or changes
-candidate promotion, memory writers, or safety policy.
+turn and force an unresolved synthesis. The desktop closes abandoned records on startup. At the time of this
+recorded follow-up it also restarted its owned worker after the configured request timeout; that behavior has
+since been superseded by a soft delayed-status boundary that leaves a healthy long-running request and worker
+alive. None of these paths grants new write authority or changes candidate promotion, memory writers, or
+safety policy.
 
 ## Follow-up architecture and result
 

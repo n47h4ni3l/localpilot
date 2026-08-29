@@ -22,6 +22,8 @@ class RuntimeWorker:
         self.systemsense = get_system_sense(
             self.config.systemsense,
             self.root / self.config.agent.data_dir,
+            project_root=self.root,
+            main_branch=self.config.github.main_branch,
         )
         self._agents: dict[str, LocalPilotAgent] = {}
         self._write_lock = threading.Lock()

@@ -73,7 +73,12 @@ class BrokerApp:
         # The runtime worker remains the sole owner of passive collection. The
         # broker opens the same local store only to serve a bounded, read-only
         # summary to the authenticated desktop UI.
-        self.systemsense = get_system_sense(config.systemsense, data_dir)
+        self.systemsense = get_system_sense(
+            config.systemsense,
+            data_dir,
+            project_root=self.root,
+            main_branch=config.github.main_branch,
+        )
         self.token = load_or_create_broker_token(self.root, config)
         self._condition = threading.Condition()
         self._lock = threading.RLock()
@@ -83,6 +88,7 @@ class BrokerApp:
             config_path=config_path,
             restart_limit=config.desktop.runtime_restart_limit,
             on_message=self._on_runtime_message,
+            audit_path=data_dir / "audit.jsonl",
         )
         recovered = self.store.fail_streaming_messages("the broker restarted before completion")
         for message in recovered:
@@ -154,6 +160,7 @@ class BrokerApp:
                     "kind": "ask",
                     "request_id": request_id,
                     "session_id": session_id,
+                    "message_id": assistant_message["id"],
                     "prompt": content.strip(),
                     "history": history,
                 }
@@ -176,19 +183,51 @@ class BrokerApp:
 
     def _expire_request(self, request_id: str) -> None:
         with self._lock:
-            pending = self._pending.pop(request_id, None)
+            pending = self._pending.get(request_id)
+            if pending is None or pending.get("timed_out"):
+                return
+            pending["timed_out"] = True
         if pending is None:
             return
         seconds = float(self.config.desktop.request_timeout_seconds)
-        marker = f"[LocalPilot answer timed out after {seconds:g} seconds; the runtime is restarting.]"
-        failed = self.store.update_message(pending["message_id"], marker, status="error")
         self._event(
-            "message.failed",
-            {"message": failed, "reason": "request_timeout", "timeout_seconds": seconds},
+            "message.delayed",
+            {
+                "message": self.store.message(pending["message_id"]),
+                "reason": "request_timeout",
+                "timeout_seconds": seconds,
+                "request_id": request_id,
+                "session_id": pending["session_id"],
+                "message_id": pending["message_id"],
+                "continuing": True,
+            },
             session_id=pending["session_id"],
         )
-        self._event("runtime.state", {"state": "restarting"}, session_id=pending["session_id"])
-        self.runtime.restart()
+        self._event(
+            "runtime.state",
+            {"state": "working", "reason": "request_timeout", "continuing": True},
+            session_id=pending["session_id"],
+        )
+
+    def restart_runtime(self, *, source: str, reason: str) -> bool:
+        with self._lock:
+            pending = next(iter(self._pending.items()), None)
+        request_id = pending[0] if pending else None
+        item = pending[1] if pending else {}
+        restarted = self.runtime.restart(
+            source=source,
+            reason=reason,
+            request_id=request_id,
+            session_id=item.get("session_id"),
+            message_id=item.get("message_id"),
+        )
+        if restarted:
+            self._event(
+                "runtime.state",
+                {"state": "restarting", "source": source, "reason": reason},
+                session_id=item.get("session_id"),
+            )
+        return restarted
 
     def _fail_pending(self, reason: str) -> None:
         with self._lock:
@@ -214,7 +253,10 @@ class BrokerApp:
             event_type = str(message.get("type") or "runtime.supervisor")
             payload = dict(message.get("payload") or {})
             if event_type == "runtime.exited":
-                self._fail_pending(f"worker exited with code {payload.get('returncode')}")
+                reason = str(payload.get("reason") or "worker_exit")
+                self._fail_pending(
+                    f"{reason}; worker exited with code {payload.get('returncode')}"
+                )
                 self._event("runtime.state", {"state": "restarting"})
             elif event_type == "runtime.unavailable":
                 self._event("runtime.state", {"state": "error"})
@@ -410,7 +452,10 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.ACCEPTED, result)
                 return
             if parts == ["v1", "runtime", "restart"]:
-                self.server.app.runtime.restart()
+                self.server.app.restart_runtime(
+                    source="explicit_api_restart",
+                    reason="owner_requested_via_api",
+                )
                 self._json(HTTPStatus.ACCEPTED, {"status": "restarting"})
                 return
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})

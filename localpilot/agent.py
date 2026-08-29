@@ -60,6 +60,7 @@ _REPOSITORY_TOOLS = {
     "search_repository",
     "inspect_project_dependencies",
     "get_repository_status",
+    "get_runtime_lifecycle",
 }
 _GITHUB_TOOLS = {
     "get_github_repository",
@@ -208,7 +209,10 @@ class LocalPilotAgent:
             )
         )
         self.systemsense = systemsense or get_system_sense(
-            config.systemsense, self.data_dir
+            config.systemsense,
+            self.data_dir,
+            project_root=self.project_root,
+            main_branch=config.github.main_branch,
         )
         self.tools = registry(
             self.project_root,

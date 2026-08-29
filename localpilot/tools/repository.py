@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterator
 
 from localpilot.process import hidden_process_creation_flags
+from localpilot.runtime_evidence import RuntimeEvidence
 
 
 _BLOCKED_PARTS = {
@@ -38,8 +39,21 @@ _MAX_SEARCH_FILE_BYTES = 1_000_000
 class RepositoryReader:
     """Bounded, read-only inspection of LocalPilot's trusted repository checkout."""
 
-    def __init__(self, project_root: str | Path) -> None:
+    def __init__(
+        self,
+        project_root: str | Path,
+        *,
+        data_dir: str | Path | None = None,
+        main_branch: str = "main",
+    ) -> None:
         self.root = Path(project_root).resolve()
+        self.runtime_evidence = RuntimeEvidence(
+            self.root,
+            Path(data_dir).resolve() / "audit.jsonl"
+            if data_dir is not None
+            else self.root / "localpilot-data" / "audit.jsonl",
+            main_branch=main_branch,
+        )
 
     @staticmethod
     def _is_sensitive(relative: Path) -> bool:
@@ -269,3 +283,8 @@ class RepositoryReader:
             else:
                 result[label] = completed.stdout.strip() or "(clean)"
         return json.dumps(result, indent=2)
+
+    def get_runtime_lifecycle(self, limit: int = 8) -> str:
+        """Read recent runtime transitions, current process evidence, and checkout state."""
+        limit = max(1, min(int(limit), 20))
+        return json.dumps(self.runtime_evidence.snapshot(limit=limit), indent=2)

@@ -118,9 +118,12 @@
       <div class="history-sheet" id="history-sheet" aria-hidden="true">
         <div class="history-sheet__header">
           Conversations
-          <button class="icon-btn history-close" id="history-close" aria-label="Close history">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
-          </button>
+          <div class="history-actions">
+            <button class="icon-btn history-new" id="history-new" aria-label="New conversation">＋</button>
+            <button class="icon-btn history-close" id="history-close" aria-label="Close history">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
         </div>
         <div class="history-list" id="history-list"></div>
       </div>

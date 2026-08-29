@@ -109,6 +109,51 @@ class RuntimeEvidence:
             for row in self.audit.recent("runtime_lifecycle", limit=limit)
         ]
 
+    def autonomous_activity(self) -> dict[str, Any]:
+        """Return a bounded, audit-backed view of background and self-dev progress."""
+
+        def bounded(event: str, fields: tuple[str, ...]) -> dict[str, Any] | None:
+            row = self.audit.latest(event)
+            if row is None:
+                return None
+            return {key: row.get(key) for key in fields if key in row}
+
+        return {
+            "background_worker": bounded(
+                "background_worker_start",
+                ("timestamp", "pid", "interval_seconds", "recovered_stale_pid"),
+            ),
+            "latest_background_cycle": bounded(
+                "background_worker_cycle_end",
+                ("timestamp", "pid", "sequence", "status", "duration_seconds"),
+            ),
+            "latest_background_error": bounded(
+                "background_worker_cycle_error",
+                ("timestamp", "pid", "sequence", "error_type", "duration_seconds"),
+            ),
+            "latest_evolution_run": bounded(
+                "evolve_run_end",
+                (
+                    "timestamp",
+                    "invocation_id",
+                    "status",
+                    "branch",
+                    "workspace",
+                    "checks_passed",
+                    "summary",
+                    "experiment_id",
+                ),
+            ),
+            "learning_boundaries": {
+                "model_weights_changed_by_localpilot": False,
+                "ordinary_chat_automatically_persisted_as_learning": False,
+                "scope": (
+                    "progress means durable studied facts, explicit owner lessons, reading notes, "
+                    "and isolated self-development outcomes; it does not mean model-weight training"
+                ),
+            },
+        }
+
     def snapshot(self, *, limit: int = 8) -> dict[str, Any]:
         lifecycle = self.lifecycle(limit=limit)
         current_process: dict[str, Any] | None = None
@@ -128,4 +173,5 @@ class RuntimeEvidence:
             "current_process": current_process,
             "recent_lifecycle": lifecycle,
             "repository": self.repository(),
+            "autonomous_activity": self.autonomous_activity(),
         }

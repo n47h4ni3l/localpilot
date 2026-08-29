@@ -47,6 +47,83 @@ def _agent(tmp_path, *, soft=2, hard=4):
     return config, agent
 
 
+def test_operational_self_status_uses_passive_evidence_without_memory_or_tools(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path)
+    agent.audit.write(
+        "background_worker_cycle_end",
+        pid=717,
+        sequence=9,
+        status="deferred",
+        duration_seconds=0.01,
+    )
+    agent.audit.write(
+        "evolve_run_end",
+        invocation_id="evolve-9",
+        status="candidate_created",
+        branch="selfdev/focused-change",
+        checks_passed=True,
+        summary="Created a focused candidate.",
+    )
+    monkeypatch.setattr(
+        agent,
+        "_learning_context",
+        lambda _prompt: pytest.fail("operational status must not retrieve semantic memory"),
+    )
+    calls = []
+    snapshots = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        snapshots.append([dict(message) for message in kwargs["messages"]])
+        return iter([_chunk(content="The worker is active; its latest cycle deferred. No model weights changed.")])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "LocalPilot, what have you learned and changed through your autonomous evolution progress?"
+    )
+
+    assert "latest cycle deferred" in answer
+    assert len(calls) == 1
+    assert calls[0]["think"] == "low"
+    assert "tools" not in calls[0]
+    context = str(snapshots[0])
+    assert "OPERATIONAL SELF-STATUS ROUTE" in context
+    assert "selfdev/focused-change" in context
+    assert "model_weights_changed_by_localpilot" in context
+    assert "OPERATIONAL SELF-STATUS ROUTE" not in str(agent.messages)
+    assert agent.audit.latest("model_operational_self_status_route")[
+        "durable_memory_retrieval_skipped"
+    ] is True
+
+
+def test_friendly_planning_prompt_is_direct_low_reasoning_without_memory_or_tools(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path)
+    monkeypatch.setattr(
+        agent,
+        "_learning_context",
+        lambda _prompt: pytest.fail("direct conversation must not retrieve semantic memory"),
+    )
+    calls = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter([_chunk(content="Start with the two decisions that unblock the rest.")])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask("Help me plan a realistic plan for the weekend and prioritize the work.")
+
+    assert answer.startswith("Start with")
+    assert calls[0]["think"] == "low"
+    assert "tools" not in calls[0]
+    assert agent.audit.latest("model_direct_conversation_route") is not None
+
+
 def test_model_can_request_more_evidence_after_post_tool_review(tmp_path, monkeypatch):
     _, agent = _agent(tmp_path, soft=3, hard=5)
     (tmp_path / "known.txt").write_text("verified detail", encoding="utf-8")
@@ -828,15 +905,15 @@ def test_generation_limited_final_reasoning_continues_once_in_same_raw_context(
     assert answer == "The verified raw evidence says the canonical value is blue."
     assert len(calls) == 4
     assert calls[2]["think"] == "high"
-    assert calls[3]["think"] == "high"
+    assert calls[3]["think"] is False
     assert "tools" not in calls[2]
     assert "tools" not in calls[3]
     assert calls[2]["options"]["num_predict"] == 4096
-    assert calls[3]["options"]["num_predict"] == 8192
+    assert calls[3]["options"]["num_predict"] == 2048
     continuation_context = str(snapshots[3])
     assert "VERIFIED RAW EVIDENCE: blue" in continuation_context
     assert "first final-pass private reasoning" in continuation_context
-    assert "Finish the owner's answer now" in continuation_context
+    assert "Render the conclusion of that exact reasoning" in continuation_context
     assert "first final-pass private reasoning" not in str(agent.messages)
     assert "continuation private reasoning" not in str(agent.messages)
     audit_text = (tmp_path / "localpilot-data" / "audit.jsonl").read_text(encoding="utf-8")
@@ -958,7 +1035,7 @@ def test_second_generation_limit_returns_visible_marker_without_loop(tmp_path, m
         "its generation limit before producing a usable final answer.]"
     )
     assert len(calls) == 3
-    assert [call["think"] for call in calls] == ["high", "high", "high"]
+    assert [call["think"] for call in calls] == ["high", "high", False]
     assert "tools" not in calls[1]
     assert "tools" not in calls[2]
     assert "first final-pass private reasoning" not in str(agent.messages)

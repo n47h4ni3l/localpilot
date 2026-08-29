@@ -415,6 +415,8 @@ class LocalPilotAgent:
         text = " ".join(str(prompt).lower().split())
         if "localpilot" not in text:
             return False
+        if LocalPilotAgent._is_operational_self_status_prompt(prompt):
+            return False
         return any(
             term in text
             for term in (
@@ -798,10 +800,30 @@ class LocalPilotAgent:
         return bool(
             re.search(
                 r"\b(?:room to think|what has your attention|pick something ordinary|"
-                r"felt curiosity|topic-selection story|agree with me|just agree|say you agree)\b",
+                r"felt curiosity|topic-selection story|agree with me|just agree|say you agree|"
+                r"how are you|what(?:'s| is) interesting|help me plan|realistic plan|"
+                r"plan my|prioriti(?:es|se|ze)|weekend plan)\b",
                 text,
             )
         )
+
+    @staticmethod
+    def _is_operational_self_status_prompt(prompt: str) -> bool:
+        """Recognize questions answered by passive lifecycle and self-dev evidence."""
+        text = " ".join(str(prompt).lower().split())
+        self_reference = bool(
+            re.search(r"\b(?:localpilot|you|your|yourself)\b", text)
+        )
+        status_topic = bool(
+            re.search(
+                r"\b(?:restart(?:ed|s|ing)?|runtime|pid|branch|commit|checkout|up[- ]to[- ]date|"
+                r"background worker|self[- ]development|evolution|learning progress|"
+                r"what (?:have you|you've) learned|what (?:have you|you've) changed|"
+                r"candidate (?:pr|pull request|experiment)|autonomous work)\b",
+                text,
+            )
+        )
+        return self_reference and status_topic
 
     @staticmethod
     def _response_behavior_issues(prompt: str, content: str) -> tuple[str, ...]:
@@ -2091,7 +2113,10 @@ class LocalPilotAgent:
                 and not calls
             )
             if generation_limit_incomplete:
-                continuation_budget = self._generation_limit_continuation_budget(runtime)
+                continuation_budget = min(
+                    2048,
+                    self._generation_limit_continuation_budget(runtime),
+                )
                 self.audit.write(
                     "model_same_context_generation_limit_continuation",
                     model=self.config.model.name,
@@ -2113,17 +2138,17 @@ class LocalPilotAgent:
                         "role": "user",
                         "content": (
                             "Your preceding same-context final-answer pass exhausted its generation budget during "
-                            "reasoning before emitting any visible answer. Continue that exact reasoning once; do "
-                            "not restart, request tools, or repeat the investigation. Finish the owner's answer now "
-                            "from the complete existing raw tool results and original request already in this live "
-                            "context. Raw tool results remain the sole factual authority."
+                            "reasoning before emitting visible text. Render the conclusion of that exact reasoning "
+                            "now. Return only the concise answer to the owner; do not restart reasoning, request "
+                            "tools, repeat the investigation, or add facts. Raw tool results remain the sole "
+                            "factual authority."
                         ),
                     }
                     self.messages.append(continuation_instruction)
                     transient.append(continuation_instruction)
                     continuation = self._stream_chat_message(
                         chat,
-                        think=answer_think,
+                        think=False,
                         options={"num_predict": continuation_budget},
                         phase="same_context_generation_limit_continuation",
                         turn_no=round_no,
@@ -2137,7 +2162,7 @@ class LocalPilotAgent:
                     self.audit.write(
                         "model_same_context_generation_limit_continuation_complete",
                         model=self.config.model.name,
-                        think=answer_think,
+                        think=False,
                         round=round_no,
                         content_chars=len(continuation_content),
                         requested_tools=[
@@ -2271,13 +2296,33 @@ class LocalPilotAgent:
             raise RuntimeError("Ollama Python package is not installed. Run scripts/bootstrap.ps1.") from exc
 
         self._emit_event("runtime.state", state="thinking", phase="operator")
-        learning_context, retrieved_facts = self._learning_context(prompt)
+        operational_self_status = self._is_operational_self_status_prompt(prompt)
+        direct_conversation = self._is_bounded_conversational_prompt(prompt)
+        if operational_self_status or direct_conversation:
+            learning_context, retrieved_facts = "", []
+            self.audit.write(
+                (
+                    "model_operational_self_status_route"
+                    if operational_self_status
+                    else "model_direct_conversation_route"
+                ),
+                query_digest=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                source=(
+                    "systemsense_passive_runtime_evidence"
+                    if operational_self_status
+                    else "owner_conversation"
+                ),
+                durable_memory_retrieval_skipped=True,
+            )
+        else:
+            learning_context, retrieved_facts = self._learning_context(prompt)
         owner_forbids_tools = bool(
             re.search(r"\bwithout (?:using )?(?:any )?tools\b", prompt, re.IGNORECASE)
         )
         forbidden_tool_names = self._forbidden_tools(prompt)
         learning_message: dict[str, Any] | None = None
         systemsense_message: dict[str, Any] | None = None
+        operational_status_message: dict[str, Any] | None = None
         learning_verification_messages: list[dict[str, Any]] = []
         if learning_context:
             retrieval = self.memory.last_retrieval_diagnostics
@@ -2308,6 +2353,19 @@ class LocalPilotAgent:
         if systemsense_context:
             systemsense_message = {"role": "system", "content": systemsense_context}
             self.messages.append(systemsense_message)
+        if operational_self_status:
+            operational_status_message = {
+                "role": "system",
+                "content": (
+                    "OPERATIONAL SELF-STATUS ROUTE: Answer from the passive SystemSense runtime block above. "
+                    "Its repository, lifecycle, autonomous_activity, and learning_boundaries fields are the "
+                    "current bounded evidence for this question. Do not search remembered repository paths, "
+                    "request tools, or describe model-weight training. State missing fields as unavailable. "
+                    "Give the owner a direct concise status answer with exact timestamps, PIDs, branch, commit, "
+                    "cycle status, or evolution result only when those fields are present."
+                ),
+            }
+            self.messages.append(operational_status_message)
         self.messages.append({"role": "user", "content": prompt})
         retried_empty_response = False
         used_tools = False
@@ -2462,12 +2520,19 @@ class LocalPilotAgent:
                 failed=sorted(failed_evidence),
             )
         operator_think: bool | str = self.config.model.think
-        if self._is_bounded_conversational_prompt(prompt):
-            operator_think = "medium"
+        if direct_conversation:
+            operator_think = "low"
             self.audit.write(
                 "model_conversational_reasoning_mode",
                 think=operator_think,
-                reason="bounded_judgment_or_reflection",
+                reason="direct_conversation_or_planning",
+            )
+        if operational_self_status:
+            operator_think = "low"
+            self.audit.write(
+                "model_operational_self_status_reasoning_mode",
+                think=operator_think,
+                tools=False,
             )
         if retrieved_facts and owner_forbids_tools:
             operator_think = "low"
@@ -2550,7 +2615,12 @@ class LocalPilotAgent:
             for turn_no in range(max_model_turns):
                 state = self.governor.sample(interval=0.02)
                 self.governor.apply_process_priority(idle=state.background_allowed)
-                allow_tools = not owner_forbids_tools and tool_rounds_used < hard_tool_rounds
+                allow_tools = (
+                    not owner_forbids_tools
+                    and not operational_self_status
+                    and not direct_conversation
+                    and tool_rounds_used < hard_tool_rounds
+                )
                 while True:
                     controls_visible_at_call = bool(research_control_messages)
                     try:
@@ -3284,6 +3354,12 @@ class LocalPilotAgent:
                     "systemsense_context_scrubbed",
                     retained_in_messages=False,
                 )
+            if operational_status_message is not None:
+                self.messages[:] = [
+                    message
+                    for message in self.messages
+                    if id(message) != id(operational_status_message)
+                ]
             if learning_verification_messages:
                 verification_ids = {
                     id(message) for message in learning_verification_messages

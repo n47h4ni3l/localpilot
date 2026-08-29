@@ -11,6 +11,7 @@ import pytest
 
 from localpilot.broker import BrokerApp, BrokerHTTPServer, load_or_create_broker_token
 from localpilot.chat_store import ChatStore
+from localpilot.desktop import _markdown_segments
 from localpilot.config import Config, load_config
 from localpilot.agent import LocalPilotAgent
 from localpilot.runtime_supervisor import RuntimeSupervisor
@@ -196,6 +197,36 @@ def test_chat_history_is_unicode_safe_persistent_and_separate_from_learning(tmp_
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "knowledge_facts" not in tables
     assert "chat_messages" in tables
+
+
+def test_first_user_message_titles_new_conversation_locally(tmp_path):
+    store = ChatStore(tmp_path / "chat.sqlite3")
+    session = store.create_session()
+
+    store.add_message(
+        session["id"],
+        "user",
+        "  Plan   a realistic weekend review of the LocalPilot reliability work and next steps  ",
+    )
+    titled = store.session(session["id"])["title"]
+
+    assert titled.startswith("Plan a realistic weekend review")
+    assert titled.endswith("…")
+    store.add_message(session["id"], "user", "This must not replace the title")
+    assert store.session(session["id"])["title"] == titled
+
+
+def test_tk_markdown_renderer_removes_raw_markers_without_executing_html():
+    rendered = _markdown_segments("## Status\n- **Stable** runtime\nUse `main` <script>alert(1)</script>")
+    text = "".join(value for value, _tag in rendered)
+    tags = [tag for _value, tag in rendered]
+
+    assert "##" not in text
+    assert "**" not in text
+    assert "`" not in text
+    assert "• Stable runtime" in text
+    assert "<script>alert(1)</script>" in text
+    assert {"heading", "bold", "code"} <= set(tags)
 
 
 def test_broker_replays_completed_session_after_runtime_replacement(tmp_path):

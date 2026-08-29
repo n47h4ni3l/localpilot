@@ -237,7 +237,8 @@ def test_passive_summary_never_collects_when_the_runtime_has_not_sampled(tmp_pat
 
 
 def test_passive_context_includes_durable_runtime_and_checkout_evidence(tmp_path):
-    AuditLog(tmp_path / "data" / "audit.jsonl").write(
+    audit = AuditLog(tmp_path / "data" / "audit.jsonl")
+    audit.write(
         "runtime_lifecycle",
         transition="ready",
         old_pid=None,
@@ -251,6 +252,21 @@ def test_passive_context_includes_durable_runtime_and_checkout_evidence(tmp_path
         message_id=None,
         affected_requests=[],
         source="broker_startup",
+    )
+    audit.write(
+        "background_worker_cycle_end",
+        pid=777,
+        sequence=12,
+        status="deferred",
+        duration_seconds=0.02,
+    )
+    audit.write(
+        "evolve_run_end",
+        invocation_id="evolve-1",
+        status="candidate_created",
+        branch="selfdev/example",
+        checks_passed=True,
+        summary="Created one isolated candidate.",
     )
     sense = SystemSense(
         SystemSenseConfig(),
@@ -267,8 +283,13 @@ def test_passive_context_includes_durable_runtime_and_checkout_evidence(tmp_path
 
     assert summary["runtime"]["current_process"]["pid"] == 901
     assert summary["runtime"]["recent_lifecycle"][0]["source"] == "broker_startup"
+    activity = summary["runtime"]["autonomous_activity"]
+    assert activity["latest_background_cycle"]["status"] == "deferred"
+    assert activity["latest_evolution_run"]["branch"] == "selfdev/example"
+    assert activity["learning_boundaries"]["model_weights_changed_by_localpilot"] is False
     assert "\"runtime\"" in context
     assert "\"process_started_at\":\"2026-08-29T02:03:04+00:00\"" in context
+    assert "\"ordinary_chat_automatically_persisted_as_learning\":false" in context
 
 
 def test_inventory_exposes_ids_errors_hidden_devices_and_conservative_driver_classes(tmp_path):

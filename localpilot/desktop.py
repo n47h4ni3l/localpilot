@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -15,6 +16,39 @@ from typing import Any
 
 from localpilot.broker import load_or_create_broker_token
 from localpilot.config import Config, load_config
+
+
+def _markdown_segments(content: str) -> list[tuple[str, str]]:
+    """Parse a small safe Markdown subset into Tk text-tag segments."""
+    segments: list[tuple[str, str]] = []
+    fenced = False
+    inline = re.compile(r"(\*\*[^*\n]+\*\*|`[^`\n]+`)")
+    for raw_line in str(content).splitlines(keepends=True):
+        line = raw_line
+        if line.strip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            segments.append((line, "code"))
+            continue
+        tag = "body"
+        heading = re.match(r"^\s{0,3}#{1,6}\s+", line)
+        if heading:
+            line = line[heading.end():]
+            tag = "heading"
+        bullet = re.match(r"^(\s*)[-*+]\s+", line)
+        if bullet:
+            line = bullet.group(1) + "• " + line[bullet.end():]
+        position = 0
+        for match in inline.finditer(line):
+            if match.start() > position:
+                segments.append((line[position:match.start()], tag))
+            token = match.group(0)
+            segments.append((token[2:-2], "bold") if token.startswith("**") else (token[1:-1], "code"))
+            position = match.end()
+        if position < len(line):
+            segments.append((line[position:], tag))
+    return segments or [("", "body")]
 
 
 class BrokerClient:
@@ -274,11 +308,13 @@ class DesktopChat:
         self.chat.tag_configure("user_label", foreground="#75b9ff", font=("Segoe UI Semibold", 10))
         self.chat.tag_configure("assistant_label", foreground="#7fe3c3", font=("Segoe UI Semibold", 10))
         self.chat.tag_configure("body", foreground="#dce8f2", font=("Segoe UI", 11))
+        self.chat.tag_configure("heading", foreground="#f3f7fb", font=("Segoe UI Semibold", 12))
+        self.chat.tag_configure("bold", foreground="#f3f7fb", font=("Segoe UI Semibold", 11))
+        self.chat.tag_configure("code", foreground="#f7d774", font=("Consolas", 10))
         self.chat.tag_configure("pending", foreground="#8aa4bd", font=("Segoe UI", 11, "italic"))
-        self.chat.pack(fill="both", expand=True)
 
         composer = tk.Frame(main, bg="#142334", padx=14, pady=12)
-        composer.pack(fill="x")
+        composer.pack(side="bottom", fill="x")
         self.input = tk.Text(
             composer,
             height=3,
@@ -308,6 +344,7 @@ class DesktopChat:
             font=("Segoe UI Semibold", 10),
         )
         self.send_button.pack(side="left", padx=(12, 0))
+        self.chat.pack(side="top", fill="both", expand=True)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
         threading.Thread(target=self._bootstrap, daemon=True).start()
@@ -319,7 +356,7 @@ class DesktopChat:
             sessions = self.client.request("GET", "/v1/sessions")["sessions"]
             if not sessions:
                 sessions = [self.client.request("POST", "/v1/sessions", {"title": "New conversation"})["session"]]
-            self.queue.put(("sessions", sessions))
+            self.queue.put(("sessions", (sessions, sessions[0]["id"])))
         except Exception as exc:
             self.queue.put(("error", str(exc)))
 
@@ -347,13 +384,24 @@ class DesktopChat:
             while True:
                 kind, value = self.queue.get_nowait()
                 if kind == "sessions":
-                    self.sessions = list(value)
+                    sessions, selected_id = value
+                    self.sessions = list(sessions)
                     self.session_list.delete(0, "end")
                     for session in self.sessions:
                         self.session_list.insert("end", session["title"])
-                    if self.sessions and self.session_id is None:
-                        self.session_id = self.sessions[0]["id"]
-                        self.session_list.selection_set(0)
+                    if self.sessions:
+                        target_id = selected_id or self.session_id or self.sessions[0]["id"]
+                        index = next(
+                            (i for i, session in enumerate(self.sessions) if session["id"] == target_id),
+                            0,
+                        )
+                        changed = self.session_id != self.sessions[index]["id"]
+                        self.session_id = self.sessions[index]["id"]
+                        self.session_list.selection_clear(0, "end")
+                        self.session_list.selection_set(index)
+                        self.session_list.see(index)
+                        if changed:
+                            self.after_event_id = 0
                         refresh = True
                 elif kind == "event":
                     event_type = value["type"]
@@ -366,6 +414,8 @@ class DesktopChat:
                         self._set_state("error", payload)
                     if event_type.startswith("message.") or event_type == "assistant.delta":
                         refresh = True
+                    if event_type in {"message.completed", "message.failed"}:
+                        self._refresh_sessions()
                 elif kind == "state":
                     self._set_state(str(value), {})
                 elif kind == "refresh":
@@ -421,7 +471,12 @@ class DesktopChat:
             self.chat.insert("end", label + "\n", tag)
             content = str(message["content"])
             body_tag = "pending" if message["status"] == "streaming" and not content else "body"
-            self.chat.insert("end", (content or "…") + "\n\n", body_tag)
+            if body_tag == "pending":
+                self.chat.insert("end", "…\n\n", body_tag)
+            else:
+                for text, markdown_tag in _markdown_segments(content):
+                    self.chat.insert("end", text, markdown_tag)
+                self.chat.insert("end", "\n\n", "body")
         self.chat.configure(state="disabled")
         self.chat.see("end")
 
@@ -438,9 +493,7 @@ class DesktopChat:
             try:
                 session = self.client.request("POST", "/v1/sessions", {"title": "New conversation"})["session"]
                 sessions = self.client.request("GET", "/v1/sessions")["sessions"]
-                self.queue.put(("sessions", sessions))
-                self.session_id = session["id"]
-                self.queue.put(("refresh", None))
+                self.queue.put(("sessions", (sessions, session["id"])))
             except Exception as exc:
                 self.queue.put(("error", str(exc)))
 
@@ -462,10 +515,23 @@ class DesktopChat:
                     {"content": content},
                 )
                 self.queue.put(("refresh", None))
+                self._refresh_sessions(selected_id=session_id)
             except Exception as exc:
                 self.queue.put(("error", str(exc)))
 
         threading.Thread(target=send, daemon=True).start()
+
+    def _refresh_sessions(self, *, selected_id: str | None = None) -> None:
+        target_id = selected_id or self.session_id
+
+        def fetch() -> None:
+            try:
+                sessions = self.client.request("GET", "/v1/sessions")["sessions"]
+                self.queue.put(("sessions", (sessions, target_id)))
+            except Exception as exc:
+                self.queue.put(("error", str(exc)))
+
+        threading.Thread(target=fetch, daemon=True).start()
 
     def _close(self) -> None:
         self.stop_event.set()

@@ -307,6 +307,11 @@
   }
   .composer.is-focused { border-color: var(--accent-core); box-shadow: 0 0 0 3px var(--accent-glow); }
   .composer.is-busy { opacity: 0.7; }
+  .reveal-text > div { min-height: 1.25em; }
+  .reveal-text .markdown-heading { color: var(--text-primary); font-weight: 700; margin-top: 0.45em; }
+  .reveal-text .markdown-bullet { padding-left: 0.85em; text-indent: -0.85em; }
+  .reveal-text pre { margin: 0.5em 0; padding: 0.65em; overflow-x: auto; border-radius: 8px; background: rgba(4, 10, 16, 0.42); }
+  .reveal-text code { font-family: Consolas, "Cascadia Mono", monospace; color: var(--accent-warm); }
   #composer-input {
     flex: 1; resize: none; border: none; outline: none; background: transparent;
     color: var(--text-primary); font-family: var(--font-body); font-size: 14px; line-height: 1.4;
@@ -342,6 +347,8 @@
     font-family: var(--font-display); font-weight: 600; font-size: 14px;
   }
   .history-close { width: 26px; height: 26px; }
+  .history-actions { display: flex; align-items: center; gap: var(--space-1); }
+  .history-new { width: 26px; height: 26px; color: var(--idle-core); font-size: 18px; }
   .history-list { flex: 1; overflow-y: auto; padding: var(--space-2); }
   .session-row {
     display: flex; align-items: flex-start; gap: var(--space-2);

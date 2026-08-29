@@ -241,6 +241,9 @@ def test_frontend_is_fully_local_and_uses_strict_csp():
     assert "'unsafe-inline'" not in index
     assert "'unsafe-eval'" not in index
     assert ".innerHTML" not in javascript
+    assert "renderSafeMarkdown" in javascript
+    assert "document.createTextNode" in javascript
+    assert 'document.createElement(token.startsWith("**") ? "strong" : "code")' in javascript
 
 
 def test_systemsense_glance_panel_uses_authenticated_summary_surface_only():
@@ -258,6 +261,15 @@ def test_systemsense_glance_panel_uses_authenticated_summary_surface_only():
     assert "collect_if_missing" not in javascript
     assert ".panel.is-system-open .system-panel" in stylesheet
     assert ".panel.is-system-open .composer-wrap" in stylesheet
+
+
+def test_webview_can_create_and_select_a_new_conversation():
+    index = webview_app.INDEX_HTML.read_text(encoding="utf-8")
+    javascript = (webview_app.WEBVIEW_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="history-new"' in index
+    assert 'api("POST", "/v1/sessions", {})' in javascript
+    assert "await switchSession(created.session.id)" in javascript
 
 
 def test_webview_is_expanded_chat_only_not_compact_avatar():

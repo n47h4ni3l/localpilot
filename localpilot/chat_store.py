@@ -12,6 +12,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _conversation_title(content: str, *, limit: int = 64) -> str:
+    """Derive a stable, private title locally from the first user message."""
+    normalized = " ".join(str(content).split())
+    if not normalized:
+        return "New conversation"
+    if len(normalized) <= limit:
+        return normalized
+    shortened = normalized[: limit + 1].rsplit(" ", 1)[0].rstrip(".,;:!? -")
+    if not shortened:
+        shortened = normalized[:limit].rstrip()
+    return shortened + "…"
+
+
 class ChatStore:
     """Durable UI/session history kept separate from LocalPilot learning memory."""
 
@@ -111,8 +124,10 @@ class ChatStore:
                 (session_id, role, str(content), status, timestamp, timestamp),
             )
             connection.execute(
-                "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
-                (timestamp, session_id),
+                "UPDATE chat_sessions SET updated_at = ?, "
+                "title = CASE WHEN ? = 'user' AND title = 'New conversation' THEN ? ELSE title END "
+                "WHERE id = ?",
+                (timestamp, role, _conversation_title(content), session_id),
             )
             message_id = int(cursor.lastrowid)
         return self.message(message_id)

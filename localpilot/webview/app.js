@@ -301,6 +301,7 @@
   const historyToggle = document.getElementById("history-toggle");
   const historySheet = document.getElementById("history-sheet");
   const historyClose = document.getElementById("history-close");
+  const historyNew = document.getElementById("history-new");
   const historyList = document.getElementById("history-list");
   const settingsToggle = document.getElementById("settings-toggle");
   const settingsPopover = document.getElementById("settings-popover");
@@ -417,6 +418,16 @@
     else { closeSettings(); openHistory(); }
   });
   historyClose.addEventListener("click", closeHistory);
+  historyNew.addEventListener("click", async function () {
+    try {
+      const created = await api("POST", "/v1/sessions", {});
+      await switchSession(created.session.id);
+      closeHistory();
+      composerInput.focus();
+    } catch (e) {
+      console.warn("LocalPilot: failed to create conversation", e);
+    }
+  });
 
   function relativeTime(isoString) {
     const then = new Date(isoString).getTime();
@@ -787,6 +798,46 @@
 
   function scrollToBottom() { messageStream.scrollTop = messageStream.scrollHeight; }
 
+  function appendInlineMarkdown(container, text) {
+    const pattern = /(\*\*[^*\n]+\*\*|`[^`\n]+`)/g;
+    let position = 0;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      if (match.index > position) container.appendChild(document.createTextNode(text.slice(position, match.index)));
+      const token = match[0];
+      const element = document.createElement(token.startsWith("**") ? "strong" : "code");
+      element.textContent = token.startsWith("**") ? token.slice(2, -2) : token.slice(1, -1);
+      container.appendChild(element);
+      position = match.index + token.length;
+    }
+    if (position < text.length) container.appendChild(document.createTextNode(text.slice(position)));
+  }
+
+  function renderSafeMarkdown(target, content) {
+    target.replaceChildren();
+    let fenced = false;
+    String(content || "").split("\n").forEach(function (sourceLine) {
+      if (sourceLine.trim().startsWith("```")) { fenced = !fenced; return; }
+      const line = document.createElement(fenced ? "pre" : "div");
+      if (fenced) {
+        const code = document.createElement("code"); code.textContent = sourceLine; line.appendChild(code);
+      } else {
+        const heading = sourceLine.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
+        const bullet = sourceLine.match(/^(\s*)[-*+]\s+(.*)$/);
+        if (heading) {
+          line.className = "markdown-heading";
+          appendInlineMarkdown(line, heading[2]);
+        } else if (bullet) {
+          line.className = "markdown-bullet";
+          appendInlineMarkdown(line, "\u2022 " + bullet[2]);
+        } else {
+          appendInlineMarkdown(line, sourceLine || "\u00a0");
+        }
+      }
+      target.appendChild(line);
+    });
+  }
+
   function renderUserTurn(message) {
     const turn = document.createElement("div");
     turn.className = "turn turn--user";
@@ -827,6 +878,7 @@
       revealTimer: null,
       finalizeAfterReveal: false,
     });
+    if (message.status === "complete") renderSafeMarkdown(reveal, message.content || "");
     if (message.status === "failed") renderFailedNotice(message.id, message);
     scrollToBottom();
   }
@@ -866,8 +918,9 @@
       } else {
         entry.revealTimer = null;
         avatars.forEach(function (a) { a.ventLevel = 0; });
-        if (entry.finalizeAfterReveal && entry.caretEl && entry.caretEl.parentNode) {
-          entry.caretEl.remove();
+        if (entry.finalizeAfterReveal) {
+          if (entry.caretEl && entry.caretEl.parentNode) entry.caretEl.remove();
+          renderSafeMarkdown(entry.revealEl, entry.targetContent);
         }
       }
     }
@@ -887,6 +940,7 @@
     if (!entry) return;
     if (entry.revealedLength >= entry.targetContent.length) {
       if (entry.caretEl && entry.caretEl.parentNode) entry.caretEl.remove();
+      renderSafeMarkdown(entry.revealEl, entry.targetContent);
     } else {
       entry.finalizeAfterReveal = true;
     }
@@ -1011,6 +1065,7 @@
         updateAssistantContent(message.id, message.content);
         finalizeMessage(message.id);
         collapseActivityIntoChip(message.id);
+        loadSessionList();
         break;
       }
       case "message.delayed": {
@@ -1061,6 +1116,7 @@
         if (m.role === "user") renderUserTurn(m);
         else renderAssistantTurn(m);
       });
+      await loadSessionList();
     } catch (e) {
       console.error("LocalPilot: failed to load messages for session", sessionId, e);
     }
@@ -1152,6 +1208,7 @@
     composerWrap.classList.add("is-busy");
     try {
       await api("POST", "/v1/sessions/" + activeSessionId + "/messages", { content: text });
+      loadSessionList();
     } catch (e) {
       console.error("LocalPilot: failed to send message", e);
       composerInput.value = text; // don't silently lose what they typed

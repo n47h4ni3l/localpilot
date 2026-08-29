@@ -12,6 +12,8 @@ from typing import Any, Iterable
 
 import psutil
 
+from localpilot.process import hidden_process_creation_flags
+
 
 def utc_timestamp() -> str:
     return datetime.now(UTC).isoformat()
@@ -344,6 +346,7 @@ class DriverStoreCollector:
                 timeout=60,
                 check=False,
                 shell=False,
+                creationflags=hidden_process_creation_flags(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return {

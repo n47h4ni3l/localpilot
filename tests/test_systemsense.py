@@ -270,7 +270,7 @@ def test_inventory_exposes_ids_errors_hidden_devices_and_conservative_driver_cla
 
 def test_rolling_baseline_flags_large_anomaly(tmp_path):
     sense = make_sense(tmp_path, cpu=96.0)
-    now = "2026-08-28T00:00:00+00:00"
+    now = utc_timestamp()
     for value in (20.0, 21.0, 19.0, 20.5, 20.0, 21.0):
         sense.store.save_metrics(now, [("cpu.percent", value, "%", "test")])
     sense.collect_dynamic()

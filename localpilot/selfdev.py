@@ -32,6 +32,7 @@ from localpilot.evolution import (
 from localpilot.github_integration import GitHubIntegration, is_managed_candidate_branch
 from localpilot.learning import LearningMemory
 from localpilot.mission import mission_context
+from localpilot.process import hidden_process_creation_flags
 from localpilot.resource import ResourceGovernor
 from localpilot.study import (
     GroundingIssue,
@@ -982,6 +983,7 @@ class CandidateTools:
                                 timeout=15,
                                 check=False,
                                 shell=False,
+                                creationflags=hidden_process_creation_flags(),
                             )
                             if completed.returncode != 0:
                                 detail = completed.stderr.strip() or completed.stdout.strip()
@@ -1007,6 +1009,7 @@ class CandidateTools:
             timeout=30,
             check=False,
             shell=False,
+            creationflags=hidden_process_creation_flags(),
         )
         if completed.returncode != 0:
             return completed.stderr.strip() or "git diff unavailable"

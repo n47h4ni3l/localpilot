@@ -9,6 +9,7 @@ from pathlib import Path
 
 from localpilot.config import Config
 from localpilot.github_integration import GitHubIntegration
+from localpilot.process import hidden_process_creation_flags
 
 
 def _version_ok() -> bool:
@@ -28,7 +29,14 @@ def doctor(config: Config, project_root: str | Path) -> list[tuple[str, bool, st
     model_detail = "Ollama unavailable"
     if shutil.which("ollama"):
         try:
-            out = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=15, check=False)
+            out = subprocess.run(
+                ["ollama", "list"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                creationflags=hidden_process_creation_flags(),
+            )
             model_ok = out.returncode == 0 and config.model.name in out.stdout
             model_detail = f"{config.model.name}: {'installed' if model_ok else 'not installed'}"
         except Exception as exc:

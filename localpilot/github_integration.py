@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from localpilot.config import GitHubConfig
+from localpilot.process import hidden_process_creation_flags
 
 
 @dataclass(slots=True)
@@ -139,6 +140,7 @@ class GitHubIntegration:
             timeout=timeout,
             check=False,
             shell=False,
+            creationflags=hidden_process_creation_flags(),
         )
         return CommandResult(completed.returncode == 0, completed.stdout.strip(), completed.stderr.strip(), completed.returncode)
 

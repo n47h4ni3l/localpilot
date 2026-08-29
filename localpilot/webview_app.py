@@ -25,6 +25,7 @@ from webview.window import FixPoint
 from localpilot.config import load_config
 from localpilot.desktop import BrokerClient, ensure_broker
 from localpilot.desktop_state import DesktopUIState
+from localpilot.process import hidden_process_creation_flags
 
 WEBVIEW_DIR = Path(__file__).resolve().parent / "webview"
 INDEX_HTML = WEBVIEW_DIR / "index.html"
@@ -154,6 +155,7 @@ def _write_startup_shortcut(target: Path, root: Path, config_path: str | None) -
         capture_output=True,
         env=environment,
         timeout=10,
+        creationflags=hidden_process_creation_flags(),
     )
 
 

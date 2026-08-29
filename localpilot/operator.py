@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Callable
 
+from localpilot.process import hidden_process_creation_flags
+
 
 class OperationRisk(StrEnum):
     READ_ONLY = "read_only"
@@ -99,6 +101,7 @@ class CommandRunner:
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    creationflags=hidden_process_creation_flags(),
                 )
             except OSError as exc:
                 duration_ms = int((time.monotonic() - started) * 1000)
@@ -138,6 +141,7 @@ class CommandRunner:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
+                creationflags=hidden_process_creation_flags(),
             )
         except subprocess.TimeoutExpired as exc:
             duration_ms = int((time.monotonic() - started) * 1000)

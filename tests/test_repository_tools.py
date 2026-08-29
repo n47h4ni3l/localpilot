@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ from localpilot.safety import RiskLevel
 from localpilot.tools import registry
 from localpilot.tools.github_readonly import GitHubReader
 from localpilot.tools.repository import RepositoryReader
+from localpilot.audit import AuditLog
 from localpilot.tools.web import fetch_public_https
 
 
@@ -162,6 +164,7 @@ def test_operator_registry_exposes_trusted_senses_as_read_only(tmp_path: Path):
         "search_repository",
         "inspect_project_dependencies",
         "get_repository_status",
+        "get_runtime_lifecycle",
         "fetch_public_https",
         "get_github_repository",
         "list_github_pull_requests",
@@ -177,3 +180,49 @@ def test_operator_registry_exposes_trusted_senses_as_read_only(tmp_path: Path):
     assert "fetch_public_https" in legacy
     assert "read_repository_file" not in legacy
     assert "get_github_pull_request" not in legacy
+
+
+def test_runtime_self_inspection_exposes_lifecycle_process_and_git_state(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    data_dir = tmp_path / "runtime-data"
+    audit = AuditLog(data_dir / "audit.jsonl")
+    audit.write(
+        "runtime_lifecycle",
+        transition="ready",
+        old_pid=40,
+        new_pid=41,
+        process_started_at="2026-08-29T01:02:03+00:00",
+        reason="unexpected_worker_exit",
+        return_code=23,
+        signal=None,
+        request_id="request-1",
+        session_id="session-1",
+        message_id=7,
+        affected_requests=[],
+        source="crash_recovery",
+    )
+    reader = RepositoryReader(tmp_path, data_dir=data_dir)
+    values = {
+        ("branch", "--show-current"): "main",
+        ("rev-parse", "HEAD"): "abc123",
+        ("status", "--short"): "",
+        ("rev-parse", "--abbrev-ref", "@{upstream}"): "origin/main",
+        ("rev-parse", "@{upstream}"): "abc123",
+        ("rev-list", "--left-right", "--count", "@{upstream}...HEAD"): "0 0",
+        ("rev-parse", "main"): "abc123",
+        ("rev-parse", "origin/main"): "abc123",
+    }
+    monkeypatch.setattr(reader.runtime_evidence, "_git", lambda *args: values.get(args))
+
+    evidence = json.loads(reader.get_runtime_lifecycle())
+
+    assert evidence["current_process"] == {
+        "pid": 41,
+        "started_at": "2026-08-29T01:02:03+00:00",
+        "source": "crash_recovery",
+        "reason": "unexpected_worker_exit",
+    }
+    assert evidence["repository"]["branch"] == "main"
+    assert evidence["repository"]["commit"] == "abc123"
+    assert evidence["repository"]["matches_upstream"] is True
+    assert evidence["recent_lifecycle"][0]["request_id"] == "request-1"

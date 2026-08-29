@@ -1013,6 +1013,13 @@
         collapseActivityIntoChip(message.id);
         break;
       }
+      case "message.delayed": {
+        const seconds = evt.payload && evt.payload.timeout_seconds;
+        previewLine.textContent = "Still working" + (seconds ? " after " + seconds + " seconds" : "") + "\u2026";
+        previewLine.classList.add("is-visible");
+        setGlobalState("working");
+        break;
+      }
       case "message.failed": {
         const message = evt.payload && evt.payload.message;
         if (!message || !messageElementsById.has(message.id)) break;

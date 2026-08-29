@@ -37,7 +37,7 @@ class AuditLog:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
 
-    def write(self, event: str, **fields: Any) -> None:
+    def write(self, event: str, **fields: Any) -> dict[str, Any]:
         row = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "event": event,
@@ -45,6 +45,7 @@ class AuditLog:
         }
         with self._lock, self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        return row
 
     def latest(self, event: str | None = None) -> dict[str, Any] | None:
         """Return the newest valid audit row, optionally filtered by event."""
@@ -62,3 +63,24 @@ class AuditLog:
                 if event is None or row.get("event") == event:
                     latest_row = row
         return latest_row
+
+    def recent(self, event: str | None = None, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Return a bounded newest-first view of valid audit rows."""
+        if not self.path.exists():
+            return []
+        bounded_limit = max(1, min(int(limit), 100))
+        rows: list[dict[str, Any]] = []
+        with self._lock, self.path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                if event is None or row.get("event") == event:
+                    rows.append(row)
+                    if len(rows) > bounded_limit:
+                        rows.pop(0)
+        rows.reverse()
+        return rows

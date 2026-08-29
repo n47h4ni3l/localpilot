@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from localpilot.config import SystemSenseConfig
+from localpilot.runtime_evidence import RuntimeEvidence
 from localpilot.systemsense_collectors import (
     LibreHardwareMonitorCollector,
     PsutilTelemetryCollector,
@@ -286,6 +287,8 @@ class SystemSense:
         performance_collector: WindowsPerformanceCollector | None = None,
         sensor_collector: LibreHardwareMonitorCollector | None = None,
         inventory_collector: WindowsInventoryCollector | None = None,
+        project_root: str | Path | None = None,
+        main_branch: str = "main",
     ) -> None:
         self.config = config
         self.data_dir = Path(data_dir).resolve()
@@ -300,6 +303,27 @@ class SystemSense:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_prune = 0.0
+        self._runtime_evidence = (
+            RuntimeEvidence(
+                project_root,
+                self.data_dir / "audit.jsonl",
+                main_branch=main_branch,
+            )
+            if project_root is not None
+            else None
+        )
+
+    def configure_runtime_evidence(
+        self, project_root: str | Path, *, main_branch: str = "main"
+    ) -> None:
+        self._runtime_evidence = RuntimeEvidence(
+            project_root,
+            self.data_dir / "audit.jsonl",
+            main_branch=main_branch,
+        )
+
+    def runtime_evidence(self) -> dict[str, Any] | None:
+        return self._runtime_evidence.snapshot() if self._runtime_evidence is not None else None
 
     @property
     def enabled(self) -> bool:
@@ -689,8 +713,9 @@ class SystemSense:
         return anomalies[:5]
 
     def summary(self, *, collect_if_missing: bool = True) -> dict[str, Any]:
+        runtime = self.runtime_evidence()
         if not self.enabled:
-            return {"enabled": False, "system_health": "unknown"}
+            return {"enabled": False, "system_health": "unknown", "runtime": runtime}
         dynamic = (
             self._ensure_dynamic()
             if collect_if_missing
@@ -706,6 +731,7 @@ class SystemSense:
                 "anomalies": [],
                 "probable_causes": [],
                 "background_resource_contention": [],
+                "runtime": runtime,
             }
         metrics = {key: value for key, value, _unit, _source in self._metric_rows(dynamic)}
         baseline = self.baselines()
@@ -799,6 +825,7 @@ class SystemSense:
             "background_resource_contention": top_processes,
             "sensor_source": _path_get(dynamic, "sensors.source"),
             "sensor_source_available": bool(_path_get(dynamic, "sensors.available")),
+            "runtime": runtime,
         }
 
     def compact_context(self) -> str:
@@ -807,9 +834,9 @@ class SystemSense:
         # The runtime worker samples before serving turns. Avoid turning passive
         # context injection into an on-demand collector call in short-lived tests
         # or alternate entry points where the service is not running.
-        if self.store.latest_snapshot("dynamic") is None:
+        if self.store.latest_snapshot("dynamic") is None and self._runtime_evidence is None:
             return ""
-        state = self.summary()
+        state = self.summary(collect_if_missing=False)
         compact = {
             key: state.get(key)
             for key in (
@@ -829,6 +856,7 @@ class SystemSense:
                 "inference",
                 "anomalies",
                 "probable_causes",
+                "runtime",
             )
         }
         return (
@@ -1030,11 +1058,24 @@ _INSTANCES: dict[Path, SystemSense] = {}
 _INSTANCES_LOCK = threading.Lock()
 
 
-def get_system_sense(config: SystemSenseConfig, data_dir: str | Path) -> SystemSense:
+def get_system_sense(
+    config: SystemSenseConfig,
+    data_dir: str | Path,
+    *,
+    project_root: str | Path | None = None,
+    main_branch: str = "main",
+) -> SystemSense:
     database = (Path(data_dir).resolve() / config.database).resolve()
     with _INSTANCES_LOCK:
         instance = _INSTANCES.get(database)
         if instance is None:
-            instance = SystemSense(config, data_dir)
+            instance = SystemSense(
+                config,
+                data_dir,
+                project_root=project_root,
+                main_branch=main_branch,
+            )
             _INSTANCES[database] = instance
+        elif project_root is not None:
+            instance.configure_runtime_evidence(project_root, main_branch=main_branch)
         return instance

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from localpilot.config import Config, SystemSenseConfig, load_config
+from localpilot.audit import AuditLog
 from localpilot.agent import LocalPilotAgent
 from localpilot.safety import RiskLevel
 from localpilot.runtime_worker import RuntimeWorker
@@ -233,6 +234,41 @@ def test_passive_summary_never_collects_when_the_runtime_has_not_sampled(tmp_pat
     active = sense.summary()
     assert active["system_health"] == "good"
     assert calls == [True]
+
+
+def test_passive_context_includes_durable_runtime_and_checkout_evidence(tmp_path):
+    AuditLog(tmp_path / "data" / "audit.jsonl").write(
+        "runtime_lifecycle",
+        transition="ready",
+        old_pid=None,
+        new_pid=901,
+        process_started_at="2026-08-29T02:03:04+00:00",
+        reason="broker_started",
+        return_code=None,
+        signal=None,
+        request_id=None,
+        session_id=None,
+        message_id=None,
+        affected_requests=[],
+        source="broker_startup",
+    )
+    sense = SystemSense(
+        SystemSenseConfig(),
+        tmp_path / "data",
+        project_root=tmp_path,
+        psutil_collector=FakeDynamicCollector(),
+        performance_collector=FakePerformanceCollector(),
+        sensor_collector=FakeSensorCollector(),
+        inventory_collector=FakeInventoryCollector(),
+    )
+
+    summary = sense.summary(collect_if_missing=False)
+    context = sense.compact_context()
+
+    assert summary["runtime"]["current_process"]["pid"] == 901
+    assert summary["runtime"]["recent_lifecycle"][0]["source"] == "broker_startup"
+    assert "\"runtime\"" in context
+    assert "\"process_started_at\":\"2026-08-29T02:03:04+00:00\"" in context
 
 
 def test_inventory_exposes_ids_errors_hidden_devices_and_conservative_driver_classes(tmp_path):

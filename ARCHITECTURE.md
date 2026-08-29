@@ -216,7 +216,9 @@ The existing `ResourceGovernor` remains in charge of self-development eligibilit
 
 All Git/GitHub/static-check process calls use argument arrays with `shell=False`. Full executable tests remain in GitHub Actions. Stable, developer, and candidate boundaries do not depend on model cooperation: the tool surface enforces them.
 
-The desktop broker applies the same process rule to its runtime worker. It owns child lifetime and bounded restart, while the worker owns Ollama plus any PowerShell-backed operator tools. The broker never gains candidate promotion or merge authority.
+The desktop broker applies the same process rule to its runtime worker. It owns child lifetime and bounded restart, while the worker owns Ollama plus any PowerShell-backed operator tools. Crossing `desktop.request_timeout_seconds` is a soft delayed-status boundary: the request remains active and a late result can still complete without changing the worker PID. Whole-worker replacement is limited to unexpected process exit or an explicitly classified coordinated restart, update, watchdog, or fatal condition. The broker never gains candidate promotion or merge authority.
+
+Every worker start, ready state, coordinated restart request, exit, replacement, and stop is appended to the existing private audit stream with old/new PID, process start time, reason, return code or signal when available, affected request/session/message identifiers, and a source classification. A bounded recent view plus local Git branch/commit/tracking-ref evidence is available through passive SystemSense context and the read-only runtime self-inspection tool. Git freshness is explicitly local-ref evidence until a remote fetch verifies otherwise.
 
 
 

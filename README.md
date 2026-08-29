@@ -289,7 +289,7 @@ Or open the persistent desktop window:
 localpilot desktop
 ```
 
-The desktop command starts a detached loopback broker when needed. The window reconnects to that broker, while the broker supervises a replaceable operator worker that owns Ollama and the existing PowerShell-backed tools. The expanded chat includes a read-only SystemSense glance panel for current health, resource pressure, inference performance and active signals; it reads only a bounded authenticated broker summary and never controls the machine. Closing the window does not stop the broker; `localpilot chat` remains the independent fallback.
+The desktop command starts a detached loopback broker when needed. The window reconnects to that broker, while the broker supervises a replaceable operator worker that owns Ollama and the existing PowerShell-backed tools. A request that crosses `desktop.request_timeout_seconds` is reported as still working and continues on the same worker; it does not trigger a whole-runtime restart. Unexpected worker exit still receives bounded crash recovery, and the explicit restart control remains a classified coordinated restart. Durable lifecycle audit rows record the old/new PID, process start time, reason, exit result, affected request identifiers, and restart source. The expanded chat includes a read-only SystemSense glance panel for current health, resource pressure, inference performance, runtime lifecycle, checkout state and active signals; it reads only a bounded authenticated broker summary and never controls the machine. Closing the window does not stop the broker; `localpilot chat` remains the independent fallback.
 
 ## Command reference
 
@@ -344,7 +344,7 @@ The task does not bypass LocalPilot's own idle, resource, candidate, or trusted-
 - `[agent]` — data directory and operator research budgets;
 - `[resource]` — idle, CPU, memory, and priority gates;
 - `[selfdev]` — developer models, candidate limits, GitHub delivery, and checkpoints;
-- `[desktop]` — loopback broker port, separate chat database, and runtime restart ceiling;
+- `[desktop]` — loopback broker port, separate chat database, soft request-status timeout, and crash-restart ceiling;
 - `[library]` — optional owner-managed PDF/text source root and bounded disposable-index limits;
 - `[systemsense]` — passive sample/inventory cadence, private telemetry database, retention, baseline/correlation windows, and compact context injection;
 - `[github]` — trusted remote, main branch, and candidate delivery; and

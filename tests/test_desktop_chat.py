@@ -21,6 +21,8 @@ class _FakeRuntime:
     def __init__(self):
         self.sent = []
         self.running = True
+        self.pid = 321
+        self.restart_calls = []
 
     def send(self, message):
         self.sent.append(message)
@@ -31,8 +33,10 @@ class _FakeRuntime:
     def stop(self):
         self.running = False
 
-    def restart(self):
+    def restart(self, **kwargs):
+        self.restart_calls.append(kwargs)
         self.running = False
+        return True
 
 
 def _broker(tmp_path):
@@ -280,25 +284,40 @@ def test_broker_startup_closes_abandoned_streaming_records(tmp_path):
     )
 
 
-def test_broker_request_timeout_fails_message_and_restarts_owned_runtime(tmp_path):
+def test_broker_request_timeout_is_soft_and_late_result_completes_without_pid_change(tmp_path):
     config = Config()
     config.desktop.request_timeout_seconds = 60
     app = BrokerApp(tmp_path, config)
     app.runtime = _FakeRuntime()
     session = app.store.create_session()
     submitted = app.submit(session["id"], "A bounded request")
+    original_pid = app.runtime.pid
 
     app._expire_request(submitted["request_id"])
 
-    failed = app.store.message(submitted["assistant"]["id"])
-    assert failed["status"] == "error"
-    assert "timed out after 60 seconds" in failed["content"]
-    assert app.runtime.running is False
+    delayed = app.store.message(submitted["assistant"]["id"])
+    assert delayed["status"] == "streaming"
+    assert app.runtime.running is True
+    assert app.runtime.pid == original_pid
+    assert app.runtime.restart_calls == []
     assert any(
         event["payload"].get("reason") == "request_timeout"
         for event in app.store.events_after(0)
-        if event["type"] == "message.failed"
+        if event["type"] == "message.delayed"
     )
+
+    app._on_runtime_message(
+        {
+            "kind": "result",
+            "request_id": submitted["request_id"],
+            "session_id": session["id"],
+            "answer": "Completed after the soft boundary",
+        }
+    )
+
+    completed = app.store.message(submitted["assistant"]["id"])
+    assert completed["status"] == "complete"
+    assert completed["content"] == "Completed after the soft boundary"
 
 
 def test_runtime_worker_uses_agent_once_and_streams_structured_visible_deltas(tmp_path, monkeypatch):
@@ -387,6 +406,124 @@ def test_supervisor_does_not_forward_raw_worker_stderr(tmp_path):
         {"kind": "supervisor", "type": "runtime.stderr", "payload": {"diagnostic": True}}
     ]
     assert "private prompt fragment" not in json.dumps(messages)
+
+
+def test_supervisor_replaces_crashed_pid_and_records_crash_recovery(tmp_path, monkeypatch):
+    processes = []
+
+    class FakeProcess:
+        stdin = io.StringIO()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        def __init__(self, pid, returncode):
+            self.pid = pid
+            self.returncode = returncode
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    def fake_popen(*args, **kwargs):
+        process = FakeProcess(700 + len(processes), 23 if not processes else 0)
+        processes.append(process)
+        return process
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr("localpilot.runtime_supervisor.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("localpilot.runtime_supervisor.threading.Thread", FakeThread)
+    monkeypatch.setattr("localpilot.runtime_supervisor.time.sleep", lambda seconds: None)
+    supervisor = RuntimeSupervisor(tmp_path)
+
+    supervisor.start()
+    old_pid = supervisor.pid
+    supervisor._watch(processes[0])
+
+    assert old_pid == 700
+    assert supervisor.pid == 701
+    rows = supervisor.audit.recent("runtime_lifecycle", limit=10)
+    crash_exit = next(row for row in rows if row["transition"] == "exited")
+    replacement = next(
+        row
+        for row in rows
+        if row["transition"] == "started" and row.get("new_pid") == 701
+    )
+    assert crash_exit["source"] == "crash_recovery"
+    assert crash_exit["old_pid"] == 700
+    assert crash_exit["return_code"] == 23
+    assert replacement["source"] == "crash_recovery"
+    assert replacement["old_pid"] == 700
+
+
+def test_explicit_restart_is_classified_and_background_source_is_rejected(tmp_path, monkeypatch):
+    processes = []
+
+    class FakeProcess:
+        stdin = io.StringIO()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        def __init__(self, pid):
+            self.pid = pid
+            self.terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(*args, **kwargs):
+        process = FakeProcess(800 + len(processes))
+        processes.append(process)
+        return process
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr("localpilot.runtime_supervisor.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("localpilot.runtime_supervisor.threading.Thread", FakeThread)
+    supervisor = RuntimeSupervisor(tmp_path)
+    supervisor.start()
+
+    with pytest.raises(ValueError, match="Unsupported whole-runtime restart source"):
+        supervisor.restart(source="autonomous_background", reason="background_cycle")
+    assert processes[0].terminated is False
+
+    assert supervisor.restart(
+        source="explicit_api_restart",
+        reason="owner_requested_via_api",
+        request_id="request-1",
+        session_id="session-1",
+        message_id=9,
+    )
+    assert processes[0].terminated is True
+    supervisor._watch(processes[0])
+
+    assert supervisor.pid == 801
+    rows = supervisor.audit.recent("runtime_lifecycle", limit=10)
+    requested = next(row for row in rows if row["transition"] == "restart_requested")
+    replacement = next(row for row in rows if row.get("new_pid") == 801)
+    assert requested["source"] == "explicit_api_restart"
+    assert requested["request_id"] == "request-1"
+    assert requested["session_id"] == "session-1"
+    assert requested["message_id"] == 9
+    assert replacement["source"] == "explicit_api_restart"
 
 
 def test_broker_token_is_stable_and_desktop_config_refuses_non_loopback(tmp_path):

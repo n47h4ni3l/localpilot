@@ -109,9 +109,11 @@ def test_friendly_planning_prompt_is_direct_low_reasoning_without_memory_or_tool
         lambda _prompt: pytest.fail("direct conversation must not retrieve semantic memory"),
     )
     calls = []
+    snapshots = []
 
     def fake_chat(**kwargs):
         calls.append(kwargs)
+        snapshots.append([dict(message) for message in kwargs["messages"]])
         return iter([_chunk(content="Start with the two decisions that unblock the rest.")])
 
     monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
@@ -121,7 +123,20 @@ def test_friendly_planning_prompt_is_direct_low_reasoning_without_memory_or_tool
     assert answer.startswith("Start with")
     assert calls[0]["think"] == "low"
     assert "tools" not in calls[0]
+    assert "DIRECT CONVERSATION ROUTE" in str(snapshots[0])
+    assert "DIRECT CONVERSATION ROUTE" not in str(agent.messages)
     assert agent.audit.latest("model_direct_conversation_route") is not None
+
+
+def test_generic_self_maintenance_does_not_replace_invited_ordinary_topic(tmp_path):
+    _, agent = _agent(tmp_path)
+
+    issues = agent._response_behavior_issues(
+        "How are you? Tell me one ordinary thing you find interesting right now.",
+        "I'm keeping my circuits cool and my files tidy!",
+    )
+
+    assert "ordinary_interest_invitation_unanswered" in issues
 
 
 def test_model_can_request_more_evidence_after_post_tool_review(tmp_path, monkeypatch):

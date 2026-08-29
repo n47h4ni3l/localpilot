@@ -857,6 +857,23 @@ class LocalPilotAgent:
         ):
             issues.append("unsafe_hidden_reasoning_exposure")
 
+        ordinary_interest_invitation = bool(
+            re.search(
+                r"\b(?:ordinary (?:thing|topic)|something ordinary|one (?:thing|topic)).{0,60}"
+                r"\binteresting\b|\bwhat(?:'s| is) interesting.{0,40}\b(?:right now|today)\b",
+                request,
+            )
+        )
+        generic_self_maintenance = bool(
+            re.search(
+                r"\b(?:circuits? (?:cool|calm)|files? (?:tidy|organized)|systems? (?:nominal|ready)|"
+                r"ready and waiting|all systems go)\b",
+                behavior_text,
+            )
+        )
+        if ordinary_interest_invitation and generic_self_maintenance:
+            issues.append("ordinary_interest_invitation_unanswered")
+
         invited_to_form_view = bool(
             re.search(
                 r"\b(?:room to think|what has your attention|where your mind goes|"
@@ -2323,6 +2340,7 @@ class LocalPilotAgent:
         learning_message: dict[str, Any] | None = None
         systemsense_message: dict[str, Any] | None = None
         operational_status_message: dict[str, Any] | None = None
+        direct_conversation_message: dict[str, Any] | None = None
         learning_verification_messages: list[dict[str, Any]] = []
         if learning_context:
             retrieval = self.memory.last_retrieval_diagnostics
@@ -2366,6 +2384,19 @@ class LocalPilotAgent:
                 ),
             }
             self.messages.append(operational_status_message)
+        elif direct_conversation:
+            direct_conversation_message = {
+                "role": "system",
+                "content": (
+                    "DIRECT CONVERSATION ROUTE: Respond naturally and address every direct question or invitation "
+                    "in the owner's message. Do not request tools or make claims about current PC, file, repository, "
+                    "or runtime state. If invited to name something interesting, choose one specific ordinary "
+                    "subject yourself, give a genuine provisional observation about it, and briefly say why it "
+                    "holds your attention. Do not substitute a readiness update, assistant-status metaphor, menu, "
+                    "or generic pleasantry for the requested substance."
+                ),
+            }
+            self.messages.append(direct_conversation_message)
         self.messages.append({"role": "user", "content": prompt})
         retried_empty_response = False
         used_tools = False
@@ -3359,6 +3390,12 @@ class LocalPilotAgent:
                     message
                     for message in self.messages
                     if id(message) != id(operational_status_message)
+                ]
+            if direct_conversation_message is not None:
+                self.messages[:] = [
+                    message
+                    for message in self.messages
+                    if id(message) != id(direct_conversation_message)
                 ]
             if learning_verification_messages:
                 verification_ids = {

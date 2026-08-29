@@ -9,6 +9,8 @@ import time
 
 import psutil
 
+from localpilot.process import hidden_process_creation_flags
+
 
 def _powershell(script: str, timeout: int = 20) -> str:
     executable = shutil.which("pwsh") or shutil.which("powershell")
@@ -20,6 +22,7 @@ def _powershell(script: str, timeout: int = 20) -> str:
         text=True,
         timeout=timeout,
         check=False,
+        creationflags=hidden_process_creation_flags(),
     )
     if completed.returncode != 0:
         return f"PowerShell error: {completed.stderr.strip()}"

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import psutil
 
+from localpilot.process import hidden_process_creation_flags
 from localpilot.tools import windows
 
 
@@ -43,6 +44,7 @@ def test_powershell_uses_argument_vector_and_returns_output(monkeypatch):
         "text": True,
         "timeout": 7,
         "check": False,
+        "creationflags": hidden_process_creation_flags(),
     }
 
 

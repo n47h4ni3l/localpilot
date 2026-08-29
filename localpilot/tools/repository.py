@@ -8,6 +8,8 @@ import tomllib
 from pathlib import Path
 from typing import Iterator
 
+from localpilot.process import hidden_process_creation_flags
+
 
 _BLOCKED_PARTS = {
     ".git",
@@ -260,6 +262,7 @@ class RepositoryReader:
                 timeout=10,
                 check=False,
                 shell=False,
+                creationflags=hidden_process_creation_flags(),
             )
             if completed.returncode != 0:
                 result[label] = f"git error: {completed.stderr.strip()}"

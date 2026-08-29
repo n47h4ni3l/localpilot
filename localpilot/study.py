@@ -21,6 +21,7 @@ from localpilot.learning import (
     PeerModelComparison,
     StudyRun,
 )
+from localpilot.process import hidden_process_creation_flags
 
 
 STAGES = ("self", "qwen", "python")
@@ -942,6 +943,7 @@ class StudyEngine:
                 capture_output=True,
                 timeout=10,
                 shell=False,
+                creationflags=hidden_process_creation_flags(),
             )
             tracked = [
                 self.root / item.decode("utf-8", errors="replace")
@@ -1177,6 +1179,7 @@ class StudyEngine:
                 text=True,
                 timeout=10,
                 shell=False,
+                creationflags=hidden_process_creation_flags(),
             )
             head = completed.stdout.strip()
         except (OSError, subprocess.SubprocessError):

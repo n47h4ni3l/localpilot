@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from localpilot.process import hidden_process_creation_flags
+
 
 _MAX_OUTPUT_CHARS = 50_000
 _VALID_STATE = {"open", "closed", "merged", "all"}
@@ -29,6 +31,7 @@ class GitHubReader:
             timeout=timeout,
             check=False,
             shell=False,
+            creationflags=hidden_process_creation_flags(),
         )
         if completed.returncode != 0:
             error = " ".join(completed.stderr.strip().split())[:1200]

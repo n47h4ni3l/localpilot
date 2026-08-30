@@ -138,6 +138,46 @@ def test_learning_reader_bounds_stale_samples_and_sources(tmp_path):
     assert len(result["top_sources"]) == 12
 
 
+def test_learning_reader_does_not_count_a_superseded_policy_block_as_outstanding(tmp_path):
+    memory = _memory(tmp_path)
+    workspace = tmp_path / "candidate"
+    workspace.mkdir()
+    branch = "localpilot/candidate-policy-blocked"
+    cycle = memory.start_cycle(
+        task_id="policy-blocked",
+        branch=branch,
+        everyday_model="daily",
+        developer_model="developer",
+        workspace=workspace,
+        is_worktree=True,
+    )
+    memory.record_write_integrity_failure(
+        cycle,
+        "Candidate delivery blocked because a valid directory write hit framework policy.",
+    )
+    memory.finish_cycle(
+        cycle,
+        status="candidate_pending_validation",
+        summary="Candidate delivery blocked by framework policy; static checks later passed.",
+        reusable_lesson="Preserve the objective when framework policy is at fault.",
+        checks_passed=True,
+        pushed=True,
+        validation_state="passed",
+    )
+    memory.authorize_policy_retry(
+        branch,
+        reason="Framework policy blocked valid architecture.",
+        remote_branch_verified=True,
+        remote_merged=False,
+        pull_request_state="closed",
+    )
+
+    result = LearningMemoryReader(tmp_path).get_learning_memory_summary()
+
+    assert memory.pending_candidates() == []
+    assert result["self_development_memory"]["outstanding"] == 0
+
+
 def test_learning_memory_summary_is_registered_read_only(tmp_path):
     _memory(tmp_path)
     tools = registry(tmp_path)

@@ -152,6 +152,10 @@ class LearningMemoryReader:
                        SUM(CASE WHEN pushed = 1
                                      AND validation_state != 'rejected_by_human'
                                      AND NOT (merged = 1 AND validation_state = 'passed')
+                                     AND NOT (
+                                         status = 'policy_blocked'
+                                         AND retried_by_cycle_id IS NOT NULL
+                                     )
                                 THEN 1 ELSE 0 END) AS outstanding_count
                 FROM development_cycles
                 """

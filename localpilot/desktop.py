@@ -22,7 +22,7 @@ def _markdown_segments(content: str) -> list[tuple[str, str]]:
     """Parse a small safe Markdown subset into Tk text-tag segments."""
     segments: list[tuple[str, str]] = []
     fenced = False
-    inline = re.compile(r"(\*\*[^*\n]+\*\*|`[^`\n]+`)")
+    inline = re.compile(r"(\*\*[^\n]+?\*\*|`[^`\n]+`)")
     for raw_line in str(content).splitlines(keepends=True):
         line = raw_line
         if line.strip().startswith("```"):
@@ -44,7 +44,11 @@ def _markdown_segments(content: str) -> list[tuple[str, str]]:
             if match.start() > position:
                 segments.append((line[position:match.start()], tag))
             token = match.group(0)
-            segments.append((token[2:-2], "bold") if token.startswith("**") else (token[1:-1], "code"))
+            if token.startswith("**"):
+                value = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", token[2:-2])
+                segments.append((value, "bold"))
+            else:
+                segments.append((token[1:-1], "code"))
             position = match.end()
         if position < len(line):
             segments.append((line[position:], tag))

@@ -217,7 +217,10 @@ def test_first_user_message_titles_new_conversation_locally(tmp_path):
 
 
 def test_tk_markdown_renderer_removes_raw_markers_without_executing_html():
-    rendered = _markdown_segments("## Status\n- **Stable** runtime\nUse `main` <script>alert(1)</script>")
+    rendered = _markdown_segments(
+        "## Status\n- **Stable** runtime\n- **What I have *not* learned**\n"
+        "Use `main` <script>alert(1)</script>"
+    )
     text = "".join(value for value, _tag in rendered)
     tags = [tag for _value, tag in rendered]
 
@@ -225,6 +228,7 @@ def test_tk_markdown_renderer_removes_raw_markers_without_executing_html():
     assert "**" not in text
     assert "`" not in text
     assert "• Stable runtime" in text
+    assert "• What I have not learned" in text
     assert "<script>alert(1)</script>" in text
     assert {"heading", "bold", "code"} <= set(tags)
 

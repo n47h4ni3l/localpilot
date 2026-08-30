@@ -287,6 +287,9 @@ def test_passive_context_includes_durable_runtime_and_checkout_evidence(tmp_path
     assert activity["latest_background_cycle"]["status"] == "deferred"
     assert activity["latest_evolution_run"]["branch"] == "selfdev/example"
     assert activity["learning_boundaries"]["model_weights_changed_by_localpilot"] is False
+    assert activity["learning_boundaries"]["runtime_restart_counts_as_learning"] is False
+    assert activity["learning_boundaries"]["runtime_restart_counts_as_code_change"] is False
+    assert activity["learning_boundaries"]["current_commit_identifies_loaded_code"] is True
     assert "\"runtime\"" in context
     assert "\"process_started_at\":\"2026-08-29T02:03:04+00:00\"" in context
     assert "\"ordinary_chat_automatically_persisted_as_learning\":false" in context

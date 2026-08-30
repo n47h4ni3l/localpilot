@@ -94,6 +94,7 @@ def test_operational_self_status_uses_passive_evidence_without_memory_or_tools(
     assert "OPERATIONAL SELF-STATUS ROUTE" in context
     assert "selfdev/focused-change" in context
     assert "model_weights_changed_by_localpilot" in context
+    assert "a restart only loads code" in context
     assert "OPERATIONAL SELF-STATUS ROUTE" not in str(agent.messages)
     assert agent.audit.latest("model_operational_self_status_route")[
         "durable_memory_retrieval_skipped"

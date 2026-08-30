@@ -2405,6 +2405,12 @@ class LocalPilotAgent:
                     "Its repository, lifecycle, autonomous_activity, and learning_boundaries fields are the "
                     "current bounded evidence for this question. Do not search remembered repository paths, "
                     "request tools, or describe model-weight training. State missing fields as unavailable. "
+                    "Keep code state, process lifecycle, and learning separate: the repository commit identifies "
+                    "the code currently loaded, while a restart only loads code and is not itself a code change or "
+                    "learning event. Never claim that no files changed or were reloaded unless the supplied evidence "
+                    "establishes that comparison. Treat the background worker interval as polling cadence, not proof "
+                    "that autonomous work ran; use the latest cycle status and evolution summary to say what actually "
+                    "ran, was blocked, or was deferred. "
                     "Give the owner a direct concise status answer with exact timestamps, PIDs, branch, commit, "
                     "cycle status, or evolution result only when those fields are present."
                 ),

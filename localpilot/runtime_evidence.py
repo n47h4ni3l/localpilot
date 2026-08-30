@@ -147,6 +147,9 @@ class RuntimeEvidence:
             "learning_boundaries": {
                 "model_weights_changed_by_localpilot": False,
                 "ordinary_chat_automatically_persisted_as_learning": False,
+                "runtime_restart_counts_as_learning": False,
+                "runtime_restart_counts_as_code_change": False,
+                "current_commit_identifies_loaded_code": True,
                 "scope": (
                     "progress means durable studied facts, explicit owner lessons, reading notes, "
                     "and isolated self-development outcomes; it does not mean model-weight training"

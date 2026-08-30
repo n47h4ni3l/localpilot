@@ -799,14 +799,16 @@
   function scrollToBottom() { messageStream.scrollTop = messageStream.scrollHeight; }
 
   function appendInlineMarkdown(container, text) {
-    const pattern = /(\*\*[^*\n]+\*\*|`[^`\n]+`)/g;
+    const pattern = /(\*\*[^\n]+?\*\*|`[^`\n]+`)/g;
     let position = 0;
     let match;
     while ((match = pattern.exec(text)) !== null) {
       if (match.index > position) container.appendChild(document.createTextNode(text.slice(position, match.index)));
       const token = match[0];
       const element = document.createElement(token.startsWith("**") ? "strong" : "code");
-      element.textContent = token.startsWith("**") ? token.slice(2, -2) : token.slice(1, -1);
+      element.textContent = token.startsWith("**")
+        ? token.slice(2, -2).replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1$2")
+        : token.slice(1, -1);
       container.appendChild(element);
       position = match.index + token.length;
     }

@@ -117,11 +117,83 @@ class LearningMemoryReader:
                     """,
                     [*values, sample_limit],
                 ).fetchall()
+            human_lesson_row = connection.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) AS active_count
+                FROM human_lessons
+                """
+            ).fetchone()
+            durable_learning_row = connection.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN stale = 0 THEN 1 ELSE 0 END) AS current_count,
+                       SUM(CASE WHEN stale = 1 THEN 1 ELSE 0 END) AS stale_count
+                FROM durable_learnings
+                """
+            ).fetchone()
+            durable_type_rows = connection.execute(
+                """
+                SELECT learning_type, COUNT(*) AS total,
+                       SUM(CASE WHEN stale = 0 THEN 1 ELSE 0 END) AS current_count,
+                       SUM(CASE WHEN stale = 1 THEN 1 ELSE 0 END) AS stale_count
+                FROM durable_learnings
+                GROUP BY learning_type
+                ORDER BY total DESC, learning_type
+                """
+            ).fetchall()
+            cycle_row = connection.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN validation_state = 'rejected_by_human' THEN 1 ELSE 0 END)
+                           AS rejected_count,
+                       SUM(CASE WHEN merged = 1 AND validation_state = 'passed' THEN 1 ELSE 0 END)
+                           AS merged_count,
+                       SUM(CASE WHEN pushed = 1
+                                     AND validation_state != 'rejected_by_human'
+                                     AND NOT (merged = 1 AND validation_state = 'passed')
+                                THEN 1 ELSE 0 END) AS outstanding_count
+                FROM development_cycles
+                """
+            ).fetchone()
+            experiment_row = connection.execute(
+                "SELECT COUNT(*) AS total FROM capability_experiments"
+            ).fetchone()
 
         total = int(total_row["total"] or 0) if total_row is not None else 0
         current = int(total_row["current_count"] or 0) if total_row is not None else 0
         stale = int(total_row["stale_count"] or 0) if total_row is not None else 0
+        human_total = int(human_lesson_row["total"] or 0)
+        human_active = int(human_lesson_row["active_count"] or 0)
+        durable_total = int(durable_learning_row["total"] or 0)
+        durable_current = int(durable_learning_row["current_count"] or 0)
+        durable_stale = int(durable_learning_row["stale_count"] or 0)
         return {
+            "available": True,
+            "store": "LearningMemory",
+            "database": self.database.name,
+            "read_interface": "get_learning_memory_summary",
+            "scope": {
+                "stores": [
+                    "source-linked knowledge facts",
+                    "typed non-factual durable learnings",
+                    "explicit owner lessons",
+                    "self-development cycles, experiments, candidates, and frontiers",
+                    "study outcomes",
+                ],
+                "does_not_store": [
+                    "chat transcripts",
+                    "hidden reasoning",
+                    "model weights",
+                ],
+                "write_paths": [
+                    "verified staged study",
+                    "verified source-grounded background reading",
+                    "explicit owner teaching",
+                    "self-development lifecycle recording",
+                ],
+                "ordinary_chat_auto_persistence": False,
+            },
             "filters": {
                 "stage": clean_stage or None,
                 "fact_type": clean_type or None,
@@ -130,6 +202,32 @@ class LearningMemoryReader:
                 "total": total,
                 "current": current,
                 "stale": stale,
+            },
+            "human_lessons": {
+                "total": human_total,
+                "active": human_active,
+                "inactive": human_total - human_active,
+            },
+            "durable_learnings": {
+                "total": durable_total,
+                "current": durable_current,
+                "stale": durable_stale,
+                "by_type": [
+                    {
+                        "learning_type": str(row["learning_type"]),
+                        "total": int(row["total"] or 0),
+                        "current": int(row["current_count"] or 0),
+                        "stale": int(row["stale_count"] or 0),
+                    }
+                    for row in durable_type_rows
+                ],
+            },
+            "self_development_memory": {
+                "cycles": int(cycle_row["total"] or 0),
+                "merged": int(cycle_row["merged_count"] or 0),
+                "rejected": int(cycle_row["rejected_count"] or 0),
+                "outstanding": int(cycle_row["outstanding_count"] or 0),
+                "experiments": int(experiment_row["total"] or 0),
             },
             "by_stage": [
                 {

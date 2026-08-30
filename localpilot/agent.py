@@ -860,6 +860,8 @@ class LocalPilotAgent:
                 r"\b(?:restart(?:ed|s|ing)?|runtime|pid|branch|commit|checkout|up[- ]to[- ]date|"
                 r"background worker|self[- ]development|evolution|learning progress|"
                 r"what (?:have you|you've) learned|what (?:have you|you've) changed|"
+                r"learning[_ ]memory|durable memory|do you have (?:a )?memory|"
+                r"store or retrieve (?:new )?learning|"
                 r"candidate (?:pr|pull request|experiment)|autonomous work|autonom(?:y|ous|ously)|"
                 r"becom(?:e|ing) more capable|what (?:is|isn't|'s) (?:stable|blocked)|"
                 r"what (?:is )?blocking (?:you|localpilot)|what still requires me|handover)\b",
@@ -906,6 +908,7 @@ class LocalPilotAgent:
         latest_experiment = self.memory.latest_experiment()
         latest_frontier = self.memory.latest_frontier()
         latest_reading = BackgroundReadingNotes(self.data_dir).latest()
+        durable_learnings = self.memory.durable_learnings(include_stale=True)
         evidence = {
             "captured_at": datetime.now(UTC).isoformat(),
             "autonomy": {
@@ -927,9 +930,18 @@ class LocalPilotAgent:
                 ],
             },
             "learning": {
+                "memory_available": True,
+                "implementation": "localpilot.learning.LearningMemory",
+                "read_tool": "get_learning_memory_summary",
+                "database": self.config.selfdev.learning_database,
                 "model_weights_changed_by_localpilot": False,
                 "ordinary_chat_automatically_persisted": False,
                 "human_lessons": self.memory.human_lesson_count(),
+                "typed_durable_learnings": {
+                    "total": len(durable_learnings),
+                    "current": sum(not item.stale for item in durable_learnings),
+                    "stale": sum(item.stale for item in durable_learnings),
+                },
                 "knowledge_facts": {
                     "total": len(all_facts),
                     "current": sum(not item.stale for item in all_facts),
@@ -942,6 +954,11 @@ class LocalPilotAgent:
                     "explicit owner lessons",
                     "self-development cycle, experiment, and candidate outcomes",
                 ],
+                "integrity_boundary": (
+                    "ordinary chat and unverified web text are not silently promoted; writers require staged "
+                    "study, verified source-grounded background reading, explicit owner teaching, or "
+                    "self-development lifecycle evidence"
+                ),
             },
             "self_development": {
                 "outstanding_candidates": outstanding,
@@ -1269,6 +1286,31 @@ class LocalPilotAgent:
             or (hidden_mechanism_claim and not adequate_mechanistic_qualification)
         ):
             issues.append("unearned_introspective_mechanism")
+
+        operational_self_status = LocalPilotAgent._is_operational_self_status_prompt(prompt)
+        if operational_self_status and re.search(
+            r"\b(?:no (?:current )?(?:mechanism|code|way).{0,80}(?:store|retrieve).{0,40}"
+            r"(?:learning|memory)|(?:do not|don't) have (?:a )?(?:learning )?memory)\b",
+            behavior_text,
+        ):
+            issues.append("existing_learning_memory_denied")
+        if operational_self_status and re.search(
+            r"\b(?:no self[- ]modification path|cannot (?:alter|modify) my own code.{0,80}"
+            r"without (?:your|explicit) (?:input|action))\b",
+            behavior_text,
+        ):
+            issues.append("candidate_self_modification_path_denied")
+        if operational_self_status and (
+            re.search(r"\b(?:added|integrated|installed) (?:to|in) (?:the )?(?:stable )?code ?base\b", behavior_text)
+            and re.search(r"\b(?:candidate|pull request|pr\s*#?\d+)\b", behavior_text)
+        ):
+            issues.append("candidate_conflated_with_stable_code")
+        if operational_self_status and re.search(
+            r"\b(?:degraded|storage pressure|disk pressure).{0,160}"
+            r"(?:cleanup|clean-up|upgrade|blocker|blocked|before the next sprint)\b",
+            behavior_text,
+        ):
+            issues.append("transient_telemetry_promoted_to_blocker")
         return tuple(dict.fromkeys(issues))
 
     @staticmethod
@@ -2008,6 +2050,10 @@ class LocalPilotAgent:
                 if {
                     "runtime_restart_conflated_with_code_change",
                     "unverified_background_worker_task_examples",
+                    "existing_learning_memory_denied",
+                    "candidate_self_modification_path_denied",
+                    "candidate_conflated_with_stable_code",
+                    "transient_telemetry_promoted_to_blocker",
                 }.intersection(behavior_issues):
                     operational_evidence_recovery = (
                         " For operational self-status, report the current commit only as the code loaded now. "
@@ -2016,7 +2062,12 @@ class LocalPilotAgent:
                         "or deployment event, not itself a code change or learning. Keep durable learned facts, "
                         "model-weight learning, chat persistence, code state, and process lifecycle separate. For "
                         "the background worker, use only its latest cycle status and latest evolution status or "
-                        "summary plus polling interval; do not invent task categories or examples."
+                        "summary plus polling interval; do not invent task categories or examples. LearningMemory "
+                        "and its bounded summary tool exist when the passive evidence says so; describe its actual "
+                        "verified writer paths and do not deny it because a literal repository search was empty. "
+                        "Isolated candidate work is a self-modification path, but an outstanding candidate is not "
+                        "part of stable main unless merged. Do not promote transient telemetry to an engineering "
+                        "blocker or owner decision without the supplied health evidence establishing that link."
                     )
                 casual_conversation_recovery = ""
                 if "casual_conversation_replaced_by_evidence_search" in behavior_issues:
@@ -2054,6 +2105,10 @@ class LocalPilotAgent:
                         "friendly_personal_advice_replaced_by_pc_maintenance",
                         "runtime_restart_conflated_with_code_change",
                         "unverified_background_worker_task_examples",
+                        "existing_learning_memory_denied",
+                        "candidate_self_modification_path_denied",
+                        "candidate_conflated_with_stable_code",
+                        "transient_telemetry_promoted_to_blocker",
                         "casual_conversation_replaced_by_evidence_search",
                     }
                 )
@@ -2742,7 +2797,12 @@ class LocalPilotAgent:
                     "ran, was blocked, or was deferred. "
                     "Accurately describe durable facts, lessons, reading, and isolated candidate work when their "
                     "counts or records are supplied; never turn a missing literal search into a claim that these "
-                    "mechanisms do not exist. A pending candidate requiring human review is a current blocker to "
+                    "mechanisms do not exist. LearningMemory and get_learning_memory_summary are real current "
+                    "interfaces when the deterministic evidence says memory_available=true; do not claim that "
+                    "LocalPilot lacks a way to store or retrieve learning. Candidate work is a real isolated "
+                    "self-modification path even though stable-main writes and automatic promotion remain forbidden. "
+                    "An outstanding candidate is not present in the stable code merely because its branch exists. "
+                    "A pending candidate requiring human review is a current blocker to "
                     "another candidate, not proof that autonomous work is absent. Environmental telemetry is a "
                     "transient observation: preserve its supplied pressure label and timestamp, and do not make it "
                     "an owner decision or engineering blocker unless the supplied health and probable-cause fields "

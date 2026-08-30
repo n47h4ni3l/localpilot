@@ -105,6 +105,7 @@ def test_operational_status_classifier_covers_owner_handover_and_autonomy_questi
     for prompt in (
         "LocalPilot, give me a handover of what is stable, blocked, and the next decision.",
         "What can you actually do autonomously toward becoming more capable, what is blocking you, and what still requires me?",
+        "Do you have learning_memory and can you store or retrieve new learning?",
     ):
         assert LocalPilotAgent._is_operational_self_status_prompt(prompt) is True
 
@@ -124,6 +125,31 @@ def test_operational_status_context_exposes_real_learning_and_authority_boundari
     assert '"candidate_workspace_writes_allowed":true' in context
     assert '"automatic_merge_or_promotion_allowed":false' in context
     assert '"public_web_research_available"' in context
+    assert '"memory_available":true' in context
+    assert '"read_tool":"get_learning_memory_summary"' in context
+    assert '"typed_durable_learnings"' in context
+
+
+def test_operational_status_behavior_gate_rejects_memory_and_candidate_misstatements():
+    prompt = (
+        "While I'm away, what can you do autonomously, what is blocked, and do you have "
+        "learning_memory?"
+    )
+
+    issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        """
+        I have no mechanism to store or retrieve learning and no self-modification path without
+        your explicit input. The candidate self-teaching feature has been added to the code base,
+        but PR #79 is still outstanding. Storage pressure means you should plan a cleanup before
+        the next sprint.
+        """,
+    )
+
+    assert "existing_learning_memory_denied" in issues
+    assert "candidate_self_modification_path_denied" in issues
+    assert "candidate_conflated_with_stable_code" in issues
+    assert "transient_telemetry_promoted_to_blocker" in issues
 
 
 def test_friendly_planning_prompt_is_direct_low_reasoning_without_memory_or_tools(

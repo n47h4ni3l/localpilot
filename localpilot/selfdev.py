@@ -3914,14 +3914,17 @@ class SelfDeveloper:
                 sync.summary + " Evolve stopped so the next invocation loads the updated code.",
             )
 
+        # Reconciliation is bounded GitHub/local-state bookkeeping, not model
+        # work. Keep review evidence current even while owner activity correctly
+        # defers resource-intensive candidate development.
+        self._reconcile_candidates()
+
         state = self.governor.sample()
         if not state.allows_selfdev(ignore_idle=force):
             self.governor.apply_process_priority(idle=False)
             reason = state.blocking_reason(ignore_idle=force)
             return EvolutionResult("deferred", None, None, f"PC is in use or busy: {reason}")
         self.governor.apply_process_priority(idle=True)
-
-        self._reconcile_candidates()
 
         checkpoint = self._validated_checkpoint()
         if checkpoint is not None:

@@ -75,6 +75,39 @@ def test_learning_reader_can_filter_fact_type_and_empty_state(tmp_path):
     assert missing["by_fact_type"] == []
 
 
+def test_learning_reader_exposes_the_real_memory_scope_and_writer_boundaries(tmp_path):
+    memory = _memory(tmp_path)
+    memory.record_human_lesson(
+        "Keep factual claims tied to their source.",
+        topic="evidence",
+        source="owner",
+    )
+    memory.upsert_durable_learning(
+        learning_key="reading:question:one",
+        learning_type="question",
+        subject="Memory integrity",
+        summary="How should conflicting sources be reconciled?",
+        source_uri="library://notes/page/1",
+        source_kind="local_library",
+        source_digest="abc",
+        provenance="verified background reading",
+        confidence=0.8,
+    )
+
+    result = LearningMemoryReader(tmp_path).get_learning_memory_summary()
+
+    assert result["available"] is True
+    assert result["store"] == "LearningMemory"
+    assert result["read_interface"] == "get_learning_memory_summary"
+    assert result["human_lessons"] == {"total": 1, "active": 1, "inactive": 0}
+    assert result["durable_learnings"]["current"] == 1
+    assert result["durable_learnings"]["by_type"][0]["learning_type"] == "question"
+    assert result["self_development_memory"]["cycles"] == 0
+    assert result["scope"]["ordinary_chat_auto_persistence"] is False
+    assert "model weights" in result["scope"]["does_not_store"]
+    assert "verified staged study" in result["scope"]["write_paths"]
+
+
 def test_learning_reader_bounds_stale_samples_and_sources(tmp_path):
     memory = _memory(tmp_path)
     for index in range(20):
@@ -111,6 +144,7 @@ def test_learning_memory_summary_is_registered_read_only(tmp_path):
 
     spec = tools["get_learning_memory_summary"]
     assert spec.risk == RiskLevel.READ_ONLY
+    assert "real LearningMemory" in spec.description
     result = spec.fn(stage="python")
     assert result["counts"] == {"total": 0, "current": 0, "stale": 0}
 

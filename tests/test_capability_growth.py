@@ -268,6 +268,41 @@ def test_outstanding_candidate_gate_prevents_parallel_experiment(tmp_path: Path,
     assert "One candidate" in result.summary
 
 
+def test_candidate_review_reconciliation_runs_even_when_owner_activity_defers_model_work(
+    tmp_path: Path, monkeypatch
+):
+    config = Config()
+    config.agent.data_dir = "data"
+    developer = SelfDeveloper(config, tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        developer.github,
+        "sync_trusted_main",
+        lambda: MainSyncResult(True, False, "current"),
+    )
+    monkeypatch.setattr(developer, "_reconcile_candidates", lambda: calls.append("reconciled"))
+    monkeypatch.setattr(
+        developer.governor,
+        "sample",
+        lambda: ResourceState(
+            0,
+            5,
+            20,
+            False,
+            "owner active",
+            idle_allowed=False,
+            capacity_allowed=True,
+            idle_reason="owner active",
+        ),
+    )
+    monkeypatch.setattr(developer.governor, "apply_process_priority", lambda idle: None)
+
+    result = developer._run_once()
+
+    assert result.status == "deferred"
+    assert calls == ["reconciled"]
+
+
 def test_capability_discovery_exposes_permissionless_public_web_research(
     tmp_path: Path, monkeypatch
 ):

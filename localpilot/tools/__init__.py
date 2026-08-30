@@ -99,7 +99,7 @@ def registry(
             [
                 ToolSpec(
                     "get_learning_memory_summary",
-                    "Read bounded current/stale durable knowledge-fact counts, fact types, source summaries, and stale samples from LocalPilot's local learning store without mutating it.",
+                    "Inspect LocalPilot's real LearningMemory without mutating it: bounded fact, durable-learning, owner-lesson, development-cycle, experiment, source, and staleness summaries plus the verified writer boundaries.",
                     RiskLevel.READ_ONLY,
                     learning.get_learning_memory_summary,
                 ),

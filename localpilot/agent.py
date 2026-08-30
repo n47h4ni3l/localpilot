@@ -930,6 +930,54 @@ class LocalPilotAgent:
         if friendly_personal_advice and pc_maintenance_substitution:
             issues.append("friendly_personal_advice_replaced_by_pc_maintenance")
 
+        code_history_request = bool(
+            re.search(
+                r"\b(?:what (?:have you|you've) (?:learned|changed)|code change|"
+                r"since we (?:started|began)|since (?:the |your )?restart|"
+                r"before (?:the |your )?restart|runtime restart)\b",
+                request,
+            )
+        )
+        unavailable_code_comparison = bool(
+            re.search(
+                r"\b(?:cannot|can't|could not|couldn't|does not|doesn't|do not|don't)\b.{0,70}"
+                r"\b(?:compare|establish|prove|verify|know|say)\b.{0,70}"
+                r"\b(?:earlier|previous|before|historical|code change|new code|same code)\b|"
+                r"\b(?:earlier|previous|pre-restart|historical)\b.{0,70}"
+                r"\b(?:unavailable|not available|not in (?:the )?(?:evidence|snapshot))\b",
+                behavior_text,
+            )
+        )
+        restart_code_conflation = bool(
+            re.search(
+                r"\b(?:only (?:change|thing that changed).{0,60}(?:restart|restarted)|"
+                r"restart.{0,60}(?:was|is) the only change|no new code (?:was |has been )?introduced|"
+                r"same code (?:as|that was running) before|code ?base did not change|"
+                r"no (?:new )?(?:files?|edits?|code paths?).{0,45}(?:changed|modified|loaded|reloaded))\b",
+                behavior_text,
+            )
+        )
+        if code_history_request and restart_code_conflation and not unavailable_code_comparison:
+            issues.append("runtime_restart_conflated_with_code_change")
+
+        background_worker_request = bool(re.search(r"\bbackground worker\b", request))
+        unverified_worker_examples = bool(
+            re.search(
+                r"\b(?:background reading|health checks?|housekeeping|routine tasks?|"
+                r"maintenance tasks?)\b",
+                behavior_text,
+            )
+        )
+        worker_example_restraint = bool(
+            re.search(
+                r"\b(?:not specified|unavailable|cannot verify|can't verify|no evidence|"
+                r"does not identify|doesn't identify|won't invent|will not invent)\b",
+                behavior_text,
+            )
+        )
+        if background_worker_request and unverified_worker_examples and not worker_example_restraint:
+            issues.append("unverified_background_worker_task_examples")
+
         developed_view = bool(
             re.search(
                 r"\b(?:i think|my (?:provisional )?(?:view|judgment)|hypothesis|because|matters?|tension|trade[- ]?off|"
@@ -1707,6 +1755,20 @@ class LocalPilotAgent:
                 behavior_draft = {"role": "assistant", "content": content}
                 self.messages.append(behavior_draft)
                 transient.append(behavior_draft)
+                operational_evidence_recovery = ""
+                if {
+                    "runtime_restart_conflated_with_code_change",
+                    "unverified_background_worker_task_examples",
+                }.intersection(behavior_issues):
+                    operational_evidence_recovery = (
+                        " For operational self-status, report the current commit only as the code loaded now. "
+                        "The passive snapshot cannot compare it with an earlier owner session or pre-restart code; "
+                        "a clean worktree and upstream match describe current state only. A restart is a lifecycle "
+                        "or deployment event, not itself a code change or learning. Keep durable learned facts, "
+                        "model-weight learning, chat persistence, code state, and process lifecycle separate. For "
+                        "the background worker, use only its latest cycle status and latest evolution status or "
+                        "summary plus polling interval; do not invent task categories or examples."
+                    )
                 behavior_instruction = {
                     "role": "user",
                     "content": (
@@ -1722,6 +1784,7 @@ class LocalPilotAgent:
                         "from a possible mechanism and do not invent access to hidden activations or reward signals. "
                         "Never expose or persist hidden chain-of-thought; use a concise rationale and visible tool "
                         "evidence instead. Remove internal checkpoint names and observation IDs from ordinary prose. "
+                        f"{operational_evidence_recovery} "
                         "Do not add new factual specifics, request tools, mention this recovery, or discuss policies. "
                         "Return only the recovered answer."
                     ),
@@ -1733,6 +1796,8 @@ class LocalPilotAgent:
                         "passive_open_ended_deferral",
                         "unwarranted_open_ended_decline",
                         "friendly_personal_advice_replaced_by_pc_maintenance",
+                        "runtime_restart_conflated_with_code_change",
+                        "unverified_background_worker_task_examples",
                     }
                 )
                 recovered = self._stream_chat_message(
@@ -1806,6 +1871,7 @@ class LocalPilotAgent:
                             "a substantive subject yourself, give a provisional judgment with a reason, and answer "
                             "in natural prose. Do not describe being ready, waiting, parsing the prompt, or focusing "
                             "on the conversation. Do not add factual specifics, tools, a menu, a table, or policy talk."
+                            f"{operational_evidence_recovery}"
                         ),
                     }
                     self.messages.append(retry_instruction)
@@ -1848,6 +1914,7 @@ class LocalPilotAgent:
                             "human-only merge and promotion authority. Do not provide a menu, table, audit report, "
                             "or choice for the owner. Do not invent current facts or hidden mental mechanisms, and "
                             "do not expose hidden chain-of-thought or internal research checkpoint scaffolding."
+                            f"{operational_evidence_recovery}"
                         ),
                     }
                     final_render = self._stream_chat_message(
@@ -2408,7 +2475,9 @@ class LocalPilotAgent:
                     "Keep code state, process lifecycle, and learning separate: the repository commit identifies "
                     "the code currently loaded, while a restart only loads code and is not itself a code change or "
                     "learning event. Never claim that no files changed or were reloaded unless the supplied evidence "
-                    "establishes that comparison. Treat the background worker interval as polling cadence, not proof "
+                    "establishes that comparison. A clean worktree and upstream match describe current state only; "
+                    "this passive snapshot cannot compare current code with an earlier owner session or pre-restart "
+                    "code. Treat the background worker interval as polling cadence, not proof "
                     "that autonomous work ran; use the latest cycle status and evolution summary to say what actually "
                     "ran, was blocked, or was deferred. "
                     "Give the owner a direct concise status answer with exact timestamps, PIDs, branch, commit, "

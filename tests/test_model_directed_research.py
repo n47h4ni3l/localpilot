@@ -197,6 +197,72 @@ def test_pc_maintenance_does_not_replace_friendly_personal_advice(tmp_path):
     assert "friendly_personal_advice_replaced_by_pc_maintenance" in issues
 
 
+def test_operational_status_rejects_restart_code_conflation_and_invented_worker_tasks(tmp_path):
+    _, agent = _agent(tmp_path)
+
+    issues = agent._response_behavior_issues(
+        "What have you learned or changed since we started, and what will your background worker do?",
+        "The only change was a runtime restart. No new code was introduced, so it is the same code as "
+        "before. The worker will do background reading, health checks, and housekeeping.",
+    )
+
+    assert "runtime_restart_conflated_with_code_change" in issues
+    assert "unverified_background_worker_task_examples" in issues
+
+
+def test_operational_status_recovers_from_restart_conflation_without_inventing_worker_tasks(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path)
+    calls = []
+    streams = iter(
+        [
+            [
+                _chunk(
+                    content=(
+                        "The only change was a runtime restart and no new code was introduced. "
+                        "The worker will do background reading, health checks, and housekeeping."
+                    )
+                )
+            ],
+            [
+                _chunk(
+                    content=(
+                        "The current commit identifies the code loaded now. The passive evidence cannot compare "
+                        "it with the earlier session; the restart loaded code but was not itself a code change or "
+                        "learning. No model weights changed. The latest worker cycle was deferred because the PC "
+                        "was in use; its polling interval is not evidence that autonomous work ran."
+                    )
+                )
+            ],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "Tell me what you learned or changed since we started, what was a code change versus a runtime "
+        "restart, and what your background worker will do."
+    )
+
+    assert "cannot compare it with the earlier session" in answer
+    assert "latest worker cycle was deferred" in answer
+    assert len(calls) == 2
+    recovery = agent.audit.latest("model_same_context_behavior_recovery_complete")
+    assert recovery["original_issues"] == [
+        "runtime_restart_conflated_with_code_change",
+        "unverified_background_worker_task_examples",
+    ]
+    assert recovery["accepted"] is True
+    recovery_context = str(calls[-1]["messages"])
+    assert "passive snapshot cannot compare" in recovery_context
+    assert "do not invent task categories" in recovery_context
+
+
 def test_model_can_request_more_evidence_after_post_tool_review(tmp_path, monkeypatch):
     _, agent = _agent(tmp_path, soft=3, hard=5)
     (tmp_path / "known.txt").write_text("verified detail", encoding="utf-8")

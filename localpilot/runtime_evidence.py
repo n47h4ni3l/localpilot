@@ -150,6 +150,10 @@ class RuntimeEvidence:
                 "runtime_restart_counts_as_learning": False,
                 "runtime_restart_counts_as_code_change": False,
                 "current_commit_identifies_loaded_code": True,
+                "clean_worktree_describes_current_uncommitted_state_only": True,
+                "upstream_match_describes_current_ref_alignment_only": True,
+                "previous_owner_session_commit_available": False,
+                "passive_snapshot_can_compare_pre_restart_code": False,
                 "scope": (
                     "progress means durable studied facts, explicit owner lessons, reading notes, "
                     "and isolated self-development outcomes; it does not mean model-weight training"

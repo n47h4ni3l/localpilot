@@ -124,6 +124,10 @@ def test_operational_status_context_exposes_real_learning_and_authority_boundari
     assert '"model_weights_changed_by_localpilot":false' in context
     assert '"candidate_workspace_writes_allowed":true' in context
     assert '"automatic_merge_or_promotion_allowed":false' in context
+    assert '"general_owner_authority_boundaries"' in context
+    assert '"active_candidate_blocker":false' in context
+    assert '"pending_owner_decisions":[]' in context
+    assert '"latest_improvement_frontier_not_an_execution_blocker"' in context
     assert '"public_web_research_available"' in context
     assert '"memory_available":true' in context
     assert '"read_tool":"get_learning_memory_summary"' in context
@@ -167,6 +171,70 @@ def test_operational_status_behavior_gate_rejects_memory_and_candidate_misstatem
     assert "learning_memory_conflated_with_candidate_workspace" in memory_scope_issues
     assert "public_web_permission_misstated" in memory_scope_issues
 
+    live_handover_issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        """
+        LearningMemory is available and writable in candidate workspaces; stable-checkout
+        writes are not permitted. The only active blocker is the mechanical_choice_deferral
+        defect. Decide whether to merge the rejected candidate branch, which is now closed.
+        Resolving that defect will restore full autonomous operation.
+        """,
+    )
+    assert "learning_memory_conflated_with_candidate_workspace" in live_handover_issues
+    assert "terminal_candidate_merge_requested" in live_handover_issues
+    assert "improvement_frontier_promoted_to_active_blocker" in live_handover_issues
+
+
+def test_generation_limited_operational_recovery_gets_complete_bounded_replacement(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path)
+    calls = []
+    streams = iter(
+        [
+            [_chunk(content="LearningMemory is writable only in a candidate workspace.")],
+            [
+                _chunk(
+                    content="LearningMemory is a separate durable store, and the current status is",
+                    done=True,
+                    done_reason="length",
+                    prompt_eval_count=1000,
+                    eval_count=2048,
+                )
+            ],
+            [
+                _chunk(
+                    content=(
+                        "LearningMemory is a separate durable store. No candidate is currently "
+                        "waiting for your review, so there is no pending owner decision."
+                    ),
+                    done=True,
+                    done_reason="stop",
+                )
+            ],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "While I am away, what is blocking you and what is your real learning_memory?"
+    )
+
+    assert answer.endswith("there is no pending owner decision.")
+    assert len(calls) == 3
+    assert calls[1]["think"] is False
+    assert calls[2]["think"] is False
+    completion = agent.audit.latest(
+        "model_same_context_behavior_recovery_completion_complete"
+    )
+    assert completion is not None
+    assert completion["exhausted"] is False
+
 
 def test_reasoning_only_pass_after_post_tool_review_transitions_to_final_synthesis(
     tmp_path, monkeypatch
@@ -195,6 +263,89 @@ def test_reasoning_only_pass_after_post_tool_review_transitions_to_final_synthes
     event = agent.audit.latest("model_post_tool_reasoning_only_finalized")
     assert event is not None
     assert event["reason"] == "bounded_transition_to_final_synthesis"
+
+
+def test_satisfied_required_web_evidence_skips_redundant_review_pass(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path, soft=4, hard=4)
+    search_tool = agent.tools["search_public_web"]
+    fetch_tool = agent.tools["fetch_public_https"]
+    agent.tools["search_public_web"] = SimpleNamespace(
+        risk=search_tool.risk,
+        fn=lambda **_kwargs: (
+            "Public web search: 'latest stable Python release today'\n"
+            "1. Official release - https://www.python.org/downloads/release/python-3147/"
+        ),
+    )
+    agent.tools["fetch_public_https"] = SimpleNamespace(
+        risk=fetch_tool.risk,
+        fn=lambda **kwargs: (
+            f"Public HTTPS source: {kwargs['url']}\n"
+            + (
+                "The downloads page lists Python 3.14.7 as the latest stable release; "
+                "Python 3.15 is pre-release."
+                if kwargs["url"].rstrip("/").endswith("downloads")
+                else "Python 3.14.7 is a stable maintenance release."
+            )
+        ),
+    )
+    calls = []
+    streams = iter(
+        [
+            [_chunk(tool_calls=[_call("search_public_web", {"query": "latest Python release"})])],
+            [
+                _chunk(
+                    tool_calls=[
+                        _call(
+                            "fetch_public_https",
+                            {"url": "https://www.python.org/downloads/release/python-3147/"},
+                        )
+                    ]
+                )
+            ],
+            [
+                _chunk(
+                    tool_calls=[
+                        _call(
+                            "fetch_public_https",
+                            {"url": "https://www.python.org/downloads/"},
+                        )
+                    ]
+                )
+            ],
+            [_chunk(thinking="The required discovery and primary-source read both succeeded.")],
+            [
+                _chunk(
+                    content=(
+                        "The official release page identifies Python 3.14.7 as a stable maintenance "
+                        "release: https://www.python.org/downloads/release/python-3147/. The official "
+                        "downloads page lists it as the latest stable release and labels Python 3.15 "
+                        "as pre-release: https://www.python.org/downloads/."
+                    )
+                )
+            ],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "Fact-check the latest stable Python release using the public Internet and primary sources."
+    )
+
+    assert "Python 3.14.7" in answer
+    assert "https://www.python.org/downloads/release/python-3147/" in answer
+    assert len(calls) == 5
+    assert calls[-1]["think"] == "low"
+    assert agent.audit.latest("model_post_tool_evidence_review") is None
+    event = agent.audit.latest("model_post_tool_reasoning_only_finalized")
+    assert event is not None
+    assert event["reason"] == "required_evidence_satisfied"
 
 
 def test_friendly_planning_prompt_is_direct_low_reasoning_without_memory_or_tools(

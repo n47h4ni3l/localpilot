@@ -923,7 +923,7 @@ class LocalPilotAgent:
                 "stable_checkout_direct_writes_allowed": False,
                 "candidate_workspace_writes_allowed": True,
                 "automatic_merge_or_promotion_allowed": False,
-                "owner_required_for": [
+                "general_owner_authority_boundaries": [
                     "reviewing and merging candidate pull requests",
                     "destructive or otherwise confirmation-gated operator actions",
                     "providing goals or choices that cannot be inferred safely",
@@ -964,6 +964,12 @@ class LocalPilotAgent:
                 "outstanding_candidates": outstanding,
                 "local_unpushed_candidates": local_candidates,
                 "new_candidate_creation_blocked_by_outstanding_candidate": bool(outstanding or local_candidates),
+                "active_candidate_blocker": bool(outstanding or local_candidates),
+                "pending_owner_decisions": (
+                    ["review the currently outstanding candidate"]
+                    if outstanding or local_candidates
+                    else []
+                ),
                 "latest_experiment": (
                     {
                         "task_id": latest_experiment.task_id,
@@ -976,7 +982,7 @@ class LocalPilotAgent:
                     if latest_experiment is not None
                     else None
                 ),
-                "latest_frontier": (
+                "latest_improvement_frontier_not_an_execution_blocker": (
                     {
                         "task_id": latest_frontier.task_id,
                         "current_frontier": latest_frontier.current_frontier,
@@ -1319,17 +1325,33 @@ class LocalPilotAgent:
         ):
             issues.append("rejected_history_promoted_to_blocker")
         if operational_self_status and re.search(
+            r"\b(?:decide whether to|you (?:should|need to|must))\b.{0,100}"
+            r"\b(?:merge|keep|revisit)\b.{0,100}\b(?:rejected|closed)\b|"
+            r"\b(?:merge|keep|revisit)\b.{0,100}\b(?:rejected|closed)\b.{0,100}"
+            r"\b(?:candidate|branch|pull request|pr)\b",
+            behavior_text,
+        ):
+            issues.append("terminal_candidate_merge_requested")
+        if operational_self_status and re.search(
             r"\bno (?:pending merges? or )?outstanding candidate branches? (?:are|remain) "
             r"in the repository\b",
             behavior_text,
         ):
             issues.append("terminal_candidate_history_denied")
         if operational_self_status and re.search(
-            r"\blearning memory\b.{0,200}\b(?:read from and )?write to only "
-            r"(?:within|in) (?:a |the )?candidate workspace\b",
+            r"\blearning[ _]?memory\b.{0,220}\b(?:read from and )?writ(?:e|able) (?:to )?"
+            r"(?:only )?(?:within|in) (?:a |the )?candidate workspaces?\b|"
+            r"\blearning[ _]?memory\b.{0,160}\bwritable in candidate workspaces?\b",
             behavior_text,
         ):
             issues.append("learning_memory_conflated_with_candidate_workspace")
+        if operational_self_status and re.search(
+            r"\b(?:only active )?blocker\b.{0,100}\bmechanical_choice_deferral\b|"
+            r"\bmechanical_choice_deferral\b.{0,160}\b(?:restore full autonomous operation|"
+            r"active blocker|blocking me)\b",
+            behavior_text,
+        ):
+            issues.append("improvement_frontier_promoted_to_active_blocker")
         if operational_self_status and re.search(
             r"\b(?:you (?:also )?(?:need to|must|can) (?:give|grant)(?: me)? permission|"
             r"requires? your permission).{0,100}\b(?:fetch|research|browse|public (?:web|internet)|"
@@ -2062,6 +2084,7 @@ class LocalPilotAgent:
                     content = str(response.get("content") or "")
                     calls = response.get("tool_calls") or []
 
+            operational_self_status = self._is_operational_self_status_prompt(prompt)
             behavior_issues = (
                 self._response_behavior_issues(prompt, content)
                 if content.strip() and not calls
@@ -2082,8 +2105,10 @@ class LocalPilotAgent:
                     "transient_telemetry_promoted_to_blocker",
                     "rejected_history_promoted_to_blocker",
                     "terminal_candidate_history_denied",
+                    "terminal_candidate_merge_requested",
                     "learning_memory_conflated_with_candidate_workspace",
                     "public_web_permission_misstated",
+                    "improvement_frontier_promoted_to_active_blocker",
                 }.intersection(behavior_issues):
                     operational_evidence_recovery = (
                         " For operational self-status, report the current commit only as the code loaded now. "
@@ -2099,7 +2124,11 @@ class LocalPilotAgent:
                         "part of stable main unless merged. Do not promote transient telemetry to an engineering "
                         "blocker or owner decision without the supplied health evidence establishing that link."
                         " A rejected candidate is terminal history that clears the active-candidate gate; it is not "
-                        "a current blocker or an owner decision, and its retained branch/PR history may still exist."
+                        "a current blocker or an owner decision, and its retained branch/PR history may still exist; "
+                        "never ask the owner to merge, keep, or revisit that rejected candidate. The latest improvement "
+                        "frontier is a development target, not an active execution blocker and not proof that resolving "
+                        "one item would restore full autonomy. When pending_owner_decisions is empty, do not invent a "
+                        "current decision for the owner; distinguish general authority boundaries from pending work."
                         " LearningMemory is the separate machine-local durable store described by the evidence; "
                         "it is not confined to candidate workspaces. Credential-free public HTTPS research needs "
                         "no per-use owner permission when the autonomy evidence says it is available."
@@ -2146,14 +2175,19 @@ class LocalPilotAgent:
                         "transient_telemetry_promoted_to_blocker",
                         "rejected_history_promoted_to_blocker",
                         "terminal_candidate_history_denied",
+                        "terminal_candidate_merge_requested",
                         "learning_memory_conflated_with_candidate_workspace",
                         "public_web_permission_misstated",
+                        "improvement_frontier_promoted_to_active_blocker",
                         "casual_conversation_replaced_by_evidence_search",
                     }
                 )
+                recovery_think: bool | str = (
+                    False if operational_self_status else "medium"
+                )
                 recovered = self._stream_chat_message(
                     chat,
-                    think="medium",
+                    think=recovery_think,
                     options={"num_predict": 2048},
                     messages=(
                         [*recovery_base_messages, behavior_instruction]
@@ -2165,6 +2199,57 @@ class LocalPilotAgent:
                 )
                 recovered_content = str(recovered.get("content") or "")
                 recovered_calls = recovered.get("tool_calls") or []
+                recovered_runtime = dict(self._last_stream_runtime)
+                if (
+                    recovered_runtime.get("runtime_classification") == "generation_limit"
+                    and recovered_content.strip()
+                    and not recovered_calls
+                ):
+                    incomplete_recovery = {
+                        "role": "assistant",
+                        "content": recovered_content,
+                    }
+                    completion_instruction = {
+                        "role": "user",
+                        "content": (
+                            "That recovery reached its generation limit and may end mid-sentence. Replace it with "
+                            "one complete, concise answer to the owner's original request. Preserve its useful facts "
+                            "and judgment, but finish every sentence. Do not add facts, request tools, use a table, "
+                            "mention this repair, or continue from the fragment. Return the complete replacement only."
+                        ),
+                    }
+                    completed_recovery = self._stream_chat_message(
+                        chat,
+                        think=False,
+                        options={"num_predict": 1600},
+                        messages=[
+                            *recovery_base_messages,
+                            behavior_instruction,
+                            incomplete_recovery,
+                            completion_instruction,
+                        ],
+                        phase="same_context_behavior_recovery_completion",
+                        turn_no=round_no,
+                    )
+                    recovered_content = str(completed_recovery.get("content") or "")
+                    recovered_calls = completed_recovery.get("tool_calls") or []
+                    recovered_runtime = dict(self._last_stream_runtime)
+                    completion_exhausted = (
+                        recovered_runtime.get("runtime_classification") == "generation_limit"
+                    )
+                    self.audit.write(
+                        "model_same_context_behavior_recovery_completion_complete",
+                        model=self.config.model.name,
+                        round=round_no,
+                        content_chars=len(recovered_content),
+                        exhausted=completion_exhausted,
+                    )
+                    if completion_exhausted:
+                        recovered_content = (
+                            "[LocalPilot withheld an incomplete status recovery after its single bounded "
+                            "completion also reached the generation limit.]"
+                        )
+                        recovered_calls = []
                 if (
                     not recovered_content.strip()
                     and not recovered_calls
@@ -3092,6 +3177,7 @@ class LocalPilotAgent:
             hard_limit: bool = False,
             draft_content: str | None = None,
             synthesis_reason: str = "",
+            answer_think: bool | str | None = None,
         ) -> str:
             strip_transient_controls(reason="before_final_synthesis")
             return self._continue_high_reasoning_answer(
@@ -3100,7 +3186,7 @@ class LocalPilotAgent:
                 round_no=round_no,
                 after_tools=after_tools,
                 hard_limit=hard_limit,
-                think=operator_think,
+                think=operator_think if answer_think is None else answer_think,
                 authority_review=(
                     bool(retrieved_facts)
                     or self._requires_information_authority_review(prompt)
@@ -3732,6 +3818,24 @@ class LocalPilotAgent:
                 if used_tools:
                     if not post_tool_guidance_given and allow_tools:
                         response["content"] = ""
+                        if (
+                            thinking.strip()
+                            and evidence_requirements
+                            and not missing_evidence
+                            and self._is_temporal_web_prompt(prompt)
+                        ):
+                            self.audit.write(
+                                "model_post_tool_reasoning_only_finalized",
+                                round=turn_no,
+                                tool_rounds=tool_rounds_used,
+                                reasoning_chars=len(thinking),
+                                reason="required_evidence_satisfied",
+                            )
+                            return continue_clean_answer(
+                                round_no=turn_no,
+                                after_tools=True,
+                                answer_think="low",
+                            )
                         add_internal(
                             "Continue from the exact tool results and reasoning already present above; decide whether "
                             "you have enough verified evidence for the owner's original request. If important facts "

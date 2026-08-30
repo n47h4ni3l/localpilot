@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 from types import SimpleNamespace
 
 import pytest
@@ -10,8 +11,9 @@ from localpilot.tools.web import fetch_public_https, search_public_web
 
 
 class _Headers:
-    def __init__(self, content_type: str = "text/html") -> None:
+    def __init__(self, content_type: str = "text/html", content_encoding: str = "identity") -> None:
         self.content_type = content_type
+        self.content_encoding = content_encoding
 
     def get_content_type(self):
         return self.content_type
@@ -20,14 +22,23 @@ class _Headers:
         return "utf-8"
 
     def get(self, name, default=None):
+        if str(name).lower() == "content-encoding":
+            return self.content_encoding
         return default
 
 
 class _Response:
-    def __init__(self, url: str, body: str, content_type: str = "text/html") -> None:
+    def __init__(
+        self,
+        url: str,
+        body: str,
+        content_type: str = "text/html",
+        content_encoding: str = "identity",
+    ) -> None:
         self._url = url
-        self._body = body.encode("utf-8")
-        self.headers = _Headers(content_type)
+        raw = body.encode("utf-8")
+        self._body = gzip.compress(raw) if content_encoding == "gzip" else raw
+        self.headers = _Headers(content_type, content_encoding)
 
     def geturl(self):
         return self._url
@@ -104,6 +115,30 @@ def test_search_to_read_flow_keeps_discovery_separate_from_evidence(monkeypatch)
     assert "HTTPS source: https://example.com/article" in page
     assert "Verified after an explicit page read." in page
     assert len(opener.urls) == 2
+
+
+def test_https_reader_decodes_bounded_gzip_text(monkeypatch):
+    article_html = "<html><body><h1>Python 3.14.7</h1><p>Latest stable release.</p></body></html>"
+
+    class GzipOpener:
+        def open(self, request, timeout=15):
+            assert request.headers["Accept-encoding"] == "gzip, deflate, identity"
+            return _Response(
+                request.full_url,
+                article_html,
+                content_encoding="gzip",
+            )
+
+    monkeypatch.setattr("localpilot.tools.web.socket.getaddrinfo", _public_dns)
+    monkeypatch.setattr(
+        "localpilot.tools.web.urllib.request.build_opener",
+        lambda *args: GzipOpener(),
+    )
+
+    page = fetch_public_https("https://example.com/article")
+
+    assert "Python 3.14.7" in page
+    assert "Latest stable release." in page
 
 
 def test_web_search_validates_query_and_limits(monkeypatch):

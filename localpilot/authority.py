@@ -522,6 +522,17 @@ class InformationAuthorityVerifier:
             marker in text for marker in _NON_CURRENT
         )
 
+    @classmethod
+    def _negative_relationship_claim(cls, sentence: str) -> bool:
+        text = cls._normalized(sentence)
+        return bool(
+            re.search(
+                r"\b(?:no longer|does not|doesn't|do not|don't|never|cannot|can't)\b"
+                r".{0,80}\b(?:call|calls|invoke|invokes|use|uses|route|routes|write|writes|read|reads)\b",
+                text,
+            )
+        )
+
     @staticmethod
     def _literals(sentence: str) -> tuple[str, ...]:
         return tuple(
@@ -585,8 +596,12 @@ class InformationAuthorityVerifier:
         requires_repository_grounding = False
         for sentence in sentences:
             normalized = self._normalized(sentence)
-            if self._negated_or_noncurrent(sentence):
+            negative_relationship = self._negative_relationship_claim(sentence)
+            if self._negated_or_noncurrent(sentence) and not negative_relationship:
                 continue
+            if negative_relationship and len(self._literals(sentence)) >= 2:
+                requires_repository_grounding = True
+                break
             if any(
                 not any(marker in normalized for marker in rule.exceptions)
                 and all(any(alias in normalized for alias in group) for group in rule.groups)
@@ -647,6 +662,7 @@ class InformationAuthorityVerifier:
         for sentence in sentences:
             normalized = self._normalized(sentence)
             negated_or_noncurrent = self._negated_or_noncurrent(sentence)
+            negative_relationship = self._negative_relationship_claim(sentence)
             literals = self._literals(sentence)
             repository_context = any(
                 literal.endswith(_PATH_SUFFIXES) or "/" in literal
@@ -735,11 +751,25 @@ class InformationAuthorityVerifier:
             if (
                 len(resolved_in_order) >= 2
                 and words & _RELATION_WORDS
-                and not negated_or_noncurrent
             ):
                 claim_classes.add("call_relationship")
                 caller, callee = resolved_in_order[:2]
-                if self._relationship_exists(caller, callee, relationships):
+                relationship_exists = self._relationship_exists(
+                    caller, callee, relationships
+                )
+                if negative_relationship and relationship_exists:
+                    issues.append(
+                        AuthorityIssue(
+                            "contradicted_negative_call_relationship",
+                            "call_relationship",
+                            f"Live repository evidence contains {caller}->{callee}.",
+                            sentence,
+                        )
+                    )
+                    evidence.append(f"call:{caller}->{callee.split('.')[-1]}")
+                elif negated_or_noncurrent:
+                    continue
+                elif relationship_exists:
                     evidence.append(f"call:{caller}->{callee.split('.')[-1]}")
                 else:
                     issues.append(

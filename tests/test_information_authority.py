@@ -70,6 +70,17 @@ def test_live_repository_literals_and_direct_calls_use_actual_ground_truth():
     assert external.accepted is True
 
 
+def test_negative_call_claim_is_rejected_when_live_relationship_exists():
+    report = InformationAuthorityVerifier(PROJECT_ROOT).review(
+        "`_chat` no longer calls `LocalPilotAgent`."
+    )
+
+    assert report.accepted is False
+    assert {issue.code for issue in report.issues} == {
+        "contradicted_negative_call_relationship"
+    }
+
+
 def test_proposals_negations_and_ordinary_answers_do_not_trigger_repository_scans():
     verifier = InformationAuthorityVerifier(PROJECT_ROOT)
 
@@ -403,6 +414,61 @@ def test_explicit_primary_source_research_cannot_claim_success_without_fetch():
     assert unsupported == ("research_claims_without_primary_source",)
     assert scoped == ()
     assert verified == ()
+
+
+def test_latest_claim_rejects_guessed_or_superseded_source_and_accepts_current_source():
+    prompt = (
+        "Fact-check the latest stable Python release as of today using the public Internet "
+        "and primary sources."
+    )
+    tools = frozenset({"search_public_web", "fetch_public_https"})
+    guessed = [
+        {
+            "role": "tool",
+            "tool_name": "search_public_web",
+            "content": "Public web search: 'Python 3.13.7 release'",
+        },
+        {
+            "role": "tool",
+            "tool_name": "fetch_public_https",
+            "content": (
+                "HTTPS source: https://www.python.org/downloads/release/python-3137/\n"
+                "Python 3.13.7 has been superseded by Python 3.14.7."
+            ),
+        },
+    ]
+    current = [
+        {
+            "role": "tool",
+            "tool_name": "search_public_web",
+            "content": "Public web search: 'latest stable Python release today'",
+        },
+        {
+            "role": "tool",
+            "tool_name": "fetch_public_https",
+            "content": (
+                "HTTPS source: https://www.python.org/downloads/\n"
+                "Latest Python 3 Release - Python 3.14.7"
+            ),
+        },
+    ]
+
+    guessed_risks = LocalPilotAgent._contextual_evidence_risks(
+        prompt,
+        "The latest stable release is Python 3.13.7.",
+        tools,
+        guessed,
+    )
+    current_risks = LocalPilotAgent._contextual_evidence_risks(
+        prompt,
+        "The latest stable release is Python 3.14.7.",
+        tools,
+        current,
+    )
+
+    assert "latest_claim_from_version_guessed_search" in guessed_risks
+    assert "latest_claim_uses_superseded_primary_source" in guessed_risks
+    assert current_risks == ()
 
 
 def test_explicit_library_research_requires_library_evidence_and_requested_citation():

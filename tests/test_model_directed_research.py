@@ -101,6 +101,31 @@ def test_operational_self_status_uses_passive_evidence_without_memory_or_tools(
     ] is True
 
 
+def test_operational_status_classifier_covers_owner_handover_and_autonomy_questions():
+    for prompt in (
+        "LocalPilot, give me a handover of what is stable, blocked, and the next decision.",
+        "What can you actually do autonomously toward becoming more capable, what is blocking you, and what still requires me?",
+    ):
+        assert LocalPilotAgent._is_operational_self_status_prompt(prompt) is True
+
+
+def test_operational_status_context_exposes_real_learning_and_authority_boundaries(tmp_path):
+    _, agent = _agent(tmp_path)
+    agent.memory.record_human_lesson(
+        "Keep verified facts separate from judgment.",
+        topic="communication",
+        source="owner",
+    )
+
+    context = agent._operational_self_status_context()
+
+    assert '"human_lessons":1' in context
+    assert '"model_weights_changed_by_localpilot":false' in context
+    assert '"candidate_workspace_writes_allowed":true' in context
+    assert '"automatic_merge_or_promotion_allowed":false' in context
+    assert '"public_web_research_available"' in context
+
+
 def test_friendly_planning_prompt_is_direct_low_reasoning_without_memory_or_tools(
     tmp_path, monkeypatch
 ):

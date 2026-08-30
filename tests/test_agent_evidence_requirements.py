@@ -24,6 +24,12 @@ def test_public_web_and_primary_source_language_requires_https_evidence():
     ) == {"public HTTPS"}
 
 
+def test_latest_public_internet_claim_requires_current_discovery_and_primary_read():
+    assert LocalPilotAgent._evidence_requirements(
+        "Fact-check the latest stable Python release as of today using the public Internet."
+    ) == {"public web discovery", "public HTTPS"}
+
+
 def test_explicit_library_inspection_requires_local_library_evidence():
     for prompt in (
         "Search the local library for power management guidance.",

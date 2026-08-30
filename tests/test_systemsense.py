@@ -277,6 +277,7 @@ def test_passive_context_includes_durable_runtime_and_checkout_evidence(tmp_path
         sensor_collector=FakeSensorCollector(),
         inventory_collector=FakeInventoryCollector(),
     )
+    sense.collect_dynamic()
 
     summary = sense.summary(collect_if_missing=False)
     context = sense.compact_context()
@@ -295,6 +296,8 @@ def test_passive_context_includes_durable_runtime_and_checkout_evidence(tmp_path
     assert activity["learning_boundaries"]["previous_owner_session_commit_available"] is False
     assert activity["learning_boundaries"]["passive_snapshot_can_compare_pre_restart_code"] is False
     assert "\"runtime\"" in context
+    assert "\"captured_at\"" in context
+    assert "\"minimum_volume_free_percent\":31.0" in context
     assert "\"process_started_at\":\"2026-08-29T02:03:04+00:00\"" in context
     assert "\"ordinary_chat_automatically_persisted_as_learning\":false" in context
 

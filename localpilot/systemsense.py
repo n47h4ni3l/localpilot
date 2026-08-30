@@ -840,6 +840,7 @@ class SystemSense:
         compact = {
             key: state.get(key)
             for key in (
+                "captured_at",
                 "system_health",
                 "compute_pressure",
                 "cpu_percent",
@@ -847,6 +848,7 @@ class SystemSense:
                 "memory_pressure",
                 "memory_percent",
                 "storage_pressure",
+                "minimum_volume_free_percent",
                 "thermal_state",
                 "thermal_margin_c",
                 "throttling_detected",

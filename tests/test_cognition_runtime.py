@@ -92,6 +92,9 @@ def test_tool_result_success_distinguishes_real_read_failures():
         "Private GitHub pull request (read-only).\nGitHub read failed: authentication required"
     ) is False
     assert LocalPilotAgent._tool_result_success("Tool error: FileNotFoundError: missing") is False
+    assert LocalPilotAgent._tool_result_success(
+        "Repository search: 'main->LocalPilotAgent'\nNo matches found."
+    ) is False
 
 
 def test_cognition_probe_requires_unpredictable_tool_then_validates_reasoned_answer(tmp_path):

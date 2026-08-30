@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import gzip
 import ipaddress
+import io
 import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from html.parser import HTMLParser
 
 
@@ -22,6 +25,39 @@ _ALLOWED_CONTENT_TYPES = {
     "application/xml",
     "application/xhtml+xml",
 }
+
+
+def _decode_transport_payload(payload: bytes, encoding: str, limit: int) -> bytes:
+    """Decode bounded HTTP content encodings without permitting decompression bombs."""
+    normalized = str(encoding or "identity").strip().lower()
+    if normalized in {"", "identity"}:
+        decoded = payload
+    elif normalized in {"gzip", "x-gzip"}:
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(payload)) as stream:
+                decoded = stream.read(limit + 1)
+        except (OSError, EOFError) as exc:
+            raise ValueError("HTTPS response used invalid gzip encoding.") from exc
+    elif normalized == "deflate":
+        decoded = b""
+        last_error: zlib.error | None = None
+        for window_bits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+            try:
+                decoder = zlib.decompressobj(window_bits)
+                decoded = decoder.decompress(payload, limit + 1)
+                remaining = max(1, limit + 1 - len(decoded))
+                decoded += decoder.flush(remaining)
+                last_error = None
+                break
+            except zlib.error as exc:
+                last_error = exc
+        if last_error is not None:
+            raise ValueError("HTTPS response used invalid deflate encoding.") from last_error
+    else:
+        raise ValueError(f"HTTPS response used unsupported content encoding: {normalized}")
+    if len(decoded) > limit:
+        raise ValueError("HTTPS response exceeds the bounded download limit after decoding.")
+    return decoded
 
 
 def _validate_public_https(url: str) -> urllib.parse.ParseResult:
@@ -182,6 +218,7 @@ def search_public_web(query: str, max_results: int = 5) -> str:
         headers={
             "User-Agent": _SEARCH_USER_AGENT,
             "Accept": "text/html,application/xhtml+xml",
+            "Accept-Encoding": "gzip, deflate, identity",
         },
         method="GET",
     )
@@ -201,12 +238,14 @@ def search_public_web(query: str, max_results: int = 5) -> str:
                 raise ValueError("Web search response exceeds the bounded download limit.")
             payload = response.read(_MAX_SEARCH_BYTES + 1)
             charset = response.headers.get_content_charset() or "utf-8"
+            content_encoding = response.headers.get("Content-Encoding") or "identity"
     except urllib.error.HTTPError as exc:
         raise ValueError(f"Web search failed with status {exc.code}.") from exc
     except urllib.error.URLError as exc:
         raise ValueError(f"Web search failed: {exc.reason}") from exc
     if len(payload) > _MAX_SEARCH_BYTES:
         raise ValueError("Web search response exceeds the bounded download limit.")
+    payload = _decode_transport_payload(payload, content_encoding, _MAX_SEARCH_BYTES)
     try:
         text = payload.decode(charset, errors="strict")
     except (LookupError, UnicodeDecodeError) as exc:
@@ -239,6 +278,7 @@ def fetch_public_https(url: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
         headers={
             "User-Agent": "LocalPilot/0.2 read-only research",
             "Accept": "text/plain,text/html,application/json,application/xml;q=0.9,*/*;q=0.2",
+            "Accept-Encoding": "gzip, deflate, identity",
         },
         method="GET",
     )
@@ -260,12 +300,14 @@ def fetch_public_https(url: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
                 raise ValueError("HTTPS response exceeds the bounded download limit.")
             payload = response.read(_MAX_DOWNLOAD_BYTES + 1)
             charset = response.headers.get_content_charset() or "utf-8"
+            content_encoding = response.headers.get("Content-Encoding") or "identity"
     except urllib.error.HTTPError as exc:
         raise ValueError(f"HTTPS request failed with status {exc.code}.") from exc
     except urllib.error.URLError as exc:
         raise ValueError(f"HTTPS request failed: {exc.reason}") from exc
     if len(payload) > _MAX_DOWNLOAD_BYTES:
         raise ValueError("HTTPS response exceeds the bounded download limit.")
+    payload = _decode_transport_payload(payload, content_encoding, _MAX_DOWNLOAD_BYTES)
     try:
         text = payload.decode(charset, errors="strict")
     except (LookupError, UnicodeDecodeError) as exc:

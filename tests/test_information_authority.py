@@ -156,6 +156,61 @@ def test_real_answer_path_self_corrects_an_unseen_authority_claim(tmp_path: Path
     assert crosscheck["accepted"] is True
 
 
+def test_authority_correction_cannot_reintroduce_operational_status_defects(
+    tmp_path: Path,
+):
+    agent = LocalPilotAgent(Config(), tmp_path)
+    streams = iter(
+        [
+            [
+                _chunk(
+                    "The latest evolution failed. What is actually blocked is the candidate: "
+                    "it cannot be applied and the system stalls. Approve or reject the proposed "
+                    "patch, then decide on a new candidate implementing the missing API or postpone."
+                )
+            ],
+            [
+                _chunk(
+                    "The current evidence shows no active candidate blocker and no pending owner "
+                    "decision. The failed experiment is terminal history, not an active blocker. "
+                    "Autonomous work can continue when the idle and resource gates allow. No patch "
+                    "is awaiting your review."
+                )
+            ],
+        ]
+    )
+    calls = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    answer = agent._continue_high_reasoning_answer(
+        fake_chat,
+        prompt=(
+            "LocalPilot, give me an operational handover: what is stable, what is blocked, and what "
+            "decision needs me?"
+        ),
+        round_no=1,
+        after_tools=False,
+        draft_content="The paperclip was patented by Ada Example in 1905.",
+    )
+
+    assert "no active candidate blocker" in answer
+    assert "no pending owner decision" in answer
+    assert "Approve or reject" not in answer
+    assert len(calls) == 2
+    assert calls[-1]["think"] is False
+    event = agent.audit.latest("model_post_authority_behavior_recovery_complete")
+    assert event["original_issues"] == [
+        "terminal_experiment_promoted_to_active_blocker",
+        "nonexistent_candidate_review_requested",
+        "nonpending_owner_decision_invented",
+    ]
+    assert event["accepted"] is True
+    assert event["remaining_issues"] == []
+
+
 def test_postvalidation_preserves_a_grounded_draft_without_a_rewrite(tmp_path: Path):
     agent = LocalPilotAgent(Config(), tmp_path)
     streams = []

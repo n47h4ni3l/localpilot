@@ -1359,10 +1359,58 @@ class LocalPilotAgent:
             behavior_text,
         ):
             issues.append("terminal_experiment_promoted_to_active_blocker")
+        mentions_failed_experiment = bool(
+            re.search(
+                r"\b(?:latest|most recent|failed) (?:autonomous )?evolution "
+                r"(?:attempt|run|experiment|failed)\b",
+                behavior_text,
+            )
+        )
+        explicitly_terminal_experiment = bool(
+            re.search(
+                r"\b(?:terminal history|not (?:an? )?active blocker|does not block|"
+                r"doesn't block)\b",
+                behavior_text,
+            )
+        )
+        if (
+            operational_self_status
+            and mentions_failed_experiment
+            and not explicitly_terminal_experiment
+            and re.search(
+                r"\b(?:what is actually blocked|only active (?:blocker|blockage)|"
+                r"cannot be applied|can't be applied|no further autonomous evolution can proceed|"
+                r"defect remains (?:unaddressed|unresolved)|system (?:is )?stall(?:s|ed|ing))\b",
+                behavior_text,
+            )
+        ):
+            issues.append("terminal_experiment_promoted_to_active_blocker")
+        if operational_self_status and re.search(
+            r"\brejected_history_promoted_to_blocker\b.{0,180}\b(?:still reports?|remains?|"
+            r"persistent|unaddressed|unresolved|defect)\b|"
+            r"\b(?:still reports?|remains?|persistent|unaddressed|unresolved)\b.{0,180}"
+            r"\brejected_history_promoted_to_blocker\b",
+            behavior_text,
+        ):
+            issues.append("improvement_frontier_promoted_to_active_blocker")
+        if operational_self_status and re.search(
+            r"\b(?:approve or reject|review(?: and)? (?:or )?merge) (?:the )?(?:proposed|current) "
+            r"(?:patch|candidate|pull request|pr)\b",
+            behavior_text,
+        ):
+            issues.append("nonexistent_candidate_review_requested")
         if operational_self_status and re.search(
             r"\b(?:you need to decide|decision (?:that )?(?:truly )?needs you|"
             r"decision needs you now)\b.{0,320}\b(?:new candidate|implement(?:s|ing)? the missing|"
             r"correct(?:s|ing)? the plan|halt further autonomous evolution)\b",
+            behavior_text,
+        ):
+            issues.append("nonpending_owner_decision_invented")
+        if operational_self_status and re.search(
+            r"\b(?:decide(?: whether to| on)?|next decision).{0,220}\b(?:new candidate|"
+            r"implement(?:s|ing)? (?:the )?missing|postpone|halt (?:further )?(?:autonomous )?evolution)\b|"
+            r"\b(?:new candidate|implement(?:s|ing)? (?:the )?missing (?:api|interface)|postpone|"
+            r"halt (?:further )?(?:autonomous )?evolution)\b.{0,220}\b(?:owner|you (?:must|need to) decide)\b",
             behavior_text,
         ):
             issues.append("nonpending_owner_decision_invented")
@@ -2124,6 +2172,7 @@ class LocalPilotAgent:
                     "public_web_permission_misstated",
                     "improvement_frontier_promoted_to_active_blocker",
                     "terminal_experiment_promoted_to_active_blocker",
+                    "nonexistent_candidate_review_requested",
                     "nonpending_owner_decision_invented",
                 }.intersection(behavior_issues):
                     operational_evidence_recovery = (
@@ -2148,6 +2197,8 @@ class LocalPilotAgent:
                         " A completed or failed experiment is terminal history, not an active blocker: future cycles "
                         "may choose another grounded plan without owner intervention. Do not ask the owner to choose "
                         "whether to create a replacement candidate or halt evolution when no decision is pending."
+                        " Do not ask the owner to approve, reject, review, or merge a patch or candidate unless the "
+                        "current evidence identifies an actually pending patch or candidate."
                         " LearningMemory is the separate machine-local durable store described by the evidence; "
                         "it is not confined to candidate workspaces. Credential-free public HTTPS research needs "
                         "no per-use owner permission when the autonomy evidence says it is available."
@@ -2199,6 +2250,7 @@ class LocalPilotAgent:
                         "public_web_permission_misstated",
                         "improvement_frontier_promoted_to_active_blocker",
                         "terminal_experiment_promoted_to_active_blocker",
+                        "nonexistent_candidate_review_requested",
                         "nonpending_owner_decision_invented",
                         "casual_conversation_replaced_by_evidence_search",
                     }
@@ -2645,6 +2697,141 @@ class LocalPilotAgent:
                         )
                         if accepted_correction:
                             content = corrected_content
+                            late_behavior_issues = self._response_behavior_issues(
+                                prompt, content
+                            )
+                            if late_behavior_issues:
+                                late_instruction = {
+                                    "role": "user",
+                                    "content": (
+                                        "Produce one concise final answer to the owner's original request from "
+                                        "the operational evidence in this clean context. A later claim-correction "
+                                        "draft reintroduced these prohibited self-status errors: "
+                                        f"{', '.join(late_behavior_issues)}. Treat active_candidate_blocker and "
+                                        "pending_owner_decisions as authoritative current state. Rejected "
+                                        "candidates, completed or failed experiments, behavior-evaluation labels, "
+                                        "and improvement-frontier entries are history or development targets, not "
+                                        "current blockers. Do not claim a patch, candidate, branch, or PR is awaiting "
+                                        "review unless the evidence explicitly lists one. When "
+                                        "pending_owner_decisions is empty, ask the owner for no decision; describe "
+                                        "general human-only merge and promotion authority separately. Keep "
+                                        "LearningMemory separate from model-weight learning. Return only the answer, "
+                                        "with no table, menu, verifier report, or mention of this correction.\n\n"
+                                        f"OWNER'S ORIGINAL REQUEST:\n{prompt}"
+                                    ),
+                                }
+                                late_render = self._stream_chat_message(
+                                    chat,
+                                    think=False,
+                                    options={"num_predict": 1200},
+                                    messages=[*clean_recovery_messages, late_instruction],
+                                    phase="post_authority_behavior_recovery",
+                                    turn_no=round_no,
+                                )
+                                late_content = str(late_render.get("content") or "")
+                                late_calls = late_render.get("tool_calls") or []
+                                remaining_late_behavior_issues = (
+                                    self._response_behavior_issues(prompt, late_content)
+                                    if late_content.strip() and not late_calls
+                                    else late_behavior_issues
+                                )
+                                late_risks = (
+                                    self._structured_information_authority_risks(late_content)
+                                    if authority_review and late_content.strip()
+                                    else []
+                                )
+                                late_evidence_report = self.turn_evidence.review(
+                                    late_content,
+                                    successful_tools=successful_tools,
+                                )
+                                late_risks = list(dict.fromkeys([
+                                    *late_risks,
+                                    *(issue.code for issue in late_evidence_report.issues),
+                                    *self._contextual_evidence_risks(
+                                        prompt,
+                                        late_content,
+                                        successful_tools,
+                                        clean_recovery_messages,
+                                    ),
+                                ]))
+                                accepted_late_recovery = bool(
+                                    late_content.strip()
+                                    and not late_calls
+                                    and not remaining_late_behavior_issues
+                                    and not late_risks
+                                    and not self._looks_like_generic_reset(late_content)
+                                )
+                                deterministic_operational_fallback = False
+                                if accepted_late_recovery:
+                                    content = late_content
+                                else:
+                                    evidence_text = " ".join(
+                                        str(message.get("content") or "")
+                                        for message in clean_recovery_messages
+                                    ).lower()
+                                    current_state_is_clear = bool(
+                                        '"active_candidate_blocker":false' in evidence_text
+                                        and '"pending_owner_decisions":[]' in evidence_text
+                                    )
+                                    if operational_self_status and current_state_is_clear:
+                                        fallback = (
+                                            "The current operational evidence shows no active candidate blocker "
+                                            "and no pending owner decision. Prior rejected candidates, completed "
+                                            "or failed experiments, and improvement-frontier entries are history "
+                                            "or future targets, not current blockers. Autonomous work can continue "
+                                            "when the existing idle and resource gates allow. You do not need to "
+                                            "approve, merge, or choose anything now; a future candidate still "
+                                            "requires human review after it actually exists. LearningMemory remains "
+                                            "a separate durable store, and no model-weight learning occurred."
+                                        )
+                                        fallback_behavior_issues = self._response_behavior_issues(
+                                            prompt, fallback
+                                        )
+                                        fallback_risks = (
+                                            self._structured_information_authority_risks(fallback)
+                                            if authority_review
+                                            else []
+                                        )
+                                        fallback_evidence_report = self.turn_evidence.review(
+                                            fallback,
+                                            successful_tools=successful_tools,
+                                        )
+                                        fallback_risks = list(dict.fromkeys([
+                                            *fallback_risks,
+                                            *(issue.code for issue in fallback_evidence_report.issues),
+                                            *self._contextual_evidence_risks(
+                                                prompt,
+                                                fallback,
+                                                successful_tools,
+                                                clean_recovery_messages,
+                                            ),
+                                        ]))
+                                        if not fallback_behavior_issues and not fallback_risks:
+                                            content = fallback
+                                            deterministic_operational_fallback = True
+                                        else:
+                                            content = (
+                                                "[LocalPilot withheld the draft because behavioral or factual "
+                                                "postconditions remained after bounded corrections.]"
+                                            )
+                                    else:
+                                        content = (
+                                            "[LocalPilot withheld the draft because behavioral or factual "
+                                            "postconditions remained after bounded corrections.]"
+                                        )
+                                self.audit.write(
+                                    "model_post_authority_behavior_recovery_complete",
+                                    model=self.config.model.name,
+                                    round=round_no,
+                                    original_issues=list(late_behavior_issues),
+                                    remaining_issues=list(remaining_late_behavior_issues),
+                                    remaining_risks=late_risks,
+                                    accepted=accepted_late_recovery,
+                                    deterministic_operational_fallback=(
+                                        deterministic_operational_fallback
+                                    ),
+                                    content_chars=len(content),
+                                )
                         else:
                             content = (
                                 "[LocalPilot withheld the draft because unsupported factual assertions "

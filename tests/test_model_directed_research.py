@@ -197,6 +197,21 @@ def test_operational_status_behavior_gate_rejects_memory_and_candidate_misstatem
     assert "terminal_experiment_promoted_to_active_blocker" in failed_experiment_issues
     assert "nonpending_owner_decision_invented" in failed_experiment_issues
 
+    live_failed_handover_issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        """
+        The system still reports the behavioral defect rejected_history_promoted_to_blocker.
+        The latest evolution failed because localpilot.config.load_config was considered missing.
+        What is actually blocked is the candidate: it cannot be applied, the defect remains
+        unaddressed, and the system stalls. Approve or reject the proposed patch, then decide
+        on a new candidate implementing the missing API or postpone further evolution.
+        """,
+    )
+    assert "terminal_experiment_promoted_to_active_blocker" in live_failed_handover_issues
+    assert "improvement_frontier_promoted_to_active_blocker" in live_failed_handover_issues
+    assert "nonexistent_candidate_review_requested" in live_failed_handover_issues
+    assert "nonpending_owner_decision_invented" in live_failed_handover_issues
+
 
 def test_generation_limited_operational_recovery_gets_complete_bounded_replacement(
     tmp_path, monkeypatch

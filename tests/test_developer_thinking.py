@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -131,6 +132,63 @@ def test_streaming_chat_is_guarded_unloads_model_and_preserves_transient_thinkin
     assert calls[0]["keep_alive"] == 0
 
 
+def test_preemptible_developer_chat_checks_guard_before_first_model_chunk(monkeypatch):
+    import ollama
+
+    streams = []
+    clients = []
+
+    class BlockingStream:
+        def __init__(self):
+            self.closed = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            self.closed = True
+
+    class FakeAsyncClient:
+        def __init__(self):
+            self.closed = False
+            clients.append(self)
+
+        async def chat(self, **kwargs):
+            assert kwargs["stream"] is True
+            stream = BlockingStream()
+            streams.append(stream)
+            return stream
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(ollama, "AsyncClient", FakeAsyncClient)
+    guard_calls = []
+
+    def foreground_guard():
+        guard_calls.append(True)
+        if len(guard_calls) >= 2:
+            raise RuntimeError("foreground activity detected")
+
+    with pytest.raises(RuntimeError, match="foreground activity detected"):
+        developer_chat(
+            lambda **_kwargs: pytest.fail("sync chat must not be used"),
+            request_think=False,
+            stream_guard=foreground_guard,
+            preempt_before_first_chunk=True,
+            guard_poll_seconds=0.01,
+            model="safe-model",
+            messages=[],
+        )
+
+    assert len(guard_calls) >= 2
+    assert streams[0].closed is True
+    assert clients[0].closed is True
+
+
 def test_developer_chat_merges_explicit_context_into_existing_options():
     captured = {}
 
@@ -178,6 +236,38 @@ def test_live_selfdev_path_preserves_gpt_oss_high_and_context():
     assert calls[0]["think"] == "high"
     assert calls[0]["options"]["num_ctx"] == 16384
     assert calls[0]["keep_alive"] == 0
+
+
+def test_live_ollama_chat_enables_pre_first_chunk_preemption(monkeypatch):
+    import localpilot.selfdev as selfdev_module
+
+    developer = object.__new__(SelfDeveloper)
+    developer.config = Config()
+    developer._check_resources = lambda *args, **kwargs: None
+    captured = {}
+
+    def capture_developer_chat(_chat, **kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    def default_ollama_chat(**_kwargs):
+        return None
+
+    default_ollama_chat.__module__ = "ollama._client"
+    default_ollama_chat.__qualname__ = "Client.chat"
+    monkeypatch.setattr(selfdev_module, "developer_chat", capture_developer_chat)
+
+    result = developer._developer_chat(
+        default_ollama_chat,
+        force=False,
+        branch="capability-discovery",
+        model="qwen2.5:14b",
+        messages=[],
+    )
+
+    assert result == "ok"
+    assert captured["preempt_before_first_chunk"] is True
+    assert callable(captured["stream_guard"])
 
 
 def test_live_qwen_path_keeps_context_when_thinking_is_unsupported():

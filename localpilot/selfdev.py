@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -409,9 +410,84 @@ def developer_chat(
     context_tokens: int | None = None,
     keep_alive: float | str | None = None,
     stream_guard: Callable[[], None] | None = None,
+    preempt_before_first_chunk: bool = False,
+    guard_poll_seconds: float = 0.5,
     **kwargs: Any,
 ) -> Any:
     """Use thinking when supported and permit prompt cancellation while streaming."""
+
+    def add_chunk(
+        chunk: Any,
+        content: list[str],
+        thinking: list[str],
+        tool_calls: list[Any],
+    ) -> None:
+        message = getattr(chunk, "message", chunk)
+        if isinstance(message, dict) and isinstance(message.get("message"), dict):
+            message = message["message"]
+        if isinstance(message, dict):
+            content.append(str(message.get("content") or ""))
+            thinking.append(str(message.get("thinking") or ""))
+            tool_calls.extend(list(message.get("tool_calls") or []))
+        else:
+            content.append(str(getattr(message, "content", "") or ""))
+            thinking.append(str(getattr(message, "thinking", "") or ""))
+            tool_calls.extend(list(getattr(message, "tool_calls", None) or []))
+
+    def merged_response(
+        content: list[str],
+        thinking: list[str],
+        tool_calls: list[Any],
+    ) -> StreamedChatResponse:
+        message = {"role": "assistant", "content": "".join(content), "tool_calls": tool_calls}
+        if any(thinking):
+            message["thinking"] = "".join(thinking)
+        return StreamedChatResponse(message)
+
+    async def invoke_preemptible(call_kwargs: dict[str, Any]) -> Any:
+        from ollama import AsyncClient
+
+        client = AsyncClient()
+        response_stream = None
+        pending_chunk = None
+        content: list[str] = []
+        thinking: list[str] = []
+        tool_calls: list[Any] = []
+        try:
+            if stream_guard is not None:
+                stream_guard()
+            response_stream = await client.chat(**call_kwargs)
+            pending_chunk = asyncio.create_task(anext(response_stream))
+            while True:
+                done, _ = await asyncio.wait(
+                    {pending_chunk},
+                    timeout=max(0.01, float(guard_poll_seconds)),
+                )
+                if not done:
+                    if stream_guard is not None:
+                        stream_guard()
+                    continue
+                try:
+                    chunk = pending_chunk.result()
+                except StopAsyncIteration:
+                    break
+                if stream_guard is not None:
+                    stream_guard()
+                add_chunk(chunk, content, thinking, tool_calls)
+                pending_chunk = asyncio.create_task(anext(response_stream))
+        except BaseException:
+            if pending_chunk is not None and not pending_chunk.done():
+                pending_chunk.cancel()
+                try:
+                    await pending_chunk
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    pass
+            if response_stream is not None:
+                await response_stream.aclose()
+            raise
+        finally:
+            await client.close()
+        return merged_response(content, thinking, tool_calls)
 
     def invoke(*, think: bool | str | None) -> Any:
         call_kwargs = dict(kwargs)
@@ -427,6 +503,8 @@ def developer_chat(
             return chat(**call_kwargs)
 
         call_kwargs["stream"] = True
+        if preempt_before_first_chunk:
+            return asyncio.run(invoke_preemptible(call_kwargs))
         response_stream = chat(**call_kwargs)
         content: list[str] = []
         thinking: list[str] = []
@@ -434,25 +512,12 @@ def developer_chat(
         try:
             for chunk in response_stream:
                 stream_guard()
-                message = getattr(chunk, "message", chunk)
-                if isinstance(message, dict) and isinstance(message.get("message"), dict):
-                    message = message["message"]
-                if isinstance(message, dict):
-                    content.append(str(message.get("content") or ""))
-                    thinking.append(str(message.get("thinking") or ""))
-                    tool_calls.extend(list(message.get("tool_calls") or []))
-                else:
-                    content.append(str(getattr(message, "content", "") or ""))
-                    thinking.append(str(getattr(message, "thinking", "") or ""))
-                    tool_calls.extend(list(getattr(message, "tool_calls", None) or []))
+                add_chunk(chunk, content, thinking, tool_calls)
         finally:
             close = getattr(response_stream, "close", None)
             if callable(close):
                 close()
-        message = {"role": "assistant", "content": "".join(content), "tool_calls": tool_calls}
-        if any(thinking):
-            message["thinking"] = "".join(thinking)
-        return StreamedChatResponse(message)
+        return merged_response(content, thinking, tool_calls)
 
     if request_think:
         model = str(kwargs.get("model") or "").lower()
@@ -1977,6 +2042,10 @@ class SelfDeveloper:
             context_tokens=self.config.selfdev.context_tokens,
             keep_alive=self.config.selfdev.ollama_keep_alive,
             stream_guard=stream_guard,
+            preempt_before_first_chunk=(
+                getattr(chat, "__module__", "") == "ollama._client"
+                and getattr(chat, "__qualname__", "") == "Client.chat"
+            ),
             **kwargs,
         )
 

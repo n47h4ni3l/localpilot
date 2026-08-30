@@ -105,6 +105,25 @@ def test_live_grounding_recognizes_library_config_fields(tmp_path: Path):
     assert "config:library.enabled" in report.evidence
 
 
+def test_live_grounding_accepts_unambiguous_dotted_symbol_aliases(tmp_path: Path):
+    _repository(tmp_path)
+
+    report = RepositoryGroundingValidator(root=tmp_path).validate(
+        _plan(
+            referenced_symbols=["localpilot.sample.Runner.execute"],
+            integration_points=["localpilot.sample.Runner.execute"],
+            expected_call_relationships=[
+                ["localpilot.sample.Runner.execute", "localpilot.sample:helper"]
+            ],
+        )
+    )
+
+    assert report.grounded
+    assert "symbol:localpilot.sample:Runner.execute" in report.evidence
+    assert "integration:localpilot.sample:Runner.execute" in report.evidence
+    assert "call:localpilot.sample:Runner.execute->helper" in report.evidence
+
+
 def test_live_grounding_reports_false_claims_with_evidence(tmp_path: Path):
     _repository(tmp_path)
 

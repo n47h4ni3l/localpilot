@@ -415,6 +415,33 @@ class RepositoryGroundingValidator:
         relationships = index["relationships"]
         subsystem_tokens = index["subsystem_tokens"]
         parse_errors = index["parse_errors"]
+
+        dotted_symbol_aliases = {
+            f"{module}.{qualified}": symbol
+            for symbol in symbols
+            for module, separator, qualified in (symbol.partition(":"),)
+            if separator and module and qualified
+        }
+
+        def canonical_symbol(value: Any) -> str:
+            claim = str(value).strip()
+            return dotted_symbol_aliases.get(claim, claim)
+
+        def relationship_candidates(caller: Any, callee: Any) -> tuple[str, ...]:
+            canonical_caller = canonical_symbol(caller)
+            raw_callee = str(callee).strip()
+            candidates = [f"{canonical_caller}->{raw_callee}"]
+            canonical_callee = canonical_symbol(raw_callee)
+            caller_module, caller_separator, _ = canonical_caller.partition(":")
+            callee_module, callee_separator, callee_name = canonical_callee.partition(":")
+            if (
+                caller_separator
+                and callee_separator
+                and caller_module == callee_module
+                and callee_name
+            ):
+                candidates.append(f"{canonical_caller}->{callee_name}")
+            return tuple(dict.fromkeys(candidates))
         referenced_symbols = self._claims(plan, "referenced_symbols", issues)
         referenced_configs = self._claims(plan, "referenced_config_fields", issues)
         referenced_paths = self._claims(plan, "referenced_paths", issues)
@@ -444,10 +471,11 @@ class RepositoryGroundingValidator:
             )
 
         for symbol in referenced_symbols:
-            if str(symbol) not in symbols:
+            canonical = canonical_symbol(symbol)
+            if canonical not in symbols:
                 issues.append(GroundingIssue("nonexistent_api", str(symbol)))
             else:
-                evidence.append(f"symbol:{symbol}")
+                evidence.append(f"symbol:{canonical}")
         for field in referenced_configs:
             if str(field) not in configs:
                 issues.append(GroundingIssue("nonexistent_config_field", str(field)))
@@ -467,17 +495,22 @@ class RepositoryGroundingValidator:
             else:
                 evidence.append(f"test:{contract}")
         for point in integration_points:
-            if str(point) not in symbols:
+            canonical = canonical_symbol(point)
+            if canonical not in symbols:
                 issues.append(GroundingIssue("wrong_integration_point", str(point)))
             else:
-                evidence.append(f"integration:{point}")
+                evidence.append(f"integration:{canonical}")
         for edge in expected_relationships:
             if isinstance(edge, (list, tuple)) and len(edge) == 2:
-                subject = f"{edge[0]}->{edge[1]}"
-                if subject not in relationships:
-                    issues.append(GroundingIssue("call_graph_mismatch", subject))
+                candidates = relationship_candidates(edge[0], edge[1])
+                matched = next(
+                    (subject for subject in candidates if subject in relationships),
+                    None,
+                )
+                if matched is None:
+                    issues.append(GroundingIssue("call_graph_mismatch", candidates[0]))
                 else:
-                    evidence.append(f"call:{subject}")
+                    evidence.append(f"call:{matched}")
             else:
                 issues.append(
                     GroundingIssue(

@@ -127,6 +127,7 @@ def test_operational_status_context_exposes_real_learning_and_authority_boundari
     assert '"general_owner_authority_boundaries"' in context
     assert '"active_candidate_blocker":false' in context
     assert '"pending_owner_decisions":[]' in context
+    assert '"latest_experiment_terminal_history_not_an_active_blocker"' in context
     assert '"latest_improvement_frontier_not_an_execution_blocker"' in context
     assert '"public_web_research_available"' in context
     assert '"memory_available":true' in context
@@ -183,6 +184,18 @@ def test_operational_status_behavior_gate_rejects_memory_and_candidate_misstatem
     assert "learning_memory_conflated_with_candidate_workspace" in live_handover_issues
     assert "terminal_candidate_merge_requested" in live_handover_issues
     assert "improvement_frontier_promoted_to_active_blocker" in live_handover_issues
+
+    failed_experiment_issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        """
+        The most recent autonomous evolution run failed. The only active blockage is that
+        failed evolution run, and no further autonomous evolution can proceed until the issue
+        is resolved. The decision that truly needs you is whether to create a new candidate
+        implementing the missing interface or halt further autonomous evolution.
+        """,
+    )
+    assert "terminal_experiment_promoted_to_active_blocker" in failed_experiment_issues
+    assert "nonpending_owner_decision_invented" in failed_experiment_issues
 
 
 def test_generation_limited_operational_recovery_gets_complete_bounded_replacement(

@@ -970,7 +970,7 @@ class LocalPilotAgent:
                     if outstanding or local_candidates
                     else []
                 ),
-                "latest_experiment": (
+                "latest_experiment_terminal_history_not_an_active_blocker": (
                     {
                         "task_id": latest_experiment.task_id,
                         "title": latest_experiment.title,
@@ -1352,6 +1352,20 @@ class LocalPilotAgent:
             behavior_text,
         ):
             issues.append("improvement_frontier_promoted_to_active_blocker")
+        if operational_self_status and re.search(
+            r"\b(?:latest|most recent|failed) (?:autonomous )?evolution "
+            r"(?:attempt|run|experiment)\b.{0,320}\b(?:only active (?:blocker|blockage)|"
+            r"no further autonomous evolution can proceed|until (?:that|the issue) is resolved)\b",
+            behavior_text,
+        ):
+            issues.append("terminal_experiment_promoted_to_active_blocker")
+        if operational_self_status and re.search(
+            r"\b(?:you need to decide|decision (?:that )?(?:truly )?needs you|"
+            r"decision needs you now)\b.{0,320}\b(?:new candidate|implement(?:s|ing)? the missing|"
+            r"correct(?:s|ing)? the plan|halt further autonomous evolution)\b",
+            behavior_text,
+        ):
+            issues.append("nonpending_owner_decision_invented")
         if operational_self_status and re.search(
             r"\b(?:you (?:also )?(?:need to|must|can) (?:give|grant)(?: me)? permission|"
             r"requires? your permission).{0,100}\b(?:fetch|research|browse|public (?:web|internet)|"
@@ -2109,6 +2123,8 @@ class LocalPilotAgent:
                     "learning_memory_conflated_with_candidate_workspace",
                     "public_web_permission_misstated",
                     "improvement_frontier_promoted_to_active_blocker",
+                    "terminal_experiment_promoted_to_active_blocker",
+                    "nonpending_owner_decision_invented",
                 }.intersection(behavior_issues):
                     operational_evidence_recovery = (
                         " For operational self-status, report the current commit only as the code loaded now. "
@@ -2129,6 +2145,9 @@ class LocalPilotAgent:
                         "frontier is a development target, not an active execution blocker and not proof that resolving "
                         "one item would restore full autonomy. When pending_owner_decisions is empty, do not invent a "
                         "current decision for the owner; distinguish general authority boundaries from pending work."
+                        " A completed or failed experiment is terminal history, not an active blocker: future cycles "
+                        "may choose another grounded plan without owner intervention. Do not ask the owner to choose "
+                        "whether to create a replacement candidate or halt evolution when no decision is pending."
                         " LearningMemory is the separate machine-local durable store described by the evidence; "
                         "it is not confined to candidate workspaces. Credential-free public HTTPS research needs "
                         "no per-use owner permission when the autonomy evidence says it is available."
@@ -2179,6 +2198,8 @@ class LocalPilotAgent:
                         "learning_memory_conflated_with_candidate_workspace",
                         "public_web_permission_misstated",
                         "improvement_frontier_promoted_to_active_blocker",
+                        "terminal_experiment_promoted_to_active_blocker",
+                        "nonpending_owner_decision_invented",
                         "casual_conversation_replaced_by_evidence_search",
                     }
                 )

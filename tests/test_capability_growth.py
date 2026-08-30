@@ -266,3 +266,27 @@ def test_outstanding_candidate_gate_prevents_parallel_experiment(tmp_path: Path,
 
     assert result.status == "idle"
     assert "One candidate" in result.summary
+
+
+def test_capability_discovery_exposes_permissionless_public_web_research(
+    tmp_path: Path, monkeypatch
+):
+    config = Config()
+    config.agent.data_dir = "data"
+    developer = SelfDeveloper(config, tmp_path)
+    captured = {}
+    monkeypatch.setattr(developer.github, "tracked_project_paths", lambda: set())
+
+    def fake_stage(**kwargs):
+        captured["function_names"] = [function.__name__ for function in kwargs["functions"]]
+        captured["messages"] = kwargs["messages"]
+        return json.dumps({"proposals": [_proposal()]})
+
+    monkeypatch.setattr(developer, "_tool_stage", fake_stage)
+
+    task = developer._discover_capability_task(developer_model="developer", force=True)
+
+    assert task["capability_target"] == "long-horizon planning"
+    assert "search_public_web" in captured["function_names"]
+    assert "fetch_public_https" in captured["function_names"]
+    assert "untrusted evidence" in str(captured["messages"])

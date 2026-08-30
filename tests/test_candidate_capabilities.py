@@ -214,3 +214,24 @@ def test_resource_https_quota_executable_and_interruptibility_guards(tmp_path: P
             candidate_branch="localpilot/candidate-x", task_id="x", cycle_id=1,
         )
     assert interrupted.usage() == (0, 0)
+
+
+def test_candidate_research_can_search_and_read_public_web_without_write_authority(
+    tmp_path: Path, monkeypatch
+):
+    tools = CandidateTools(tmp_path)
+    monkeypatch.setattr(
+        "localpilot.selfdev._search_public_web",
+        lambda query, limit: f"results:{query}:{limit}",
+    )
+    monkeypatch.setattr(
+        "localpilot.selfdev._fetch_public_https",
+        lambda url, limit: f"source:{url}:{limit}",
+    )
+
+    assert tools.search_public_web("current Python docs", 7) == "results:current Python docs:7"
+    assert (
+        tools.fetch_public_https("https://docs.python.org/3/", 12_000)
+        == "source:https://docs.python.org/3/:12000"
+    )
+    assert tools.files_written == set()

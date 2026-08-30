@@ -265,6 +265,48 @@ def test_closed_pr_without_explicit_rejection_remains_outstanding(tmp_path: Path
     assert developer.memory.has_outstanding_candidate() is True
 
 
+def test_reconciliation_presents_missing_pr_for_a_pushed_remote_candidate(
+    tmp_path: Path, monkeypatch
+):
+    developer, cycle_id, _ = _developer(tmp_path)
+    developer.memory.update_candidate_review(
+        cycle_id,
+        validation_state="passed",
+        merged=False,
+        pull_request_url=None,
+    )
+    lifecycles = iter(
+        [
+            CandidateLifecycle("passed", False, None, "none", True),
+            CandidateLifecycle("passed", False, PR_URL, "open", True),
+        ]
+    )
+    monkeypatch.setattr(
+        developer.github,
+        "candidate_lifecycle",
+        lambda _branch: next(lifecycles),
+    )
+    presented = []
+
+    def create_pr(worktree, *, branch, title, body):
+        presented.append((worktree, branch, title, body))
+        return CommandResult(True, PR_URL, "", 0)
+
+    monkeypatch.setattr(developer.github, "create_candidate_pull_request", create_pr)
+
+    developer._reconcile_candidates()
+
+    assert len(presented) == 1
+    assert presented[0][0] == developer.root
+    assert presented[0][1] == BRANCH
+    assert "Validate candidate structural completeness" in presented[0][2]
+    assert "human review" in presented[0][3]
+    candidate = developer.memory.candidate_for_branch(BRANCH)
+    assert candidate.pull_request_url == PR_URL
+    event = developer.audit.latest("candidate_pr_presentation_reconciled")
+    assert event["presented"] is True
+
+
 def test_rejection_does_not_clear_an_unrelated_checkpoint(tmp_path: Path, monkeypatch):
     developer, cycle_id, workspace = _developer(tmp_path)
     developer.checkpoints.save(

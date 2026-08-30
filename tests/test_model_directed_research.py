@@ -151,6 +151,51 @@ def test_operational_status_behavior_gate_rejects_memory_and_candidate_misstatem
     assert "candidate_conflated_with_stable_code" in issues
     assert "transient_telemetry_promoted_to_blocker" in issues
 
+    historical_issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        "The rejected experiment is on hold until a new strategy is devised. No outstanding "
+        "candidate branches remain in the repository, so you should decide whether to revisit it.",
+    )
+    assert "rejected_history_promoted_to_blocker" in historical_issues
+    assert "terminal_candidate_history_denied" in historical_issues
+
+    memory_scope_issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        "My learning memory is a SQLite database I can read from and write to only within a "
+        "candidate workspace. You also need to give me permission to fetch new resources.",
+    )
+    assert "learning_memory_conflated_with_candidate_workspace" in memory_scope_issues
+    assert "public_web_permission_misstated" in memory_scope_issues
+
+
+def test_reasoning_only_pass_after_post_tool_review_transitions_to_final_synthesis(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path, soft=3, hard=5)
+    streams = iter(
+        [
+            [_chunk(tool_calls=[_call("list_repository_tree", {"path": ".", "depth": 1})])],
+            [_chunk(content="I have enough raw evidence and should review it.")],
+            [_chunk(thinking="The evidence is sufficient; I should now state the concise result.")],
+            [_chunk(content="The bounded repository tree was inspected successfully.")],
+        ]
+    )
+    calls = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask("Inspect the repository tree and summarize what you verified.")
+
+    assert answer == "The bounded repository tree was inspected successfully."
+    assert len(calls) == 4
+    event = agent.audit.latest("model_post_tool_reasoning_only_finalized")
+    assert event is not None
+    assert event["reason"] == "bounded_transition_to_final_synthesis"
+
 
 def test_friendly_planning_prompt_is_direct_low_reasoning_without_memory_or_tools(
     tmp_path, monkeypatch

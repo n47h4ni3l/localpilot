@@ -1306,11 +1306,37 @@ class LocalPilotAgent:
         ):
             issues.append("candidate_conflated_with_stable_code")
         if operational_self_status and re.search(
-            r"\b(?:degraded|storage pressure|disk pressure).{0,160}"
-            r"(?:cleanup|clean-up|upgrade|blocker|blocked|before the next sprint)\b",
+            r"\b(?:degraded|network[- ]traffic|storage pressure|disk pressure)\b.{0,320}"
+            r"(?:limits?|blocks?|cleanup|clean-up|upgrade|shift focus|owner decision|"
+            r"before the next sprint|mainly due)\b",
             behavior_text,
         ):
             issues.append("transient_telemetry_promoted_to_blocker")
+        if operational_self_status and re.search(
+            r"\b(?:rejected|rejection)\b.{0,240}\b(?:on hold|blocked|until (?:a )?new strategy|"
+            r"you (?:should|need to|must) (?:decide|revisit))\b",
+            behavior_text,
+        ):
+            issues.append("rejected_history_promoted_to_blocker")
+        if operational_self_status and re.search(
+            r"\bno (?:pending merges? or )?outstanding candidate branches? (?:are|remain) "
+            r"in the repository\b",
+            behavior_text,
+        ):
+            issues.append("terminal_candidate_history_denied")
+        if operational_self_status and re.search(
+            r"\blearning memory\b.{0,200}\b(?:read from and )?write to only "
+            r"(?:within|in) (?:a |the )?candidate workspace\b",
+            behavior_text,
+        ):
+            issues.append("learning_memory_conflated_with_candidate_workspace")
+        if operational_self_status and re.search(
+            r"\b(?:you (?:also )?(?:need to|must|can) (?:give|grant)(?: me)? permission|"
+            r"requires? your permission).{0,100}\b(?:fetch|research|browse|public (?:web|internet)|"
+            r"new resources)\b",
+            behavior_text,
+        ):
+            issues.append("public_web_permission_misstated")
         return tuple(dict.fromkeys(issues))
 
     @staticmethod
@@ -2054,6 +2080,10 @@ class LocalPilotAgent:
                     "candidate_self_modification_path_denied",
                     "candidate_conflated_with_stable_code",
                     "transient_telemetry_promoted_to_blocker",
+                    "rejected_history_promoted_to_blocker",
+                    "terminal_candidate_history_denied",
+                    "learning_memory_conflated_with_candidate_workspace",
+                    "public_web_permission_misstated",
                 }.intersection(behavior_issues):
                     operational_evidence_recovery = (
                         " For operational self-status, report the current commit only as the code loaded now. "
@@ -2068,6 +2098,11 @@ class LocalPilotAgent:
                         "Isolated candidate work is a self-modification path, but an outstanding candidate is not "
                         "part of stable main unless merged. Do not promote transient telemetry to an engineering "
                         "blocker or owner decision without the supplied health evidence establishing that link."
+                        " A rejected candidate is terminal history that clears the active-candidate gate; it is not "
+                        "a current blocker or an owner decision, and its retained branch/PR history may still exist."
+                        " LearningMemory is the separate machine-local durable store described by the evidence; "
+                        "it is not confined to candidate workspaces. Credential-free public HTTPS research needs "
+                        "no per-use owner permission when the autonomy evidence says it is available."
                     )
                 casual_conversation_recovery = ""
                 if "casual_conversation_replaced_by_evidence_search" in behavior_issues:
@@ -2109,6 +2144,10 @@ class LocalPilotAgent:
                         "candidate_self_modification_path_denied",
                         "candidate_conflated_with_stable_code",
                         "transient_telemetry_promoted_to_blocker",
+                        "rejected_history_promoted_to_blocker",
+                        "terminal_candidate_history_denied",
+                        "learning_memory_conflated_with_candidate_workspace",
+                        "public_web_permission_misstated",
                         "casual_conversation_replaced_by_evidence_search",
                     }
                 )
@@ -3732,6 +3771,18 @@ class LocalPilotAgent:
 
                     response["content"] = ""
                     if allow_tools:
+                        if post_tool_guidance_given and thinking.strip():
+                            self.audit.write(
+                                "model_post_tool_reasoning_only_finalized",
+                                round=turn_no,
+                                tool_rounds=tool_rounds_used,
+                                reasoning_chars=len(thinking),
+                                reason="bounded_transition_to_final_synthesis",
+                            )
+                            return continue_clean_answer(
+                                round_no=turn_no,
+                                after_tools=True,
+                            )
                         add_internal(
                             "You have not produced a user-visible final answer yet. Continue from your existing "
                             "reasoning and observations. If one more specific read-only observation is genuinely "

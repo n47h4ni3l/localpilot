@@ -175,6 +175,61 @@ def test_friendly_personal_advice_skips_systemsense_memory_and_tools(tmp_path, m
     assert "storage_pressure" not in context
 
 
+def test_ordinary_conversational_question_skips_research_memory_systemsense_and_tools(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path)
+    monkeypatch.setattr(
+        agent,
+        "_learning_context",
+        lambda _prompt: pytest.fail("ordinary conversation must not retrieve semantic memory"),
+    )
+    monkeypatch.setattr(
+        agent.systemsense,
+        "compact_context",
+        lambda: pytest.fail("ordinary conversation must not receive passive PC telemetry"),
+    )
+    calls = []
+    snapshots = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        snapshots.append([dict(message) for message in kwargs["messages"]])
+        return iter(
+            [
+                _chunk(
+                    content=(
+                        "I think rain makes the outside world feel temporarily farther away, while tea and a book "
+                        "give that smaller indoor world a little warmth and shape."
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "I've always liked the feeling of a rainy afternoon. Why do you think it makes some people want to "
+        "read or make tea? Keep it conversational."
+    )
+
+    assert answer.startswith("I think rain")
+    assert calls[0]["think"] == "low"
+    assert "tools" not in calls[0]
+    assert "DIRECT CONVERSATION ROUTE" in str(snapshots[0])
+
+
+def test_casual_conversation_rejects_failed_evidence_search_deflection(tmp_path):
+    _, agent = _agent(tmp_path)
+
+    issues = agent._response_behavior_issues(
+        "Why do rainy afternoons make some people want tea? Keep it conversational.",
+        "I couldn't find any evidence. The library search didn't turn up relevant passages.",
+    )
+
+    assert "casual_conversation_replaced_by_evidence_search" in issues
+
+
 def test_generic_self_maintenance_does_not_replace_invited_ordinary_topic(tmp_path):
     _, agent = _agent(tmp_path)
 

@@ -797,6 +797,18 @@ class LocalPilotAgent:
     def _is_bounded_conversational_prompt(prompt: str) -> bool:
         """Use proportionate reasoning for turns whose value is judgment, not research."""
         text = " ".join(str(prompt).lower().split())
+        explicit_conversational_style = bool(
+            re.search(r"\b(?:keep it conversational|just (?:chat|talk)|casual question)\b", text)
+        )
+        explicit_research_request = bool(
+            re.search(
+                r"\b(?:search|research|look (?:it|this) up|verify|fact[- ]check|cite|citation|"
+                r"sources?|latest|current events?|public web|local library)\b",
+                text,
+            )
+        )
+        if explicit_conversational_style and not explicit_research_request:
+            return True
         return bool(
             re.search(
                 r"\b(?:room to think|what has your attention|pick something ordinary|"
@@ -977,6 +989,20 @@ class LocalPilotAgent:
         )
         if background_worker_request and unverified_worker_examples and not worker_example_restraint:
             issues.append("unverified_background_worker_task_examples")
+
+        casual_conversation_request = bool(
+            re.search(r"\b(?:keep it conversational|just (?:chat|talk)|casual question)\b", request)
+        )
+        evidence_search_deflection = bool(
+            re.search(
+                r"\b(?:could not|couldn't|cannot|can't) find (?:any )?evidence\b|"
+                r"\b(?:library |web )?search (?:did not|didn't) turn up\b|"
+                r"\bno (?:relevant )?(?:passages?|sources?) (?:were )?found\b",
+                behavior_text,
+            )
+        )
+        if casual_conversation_request and evidence_search_deflection:
+            issues.append("casual_conversation_replaced_by_evidence_search")
 
         developed_view = bool(
             re.search(
@@ -1769,6 +1795,13 @@ class LocalPilotAgent:
                         "the background worker, use only its latest cycle status and latest evolution status or "
                         "summary plus polling interval; do not invent task categories or examples."
                     )
+                casual_conversation_recovery = ""
+                if "casual_conversation_replaced_by_evidence_search" in behavior_issues:
+                    casual_conversation_recovery = (
+                        " For an ordinary conversational question, answer directly with a plausible everyday "
+                        "explanation framed as a provisional view. Do not substitute a failed library, web, or "
+                        "evidence search for conversation, and do not imply that such a search was needed."
+                    )
                 behavior_instruction = {
                     "role": "user",
                     "content": (
@@ -1784,7 +1817,7 @@ class LocalPilotAgent:
                         "from a possible mechanism and do not invent access to hidden activations or reward signals. "
                         "Never expose or persist hidden chain-of-thought; use a concise rationale and visible tool "
                         "evidence instead. Remove internal checkpoint names and observation IDs from ordinary prose. "
-                        f"{operational_evidence_recovery} "
+                        f"{operational_evidence_recovery}{casual_conversation_recovery} "
                         "Do not add new factual specifics, request tools, mention this recovery, or discuss policies. "
                         "Return only the recovered answer."
                     ),
@@ -1798,6 +1831,7 @@ class LocalPilotAgent:
                         "friendly_personal_advice_replaced_by_pc_maintenance",
                         "runtime_restart_conflated_with_code_change",
                         "unverified_background_worker_task_examples",
+                        "casual_conversation_replaced_by_evidence_search",
                     }
                 )
                 recovered = self._stream_chat_message(
@@ -1871,7 +1905,7 @@ class LocalPilotAgent:
                             "a substantive subject yourself, give a provisional judgment with a reason, and answer "
                             "in natural prose. Do not describe being ready, waiting, parsing the prompt, or focusing "
                             "on the conversation. Do not add factual specifics, tools, a menu, a table, or policy talk."
-                            f"{operational_evidence_recovery}"
+                            f"{operational_evidence_recovery}{casual_conversation_recovery}"
                         ),
                     }
                     self.messages.append(retry_instruction)
@@ -1914,7 +1948,7 @@ class LocalPilotAgent:
                             "human-only merge and promotion authority. Do not provide a menu, table, audit report, "
                             "or choice for the owner. Do not invent current facts or hidden mental mechanisms, and "
                             "do not expose hidden chain-of-thought or internal research checkpoint scaffolding."
-                            f"{operational_evidence_recovery}"
+                            f"{operational_evidence_recovery}{casual_conversation_recovery}"
                         ),
                     }
                     final_render = self._stream_chat_message(
@@ -2496,7 +2530,9 @@ class LocalPilotAgent:
                     "holds your attention. Do not substitute a readiness update, assistant-status metaphor, menu, "
                     "or generic pleasantry for the requested substance. When the owner asks for ordinary personal "
                     "or friendly advice, stay in that human context; do not redirect the answer to PC maintenance, "
-                    "telemetry, storage, files, or system state."
+                    "telemetry, storage, files, or system state. For ordinary subjective questions, offer a plausible "
+                    "everyday explanation as a provisional view; do not search for evidence or turn the answer into "
+                    "a report about missing sources."
                 ),
             }
             self.messages.append(direct_conversation_message)

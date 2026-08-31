@@ -1421,6 +1421,11 @@ class LocalPilotAgent:
             behavior_text,
         ):
             issues.append("public_web_permission_misstated")
+        if operational_self_status and re.search(
+            r"\b(?:the )?broker process(?: that runs localpilot)?\s*\(pid\s*\d+\)",
+            behavior_text,
+        ):
+            issues.append("runtime_worker_misidentified_as_broker")
         return tuple(dict.fromkeys(issues))
 
     @staticmethod
@@ -1433,13 +1438,17 @@ class LocalPilotAgent:
         """Require the source a turn explicitly promised before accepting research claims."""
         request = " ".join(str(prompt).lower().split())
         answer = " ".join(str(content).lower().split())
-        requires_primary_web = bool(
-            re.search(
-                r"\b(?:public (?:web|internet)|primary source|fact[- ]check|"
-                r"research (?:it|this) (?:now )?online)\b",
-                request,
+        requires_primary_web = (
+            not LocalPilotAgent._is_operational_self_status_prompt(prompt)
+            and bool(
+                re.search(
+                    r"\b(?:public (?:web|internet)|primary source|fact[- ]check|"
+                    r"research (?:it|this) (?:now )?online)\b",
+                    request,
+                )
             )
-        ) and "fetch_public_https" not in LocalPilotAgent._forbidden_tools(prompt)
+            and "fetch_public_https" not in LocalPilotAgent._forbidden_tools(prompt)
+        )
         requires_library = bool(
             re.search(
                 r"\b(?:search|read|inspect|consult|use|check|look (?:in|through))\b.{0,40}"
@@ -2170,6 +2179,7 @@ class LocalPilotAgent:
                     "terminal_candidate_merge_requested",
                     "learning_memory_conflated_with_candidate_workspace",
                     "public_web_permission_misstated",
+                    "runtime_worker_misidentified_as_broker",
                     "improvement_frontier_promoted_to_active_blocker",
                     "terminal_experiment_promoted_to_active_blocker",
                     "nonexistent_candidate_review_requested",
@@ -2201,7 +2211,8 @@ class LocalPilotAgent:
                         "current evidence identifies an actually pending patch or candidate."
                         " LearningMemory is the separate machine-local durable store described by the evidence; "
                         "it is not confined to candidate workspaces. Credential-free public HTTPS research needs "
-                        "no per-use owner permission when the autonomy evidence says it is available."
+                        "no per-use owner permission when the autonomy evidence says it is available. The process "
+                        "identified by current_process/component=runtime_worker is the runtime worker, not the broker."
                     )
                 casual_conversation_recovery = ""
                 if "casual_conversation_replaced_by_evidence_search" in behavior_issues:
@@ -2248,6 +2259,7 @@ class LocalPilotAgent:
                         "terminal_candidate_merge_requested",
                         "learning_memory_conflated_with_candidate_workspace",
                         "public_web_permission_misstated",
+                        "runtime_worker_misidentified_as_broker",
                         "improvement_frontier_promoted_to_active_blocker",
                         "terminal_experiment_promoted_to_active_blocker",
                         "nonexistent_candidate_review_requested",
@@ -3140,7 +3152,8 @@ class LocalPilotAgent:
                     "an owner decision or engineering blocker unless the supplied health and probable-cause fields "
                     "establish that connection. Preserve any owner-requested separation of facts and judgment. "
                     "Give the owner a direct concise status answer with exact timestamps, PIDs, branch, commit, "
-                    "cycle status, or evolution result only when those fields are present."
+                    "cycle status, or evolution result only when those fields are present. The lifecycle "
+                    "current_process is explicitly the runtime worker; never describe that PID as the broker process."
                 ),
             }
             self.messages.append(operational_status_message)

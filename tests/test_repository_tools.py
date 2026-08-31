@@ -217,6 +217,7 @@ def test_runtime_self_inspection_exposes_lifecycle_process_and_git_state(tmp_pat
     evidence = json.loads(reader.get_runtime_lifecycle())
 
     assert evidence["current_process"] == {
+        "component": "runtime_worker",
         "pid": 41,
         "started_at": "2026-08-29T01:02:03+00:00",
         "source": "crash_recovery",

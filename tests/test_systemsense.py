@@ -283,6 +283,7 @@ def test_passive_context_includes_durable_runtime_and_checkout_evidence(tmp_path
     context = sense.compact_context()
 
     assert summary["runtime"]["current_process"]["pid"] == 901
+    assert summary["runtime"]["current_process"]["component"] == "runtime_worker"
     assert summary["runtime"]["recent_lifecycle"][0]["source"] == "broker_startup"
     activity = summary["runtime"]["autonomous_activity"]
     assert activity["latest_background_cycle"]["status"] == "deferred"

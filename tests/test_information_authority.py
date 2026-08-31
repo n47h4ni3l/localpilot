@@ -471,6 +471,21 @@ def test_explicit_primary_source_research_cannot_claim_success_without_fetch():
     assert verified == ()
 
 
+def test_operational_capability_question_does_not_require_live_web_fetch():
+    prompt = (
+        "LocalPilot, do you have learning_memory, and how can you research the public "
+        "internet autonomously?"
+    )
+
+    risks = LocalPilotAgent._contextual_evidence_risks(
+        prompt,
+        "I can use the configured public-web research tools without per-use permission.",
+        frozenset(),
+    )
+
+    assert risks == ()
+
+
 def test_latest_claim_rejects_guessed_or_superseded_source_and_accepts_current_source():
     prompt = (
         "Fact-check the latest stable Python release as of today using the public Internet "

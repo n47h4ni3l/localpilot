@@ -168,6 +168,7 @@ class RuntimeEvidence:
             transition = row.get("transition")
             if transition in {"started", "ready"} and row.get("new_pid") is not None:
                 current_process = {
+                    "component": "runtime_worker",
                     "pid": row.get("new_pid"),
                     "started_at": row.get("process_started_at"),
                     "source": row.get("source"),

@@ -172,6 +172,12 @@ def test_operational_status_behavior_gate_rejects_memory_and_candidate_misstatem
     assert "learning_memory_conflated_with_candidate_workspace" in memory_scope_issues
     assert "public_web_permission_misstated" in memory_scope_issues
 
+    process_role_issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        "The broker process that runs LocalPilot (PID 8736) has been stable since startup.",
+    )
+    assert "runtime_worker_misidentified_as_broker" in process_role_issues
+
     live_handover_issues = LocalPilotAgent._response_behavior_issues(
         prompt,
         """

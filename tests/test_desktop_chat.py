@@ -332,6 +332,9 @@ def test_broker_request_timeout_is_soft_and_late_result_completes_without_pid_ch
 
     assert len(active_turns) == 1
     assert active_turns[0]["request_id"] == submitted["request_id"]
+    published = app.audit.latest("foreground_turn_state")
+    assert published["active_count"] == 1
+    assert published["published"] is True
 
     app._expire_request(submitted["request_id"])
 
@@ -359,6 +362,7 @@ def test_broker_request_timeout_is_soft_and_late_result_completes_without_pid_ch
     assert completed["status"] == "complete"
     assert completed["content"] == "Completed after the soft boundary"
     assert active_foreground_turns(tmp_path / config.agent.data_dir) == ()
+    assert app.audit.latest("foreground_turn_state")["active_count"] == 0
 
 
 def test_runtime_worker_uses_agent_once_and_streams_structured_visible_deltas(tmp_path, monkeypatch):

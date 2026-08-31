@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets
 import threading
 import time
@@ -12,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from localpilot.audit import AuditLog
 from localpilot.chat_store import ChatStore
 from localpilot.config import Config, load_config
 from localpilot.foreground import write_foreground_turns
@@ -71,6 +73,7 @@ class BrokerApp:
         self.config = config
         data_dir = (self.root / config.agent.data_dir).resolve()
         self.data_dir = data_dir
+        self.audit = AuditLog(data_dir / "audit.jsonl")
         self.store = ChatStore(data_dir / config.desktop.chat_database)
         # The runtime worker remains the sole owner of passive collection. The
         # broker opens the same local store only to serve a bounded, read-only
@@ -85,7 +88,14 @@ class BrokerApp:
         self._condition = threading.Condition()
         self._lock = threading.RLock()
         self._pending: dict[str, dict[str, Any]] = {}
-        write_foreground_turns(self.data_dir, ())
+        initialized_foreground_state = write_foreground_turns(self.data_dir, ())
+        self.audit.write(
+            "foreground_turn_state",
+            broker_pid=os.getpid(),
+            active_count=0,
+            published=initialized_foreground_state,
+            reason="broker_initialized",
+        )
         self.runtime = RuntimeSupervisor(
             self.root,
             config_path=config_path,
@@ -110,16 +120,25 @@ class BrokerApp:
             write_foreground_turns(self.data_dir, ())
 
     def _sync_foreground_turns_locked(self) -> None:
-        write_foreground_turns(
+        requests = tuple(
+            {
+                "request_id": request_id,
+                "session_id": item.get("session_id"),
+                "message_id": item.get("message_id"),
+            }
+            for request_id, item in self._pending.items()
+        )
+        published = write_foreground_turns(
             self.data_dir,
-            (
-                {
-                    "request_id": request_id,
-                    "session_id": item.get("session_id"),
-                    "message_id": item.get("message_id"),
-                }
-                for request_id, item in self._pending.items()
-            ),
+            requests,
+        )
+        self.audit.write(
+            "foreground_turn_state",
+            broker_pid=os.getpid(),
+            active_count=len(requests),
+            request_ids=[item["request_id"] for item in requests],
+            published=published,
+            reason="pending_requests_changed",
         )
 
     def systemsense_summary(self) -> dict[str, Any]:

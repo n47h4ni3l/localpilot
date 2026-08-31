@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -40,16 +41,17 @@ def write_foreground_turns(
     temporary = destination.with_name(
         f".{destination.name}.{os.getpid()}.{threading.get_ident()}.tmp"
     )
-    try:
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True),
-            encoding="utf-8",
-        )
-        os.replace(temporary, destination)
-    except OSError:
-        temporary.unlink(missing_ok=True)
-        return False
-    return True
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    for attempt in range(5):
+        try:
+            temporary.write_text(encoded, encoding="utf-8")
+            os.replace(temporary, destination)
+            return True
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            if attempt < 4:
+                time.sleep(0.02)
+    return False
 
 
 def active_foreground_turns(data_dir: str | Path) -> tuple[dict[str, str], ...]:

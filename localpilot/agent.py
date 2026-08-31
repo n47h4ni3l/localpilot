@@ -1143,6 +1143,19 @@ class LocalPilotAgent:
         if friendly_personal_advice and pc_maintenance_substitution:
             issues.append("friendly_personal_advice_replaced_by_pc_maintenance")
 
+        practical_troubleshooting = LocalPilotAgent._is_practical_troubleshooting_prompt(prompt)
+        if practical_troubleshooting and not re.search(
+            r"https://\S+|\bbambu lab (?:wiki|support|guide)\b",
+            behavior_text,
+        ):
+            issues.append("practical_troubleshooting_source_unattributed")
+        if practical_troubleshooting and re.search(
+            r"\b(?:24\d|2[5-9]\d|[3-9]\d{2})\s*°?\s*c\b.{0,50}\b(?:for\s+)?pla\b|"
+            r"\bpla\b.{0,50}\b(?:24\d|2[5-9]\d|[3-9]\d{2})\s*°?\s*c\b",
+            behavior_text,
+        ):
+            issues.append("unsafe_pla_temperature_example")
+
         code_history_request = bool(
             re.search(
                 r"\b(?:what (?:have you|you've) (?:learned|changed)|code change|"
@@ -2264,6 +2277,18 @@ class LocalPilotAgent:
                         "explanation framed as a provisional view. Do not substitute a failed library, web, or "
                         "evidence search for conversation, and do not imply that such a search was needed."
                     )
+                practical_troubleshooting_recovery = ""
+                if {
+                    "practical_troubleshooting_source_unattributed",
+                    "unsafe_pla_temperature_example",
+                }.intersection(behavior_issues):
+                    practical_troubleshooting_recovery = (
+                        " For practical troubleshooting, attribute the answer to the strongest verified support "
+                        "source already in context and include its HTTPS URL. Keep every numeric temperature and "
+                        "device-specific procedure faithful to that source. Remove the unsafe 240°C-or-higher PLA "
+                        "recommendation; do not invent a replacement number if the verified source did not supply "
+                        "one. Prefer safe reversible checks and clearly label any remaining practical judgment."
+                    )
                 behavior_instruction = {
                     "role": "user",
                     "content": (
@@ -2279,7 +2304,8 @@ class LocalPilotAgent:
                         "from a possible mechanism and do not invent access to hidden activations or reward signals. "
                         "Never expose or persist hidden chain-of-thought; use a concise rationale and visible tool "
                         "evidence instead. Remove internal checkpoint names and observation IDs from ordinary prose. "
-                        f"{operational_evidence_recovery}{casual_conversation_recovery} "
+                        f"{operational_evidence_recovery}{casual_conversation_recovery}"
+                        f"{practical_troubleshooting_recovery} "
                         "Do not add new factual specifics, request tools, mention this recovery, or discuss policies. "
                         "Return only the recovered answer."
                     ),

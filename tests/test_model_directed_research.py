@@ -181,6 +181,21 @@ def test_operational_status_behavior_gate_rejects_memory_and_candidate_misstatem
     )
     assert "public_web_capability_denied" in web_denial_issues
 
+    unsafe_troubleshooting_issues = LocalPilotAgent._response_behavior_issues(
+        "My H2S printer nozzle keeps clogging again straight away.",
+        "Heat slightly above the recommended temperature, for example 250 °C for PLA, then clear it.",
+    )
+    assert "practical_troubleshooting_source_unattributed" in unsafe_troubleshooting_issues
+    assert "unsafe_pla_temperature_example" in unsafe_troubleshooting_issues
+
+    sourced_troubleshooting_issues = LocalPilotAgent._response_behavior_issues(
+        "My H2S printer nozzle keeps clogging again straight away.",
+        "The Bambu Lab Wiki recommends following its H2S unclogging procedure: "
+        "https://wiki.bambulab.com/en/h2s/troubleshooting/nozzle-clog",
+    )
+    assert "practical_troubleshooting_source_unattributed" not in sourced_troubleshooting_issues
+    assert "unsafe_pla_temperature_example" not in sourced_troubleshooting_issues
+
     process_role_issues = LocalPilotAgent._response_behavior_issues(
         prompt,
         "The broker process that manages the worker is PID 8736 and has been stable since startup.",
@@ -447,10 +462,11 @@ def test_practical_troubleshooting_uses_live_support_sources_not_semantic_memory
             [_chunk(content="The support source gives enough evidence to diagnose safely.")],
             [
                 _chunk(
-                    content=(
-                        "Because the clog returns immediately with dry filament, inspect the full filament "
-                        "path, extruder gears, and hotend for retained debris before replacing parts."
-                    )
+                        content=(
+                            "The Bambu Lab Wiki support procedure says to inspect the full filament path, "
+                            "extruder gears, and hotend for retained debris before replacing parts: "
+                            "https://support.example/printer-clogs"
+                        )
                 )
             ],
         ]

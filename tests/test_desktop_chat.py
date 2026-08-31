@@ -13,6 +13,7 @@ from localpilot.broker import BrokerApp, BrokerHTTPServer, load_or_create_broker
 from localpilot.chat_store import ChatStore
 from localpilot.desktop import _markdown_segments
 from localpilot.config import Config, load_config
+from localpilot.foreground import active_foreground_turns
 from localpilot.agent import LocalPilotAgent
 from localpilot.runtime_supervisor import RuntimeSupervisor
 from localpilot.runtime_worker import RuntimeWorker
@@ -327,6 +328,10 @@ def test_broker_request_timeout_is_soft_and_late_result_completes_without_pid_ch
     session = app.store.create_session()
     submitted = app.submit(session["id"], "A bounded request")
     original_pid = app.runtime.pid
+    active_turns = active_foreground_turns(tmp_path / config.agent.data_dir)
+
+    assert len(active_turns) == 1
+    assert active_turns[0]["request_id"] == submitted["request_id"]
 
     app._expire_request(submitted["request_id"])
 
@@ -353,6 +358,7 @@ def test_broker_request_timeout_is_soft_and_late_result_completes_without_pid_ch
     completed = app.store.message(submitted["assistant"]["id"])
     assert completed["status"] == "complete"
     assert completed["content"] == "Completed after the soft boundary"
+    assert active_foreground_turns(tmp_path / config.agent.data_dir) == ()
 
 
 def test_runtime_worker_uses_agent_once_and_streams_structured_visible_deltas(tmp_path, monkeypatch):

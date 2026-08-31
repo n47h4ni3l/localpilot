@@ -14,6 +14,7 @@ from typing import Any
 
 from localpilot.chat_store import ChatStore
 from localpilot.config import Config, load_config
+from localpilot.foreground import write_foreground_turns
 from localpilot.runtime_supervisor import RuntimeSupervisor
 from localpilot.systemsense import get_system_sense
 
@@ -69,6 +70,7 @@ class BrokerApp:
         self.root = Path(root).resolve()
         self.config = config
         data_dir = (self.root / config.agent.data_dir).resolve()
+        self.data_dir = data_dir
         self.store = ChatStore(data_dir / config.desktop.chat_database)
         # The runtime worker remains the sole owner of passive collection. The
         # broker opens the same local store only to serve a bounded, read-only
@@ -83,6 +85,7 @@ class BrokerApp:
         self._condition = threading.Condition()
         self._lock = threading.RLock()
         self._pending: dict[str, dict[str, Any]] = {}
+        write_foreground_turns(self.data_dir, ())
         self.runtime = RuntimeSupervisor(
             self.root,
             config_path=config_path,
@@ -103,6 +106,21 @@ class BrokerApp:
 
     def stop(self) -> None:
         self.runtime.stop()
+        with self._lock:
+            write_foreground_turns(self.data_dir, ())
+
+    def _sync_foreground_turns_locked(self) -> None:
+        write_foreground_turns(
+            self.data_dir,
+            (
+                {
+                    "request_id": request_id,
+                    "session_id": item.get("session_id"),
+                    "message_id": item.get("message_id"),
+                }
+                for request_id, item in self._pending.items()
+            ),
+        )
 
     def systemsense_summary(self) -> dict[str, Any]:
         """Return a fail-soft GUI summary without exposing raw telemetry."""
@@ -152,6 +170,7 @@ class BrokerApp:
                 "content": "",
                 "timer": timer,
             }
+            self._sync_foreground_turns_locked()
         self._event("message.created", {"message": user_message}, session_id=session_id)
         self._event("message.created", {"message": assistant_message}, session_id=session_id)
         try:
@@ -169,6 +188,7 @@ class BrokerApp:
         except Exception as exc:
             with self._lock:
                 pending = self._pending.pop(request_id, None)
+                self._sync_foreground_turns_locked()
             if pending is not None:
                 pending["timer"].cancel()
             marker = f"[LocalPilot runtime unavailable: {type(exc).__name__}: {exc}]"
@@ -233,6 +253,7 @@ class BrokerApp:
         with self._lock:
             pending = list(self._pending.values())
             self._pending.clear()
+            self._sync_foreground_turns_locked()
         for item in pending:
             item["timer"].cancel()
             marker = f"[LocalPilot runtime restarted before this answer completed: {reason}]"
@@ -286,6 +307,7 @@ class BrokerApp:
         if kind == "result":
             with self._lock:
                 pending = self._pending.pop(request_id, None)
+                self._sync_foreground_turns_locked()
             if pending is None:
                 return
             pending["timer"].cancel()
@@ -299,6 +321,7 @@ class BrokerApp:
         if kind in {"error", "protocol_error"}:
             with self._lock:
                 pending = self._pending.pop(request_id, None)
+                self._sync_foreground_turns_locked()
             payload = {
                 "error_type": str(message.get("error_type") or "RuntimeError"),
                 "message": "The local runtime reported an error.",

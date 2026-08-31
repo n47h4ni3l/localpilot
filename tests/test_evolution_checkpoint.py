@@ -6,6 +6,7 @@ import pytest
 
 from localpilot.checkpoint import CheckpointStore, EvolutionCheckpoint
 from localpilot.config import Config
+from localpilot.foreground import write_foreground_turns
 from localpilot.github_integration import CandidateSnapshot
 from localpilot.resource import ResourceState
 from localpilot.selfdev import (
@@ -251,6 +252,47 @@ def test_resource_pause_preserves_handoff_for_next_invocation(tmp_path: Path, mo
     assert result.status == "paused"
     assert captured["cycle_id"] == cycle_id
     assert captured["checkpoint"].research_findings[0].startswith("The evolution loop")
+
+
+def test_active_broker_turn_pauses_background_inference_even_when_pc_is_idle(
+    tmp_path: Path,
+    monkeypatch,
+):
+    developer, _workspace = _developer(tmp_path)
+    monkeypatch.setattr(
+        developer.governor,
+        "sample",
+        lambda interval=0.05: ResourceState(
+            3600,
+            10,
+            50,
+            True,
+            "idle capacity available",
+            True,
+            True,
+            "",
+            "",
+        ),
+    )
+    assert write_foreground_turns(
+        developer.data_dir,
+        (
+            {
+                "request_id": "request-1",
+                "session_id": "session-1",
+                "message_id": "message-1",
+            },
+        ),
+    )
+
+    with pytest.raises(CyclePaused, match="active foreground chat turn"):
+        developer._check_resources(
+            False,
+            "capability-discovery",
+            during_inference=True,
+        )
+
+    assert "active foreground chat turn" in developer.audit.latest("selfdev_paused")["reason"]
 
 
 def test_terminal_completion_cleans_up_active_checkpoint(tmp_path: Path, monkeypatch):

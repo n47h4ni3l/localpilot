@@ -30,6 +30,7 @@ from localpilot.evolution import (
     parse_capability_proposals,
     select_capability_proposal,
 )
+from localpilot.foreground import active_foreground_turns
 from localpilot.github_integration import GitHubIntegration, is_managed_candidate_branch
 from localpilot.learning import LearningMemory
 from localpilot.mission import mission_context
@@ -1967,10 +1968,18 @@ class SelfDeveloper:
         during_inference: bool = False,
     ) -> None:
         current = self.governor.sample(interval=0.05)
+        foreground_turns = active_foreground_turns(self.data_dir) if not force else ()
+        foreground_reason = (
+            f"{len(foreground_turns)} active foreground chat turn(s)"
+            if foreground_turns
+            else ""
+        )
         if during_inference:
             reasons: list[str] = []
             if not force and not current.idle_allowed:
                 reasons.append(current.idle_reason)
+            if foreground_reason:
+                reasons.append(foreground_reason)
             if current.memory_percent > self.config.resource.max_memory_percent_for_background:
                 reasons.append(
                     f"memory {current.memory_percent:.0f}% > "
@@ -1979,8 +1988,15 @@ class SelfDeveloper:
             allowed = not reasons
             reason = "; ".join(reasons) or "idle capacity available"
         else:
-            allowed = current.allows_selfdev(ignore_idle=force)
-            reason = current.blocking_reason(ignore_idle=force)
+            allowed = current.allows_selfdev(ignore_idle=force) and not foreground_turns
+            reason = "; ".join(
+                item
+                for item in (
+                    current.blocking_reason(ignore_idle=force),
+                    foreground_reason,
+                )
+                if item and item != "idle capacity available"
+            ) or "idle capacity available"
         if not allowed:
             self.governor.apply_process_priority(idle=False)
             if self._active_checkpoint is not None:

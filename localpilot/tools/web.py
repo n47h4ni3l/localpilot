@@ -4,6 +4,7 @@ import gzip
 import ipaddress
 import io
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,6 +20,7 @@ _SEARCH_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 LocalPilot/0.2"
 )
+_TRANSIENT_OPEN_DELAYS = (0.25, 0.75)
 _ALLOWED_CONTENT_TYPES = {
     "application/json",
     "application/ld+json",
@@ -130,6 +132,20 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def _open_public_request(opener, request, *, timeout: int = 15):
+    """Retry bounded transient transport failures without weakening HTTPS validation."""
+    for attempt in range(len(_TRANSIENT_OPEN_DELAYS) + 1):
+        try:
+            return opener.open(request, timeout=timeout)
+        except urllib.error.HTTPError:
+            raise
+        except urllib.error.URLError:
+            if attempt >= len(_TRANSIENT_OPEN_DELAYS):
+                raise
+            time.sleep(_TRANSIENT_OPEN_DELAYS[attempt])
+    raise RuntimeError("unreachable")
+
+
 class _VisibleTextParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -223,7 +239,7 @@ def search_public_web(query: str, max_results: int = 5) -> str:
         method="GET",
     )
     try:
-        with opener.open(request, timeout=15) as response:
+        with _open_public_request(opener, request, timeout=15) as response:
             final_url = response.geturl()
             _validate_public_https(final_url)
             content_type = response.headers.get_content_type().lower()
@@ -283,7 +299,7 @@ def fetch_public_https(url: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
         method="GET",
     )
     try:
-        with opener.open(request, timeout=15) as response:
+        with _open_public_request(opener, request, timeout=15) as response:
             final_url = response.geturl()
             _validate_public_https(final_url)
             content_type = response.headers.get_content_type().lower()

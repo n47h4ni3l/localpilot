@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import gzip
-from types import SimpleNamespace
+import urllib.error
 
 import pytest
 
@@ -96,6 +96,34 @@ def test_web_search_returns_only_bounded_https_leads(monkeypatch):
     assert "127.0.0.1" not in result
     assert "Tracking ad" not in result
     assert "untrusted discovery leads" in result
+
+
+def test_web_search_retries_transient_socket_denial(monkeypatch):
+    html = '<a class="result__a" href="https://example.com/article">Recovered result</a>'
+
+    class TransientOpener:
+        def __init__(self):
+            self.calls = 0
+
+        def open(self, request, timeout=15):
+            self.calls += 1
+            if self.calls == 1:
+                raise urllib.error.URLError(
+                    PermissionError(10013, "socket access was temporarily denied")
+                )
+            return _Response(request.full_url, html)
+
+    opener = TransientOpener()
+    delays = []
+    monkeypatch.setattr("localpilot.tools.web.socket.getaddrinfo", _public_dns)
+    monkeypatch.setattr("localpilot.tools.web.urllib.request.build_opener", lambda *args: opener)
+    monkeypatch.setattr("localpilot.tools.web.time.sleep", delays.append)
+
+    result = search_public_web("recover transient search", max_results=1)
+
+    assert "Recovered result" in result
+    assert opener.calls == 2
+    assert delays == [0.25]
 
 
 def test_search_to_read_flow_keeps_discovery_separate_from_evidence(monkeypatch):

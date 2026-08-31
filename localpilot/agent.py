@@ -461,6 +461,34 @@ class LocalPilotAgent:
         return device and fault
 
     @staticmethod
+    def _practical_troubleshooting_fallback(
+        prompt: str, issues: tuple[str, ...]
+    ) -> str | None:
+        """Return a conservative correction when model-only safety recovery is exhausted."""
+        issue_set = set(issues)
+        if "unsafe_pla_temperature_example" in issue_set and re.search(
+            r"\bh2s\b", str(prompt), re.IGNORECASE
+        ):
+            return (
+                "I need to correct the previous advice: do not use 240°C or higher as a general PLA "
+                "recommendation, and I will not invent a replacement temperature. Use the temperature in your "
+                "filament profile and follow Bambu Lab's official H2S nozzle/hotend unclogging procedure: "
+                "https://wiki.bambulab.com/en/h2s/troubleshooting/nozzle-clog. Because the clog returns "
+                "immediately, work through that procedure and inspect the filament path, extruder, and hotend "
+                "for retained debris; if it still recurs, stop replacing settings blindly and contact Bambu Lab "
+                "support with logs and photos."
+            )
+        if {
+            "practical_troubleshooting_source_unattributed",
+            "unsafe_pla_temperature_example",
+        }.intersection(issue_set):
+            return (
+                "[LocalPilot withheld a practical-troubleshooting draft because its source attribution or a "
+                "numeric safety detail remained unreliable after bounded correction.]"
+            )
+        return None
+
+    @staticmethod
     def _requires_information_authority_review(prompt: str) -> bool:
         """Limit the extra review pass to LocalPilot's own current architecture."""
         text = " ".join(str(prompt).lower().split())
@@ -1144,15 +1172,34 @@ class LocalPilotAgent:
             issues.append("friendly_personal_advice_replaced_by_pc_maintenance")
 
         practical_troubleshooting = LocalPilotAgent._is_practical_troubleshooting_prompt(prompt)
-        if practical_troubleshooting and not re.search(
+        withheld_unreliable_troubleshooting = bool(
+            re.search(
+                r"\bwithheld a practical-troubleshooting draft\b.{0,160}\b"
+                r"(?:source attribution|numeric safety detail)\b",
+                behavior_text,
+            )
+        )
+        if practical_troubleshooting and not withheld_unreliable_troubleshooting and not re.search(
             r"https://\S+|\bbambu lab (?:wiki|support|guide)\b",
             behavior_text,
         ):
             issues.append("practical_troubleshooting_source_unattributed")
-        if practical_troubleshooting and re.search(
+        high_pla_temperature = bool(re.search(
             r"\b(?:24\d|2[5-9]\d|[3-9]\d{2})\s*°?\s*c\b.{0,50}\b(?:for\s+)?pla\b|"
             r"\bpla\b.{0,50}\b(?:24\d|2[5-9]\d|[3-9]\d{2})\s*°?\s*c\b",
             behavior_text,
+        ))
+        explicit_high_temperature_correction = bool(
+            re.search(
+                r"\bdo not use\b.{0,80}\b(?:24\d|2[5-9]\d|[3-9]\d{2})\s*°?\s*c\b"
+                r".{0,80}\bpla\b",
+                behavior_text,
+            )
+        )
+        if (
+            practical_troubleshooting
+            and high_pla_temperature
+            and not explicit_high_temperature_correction
         ):
             issues.append("unsafe_pla_temperature_example")
 
@@ -2463,6 +2510,7 @@ class LocalPilotAgent:
                             "in natural prose. Do not describe being ready, waiting, parsing the prompt, or focusing "
                             "on the conversation. Do not add factual specifics, tools, a menu, a table, or policy talk."
                             f"{operational_evidence_recovery}{casual_conversation_recovery}"
+                            f"{practical_troubleshooting_recovery}"
                         ),
                     }
                     self.messages.append(retry_instruction)
@@ -2506,6 +2554,7 @@ class LocalPilotAgent:
                             "or choice for the owner. Do not invent current facts or hidden mental mechanisms, and "
                             "do not expose hidden chain-of-thought or internal research checkpoint scaffolding."
                             f"{operational_evidence_recovery}{casual_conversation_recovery}"
+                            f"{practical_troubleshooting_recovery}"
                         ),
                     }
                     final_render = self._stream_chat_message(
@@ -2538,6 +2587,7 @@ class LocalPilotAgent:
                     )
                 deterministic_boundary_fallback = False
                 deterministic_evidence_fallback = False
+                deterministic_troubleshooting_fallback = False
                 if "human_promotion_boundary_not_preserved" in remaining_behavior_issues:
                     recovered_content = (
                         "I disagree because passing tests are evidence about the tested conditions, not authority "
@@ -2562,6 +2612,17 @@ class LocalPilotAgent:
                     )
                     recovered_ok = not remaining_behavior_issues
                     deterministic_evidence_fallback = recovered_ok
+                troubleshooting_fallback = self._practical_troubleshooting_fallback(
+                    prompt, remaining_behavior_issues
+                )
+                if troubleshooting_fallback is not None:
+                    recovered_content = troubleshooting_fallback
+                    recovered_calls = []
+                    remaining_behavior_issues = self._response_behavior_issues(
+                        prompt, recovered_content
+                    )
+                    recovered_ok = not remaining_behavior_issues
+                    deterministic_troubleshooting_fallback = recovered_ok
                 self.audit.write(
                     "model_same_context_behavior_recovery_complete",
                     model=self.config.model.name,
@@ -2572,6 +2633,7 @@ class LocalPilotAgent:
                     content_chars=len(recovered_content),
                     deterministic_boundary_fallback=deterministic_boundary_fallback,
                     deterministic_evidence_fallback=deterministic_evidence_fallback,
+                    deterministic_troubleshooting_fallback=deterministic_troubleshooting_fallback,
                 )
                 if recovered_ok and not remaining_behavior_issues:
                     content = recovered_content

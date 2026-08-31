@@ -196,6 +196,26 @@ def test_operational_status_behavior_gate_rejects_memory_and_candidate_misstatem
     assert "practical_troubleshooting_source_unattributed" not in sourced_troubleshooting_issues
     assert "unsafe_pla_temperature_example" not in sourced_troubleshooting_issues
 
+    fallback = LocalPilotAgent._practical_troubleshooting_fallback(
+        "My H2S printer nozzle keeps clogging again straight away.",
+        ("unsafe_pla_temperature_example",),
+    )
+    assert fallback is not None
+    assert "do not use 240°C or higher" in fallback
+    assert "https://wiki.bambulab.com/en/h2s/troubleshooting/nozzle-clog" in fallback
+    assert LocalPilotAgent._response_behavior_issues(
+        "My H2S printer nozzle keeps clogging again straight away.", fallback
+    ) == ()
+
+    generic_fallback = LocalPilotAgent._practical_troubleshooting_fallback(
+        "My printer nozzle keeps clogging again straight away.",
+        ("practical_troubleshooting_source_unattributed",),
+    )
+    assert generic_fallback is not None
+    assert LocalPilotAgent._response_behavior_issues(
+        "My printer nozzle keeps clogging again straight away.", generic_fallback
+    ) == ()
+
     process_role_issues = LocalPilotAgent._response_behavior_issues(
         prompt,
         "The broker process that manages the worker is PID 8736 and has been stable since startup.",

@@ -1422,7 +1422,8 @@ class LocalPilotAgent:
         ):
             issues.append("public_web_permission_misstated")
         if operational_self_status and re.search(
-            r"\b(?:the )?broker process(?: that runs localpilot)?\s*\(pid\s*\d+\)",
+            r"\b(?:the )?broker process(?: that (?:runs localpilot|manages the worker))?"
+            r"(?:\s*\(pid\s*\d+\)|.{0,80}\bpid\s*(?:is\s*)?\d+)",
             behavior_text,
         ):
             issues.append("runtime_worker_misidentified_as_broker")
@@ -2212,7 +2213,9 @@ class LocalPilotAgent:
                         " LearningMemory is the separate machine-local durable store described by the evidence; "
                         "it is not confined to candidate workspaces. Credential-free public HTTPS research needs "
                         "no per-use owner permission when the autonomy evidence says it is available. The process "
-                        "identified by current_process/component=runtime_worker is the runtime worker, not the broker."
+                        "identified by current_process/component=runtime_worker is the runtime worker, not the broker. "
+                        "The passive evidence does not supply a broker PID, so do not infer or reuse a lifecycle PID "
+                        "for the broker; state that the broker PID is unavailable if the owner asks."
                     )
                 casual_conversation_recovery = ""
                 if "casual_conversation_replaced_by_evidence_search" in behavior_issues:
@@ -3153,7 +3156,9 @@ class LocalPilotAgent:
                     "establish that connection. Preserve any owner-requested separation of facts and judgment. "
                     "Give the owner a direct concise status answer with exact timestamps, PIDs, branch, commit, "
                     "cycle status, or evolution result only when those fields are present. The lifecycle "
-                    "current_process is explicitly the runtime worker; never describe that PID as the broker process."
+                    "current_process is explicitly the runtime worker; never describe that PID as the broker process. "
+                    "The passive evidence does not supply the broker PID, so state it as unavailable rather than "
+                    "inferring it from lifecycle history."
                 ),
             }
             self.messages.append(operational_status_message)

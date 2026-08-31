@@ -174,7 +174,7 @@ def test_operational_status_behavior_gate_rejects_memory_and_candidate_misstatem
 
     process_role_issues = LocalPilotAgent._response_behavior_issues(
         prompt,
-        "The broker process that runs LocalPilot (PID 8736) has been stable since startup.",
+        "The broker process that manages the worker is PID 8736 and has been stable since startup.",
     )
     assert "runtime_worker_misidentified_as_broker" in process_role_issues
 

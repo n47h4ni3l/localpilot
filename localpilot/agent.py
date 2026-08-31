@@ -353,6 +353,11 @@ class LocalPilotAgent:
 
         if re.search(r"https://\S+", text) and not forbids_public_web:
             requirements.add("public HTTPS")
+        if (
+            LocalPilotAgent._is_practical_troubleshooting_prompt(prompt)
+            and not forbids_public_web
+        ):
+            requirements.update({"public web discovery", "public HTTPS"})
 
         action_terms = (
             "inspect", "review", "check", "verify", "read", "search", "look at",
@@ -433,6 +438,27 @@ class LocalPilotAgent:
             )
         )
         return temporal and web_research
+
+    @staticmethod
+    def _is_practical_troubleshooting_prompt(prompt: str) -> bool:
+        """Recognize recurring product or device faults that benefit from live support evidence."""
+        text = " ".join(str(prompt).lower().split())
+        device = bool(
+            re.search(
+                r"\b(?:3d printer|printer|nozzle|extruder|filament|device|machine|appliance|"
+                r"router|camera|phone|laptop|computer|motor|battery|engine|vehicle)\b",
+                text,
+            )
+        )
+        fault = bool(
+            re.search(
+                r"\b(?:keeps?|repeatedly|again|straight away|won['’]?t|not working|fails?|"
+                r"clogg?(?:ed|ing)?|jam(?:med|ming)?|error|fault|broken|overheat(?:ing)?|"
+                r"leak(?:ing)?|disconnect(?:ing)?|stuck)\b",
+                text,
+            )
+        )
+        return device and fault
 
     @staticmethod
     def _requires_information_authority_review(prompt: str) -> bool:
@@ -862,6 +888,9 @@ class LocalPilotAgent:
                 r"what (?:have you|you've) learned|what (?:have you|you've) changed|"
                 r"learning[_ ]memory|durable memory|do you have (?:a )?memory|"
                 r"store or retrieve (?:new )?learning|"
+                r"public (?:web|internet)|internet access|web access|"
+                r"search(?:ed|ing)? (?:the )?(?:web|internet)|"
+                r"browse(?:d|ing)? (?:the )?(?:web|internet)|"
                 r"candidate (?:pr|pull request|experiment)|autonomous work|autonom(?:y|ous|ously)|"
                 r"becom(?:e|ing) more capable|what (?:is|isn't|'s) (?:stable|blocked)|"
                 r"what (?:is )?blocking (?:you|localpilot)|what still requires me|handover)\b",
@@ -1421,6 +1450,14 @@ class LocalPilotAgent:
             behavior_text,
         ):
             issues.append("public_web_permission_misstated")
+        if operational_self_status and re.search(
+            r"\b(?:cannot|can['’]?t|unable to) (?:open|access|browse|search) "
+            r"(?:the )?(?:public )?(?:web|internet)\b|"
+            r"\b(?:did not|didn['’]?t) search (?:the )?(?:public )?(?:web|internet)"
+            r".{0,160}\b(?:policy|only (?:the )?local (?:evidence|tools?))\b",
+            behavior_text,
+        ):
+            issues.append("public_web_capability_denied")
         if operational_self_status and re.search(
             r"\b(?:the )?broker process(?: that (?:runs localpilot|manages the worker))?"
             r"(?:\s*\(pid\s*\d+\)|.{0,80}\bpid\s*(?:is\s*)?\d+)",
@@ -2180,6 +2217,7 @@ class LocalPilotAgent:
                     "terminal_candidate_merge_requested",
                     "learning_memory_conflated_with_candidate_workspace",
                     "public_web_permission_misstated",
+                    "public_web_capability_denied",
                     "runtime_worker_misidentified_as_broker",
                     "improvement_frontier_promoted_to_active_blocker",
                     "terminal_experiment_promoted_to_active_blocker",
@@ -2212,7 +2250,9 @@ class LocalPilotAgent:
                         "current evidence identifies an actually pending patch or candidate."
                         " LearningMemory is the separate machine-local durable store described by the evidence; "
                         "it is not confined to candidate workspaces. Credential-free public HTTPS research needs "
-                        "no per-use owner permission when the autonomy evidence says it is available. The process "
+                        "no per-use owner permission when the autonomy evidence says it is available. Do not claim "
+                        "that policy limits LocalPilot to local evidence when the supplied capability flags show "
+                        "public search and HTTPS reading are available. The process "
                         "identified by current_process/component=runtime_worker is the runtime worker, not the broker. "
                         "The passive evidence does not supply a broker PID, so do not infer or reuse a lifecycle PID "
                         "for the broker; state that the broker PID is unavailable if the owner asks."
@@ -2262,6 +2302,7 @@ class LocalPilotAgent:
                         "terminal_candidate_merge_requested",
                         "learning_memory_conflated_with_candidate_workspace",
                         "public_web_permission_misstated",
+                        "public_web_capability_denied",
                         "runtime_worker_misidentified_as_broker",
                         "improvement_frontier_promoted_to_active_blocker",
                         "terminal_experiment_promoted_to_active_blocker",
@@ -3064,19 +3105,28 @@ class LocalPilotAgent:
         operational_self_status = self._is_operational_self_status_prompt(prompt)
         direct_conversation = self._is_bounded_conversational_prompt(prompt)
         temporal_web_research = self._is_temporal_web_prompt(prompt)
-        if operational_self_status or direct_conversation:
+        practical_troubleshooting = self._is_practical_troubleshooting_prompt(prompt)
+        if operational_self_status or direct_conversation or practical_troubleshooting:
             learning_context, retrieved_facts = "", []
             self.audit.write(
                 (
                     "model_operational_self_status_route"
                     if operational_self_status
-                    else "model_direct_conversation_route"
+                    else (
+                        "model_direct_conversation_route"
+                        if direct_conversation
+                        else "model_practical_troubleshooting_route"
+                    )
                 ),
                 query_digest=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                 source=(
                     "systemsense_passive_runtime_evidence"
                     if operational_self_status
-                    else "owner_conversation"
+                    else (
+                        "owner_conversation"
+                        if direct_conversation
+                        else "public_support_evidence"
+                    )
                 ),
                 durable_memory_retrieval_skipped=True,
             )
@@ -3090,6 +3140,7 @@ class LocalPilotAgent:
         systemsense_message: dict[str, Any] | None = None
         operational_status_message: dict[str, Any] | None = None
         direct_conversation_message: dict[str, Any] | None = None
+        troubleshooting_message: dict[str, Any] | None = None
         temporal_context_message: dict[str, Any] | None = None
         learning_verification_messages: list[dict[str, Any]] = []
         if learning_context:
@@ -3119,7 +3170,7 @@ class LocalPilotAgent:
             )
         systemsense_context = (
             self.systemsense.compact_context()
-            if operational_self_status or not direct_conversation
+            if operational_self_status or not (direct_conversation or practical_troubleshooting)
             else ""
         )
         if systemsense_context:
@@ -3159,6 +3210,8 @@ class LocalPilotAgent:
                     "current_process is explicitly the runtime worker; never describe that PID as the broker process. "
                     "The passive evidence does not supply the broker PID, so state it as unavailable rather than "
                     "inferring it from lifecycle history."
+                    " When asked about internet access, report the public_web_research_available search, read, and "
+                    "permission fields exactly; do not claim policy restricts LocalPilot to local-only evidence."
                 ),
             }
             self.messages.append(operational_status_message)
@@ -3179,6 +3232,19 @@ class LocalPilotAgent:
                 ),
             }
             self.messages.append(direct_conversation_message)
+        if practical_troubleshooting and not operational_self_status:
+            troubleshooting_message = {
+                "role": "system",
+                "content": (
+                    "PRACTICAL TROUBLESHOOTING ROUTE: The owner described a recurring product or device fault. "
+                    "Do not substitute unrelated LearningMemory, repository inspection, or a generic evidence "
+                    "refusal. Use search_public_web to discover a relevant support source, then use "
+                    "fetch_public_https on the strongest primary manufacturer, manual, or official support page "
+                    "before diagnosing. Distinguish source-backed checks from your practical judgment. Prioritize "
+                    "safe reversible checks and state any important detail that remains unknown."
+                ),
+            }
+            self.messages.append(troubleshooting_message)
         if temporal_web_research and not operational_self_status and not direct_conversation:
             current_date = datetime.now(UTC).date().isoformat()
             temporal_context_message = {
@@ -4223,6 +4289,12 @@ class LocalPilotAgent:
                     message
                     for message in self.messages
                     if id(message) != id(direct_conversation_message)
+                ]
+            if troubleshooting_message is not None:
+                self.messages[:] = [
+                    message
+                    for message in self.messages
+                    if id(message) != id(troubleshooting_message)
                 ]
             if temporal_context_message is not None:
                 self.messages[:] = [

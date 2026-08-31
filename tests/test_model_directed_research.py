@@ -1,5 +1,6 @@
 import json
 import sys
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -106,6 +107,8 @@ def test_operational_status_classifier_covers_owner_handover_and_autonomy_questi
         "LocalPilot, give me a handover of what is stable, blocked, and the next decision.",
         "What can you actually do autonomously toward becoming more capable, what is blocking you, and what still requires me?",
         "Do you have learning_memory and can you store or retrieve new learning?",
+        "Any reason you didn't search the internet for an answer?",
+        "Codex should have opened read-only internet access for you.",
     ):
         assert LocalPilotAgent._is_operational_self_status_prompt(prompt) is True
 
@@ -171,6 +174,12 @@ def test_operational_status_behavior_gate_rejects_memory_and_candidate_misstatem
     )
     assert "learning_memory_conflated_with_candidate_workspace" in memory_scope_issues
     assert "public_web_permission_misstated" in memory_scope_issues
+
+    web_denial_issues = LocalPilotAgent._response_behavior_issues(
+        "Any reason you didn't search the internet for an answer?",
+        "I didn't search the internet because system policy limits me to only local evidence.",
+    )
+    assert "public_web_capability_denied" in web_denial_issues
 
     process_role_issues = LocalPilotAgent._response_behavior_issues(
         prompt,
@@ -380,6 +389,91 @@ def test_satisfied_required_web_evidence_skips_redundant_review_pass(
     event = agent.audit.latest("model_post_tool_reasoning_only_finalized")
     assert event is not None
     assert event["reason"] == "required_evidence_satisfied"
+
+
+def test_practical_troubleshooting_uses_live_support_sources_not_semantic_memory(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path, soft=4, hard=4)
+    monkeypatch.setattr(
+        agent,
+        "_learning_context",
+        lambda _prompt: pytest.fail("device troubleshooting must not retrieve unrelated semantic memory"),
+    )
+    monkeypatch.setattr(
+        agent.systemsense,
+        "compact_context",
+        lambda: pytest.fail("device troubleshooting must not inject unrelated PC telemetry"),
+    )
+    search_tool = agent.tools["search_public_web"]
+    fetch_tool = agent.tools["fetch_public_https"]
+    agent.tools["search_public_web"] = SimpleNamespace(
+        risk=search_tool.risk,
+        fn=lambda **_kwargs: (
+            "Public web search: 'Bambu Lab H2S repeated nozzle clog official support'\n"
+            "1. Official troubleshooting - https://support.example/printer-clogs"
+        ),
+    )
+    agent.tools["fetch_public_https"] = SimpleNamespace(
+        risk=fetch_tool.risk,
+        fn=lambda **kwargs: (
+            f"Public HTTPS source: {kwargs['url']}\n"
+            "The manufacturer says to inspect the filament path, extruder gears, and hotend for debris."
+        ),
+    )
+    calls = []
+    streams = iter(
+        [
+            [
+                _chunk(
+                    tool_calls=[
+                        _call(
+                            "search_public_web",
+                            {"query": "Bambu Lab H2S repeated nozzle clog official support"},
+                        )
+                    ]
+                )
+            ],
+            [
+                _chunk(
+                    tool_calls=[
+                        _call(
+                            "fetch_public_https",
+                            {"url": "https://support.example/printer-clogs"},
+                        )
+                    ]
+                )
+            ],
+            [_chunk(content="The support source gives enough evidence to diagnose safely.")],
+            [
+                _chunk(
+                    content=(
+                        "Because the clog returns immediately with dry filament, inspect the full filament "
+                        "path, extruder gears, and hotend for retained debris before replacing parts."
+                    )
+                )
+            ],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        snapshot = dict(kwargs)
+        snapshot["messages"] = deepcopy(kwargs["messages"])
+        calls.append(snapshot)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "My H2S printer keeps getting filament clogged in the nozzle or extruder. "
+        "I unclog it and it clogs again straight away; the filament is dry."
+    )
+
+    assert "inspect the full filament path" in answer
+    assert len(calls) == 4
+    assert "PRACTICAL TROUBLESHOOTING ROUTE" in str(calls[0]["messages"])
+    assert "PRACTICAL TROUBLESHOOTING ROUTE" not in str(agent.messages)
+    assert agent.audit.latest("model_practical_troubleshooting_route") is not None
 
 
 def test_friendly_planning_prompt_is_direct_low_reasoning_without_memory_or_tools(

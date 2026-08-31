@@ -30,6 +30,19 @@ def test_latest_public_internet_claim_requires_current_discovery_and_primary_rea
     ) == {"public web discovery", "public HTTPS"}
 
 
+def test_recurring_device_fault_requires_live_support_discovery_and_primary_read():
+    prompt = (
+        "My H2S printer keeps getting filament clogged in the nozzle or extruder. "
+        "I unclog it and it clogs again straight away; the filament is dry."
+    )
+
+    assert LocalPilotAgent._is_practical_troubleshooting_prompt(prompt) is True
+    assert LocalPilotAgent._evidence_requirements(prompt) == {
+        "public web discovery",
+        "public HTTPS",
+    }
+
+
 def test_explicit_library_inspection_requires_local_library_evidence():
     for prompt in (
         "Search the local library for power management guidance.",

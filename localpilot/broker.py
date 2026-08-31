@@ -119,7 +119,7 @@ class BrokerApp:
         with self._lock:
             write_foreground_turns(self.data_dir, ())
 
-    def _sync_foreground_turns_locked(self) -> None:
+    def _sync_foreground_turns_locked(self) -> bool:
         requests = tuple(
             {
                 "request_id": request_id,
@@ -140,6 +140,7 @@ class BrokerApp:
             published=published,
             reason="pending_requests_changed",
         )
+        return published
 
     def systemsense_summary(self) -> dict[str, Any]:
         """Return a fail-soft GUI summary without exposing raw telemetry."""
@@ -189,7 +190,8 @@ class BrokerApp:
                 "content": "",
                 "timer": timer,
             }
-            self._sync_foreground_turns_locked()
+            foreground_published = self._sync_foreground_turns_locked()
+            foreground_active_count = len(self._pending)
         self._event("message.created", {"message": user_message}, session_id=session_id)
         self._event("message.created", {"message": assistant_message}, session_id=session_id)
         try:
@@ -218,7 +220,13 @@ class BrokerApp:
                 session_id=session_id,
             )
             raise
-        return {"request_id": request_id, "user": user_message, "assistant": assistant_message}
+        return {
+            "request_id": request_id,
+            "user": user_message,
+            "assistant": assistant_message,
+            "foreground_published": foreground_published,
+            "foreground_active_count": foreground_active_count,
+        }
 
     def _expire_request(self, request_id: str) -> None:
         with self._lock:

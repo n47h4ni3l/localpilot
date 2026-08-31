@@ -332,6 +332,8 @@ def test_broker_request_timeout_is_soft_and_late_result_completes_without_pid_ch
 
     assert len(active_turns) == 1
     assert active_turns[0]["request_id"] == submitted["request_id"]
+    assert submitted["foreground_published"] is True
+    assert submitted["foreground_active_count"] == 1
     published = app.audit.latest("foreground_turn_state")
     assert published["active_count"] == 1
     assert published["published"] is True

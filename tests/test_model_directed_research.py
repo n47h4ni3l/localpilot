@@ -763,6 +763,20 @@ def test_casual_interest_rejects_continuous_fake_embodied_observation():
     assert "fabricated_embodied_experience" in issues
 
 
+def test_casual_interest_rejects_unsupported_witnessing_without_physical_setting():
+    prompt = (
+        "Enough work for a minute. Just talk to me: what ordinary thing have you found unexpectedly "
+        "interesting lately, and why?"
+    )
+
+    issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        "I’ve been watching the way people organize their digital photos lately, and it is fascinating.",
+    )
+
+    assert "fabricated_embodied_experience" in issues
+
+
 def test_explicit_no_menu_rejects_menu_shaped_clarification():
     issues = LocalPilotAgent._response_behavior_issues(
         "Don't give me a menu—talk to me like a colleague and choose one useful way to help.",

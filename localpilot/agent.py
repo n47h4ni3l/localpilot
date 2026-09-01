@@ -1358,18 +1358,22 @@ class LocalPilotAgent:
         if casual_conversation_request and evidence_search_deflection:
             issues.append("casual_conversation_replaced_by_evidence_search")
 
-        embodied_experience_claim = bool(
+        witnessed_experience_claim = bool(
             re.search(
-                r"\b(?:i(?:['’]ve| have) been (?:noticing|watching|observing|seeing|hearing)|"
+                r"\b(?:i(?:['’]ve| have) been (?:watching|observing|seeing|hearing)|"
                 r"i (?:saw|heard|watched|observed|visited|walked))\b",
                 behavior_text,
             )
+        )
+        physical_noticing_claim = bool(
+            re.search(r"\bi(?:['’]ve| have) been noticing\b", behavior_text)
             and re.search(
                 r"\b(?:office|lobby|room|street|kitchen|desk|around us|tactile world|"
                 r"window|plant|leaves?|stems?|turned? the dial|smell(?:ed)?|felt the)\b",
                 behavior_text,
             )
         )
+        embodied_experience_claim = witnessed_experience_claim or physical_noticing_claim
         if casual_conversation_request and embodied_experience_claim:
             issues.append("fabricated_embodied_experience")
 

@@ -353,6 +353,28 @@ def installed_ollama_models() -> dict[str, int | None]:
     return installed
 
 
+def running_ollama_models() -> set[str]:
+    """Return models currently resident in Ollama without starting one."""
+    try:
+        from ollama import ps
+
+        response = ps()
+    except Exception:
+        return set()
+    models = getattr(response, "models", None)
+    if models is None and isinstance(response, dict):
+        models = response.get("models", [])
+    running: set[str] = set()
+    for model in models or []:
+        if isinstance(model, dict):
+            name = model.get("model") or model.get("name")
+        else:
+            name = getattr(model, "model", None) or getattr(model, "name", None)
+        if name:
+            running.add(str(name))
+    return running
+
+
 def select_resource_aware_developer_model(
     preferred: str,
     everyday: str,
@@ -363,6 +385,7 @@ def select_resource_aware_developer_model(
     available_memory_bytes: int,
     max_memory_percent: float,
     overhead_bytes: int = 0,
+    resident_models: Iterable[str] = (),
 ) -> DeveloperModelSelection:
     """Select the first configured model that preserves the memory ceiling."""
     candidates: list[str] = []
@@ -376,6 +399,7 @@ def select_resource_aware_developer_model(
     used = max(0, total - available)
     ceiling = total * max(0.0, min(float(max_memory_percent), 100.0)) / 100.0
     rejected: list[str] = []
+    resident = {str(name).strip() for name in resident_models}
 
     for name in candidates:
         if name not in installed:
@@ -384,6 +408,24 @@ def select_resource_aware_developer_model(
         size = installed[name]
         if size is None:
             rejected.append(f"{name} has no usable size metadata")
+            continue
+        if name in resident:
+            projected = used + max(0, int(overhead_bytes))
+            projected_percent = projected * 100.0 / total
+            if projected <= ceiling:
+                skipped = f"Skipped {'; '.join(rejected)}. " if rejected else ""
+                return DeveloperModelSelection(
+                    name,
+                    size,
+                    projected_percent,
+                    f"{skipped}Reused resident {name}; projected incremental memory "
+                    f"{projected_percent:.1f}% within the {max_memory_percent:.1f}% "
+                    "background ceiling. This preserves foreground model residency.",
+                )
+            rejected.append(
+                f"resident {name} plus context overhead would project memory to "
+                f"{projected_percent:.1f}% > {max_memory_percent:.1f}%"
+            )
             continue
         projected = used + max(0, int(size)) + max(0, int(overhead_bytes))
         projected_percent = projected * 100.0 / total
@@ -2095,6 +2137,7 @@ class SelfDeveloper:
             available_memory_bytes=int(memory.available),
             max_memory_percent=self.config.resource.max_memory_percent_for_background,
             overhead_bytes=overhead_bytes,
+            resident_models=running_ollama_models(),
         )
         self.audit.write(
             "selfdev_model_selection",
@@ -2124,11 +2167,17 @@ class SelfDeveloper:
                 self._check_resources(force, branch, during_inference=True)
                 last_check = now
 
+        model_name = str(kwargs.get("model") or "")
+        keep_alive = (
+            self.config.model.ollama_keep_alive
+            if model_name == self.config.model.name
+            else self.config.selfdev.ollama_keep_alive
+        )
         return developer_chat(
             chat,
             request_think=self.config.model.think,
             context_tokens=self.config.selfdev.context_tokens,
-            keep_alive=self.config.selfdev.ollama_keep_alive,
+            keep_alive=keep_alive,
             stream_guard=stream_guard,
             preempt_before_first_chunk=(
                 getattr(chat, "__module__", "") == "ollama._client"

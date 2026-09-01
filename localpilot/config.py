@@ -33,6 +33,10 @@ class ModelConfig:
     # when the model supports much more. Tool-driven agent work needs enough
     # room to retain the owner request plus repository/GitHub observations.
     context_tokens: int = 32768
+    # Keep the everyday model warm through an ordinary work session. Loading a
+    # large local model can take minutes; immediate unload turns every short
+    # colleague-style exchange into a cold start.
+    ollama_keep_alive: float | str = "30m"
     # Optional hybrid durable-memory retrieval. LocalPilot never pulls this
     # model automatically; unavailable embeddings fall back to lexical search.
     memory_embeddings_enabled: bool = False
@@ -264,6 +268,10 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg.model.context_tokens = _validate_context_tokens(
         "model.context_tokens", cfg.model.context_tokens
     )
+    if not isinstance(cfg.model.ollama_keep_alive, (int, float, str)) or isinstance(
+        cfg.model.ollama_keep_alive, bool
+    ):
+        raise ValueError("model.ollama_keep_alive must be seconds or an Ollama duration string")
     cfg.selfdev.context_tokens = _validate_context_tokens(
         "selfdev.context_tokens", cfg.selfdev.context_tokens
     )

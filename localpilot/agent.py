@@ -1395,6 +1395,18 @@ class LocalPilotAgent:
             normalized,
         ):
             issues.append("mechanical_choice_deferral")
+        explicit_no_menu = bool(
+            re.search(r"\b(?:do not|don't|no) (?:give me |offer )?(?:a )?menu\b", request)
+        )
+        menu_shaped_clarification = bool(
+            re.search(
+                r"\b(?:is it|would you prefer)\b.{0,180}\b(?:or|versus)\b.{0,120}"
+                r"\b(?:or something else|something else|another)\b",
+                behavior_text,
+            )
+        )
+        if explicit_no_menu and menu_shaped_clarification:
+            issues.append("explicit_no_menu_ignored")
 
         conversation_selection_invitation = bool(
             re.search(
@@ -2113,6 +2125,7 @@ class LocalPilotAgent:
             "messages": messages if messages is not None else self.messages,
             "think": think,
             "stream": True,
+            "keep_alive": self.config.model.ollama_keep_alive,
             "options": merged_options,
         }
         if tools is not None:
@@ -2525,13 +2538,16 @@ class LocalPilotAgent:
                 if {
                     "casual_conversation_replaced_by_evidence_search",
                     "fabricated_embodied_experience",
+                    "explicit_no_menu_ignored",
                 }.intersection(behavior_issues):
                     casual_conversation_recovery = (
                         " For an ordinary conversational question, answer directly with a plausible everyday "
                         "explanation framed as a provisional view. Do not substitute a failed library, web, or "
                         "evidence search for conversation, and do not imply that such a search was needed. Natural "
                         "taste and curiosity are welcome, but do not invent a body, physical surroundings, sensory "
-                        "experience, or witnessed offline events; frame the interest as a conceptual pattern."
+                        "experience, or witnessed offline events; frame the interest as a conceptual pattern. If the "
+                        "owner explicitly rejected a menu, choose one useful intervention or ask one genuinely "
+                        "necessary open question without listing alternatives."
                     )
                 practical_troubleshooting_recovery = ""
                 if {
@@ -2599,6 +2615,7 @@ class LocalPilotAgent:
                         "nonpending_owner_decision_invented",
                         "casual_conversation_replaced_by_evidence_search",
                         "fabricated_embodied_experience",
+                        "explicit_no_menu_ignored",
                         "internal_evidence_field_leak",
                         "unbounded_autonomy_history_claim",
                     }
@@ -3574,7 +3591,9 @@ class LocalPilotAgent:
                     "or runtime state. If invited to name something interesting, choose one specific ordinary "
                     "subject yourself, give a genuine provisional observation about it, and briefly say why it "
                     "holds your attention. Do not substitute a readiness update, assistant-status metaphor, menu, "
-                    "or generic pleasantry for the requested substance. When the owner asks for ordinary personal "
+                    "or generic pleasantry for the requested substance. If the owner explicitly rejects a menu, "
+                    "choose one useful intervention or ask one genuinely necessary open question without listing "
+                    "alternatives. When the owner asks for ordinary personal "
                     "or friendly advice, stay in that human context; do not redirect the answer to PC maintenance, "
                     "telemetry, storage, files, or system state. For ordinary subjective questions, offer a plausible "
                     "everyday explanation as a provisional view; do not search for evidence or turn the answer into "

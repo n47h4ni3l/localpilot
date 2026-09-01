@@ -18,6 +18,8 @@ temperature = 0.1
 # much smaller context than the model supports, which is especially harmful
 # for repository/GitHub tool loops.
 context_tokens = 32768
+# Keep the everyday model resident across normal back-and-forth conversation.
+ollama_keep_alive = "30m"
 # Optional hybrid lexical + semantic retrieval for durable study facts. Install
 # the named embedding model explicitly with Ollama before enabling; LocalPilot
 # never downloads it automatically and falls back to lexical retrieval on error.

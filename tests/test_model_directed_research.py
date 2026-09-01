@@ -746,6 +746,18 @@ def test_casual_interest_rejects_fabricated_embodied_experience():
     assert "fabricated_embodied_experience" not in grounded
 
 
+def test_explicit_no_menu_rejects_menu_shaped_clarification():
+    issues = LocalPilotAgent._response_behavior_issues(
+        "Don't give me a menu—talk to me like a colleague and choose one useful way to help.",
+        (
+            "What's the one thing you need done? Is it a client update, a supplier call, "
+            "or something else?"
+        ),
+    )
+
+    assert "explicit_no_menu_ignored" in issues
+
+
 def test_historical_autonomy_answer_must_scope_window_and_hide_internal_keys():
     prompt = (
         "Be candid: while I was away, what did your autonomous evolution actually accomplish, what did it "

@@ -54,6 +54,25 @@ def test_model_selection_defers_when_no_configured_model_fits():
     assert "No installed developer model fits" in selection.reason
 
 
+def test_model_selection_reuses_resident_everyday_model_without_double_counting_it():
+    gib = 1024**3
+    selection = select_resource_aware_developer_model(
+        "large",
+        "daily",
+        ["small"],
+        {"large": 20 * gib, "daily": 12 * gib, "small": 6 * gib},
+        total_memory_bytes=32 * gib,
+        available_memory_bytes=10 * gib,
+        max_memory_percent=82,
+        overhead_bytes=1 * gib,
+        resident_models={"daily"},
+    )
+
+    assert selection.model == "daily"
+    assert "Reused resident daily" in selection.reason
+    assert "preserves foreground model residency" in selection.reason
+
+
 def test_structured_fallback_applies_only_through_candidate_tools(tmp_path: Path, monkeypatch):
     raw = """{
       "summary": "add module",

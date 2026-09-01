@@ -19,6 +19,7 @@ def test_everyday_and_developer_models_are_separate():
     assert cfg.model.name == "gpt-oss:20b"
     assert cfg.model.think == "high"
     assert cfg.model.context_tokens == 32768
+    assert cfg.model.ollama_keep_alive == "30m"
     assert cfg.model.memory_embeddings_enabled is False
     assert cfg.model.memory_embedding_model == "embeddinggemma"
     assert cfg.selfdev.developer_model == "qwen2.5:32b"

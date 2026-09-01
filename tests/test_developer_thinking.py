@@ -235,7 +235,7 @@ def test_live_selfdev_path_preserves_gpt_oss_high_and_context():
     assert response.message["thinking"] == "careful"
     assert calls[0]["think"] == "high"
     assert calls[0]["options"]["num_ctx"] == 16384
-    assert calls[0]["keep_alive"] == 0
+    assert calls[0]["keep_alive"] == "30m"
 
 
 def test_live_ollama_chat_enables_pre_first_chunk_preemption(monkeypatch):

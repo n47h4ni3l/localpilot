@@ -1514,6 +1514,30 @@ class LocalPilotAgent:
             issues.append("unearned_introspective_mechanism")
 
         operational_self_status = LocalPilotAgent._is_operational_self_status_prompt(prompt)
+        explicit_evidence_plan_separation = bool(
+            operational_self_status
+            and re.search(
+                r"\bseparate\b.{0,80}\b(?:current )?evidence\b.{0,80}\bplans?\b|"
+                r"\bseparate\b.{0,80}\bplans?\b.{0,80}\b(?:current )?evidence\b",
+                request,
+            )
+        )
+        has_current_evidence_section = bool(
+            re.search(
+                r"(?mi)^\s*(?:#{1,6}\s*)?(?:\*\*)?current evidence(?:\*\*)?\s*:",
+                answer,
+            )
+        )
+        has_plans_section = bool(
+            re.search(
+                r"(?mi)^\s*(?:#{1,6}\s*)?(?:\*\*)?plans?(?:\*\*)?\s*:",
+                answer,
+            )
+        )
+        if explicit_evidence_plan_separation and not (
+            has_current_evidence_section and has_plans_section
+        ):
+            issues.append("requested_evidence_plan_separation_missing")
         if operational_self_status and re.search(
             r"\b(?:no (?:current )?(?:mechanism|code|way).{0,80}(?:store|retrieve).{0,40}"
             r"(?:learning|memory)|(?:do not|don't) have (?:a )?(?:learning )?memory)\b",
@@ -2415,6 +2439,7 @@ class LocalPilotAgent:
                     "terminal_experiment_promoted_to_active_blocker",
                     "nonexistent_candidate_review_requested",
                     "nonpending_owner_decision_invented",
+                    "requested_evidence_plan_separation_missing",
                 }.intersection(behavior_issues):
                     operational_evidence_recovery = (
                         " For operational self-status, report the current commit only as the code loaded now. "
@@ -2440,6 +2465,9 @@ class LocalPilotAgent:
                         "whether to create a replacement candidate or halt evolution when no decision is pending."
                         " Do not ask the owner to approve, reject, review, or merge a patch or candidate unless the "
                         "current evidence identifies an actually pending patch or candidate."
+                        " When the owner explicitly asks to separate current evidence from plans, use distinct "
+                        "`Current evidence:` and `Plans:` sections; do not blend capabilities, observed activity, "
+                        "and future intentions into one narrative."
                         " LearningMemory is the separate machine-local durable store described by the evidence; "
                         "it is not confined to candidate workspaces. Credential-free public HTTPS research needs "
                         "no per-use owner permission when the autonomy evidence says it is available. Do not claim "

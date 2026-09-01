@@ -230,6 +230,28 @@ def test_operational_status_classifier_covers_owner_handover_and_autonomy_questi
         assert LocalPilotAgent._is_operational_self_status_prompt(prompt) is True
 
 
+def test_operational_status_honors_explicit_evidence_plan_separation():
+    prompt = (
+        "What have you actually learned recently, and what can the background worker do? "
+        "Separate current evidence from plans."
+    )
+
+    issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        (
+            "I learned one fact. The background worker can run bounded experiments, "
+            "and later I plan to improve retrieval."
+        ),
+    )
+    assert "requested_evidence_plan_separation_missing" in issues
+
+    separated = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        "Current evidence:\n- One verified fact is stored.\n\nPlans:\n- Improve retrieval later.",
+    )
+    assert "requested_evidence_plan_separation_missing" not in separated
+
+
 def test_operational_status_context_exposes_real_learning_and_authority_boundaries(tmp_path):
     _, agent = _agent(tmp_path)
     agent.memory.record_human_lesson(

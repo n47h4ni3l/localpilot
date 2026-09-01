@@ -1585,12 +1585,7 @@ class LocalPilotAgent:
             )
         )
         unscoped_history_claim = bool(
-            re.search(
-                r"\b(?:the only activity|only activity was|a single (?:cycle|run)|"
-                r"lightweight polling|no productive work|completely non-intrusive|"
-                r"no significant (?:cpu|memory)|no files (?:were )?(?:changed|touched))\b",
-                behavior_text,
-            )
+            historical_autonomy_request
             and not re.search(
                 r"\b(?:newest|latest|recent) (?:100|hundred)\b|\bbounded (?:audit )?window\b|"
                 r"\bnot (?:a )?complete (?:history|lifetime)\b",
@@ -1599,6 +1594,13 @@ class LocalPilotAgent:
         )
         if historical_autonomy_request and unscoped_history_claim:
             issues.append("unbounded_autonomy_history_claim")
+        historical_status_counts = re.findall(
+            r"\b\d+\s+(?:completed|deferred|paused|failed|updated|blocked|crashed|"
+            r"runs?|cycles?|foreground preemptions?)\b",
+            behavior_text,
+        )
+        if historical_autonomy_request and not historical_status_counts:
+            issues.append("historical_autonomy_counts_missing")
         explicit_evidence_plan_separation = bool(
             operational_self_status
             and re.search(
@@ -2534,6 +2536,7 @@ class LocalPilotAgent:
                     "requested_evidence_plan_separation_missing",
                     "internal_evidence_field_leak",
                     "unbounded_autonomy_history_claim",
+                    "historical_autonomy_counts_missing",
                 }.intersection(behavior_issues):
                     operational_evidence_recovery = (
                         " For operational self-status, report the current commit only as the code loaded now. "
@@ -2682,6 +2685,7 @@ class LocalPilotAgent:
                         "work_update_invents_supplier_facts_or_options",
                         "internal_evidence_field_leak",
                         "unbounded_autonomy_history_claim",
+                        "historical_autonomy_counts_missing",
                     }
                 )
                 recovery_think: bool | str = (

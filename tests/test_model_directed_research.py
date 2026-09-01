@@ -880,8 +880,10 @@ def test_historical_autonomy_answer_must_scope_window_and_hide_internal_keys():
     )
 
     assert "unbounded_autonomy_history_claim" in issues
+    assert "historical_autonomy_counts_missing" in issues
     assert "internal_evidence_field_leak" in issues
     assert "unbounded_autonomy_history_claim" not in scoped
+    assert "historical_autonomy_counts_missing" not in scoped
     assert "internal_evidence_field_leak" not in scoped
 
 

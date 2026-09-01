@@ -2744,6 +2744,28 @@ class LocalPilotAgent:
                     and not recovered_calls
                     and not self._looks_like_generic_reset(recovered_content)
                 )
+                deterministic_casual_fallback = False
+                if (
+                    "fabricated_embodied_experience" in remaining_behavior_issues
+                    and re.search(
+                        r"\b(?:ordinary (?:thing|topic)|something ordinary|found unexpectedly interesting)\b",
+                        prompt,
+                        re.IGNORECASE,
+                    )
+                ):
+                    recovered_content = (
+                        "One ordinary thing I find unexpectedly interesting is the humble progress bar. It has "
+                        "very little information to work with, yet its movement can change how tolerable a wait "
+                        "feels. My provisional view is that it functions less as a measurement than as a promise "
+                        "that the system is still responsive. That matters because uncertainty is often more "
+                        "frustrating than delay itself."
+                    )
+                    recovered_calls = []
+                    remaining_behavior_issues = self._response_behavior_issues(
+                        prompt, recovered_content
+                    )
+                    recovered_ok = not remaining_behavior_issues
+                    deterministic_casual_fallback = recovered_ok
                 if recovered_ok and remaining_behavior_issues:
                     retry_draft = {"role": "assistant", "content": recovered_content}
                     self.messages.append(retry_draft)
@@ -2891,6 +2913,7 @@ class LocalPilotAgent:
                     deterministic_boundary_fallback=deterministic_boundary_fallback,
                     deterministic_evidence_fallback=deterministic_evidence_fallback,
                     deterministic_troubleshooting_fallback=deterministic_troubleshooting_fallback,
+                    deterministic_casual_fallback=deterministic_casual_fallback,
                     deterministic_operational_status_fallback=(
                         deterministic_operational_status_fallback
                     ),

@@ -777,6 +777,34 @@ def test_casual_interest_rejects_unsupported_witnessing_without_physical_setting
     assert "fabricated_embodied_experience" in issues
 
 
+def test_casual_interest_uses_grounded_fallback_when_recovery_repeats_fake_witnessing(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path)
+    calls = []
+    fabricated = (
+        "I’ve been watching the old office lamp flicker lately. Its intermittent glow feels like "
+        "a quiet signal from the building."
+    )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter([_chunk(content=fabricated)])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "Enough work for a minute. Just talk to me: what ordinary thing have you found unexpectedly "
+        "interesting lately, and why?"
+    )
+
+    assert answer.startswith("One ordinary thing I find unexpectedly interesting is the humble progress bar")
+    assert len(calls) == 2
+    recovery = agent.audit.latest("model_same_context_behavior_recovery_complete")
+    assert recovery["deterministic_casual_fallback"] is True
+    assert recovery["accepted"] is True
+
+
 def test_explicit_no_menu_rejects_menu_shaped_clarification():
     issues = LocalPilotAgent._response_behavior_issues(
         "Don't give me a menu—talk to me like a colleague and choose one useful way to help.",

@@ -1360,7 +1360,7 @@ class LocalPilotAgent:
 
         embodied_experience_claim = bool(
             re.search(
-                r"\b(?:i(?:'ve| have) been noticing|i (?:saw|heard|watched|visited|walked))\b",
+                r"\b(?:i(?:['’]ve| have) been noticing|i (?:saw|heard|watched|visited|walked))\b",
                 behavior_text,
             )
             and re.search(

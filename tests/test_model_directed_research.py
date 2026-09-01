@@ -733,7 +733,7 @@ def test_casual_interest_rejects_fabricated_embodied_experience():
     fabricated = LocalPilotAgent._response_behavior_issues(
         prompt,
         (
-            "I've been noticing how the old rotary phone in the office lobby still works. Every time "
+            "I’ve been noticing how the old rotary phone in the office lobby still works. Every time "
             "someone turns the dial it brings the tactile world around us into focus."
         ),
     )

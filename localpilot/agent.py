@@ -1302,7 +1302,7 @@ class LocalPilotAgent:
         conversation_menu_deferral = bool(
             re.search(
                 r"\b(?:pick whichever|pick one|choose one|which (?:one|topic)(?: sounds| feels)?|"
-                r"whatever (?:sounds|feels)|let me know which)\b",
+                r"whatever (?:sounds|feels)|let me know which|(?:does that |that )?sound good)\b",
                 behavior_text,
             )
         )

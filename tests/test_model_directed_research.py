@@ -651,6 +651,16 @@ def test_friendly_conversation_invitation_rejects_bulleted_choice_deferral():
 
     assert issues == ("conversation_selection_menu_deferral",)
 
+    singular = LocalPilotAgent._response_behavior_issues(
+        "What kind of conversation would you enjoy having with me? Choose for yourself and start it.",
+        (
+            "I'd love a curiosity-corner chat. How about a quirky science fact? "
+            "We can riff on why it's cool. Sound good?"
+        ),
+    )
+
+    assert singular == ("conversation_selection_menu_deferral",)
+
 
 def test_friendly_personal_advice_skips_systemsense_memory_and_tools(tmp_path, monkeypatch):
     _, agent = _agent(tmp_path)

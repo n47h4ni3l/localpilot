@@ -746,6 +746,23 @@ def test_casual_interest_rejects_fabricated_embodied_experience():
     assert "fabricated_embodied_experience" not in grounded
 
 
+def test_casual_interest_rejects_continuous_fake_embodied_observation():
+    prompt = (
+        "Enough work for a minute. Just talk to me: what ordinary thing have you found unexpectedly "
+        "interesting lately, and why?"
+    )
+
+    issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        (
+            "I’ve been watching the way the office plant reacts to light from the window. The leaves "
+            "curl toward it, which reminds me that adaptation can look almost artistic."
+        ),
+    )
+
+    assert "fabricated_embodied_experience" in issues
+
+
 def test_explicit_no_menu_rejects_menu_shaped_clarification():
     issues = LocalPilotAgent._response_behavior_issues(
         "Don't give me a menu—talk to me like a colleague and choose one useful way to help.",

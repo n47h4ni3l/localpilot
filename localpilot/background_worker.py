@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import signal
+import subprocess
 import threading
 import time
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from typing import Any, Callable, IO
 
 from localpilot.audit import AuditLog
 from localpilot.config import Config, load_config
+from localpilot.process import hidden_process_creation_flags
 from localpilot.selfdev import SelfDeveloper
 
 
@@ -32,6 +34,23 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError, TypeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _git_revision(root: Path) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=hidden_process_creation_flags(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    revision = completed.stdout.strip()
+    return revision if completed.returncode == 0 and revision else None
 
 
 class WorkerLock:
@@ -138,6 +157,7 @@ class BackgroundWorker:
         cycle_runner: Callable[[], Any] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         waiter: Callable[[float], bool] | None = None,
+        revision_reader: Callable[[], str | None] | None = None,
     ) -> None:
         if float(interval_seconds) <= 0:
             raise ValueError("interval_seconds must be positive")
@@ -158,6 +178,8 @@ class BackgroundWorker:
         self._cycle_runner = cycle_runner or self._run_evolve_cycle
         self._monotonic = monotonic
         self._waiter = waiter or self.stop_event.wait
+        self._revision_reader = revision_reader or (lambda: _git_revision(self.root))
+        self._startup_revision = self._revision_reader()
         self._previous_signal_handlers: dict[int, Any] = {}
 
     def _run_evolve_cycle(self) -> Any:
@@ -223,6 +245,25 @@ class BackgroundWorker:
                 return True
         return True
 
+    def _reload_if_source_changed(self, *, sequence: int) -> bool:
+        current_revision = self._revision_reader()
+        if (
+            not self._startup_revision
+            or not current_revision
+            or current_revision == self._startup_revision
+        ):
+            return False
+        self.stop_reason = "trusted_main_changed_external"
+        self.audit.write(
+            "background_worker_reload_required",
+            pid=os.getpid(),
+            sequence=sequence,
+            reason=self.stop_reason,
+            old_revision=self._startup_revision,
+            new_revision=current_revision,
+        )
+        return True
+
     def run(self, *, max_cycles: int | None = None) -> int:
         if max_cycles is not None and max_cycles < 1:
             raise ValueError("max_cycles must be positive")
@@ -248,10 +289,13 @@ class BackgroundWorker:
                 interval_seconds=self.interval_seconds,
                 lock_path=str(self.lock.path),
                 recovered_stale_pid=stale_pid,
+                source_revision=self._startup_revision,
             )
             next_deadline = self._monotonic()
             while not self.stop_event.is_set():
                 if self._wait_until(next_deadline):
+                    break
+                if self._reload_if_source_changed(sequence=cycles):
                     break
                 cycles += 1
                 cycle_started = self._monotonic()
@@ -294,6 +338,8 @@ class BackgroundWorker:
                             reason=self.stop_reason,
                         )
                         break
+                if self._reload_if_source_changed(sequence=cycles):
+                    break
                 if max_cycles is not None and cycles >= max_cycles:
                     self.stop_reason = "max_cycles"
                     break

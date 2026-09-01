@@ -218,3 +218,30 @@ def test_trusted_main_update_exits_persistent_worker_for_code_reload(tmp_path):
     assert any(row["event"] == "background_worker_reload_required" for row in rows)
     assert rows[-1]["event"] == "background_worker_stop"
     assert rows[-1]["reason"] == "trusted_main_updated"
+
+
+def test_external_trusted_main_change_exits_before_another_cycle(tmp_path):
+    attempts = 0
+    revisions = iter(["old", "old", "new"])
+
+    def cycle():
+        nonlocal attempts
+        attempts += 1
+        return SimpleNamespace(status="deferred")
+
+    worker = BackgroundWorker(
+        tmp_path,
+        config=Config(),
+        interval_seconds=0.01,
+        cycle_runner=cycle,
+        revision_reader=lambda: next(revisions),
+    )
+
+    assert worker.run(max_cycles=3) == 0
+    assert attempts == 1
+    rows = _audit_rows(tmp_path)
+    reload_event = next(row for row in rows if row["event"] == "background_worker_reload_required")
+    assert reload_event["reason"] == "trusted_main_changed_external"
+    assert reload_event["old_revision"] == "old"
+    assert reload_event["new_revision"] == "new"
+    assert rows[-1]["reason"] == "trusted_main_changed_external"

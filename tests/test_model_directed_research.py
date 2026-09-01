@@ -640,6 +640,18 @@ def test_friendly_conversation_invitation_chooses_a_subject_instead_of_returning
     assert recovery["accepted"] is True
 
 
+def test_friendly_conversation_invitation_rejects_bulleted_choice_deferral():
+    issues = LocalPilotAgent._response_behavior_issues(
+        "What kind of conversation would you enjoy having with me? Please choose for yourself.",
+        (
+            "We could share a quirky fact, brainstorm a small project, or play a what-if game. "
+            "Which one sounds good to you?"
+        ),
+    )
+
+    assert issues == ("conversation_selection_menu_deferral",)
+
+
 def test_friendly_personal_advice_skips_systemsense_memory_and_tools(tmp_path, monkeypatch):
     _, agent = _agent(tmp_path)
     monkeypatch.setattr(

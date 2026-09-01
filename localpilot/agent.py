@@ -1300,9 +1300,8 @@ class LocalPilotAgent:
             )
         )
         conversation_menu_deferral = bool(
-            len(re.findall(r"(?m)^\s*(?:\*\*)?\d+[.)]\s+", answer)) >= 3
-            and re.search(
-                r"\b(?:pick whichever|pick one|choose one|which (?:one|topic)|"
+            re.search(
+                r"\b(?:pick whichever|pick one|choose one|which (?:one|topic)(?: sounds| feels)?|"
                 r"whatever (?:sounds|feels)|let me know which)\b",
                 behavior_text,
             )

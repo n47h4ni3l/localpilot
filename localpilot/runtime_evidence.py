@@ -167,6 +167,56 @@ class RuntimeEvidence:
             ),
         }
 
+        recent_runs = self.audit.recent("evolve_run_end", limit=100)
+        recent_status_counts: dict[str, int] = {}
+        total_elapsed = 0.0
+        total_tool_calls = 0
+        total_web_calls = 0
+        foreground_preemptions = 0
+        nontrivial_runs: list[dict[str, Any]] = []
+        for item in recent_runs:
+            status = str(item.get("status") or "unknown")
+            recent_status_counts[status] = recent_status_counts.get(status, 0) + 1
+            budget = item.get("budget") if isinstance(item.get("budget"), dict) else {}
+            usage = budget.get("usage") if isinstance(budget.get("usage"), dict) else {}
+            try:
+                total_elapsed += float(budget.get("elapsed_seconds") or 0.0)
+            except (TypeError, ValueError):
+                pass
+            try:
+                total_tool_calls += int(usage.get("tool_calls") or 0)
+                total_web_calls += int(usage.get("web_calls") or 0)
+            except (TypeError, ValueError):
+                pass
+            summary = " ".join(str(item.get("summary") or "").split())
+            if "active foreground chat turn" in summary:
+                foreground_preemptions += 1
+            if status not in {"deferred", "idle", "disabled"} and len(nontrivial_runs) < 8:
+                nontrivial_runs.append(
+                    {
+                        "timestamp": item.get("timestamp"),
+                        "status": status,
+                        "branch": item.get("branch"),
+                        "summary": summary[:600],
+                        "elapsed_seconds": budget.get("elapsed_seconds"),
+                        "usage": usage,
+                    }
+                )
+        recent_window = {
+            "scope": "newest 100 durable evolve_run_end audit events; not a complete lifetime history",
+            "run_count": len(recent_runs),
+            "newest_at": recent_runs[0].get("timestamp") if recent_runs else None,
+            "oldest_at": recent_runs[-1].get("timestamp") if recent_runs else None,
+            "status_counts": recent_status_counts,
+            "total_elapsed_seconds": round(total_elapsed, 3),
+            "total_usage": {
+                "tool_calls": total_tool_calls,
+                "web_calls": total_web_calls,
+            },
+            "foreground_preemptions": foreground_preemptions,
+            "recent_nontrivial_runs": nontrivial_runs,
+        }
+
         return {
             "background_worker": bounded(
                 "background_worker_start",
@@ -194,6 +244,7 @@ class RuntimeEvidence:
                 ),
             ),
             "latest_evolution_budget": run_state,
+            "recent_evolution_window": recent_window,
             "opportunity_queue": queue_state,
             "learning_boundaries": {
                 "model_weights_changed_by_localpilot": False,

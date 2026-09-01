@@ -151,6 +151,7 @@ def test_cycle_failure_is_logged_and_next_cycle_still_runs(tmp_path):
         tmp_path,
         config=Config(),
         interval_seconds=0.01,
+        retry_backoff_seconds=0.01,
         cycle_runner=cycle,
     )
     assert worker.run(max_cycles=2) == 0
@@ -159,6 +160,41 @@ def test_cycle_failure_is_logged_and_next_cycle_still_runs(tmp_path):
     assert attempts == 2
     assert any(row["event"] == "background_worker_cycle_error" for row in rows)
     assert any(row["event"] == "background_worker_cycle_end" for row in rows)
+
+
+def test_paused_cycle_uses_cooldown_before_retry(tmp_path):
+    starts: list[float] = []
+    now = 0.0
+
+    def monotonic():
+        return now
+
+    def waiter(seconds):
+        nonlocal now
+        now += seconds
+        return False
+
+    def cycle():
+        starts.append(monotonic())
+        return SimpleNamespace(status="paused")
+
+    worker = BackgroundWorker(
+        tmp_path,
+        config=Config(),
+        interval_seconds=30,
+        retry_backoff_seconds=300,
+        cycle_runner=cycle,
+        monotonic=monotonic,
+        waiter=waiter,
+    )
+
+    assert worker.run(max_cycles=2) == 0
+    assert starts == [0.0, 300.0]
+    backoff = [
+        row for row in _audit_rows(tmp_path)
+        if row["event"] == "background_worker_retry_backoff"
+    ]
+    assert backoff[0]["retry_delay_seconds"] == 300
 
 
 def test_trusted_main_update_exits_persistent_worker_for_code_reload(tmp_path):

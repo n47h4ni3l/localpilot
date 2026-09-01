@@ -16,6 +16,7 @@ from localpilot.selfdev import SelfDeveloper
 
 
 DEFAULT_INTERVAL_SECONDS = 30.0
+DEFAULT_RETRY_BACKOFF_SECONDS = 300.0
 _LOCK_FILENAME = "background-worker.lock"
 _PID_FILENAME = "background-worker.pid"
 _STOP_FILENAME = "background-worker.stop"
@@ -132,6 +133,7 @@ class BackgroundWorker:
         *,
         config_path: str | Path | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
+        retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
         config: Config | None = None,
         cycle_runner: Callable[[], Any] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
@@ -139,10 +141,13 @@ class BackgroundWorker:
     ) -> None:
         if float(interval_seconds) <= 0:
             raise ValueError("interval_seconds must be positive")
+        if float(retry_backoff_seconds) <= 0:
+            raise ValueError("retry_backoff_seconds must be positive")
         self.root = Path(root).resolve()
         self.config_path = Path(config_path).resolve() if config_path else None
         self.config = config or load_config(self.config_path)
         self.interval_seconds = float(interval_seconds)
+        self.retry_backoff_seconds = float(retry_backoff_seconds)
         self.data_dir = (self.root / self.config.agent.data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
@@ -256,6 +261,7 @@ class BackgroundWorker:
                     sequence=cycles,
                     interval_seconds=self.interval_seconds,
                 )
+                result_status = "error"
                 try:
                     result = self._cycle_runner()
                 except Exception as exc:
@@ -302,6 +308,19 @@ class BackgroundWorker:
                         pid=os.getpid(),
                         sequence=cycles,
                         skipped_intervals=skipped,
+                    )
+                if result_status in {
+                    "error", "paused", "failed", "crashed", "sync_blocked",
+                    "candidate_needs_work",
+                }:
+                    retry_delay = max(self.interval_seconds, self.retry_backoff_seconds)
+                    next_deadline = max(next_deadline, now + retry_delay)
+                    self.audit.write(
+                        "background_worker_retry_backoff",
+                        pid=os.getpid(),
+                        sequence=cycles,
+                        status=result_status,
+                        retry_delay_seconds=retry_delay,
                     )
             return 0
         finally:

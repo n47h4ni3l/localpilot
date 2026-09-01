@@ -378,7 +378,8 @@ def test_runtime_worker_uses_agent_once_and_streams_structured_visible_deltas(tm
             self.messages = [{"role": "system", "content": "safe"}]
             self.event_sink = event_sink
 
-        def ask(self, prompt):
+        def ask(self, prompt, *, interface="direct"):
+            assert interface == "desktop"
             self.event_sink({"type": "tool.started", "payload": {"tool": "get_system_summary"}})
             return "Unicode answer 🤖"
 

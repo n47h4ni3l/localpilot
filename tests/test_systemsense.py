@@ -262,11 +262,27 @@ def test_passive_context_includes_durable_runtime_and_checkout_evidence(tmp_path
     )
     audit.write(
         "evolve_run_end",
+        invocation_id="evolve-2",
+        status="paused",
+        branch=None,
+        checks_passed=False,
+        summary="PC is in use or busy: 1 active foreground chat turn(s)",
+        budget={
+            "elapsed_seconds": 1.0,
+            "usage": {"tool_calls": 0, "web_calls": 0},
+        },
+    )
+    audit.write(
+        "evolve_run_end",
         invocation_id="evolve-1",
         status="candidate_created",
         branch="selfdev/example",
         checks_passed=True,
         summary="Created one isolated candidate.",
+        budget={
+            "elapsed_seconds": 42.0,
+            "usage": {"tool_calls": 7, "web_calls": 2},
+        },
     )
     (tmp_path / "data" / "evolution-run-state.json").write_text(
         json.dumps(
@@ -320,6 +336,13 @@ def test_passive_context_includes_durable_runtime_and_checkout_evidence(tmp_path
     assert activity["latest_background_cycle"]["status"] == "deferred"
     assert activity["latest_evolution_run"]["branch"] == "selfdev/example"
     assert activity["latest_evolution_budget"]["usage"]["tool_calls"] == 7
+    window = activity["recent_evolution_window"]
+    assert window["run_count"] == 2
+    assert window["status_counts"] == {"paused": 1, "candidate_created": 1}
+    assert window["total_elapsed_seconds"] == 43.0
+    assert window["total_usage"] == {"tool_calls": 7, "web_calls": 2}
+    assert window["foreground_preemptions"] == 1
+    assert window["recent_nontrivial_runs"][0]["status"] == "candidate_created"
     assert activity["opportunity_queue"]["status_counts"] == {"proposed": 1}
     assert activity["opportunity_queue"]["next_proposed"]["task_id"] == "capability-memory"
     assert activity["learning_boundaries"]["model_weights_changed_by_localpilot"] is False

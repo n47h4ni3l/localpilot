@@ -852,7 +852,11 @@ class LocalPilotAgent:
         """Use proportionate reasoning for turns whose value is judgment, not research."""
         text = " ".join(str(prompt).lower().split())
         explicit_conversational_style = bool(
-            re.search(r"\b(?:keep it conversational|just (?:chat|talk)|casual question)\b", text)
+            re.search(
+                r"\b(?:keep it conversational|just (?:chat|talk)|casual question|"
+                r"talk to me like a (?:friend|colleague))\b",
+                text,
+            )
         )
         explicit_research_request = bool(
             re.search(
@@ -885,7 +889,19 @@ class LocalPilotAgent:
                 text,
             )
         )
-        return bounded_invitation or personal_media_choice
+        workplace_judgment = bool(
+            not explicit_research_request
+            and re.search(
+                r"\b(?:supplier|client|customer|order|meeting|workday|starting work|scattered)\b",
+                text,
+            )
+            and re.search(
+                r"\b(?:what would you do first|what would you actually say|what should i do first|"
+                r"choose one useful way to help|help me get (?:clear|started)|how would you handle)\b",
+                text,
+            )
+        )
+        return bounded_invitation or personal_media_choice or workplace_judgment
 
     @staticmethod
     def _is_operational_self_status_prompt(prompt: str) -> bool:
@@ -1017,7 +1033,7 @@ class LocalPilotAgent:
                     if outstanding or local_candidates
                     else []
                 ),
-                "latest_experiment_terminal_history_not_an_active_blocker": (
+                "latest_terminal_experiment": (
                     {
                         "task_id": latest_experiment.task_id,
                         "title": latest_experiment.title,
@@ -1029,7 +1045,7 @@ class LocalPilotAgent:
                     if latest_experiment is not None
                     else None
                 ),
-                "latest_improvement_frontier_not_an_execution_blocker": (
+                "latest_improvement_frontier": (
                     {
                         "task_id": latest_frontier.task_id,
                         "current_frontier": latest_frontier.current_frontier,
@@ -1342,6 +1358,20 @@ class LocalPilotAgent:
         if casual_conversation_request and evidence_search_deflection:
             issues.append("casual_conversation_replaced_by_evidence_search")
 
+        embodied_experience_claim = bool(
+            re.search(
+                r"\b(?:i(?:'ve| have) been noticing|i (?:saw|heard|watched|visited|walked))\b",
+                behavior_text,
+            )
+            and re.search(
+                r"\b(?:office|lobby|room|street|kitchen|desk|around us|tactile world|"
+                r"turned? the dial|smell(?:ed)?|felt the)\b",
+                behavior_text,
+            )
+        )
+        if casual_conversation_request and embodied_experience_claim:
+            issues.append("fabricated_embodied_experience")
+
         developed_view = bool(
             re.search(
                 r"\b(?:i think|my (?:provisional )?(?:view|judgment)|hypothesis|because|matters?|tension|trade[- ]?off|"
@@ -1492,6 +1522,35 @@ class LocalPilotAgent:
             issues.append("unearned_introspective_mechanism")
 
         operational_self_status = LocalPilotAgent._is_operational_self_status_prompt(prompt)
+        if operational_self_status and re.search(
+            r"\b(?:latest_experiment_terminal_history_not_an_active_blocker|"
+            r"latest_improvement_frontier_not_an_execution_blocker)\b",
+            behavior_text,
+        ):
+            issues.append("internal_evidence_field_leak")
+        historical_autonomy_request = bool(
+            operational_self_status
+            and re.search(
+                r"\b(?:while i was away|what did .{0,40} accomplish|waste(?:d)? time|"
+                r"stay out of my way|since i (?:left|was away))\b",
+                request,
+            )
+        )
+        unscoped_history_claim = bool(
+            re.search(
+                r"\b(?:the only activity|only activity was|a single (?:cycle|run)|"
+                r"lightweight polling|no productive work|completely non-intrusive|"
+                r"no significant (?:cpu|memory)|no files (?:were )?(?:changed|touched))\b",
+                behavior_text,
+            )
+            and not re.search(
+                r"\b(?:newest|latest|recent) (?:100|hundred)\b|\bbounded (?:audit )?window\b|"
+                r"\bnot (?:a )?complete (?:history|lifetime)\b",
+                behavior_text,
+            )
+        )
+        if historical_autonomy_request and unscoped_history_claim:
+            issues.append("unbounded_autonomy_history_claim")
         explicit_evidence_plan_separation = bool(
             operational_self_status
             and re.search(
@@ -2418,6 +2477,8 @@ class LocalPilotAgent:
                     "nonexistent_candidate_review_requested",
                     "nonpending_owner_decision_invented",
                     "requested_evidence_plan_separation_missing",
+                    "internal_evidence_field_leak",
+                    "unbounded_autonomy_history_claim",
                 }.intersection(behavior_issues):
                     operational_evidence_recovery = (
                         " For operational self-status, report the current commit only as the code loaded now. "
@@ -2453,14 +2514,24 @@ class LocalPilotAgent:
                         "public search and HTTPS reading are available. The process "
                         "identified by current_process/component=runtime_worker is the runtime worker, not the broker. "
                         "The passive evidence does not supply a broker PID, so do not infer or reuse a lifecycle PID "
-                        "for the broker; state that the broker PID is unavailable if the owner asks."
+                        "for the broker; state that the broker PID is unavailable if the owner asks. For historical "
+                        "autonomy questions, use the supplied recent_evolution_window, name its bounded newest-100-"
+                        "event scope, summarize its counts and nontrivial runs, and do not infer a whole absence "
+                        "period from only the latest cycle. Render evidence in ordinary language; never expose "
+                        "internal snake_case field names. Do not propose a specific API, integration, or dependency "
+                        "unless the supplied evidence establishes that it exists and is relevant."
                     )
                 casual_conversation_recovery = ""
-                if "casual_conversation_replaced_by_evidence_search" in behavior_issues:
+                if {
+                    "casual_conversation_replaced_by_evidence_search",
+                    "fabricated_embodied_experience",
+                }.intersection(behavior_issues):
                     casual_conversation_recovery = (
                         " For an ordinary conversational question, answer directly with a plausible everyday "
                         "explanation framed as a provisional view. Do not substitute a failed library, web, or "
-                        "evidence search for conversation, and do not imply that such a search was needed."
+                        "evidence search for conversation, and do not imply that such a search was needed. Natural "
+                        "taste and curiosity are welcome, but do not invent a body, physical surroundings, sensory "
+                        "experience, or witnessed offline events; frame the interest as a conceptual pattern."
                     )
                 practical_troubleshooting_recovery = ""
                 if {
@@ -2527,6 +2598,9 @@ class LocalPilotAgent:
                         "nonexistent_candidate_review_requested",
                         "nonpending_owner_decision_invented",
                         "casual_conversation_replaced_by_evidence_search",
+                        "fabricated_embodied_experience",
+                        "internal_evidence_field_leak",
+                        "unbounded_autonomy_history_claim",
                     }
                 )
                 recovery_think: bool | str = (
@@ -3354,7 +3428,7 @@ class LocalPilotAgent:
             transient_ids = {id(message) for message in transient}
             self.messages[:] = [message for message in self.messages if id(message) not in transient_ids]
 
-    def ask(self, prompt: str) -> str:
+    def ask(self, prompt: str, *, interface: str = "direct") -> str:
         if self.config.model.provider.lower() != "ollama":
             raise RuntimeError("v0.1 supports Ollama only.")
         try:
@@ -3363,7 +3437,17 @@ class LocalPilotAgent:
             raise RuntimeError("Ollama Python package is not installed. Run scripts/bootstrap.ps1.") from exc
 
         self._emit_event("runtime.state", state="thinking", phase="operator")
-        operational_self_status = self._is_operational_self_status_prompt(prompt)
+        desktop_interface_question = bool(
+            interface == "desktop"
+            and re.search(
+                r"\b(?:gui|window|desktop|buttons?|commands?|options?)\b",
+                prompt,
+                re.IGNORECASE,
+            )
+        )
+        operational_self_status = (
+            self._is_operational_self_status_prompt(prompt) or desktop_interface_question
+        )
         direct_conversation = self._is_bounded_conversational_prompt(prompt)
         temporal_web_research = self._is_temporal_web_prompt(prompt)
         practical_troubleshooting = self._is_practical_troubleshooting_prompt(prompt)
@@ -3403,6 +3487,7 @@ class LocalPilotAgent:
         direct_conversation_message: dict[str, Any] | None = None
         troubleshooting_message: dict[str, Any] | None = None
         temporal_context_message: dict[str, Any] | None = None
+        interface_context_message: dict[str, Any] | None = None
         learning_verification_messages: list[dict[str, Any]] = []
         if learning_context:
             retrieval = self.memory.last_retrieval_diagnostics
@@ -3451,9 +3536,12 @@ class LocalPilotAgent:
                     "learning event. Never claim that no files changed or were reloaded unless the supplied evidence "
                     "establishes that comparison. A clean worktree and upstream match describe current state only; "
                     "this passive snapshot cannot compare current code with an earlier owner session or pre-restart "
-                    "code. Treat the background worker interval as polling cadence, not proof "
-                    "that autonomous work ran; use the latest cycle status and evolution summary to say what actually "
-                    "ran, was blocked, or was deferred. "
+                    "code. Treat the background worker interval as polling cadence, not proof that autonomous work "
+                    "ran. For a historical question such as 'while I was away', use the recent_evolution_window: "
+                    "explicitly describe it as the newest 100 durable audit events rather than a complete lifetime "
+                    "history, and summarize its status counts, elapsed time, tool/web usage, foreground preemptions, "
+                    "and nontrivial runs. For a current-state question, use the latest cycle status and evolution "
+                    "summary. Never expose internal evidence keys or snake_case names. "
                     "Accurately describe durable facts, lessons, reading, and isolated candidate work when their "
                     "counts or records are supplied; never turn a missing literal search into a claim that these "
                     "mechanisms do not exist. LearningMemory and get_learning_memory_summary are real current "
@@ -3472,7 +3560,8 @@ class LocalPilotAgent:
                     "The passive evidence does not supply the broker PID, so state it as unavailable rather than "
                     "inferring it from lifecycle history."
                     " When asked about internet access, report the public_web_research_available search, read, and "
-                    "permission fields exactly; do not claim policy restricts LocalPilot to local-only evidence."
+                    "permission fields exactly; do not claim policy restricts LocalPilot to local-only evidence. "
+                    "Do not propose a specific API, integration, or dependency unless the evidence establishes it."
                 ),
             }
             self.messages.append(operational_status_message)
@@ -3489,11 +3578,29 @@ class LocalPilotAgent:
                     "or friendly advice, stay in that human context; do not redirect the answer to PC maintenance, "
                     "telemetry, storage, files, or system state. For ordinary subjective questions, offer a plausible "
                     "everyday explanation as a provisional view; do not search for evidence or turn the answer into "
-                    "a report about missing sources. When asked to order named priorities and plan the first hour, "
+                    "a report about missing sources. Natural taste and curiosity are welcome, but never invent a "
+                    "body, physical surroundings, direct sensory experience, or witnessed offline events; describe "
+                    "the interest as a conceptual pattern unless supplied evidence establishes an observation. "
+                    "When asked to order named priorities and plan the first hour, "
                     "rank every task explicitly and give realistic minute allocations totaling roughly sixty minutes."
                 ),
             }
             self.messages.append(direct_conversation_message)
+        if interface == "desktop" and re.search(
+            r"\b(?:gui|window|desktop|buttons?|commands?|options?)\b",
+            prompt,
+            re.IGNORECASE,
+        ):
+            interface_context_message = {
+                "role": "system",
+                "content": (
+                    "DESKTOP INTERFACE CONTEXT: This turn arrived through LocalPilot's desktop chat, so do not deny "
+                    "that a GUI exists. This model context does not include a screenshot or a verified inventory of "
+                    "the controls currently visible. State that limitation plainly rather than inventing controls; "
+                    "you may accurately discuss the chat itself and any controls explicitly named by the owner."
+                ),
+            }
+            self.messages.append(interface_context_message)
         if practical_troubleshooting and not operational_self_status:
             troubleshooting_message = {
                 "role": "system",
@@ -4563,6 +4670,12 @@ class LocalPilotAgent:
                     message
                     for message in self.messages
                     if id(message) != id(temporal_context_message)
+                ]
+            if interface_context_message is not None:
+                self.messages[:] = [
+                    message
+                    for message in self.messages
+                    if id(message) != id(interface_context_message)
                 ]
             if learning_verification_messages:
                 verification_ids = {

@@ -295,6 +295,29 @@ def test_active_broker_turn_pauses_background_inference_even_when_pc_is_idle(
     assert "active foreground chat turn" in developer.audit.latest("selfdev_paused")["reason"]
 
 
+def test_active_foreground_turn_defers_before_sync_or_resource_sampling(tmp_path, monkeypatch):
+    developer, _workspace = _developer(tmp_path)
+    assert write_foreground_turns(
+        developer.data_dir,
+        ({"request_id": "request-early", "session_id": "session-1", "message_id": "message-1"},),
+    )
+    monkeypatch.setattr(
+        developer.github,
+        "sync_trusted_main",
+        lambda: pytest.fail("foreground deferral must happen before repository sync"),
+    )
+    monkeypatch.setattr(
+        developer.governor,
+        "sample",
+        lambda: pytest.fail("foreground deferral must happen before resource sampling"),
+    )
+
+    result = developer.run_once()
+
+    assert result.status == "deferred"
+    assert "active foreground chat turn" in result.summary
+
+
 def test_terminal_completion_cleans_up_active_checkpoint(tmp_path: Path, monkeypatch):
     developer, workspace = _developer(tmp_path)
     _save_checkpoint(developer, workspace, monkeypatch, milestone="delivery")

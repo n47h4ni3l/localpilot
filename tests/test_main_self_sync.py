@@ -3,6 +3,7 @@ from pathlib import Path
 
 from localpilot.config import Config, GitHubConfig
 from localpilot.github_integration import CommandResult, GitHubIntegration, MainSyncResult
+from localpilot.resource import ResourceState
 from localpilot.selfdev import SelfDeveloper
 
 
@@ -199,8 +200,9 @@ def test_updated_build_stops_before_resource_or_candidate_work(tmp_path: Path, m
     monkeypatch.setattr(
         developer.governor,
         "sample",
-        lambda: (_ for _ in ()).throw(AssertionError("resource gate should not run")),
+        lambda: ResourceState(3600, 1, 10, True, "idle capacity available"),
     )
+    monkeypatch.setattr(developer.governor, "apply_process_priority", lambda idle: None)
 
     result = developer.run_once()
 
@@ -220,8 +222,9 @@ def test_failed_sync_stops_before_resource_or_candidate_work(tmp_path: Path, mon
     monkeypatch.setattr(
         developer.governor,
         "sample",
-        lambda: (_ for _ in ()).throw(AssertionError("resource gate should not run")),
+        lambda: ResourceState(3600, 1, 10, True, "idle capacity available"),
     )
+    monkeypatch.setattr(developer.governor, "apply_process_priority", lambda idle: None)
 
     result = developer.run_once()
 

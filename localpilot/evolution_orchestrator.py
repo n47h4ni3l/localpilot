@@ -145,23 +145,24 @@ class EvolutionRunBudget:
                     f"cycle wall-clock budget exhausted after {self.elapsed_seconds:.1f}s "
                     f"(limit {self.wall_clock_seconds:.1f}s)"
                 )
-            self.tool_calls += 1
-            if name in {"search_public_web", "fetch_public_https"}:
-                self.web_calls += 1
-            if self.tool_calls > self.max_tool_calls:
+            is_web_call = name in {"search_public_web", "fetch_public_https"}
+            if self.tool_calls >= self.max_tool_calls:
                 self.status = "budget_exhausted"
                 self._persist()
                 raise EvolutionBudgetExceeded(
-                    f"cycle tool-call budget exhausted at {self.tool_calls - 1} calls "
+                    f"cycle tool-call budget exhausted at {self.tool_calls} calls "
                     f"(limit {self.max_tool_calls})"
                 )
-            if self.web_calls > self.max_web_calls:
+            if is_web_call and self.web_calls >= self.max_web_calls:
                 self.status = "budget_exhausted"
                 self._persist()
                 raise EvolutionBudgetExceeded(
-                    f"cycle web-call budget exhausted at {self.web_calls - 1} calls "
+                    f"cycle web-call budget exhausted at {self.web_calls} calls "
                     f"(limit {self.max_web_calls})"
                 )
+            self.tool_calls += 1
+            if is_web_call:
+                self.web_calls += 1
             self._persist()
 
     def finish(self, status: str) -> dict[str, Any]:

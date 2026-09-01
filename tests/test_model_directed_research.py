@@ -276,8 +276,8 @@ def test_operational_status_context_exposes_real_learning_and_authority_boundari
     assert '"general_owner_authority_boundaries"' in context
     assert '"active_candidate_blocker":false' in context
     assert '"pending_owner_decisions":[]' in context
-    assert '"latest_experiment_terminal_history_not_an_active_blocker"' in context
-    assert '"latest_improvement_frontier_not_an_execution_blocker"' in context
+    assert '"latest_terminal_experiment"' in context
+    assert '"latest_improvement_frontier"' in context
     assert '"public_web_research_available"' in context
     assert '"memory_available":true' in context
     assert '"read_tool":"get_learning_memory_summary"' in context
@@ -685,6 +685,107 @@ def test_friendly_planning_prompt_is_direct_low_reasoning_without_memory_or_tool
     assert "DIRECT CONVERSATION ROUTE" in str(snapshots[0])
     assert "DIRECT CONVERSATION ROUTE" not in str(agent.messages)
     assert agent.audit.latest("model_direct_conversation_route") is not None
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        (
+            "Morning. I'm starting work and feeling slightly scattered. Don't give me a menu—talk to me "
+            "like a colleague, choose one useful way to help, and ask only what you genuinely need."
+        ),
+        (
+            "An order is late, the supplier is vague, and my client expects an update today. I have 45 "
+            "minutes before a meeting. What would you do first, and what would you actually say?"
+        ),
+    ],
+)
+def test_live_colleague_prompts_use_direct_low_reasoning_route(tmp_path, monkeypatch, prompt):
+    _, agent = _agent(tmp_path)
+    monkeypatch.setattr(
+        agent,
+        "_learning_context",
+        lambda _prompt: pytest.fail("colleague judgment must not retrieve semantic memory"),
+    )
+    monkeypatch.setattr(
+        agent.systemsense,
+        "compact_context",
+        lambda: pytest.fail("colleague judgment must not receive passive PC telemetry"),
+    )
+    calls = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter([_chunk(content="Start by sending the client a short factual update.")])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    assert agent.ask(prompt).startswith("Start by")
+    assert calls[0]["think"] == "low"
+    assert "tools" not in calls[0]
+
+
+def test_casual_interest_rejects_fabricated_embodied_experience():
+    prompt = (
+        "Enough work for a minute. Just talk to me: what ordinary thing have you found unexpectedly "
+        "interesting lately, and why?"
+    )
+    fabricated = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        (
+            "I've been noticing how the old rotary phone in the office lobby still works. Every time "
+            "someone turns the dial it brings the tactile world around us into focus."
+        ),
+    )
+    grounded = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        "I've found the design of rotary phones unexpectedly interesting because a physical constraint made the interface legible.",
+    )
+
+    assert "fabricated_embodied_experience" in fabricated
+    assert "fabricated_embodied_experience" not in grounded
+
+
+def test_historical_autonomy_answer_must_scope_window_and_hide_internal_keys():
+    prompt = (
+        "Be candid: while I was away, what did your autonomous evolution actually accomplish, what did it "
+        "waste time on, and did it stay out of my way when I came back?"
+    )
+    issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        (
+            "The only activity was lightweight polling and a single cycle, with no significant CPU or memory. "
+            "latest_experiment_terminal_history_not_an_active_blocker was empty."
+        ),
+    )
+    scoped = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        "In the bounded newest 100-event audit window, 12 runs paused and two failed; it is not a complete history.",
+    )
+
+    assert "unbounded_autonomy_history_claim" in issues
+    assert "internal_evidence_field_leak" in issues
+    assert "unbounded_autonomy_history_claim" not in scoped
+    assert "internal_evidence_field_leak" not in scoped
+
+
+def test_desktop_gui_question_receives_honest_interface_context(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path)
+    calls = []
+    snapshots = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        snapshots.append([dict(message) for message in kwargs["messages"]])
+        return iter([_chunk(content="You are using the desktop chat, but I cannot see its current controls.")])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask("Do I have any available options or commands within this GUI?", interface="desktop")
+
+    assert "desktop chat" in answer
+    assert "DESKTOP INTERFACE CONTEXT" in str(snapshots[0])
+    assert "DESKTOP INTERFACE CONTEXT" not in str(agent.messages)
 
 
 def test_first_hour_work_plan_recovers_to_ranked_timeboxes(tmp_path, monkeypatch):

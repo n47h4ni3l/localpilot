@@ -67,7 +67,7 @@ def test_whole_cycle_budget_persists_and_bounds_tool_and_web_calls(tmp_path: Pat
 
     state = json.loads((tmp_path / "run.json").read_text(encoding="utf-8"))
     assert state["status"] == "budget_exhausted"
-    assert state["usage"] == {"tool_calls": 3, "web_calls": 2}
+    assert state["usage"] == {"tool_calls": 2, "web_calls": 1}
     assert state["limits"]["wall_clock_seconds"] == 30
 
 

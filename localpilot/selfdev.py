@@ -4091,6 +4091,15 @@ class SelfDeveloper:
         if not self.config.selfdev.enabled:
             return EvolutionResult("disabled", None, None, "Self-development is disabled in config.")
 
+        foreground_turns = active_foreground_turns(self.data_dir) if not force else ()
+        if foreground_turns:
+            return EvolutionResult(
+                "deferred",
+                None,
+                None,
+                f"PC is in use or busy: {len(foreground_turns)} active foreground chat turn(s)",
+            )
+
         sync = self.github.sync_trusted_main()
         self.audit.write(
             "selfdev_main_sync",

@@ -90,7 +90,7 @@ class RuntimeWorker:
                 }
             )
             agent = self._agent(session_id, list(command.get("history") or []))
-            answer = agent.ask(prompt)
+            answer = agent.ask(prompt, interface="desktop")
             self._write(
                 {
                     "kind": "event",

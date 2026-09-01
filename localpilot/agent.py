@@ -2248,7 +2248,13 @@ class LocalPilotAgent:
             "tool_calls": len(tool_calls),
         }
         self._last_stream_runtime = runtime
-        self.audit.write("model_stream_complete", model=self.config.model.name, think=think, **runtime)
+        self.audit.write(
+            "model_stream_complete",
+            model=self.config.model.name,
+            think=think,
+            keep_alive=self.config.model.ollama_keep_alive,
+            **runtime,
+        )
         try:
             self.systemsense.record_inference(runtime, model=self.config.model.name)
         except Exception as exc:

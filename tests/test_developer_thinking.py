@@ -270,6 +270,30 @@ def test_live_ollama_chat_enables_pre_first_chunk_preemption(monkeypatch):
     assert callable(captured["stream_guard"])
 
 
+def test_recent_foreground_completion_preserves_everyday_model_for_selfdev(tmp_path, monkeypatch):
+    import localpilot.selfdev as selfdev_module
+
+    developer = SelfDeveloper(Config(), tmp_path)
+    developer.audit.write("model_stream_complete", model="gpt-oss:20b", keep_alive="30m")
+    gib = 1024**3
+    monkeypatch.setattr(
+        selfdev_module,
+        "installed_ollama_models",
+        lambda: {"qwen2.5:32b": 19 * gib, "gpt-oss:20b": 13 * gib, "qwen2.5:14b": 9 * gib},
+    )
+    monkeypatch.setattr(selfdev_module, "running_ollama_models", lambda: set())
+    monkeypatch.setattr(
+        selfdev_module.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(total=32 * gib, available=10 * gib),
+    )
+
+    selection = developer._select_developer_model()
+
+    assert selection.model == "gpt-oss:20b"
+    assert "preserves foreground model residency" in selection.reason
+
+
 def test_live_qwen_path_keeps_context_when_thinking_is_unsupported():
     developer = object.__new__(SelfDeveloper)
     developer.config = Config()

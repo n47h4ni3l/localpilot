@@ -7,6 +7,7 @@ from localpilot.selfdev import (
     apply_change_plan,
     choose_next_task,
     parse_change_plan,
+    ollama_keep_alive_seconds,
     select_resource_aware_developer_model,
     select_developer_model,
 )
@@ -71,6 +72,31 @@ def test_model_selection_reuses_resident_everyday_model_without_double_counting_
     assert selection.model == "daily"
     assert "Reused resident daily" in selection.reason
     assert "preserves foreground model residency" in selection.reason
+
+
+def test_resident_everyday_model_is_preserved_when_context_overhead_would_be_unsafe():
+    gib = 1024**3
+    selection = select_resource_aware_developer_model(
+        "large",
+        "daily",
+        ["small"],
+        {"large": 20 * gib, "daily": 12 * gib, "small": 6 * gib},
+        total_memory_bytes=32 * gib,
+        available_memory_bytes=6 * gib,
+        max_memory_percent=82,
+        overhead_bytes=1 * gib,
+        resident_models={"daily"},
+    )
+
+    assert selection.model is None
+    assert "Preserved the resident foreground model" in selection.reason
+
+
+def test_ollama_keep_alive_duration_parser_covers_runtime_forms():
+    assert ollama_keep_alive_seconds("30m") == 1800
+    assert ollama_keep_alive_seconds("1.5h") == 5400
+    assert ollama_keep_alive_seconds(45) == 45
+    assert ollama_keep_alive_seconds(0) == 0
 
 
 def test_structured_fallback_applies_only_through_candidate_tools(tmp_path: Path, monkeypatch):

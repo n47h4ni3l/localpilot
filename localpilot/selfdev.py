@@ -375,6 +375,21 @@ def running_ollama_models() -> set[str]:
     return running
 
 
+def ollama_keep_alive_seconds(value: float | str) -> float:
+    """Parse the bounded Ollama duration forms used by LocalPilot."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float("inf") if float(value) < 0 else float(value)
+    text = str(value).strip().lower()
+    if text in {"-1", "-1s"}:
+        return float("inf")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(ms|s|m|h)?", text)
+    if not match:
+        return 0.0
+    amount = float(match.group(1))
+    multiplier = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, None: 1.0}
+    return amount * multiplier[match.group(2)]
+
+
 def select_resource_aware_developer_model(
     preferred: str,
     everyday: str,
@@ -400,6 +415,8 @@ def select_resource_aware_developer_model(
     ceiling = total * max(0.0, min(float(max_memory_percent), 100.0)) / 100.0
     rejected: list[str] = []
     resident = {str(name).strip() for name in resident_models}
+    if everyday in resident and everyday in candidates:
+        candidates = [everyday, *(name for name in candidates if name != everyday)]
 
     for name in candidates:
         if name not in installed:
@@ -426,7 +443,14 @@ def select_resource_aware_developer_model(
                 f"resident {name} plus context overhead would project memory to "
                 f"{projected_percent:.1f}% > {max_memory_percent:.1f}%"
             )
-            continue
+            return DeveloperModelSelection(
+                None,
+                None,
+                projected_percent,
+                "Preserved the resident foreground model instead of evicting it for a fallback: "
+                + rejected[-1]
+                + ".",
+            )
         projected = used + max(0, int(size)) + max(0, int(overhead_bytes))
         projected_percent = projected * 100.0 / total
         if projected <= ceiling:
@@ -2128,6 +2152,16 @@ class SelfDeveloper:
             max(0.0, float(self.config.selfdev.model_memory_overhead_gb))
             * 1024**3
         )
+        resident_models = running_ollama_models()
+        latest_foreground = self.audit.latest("model_stream_complete")
+        if latest_foreground and latest_foreground.get("model") == self.config.model.name:
+            try:
+                completed_at = datetime.fromisoformat(str(latest_foreground["timestamp"]))
+                age_seconds = (datetime.now(timezone.utc) - completed_at).total_seconds()
+            except (KeyError, TypeError, ValueError):
+                age_seconds = float("inf")
+            if age_seconds <= ollama_keep_alive_seconds(self.config.model.ollama_keep_alive):
+                resident_models.add(self.config.model.name)
         selection = select_resource_aware_developer_model(
             self.config.selfdev.developer_model,
             self.config.model.name,
@@ -2137,7 +2171,7 @@ class SelfDeveloper:
             available_memory_bytes=int(memory.available),
             max_memory_percent=self.config.resource.max_memory_percent_for_background,
             overhead_bytes=overhead_bytes,
-            resident_models=running_ollama_models(),
+            resident_models=resident_models,
         )
         self.audit.write(
             "selfdev_model_selection",

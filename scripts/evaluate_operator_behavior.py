@@ -14,18 +14,8 @@ from localpilot.agent import SYSTEM_PROMPT
 from localpilot.behavior_eval import SCENARIOS, score_response, summarize_scores
 
 
-def _system_prompt(root: Path, revision: str) -> str:
-    if revision == "working-tree":
-        return SYSTEM_PROMPT
-    result = subprocess.run(
-        ["git", "show", f"{revision}:localpilot/agent.py"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    module = ast.parse(result.stdout)
+def _system_prompt_assignment(source: str) -> str | None:
+    module = ast.parse(source)
     for node in module.body:
         if isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "SYSTEM_PROMPT"
@@ -34,6 +24,29 @@ def _system_prompt(root: Path, revision: str) -> str:
             value = ast.literal_eval(node.value)
             if isinstance(value, str):
                 return value
+    return None
+
+
+def _system_prompt(root: Path, revision: str) -> str:
+    if revision == "working-tree":
+        return SYSTEM_PROMPT
+    # SYSTEM_PROMPT lived as an inline assignment in agent.py through the
+    # decomposition that split it out into agent_prompt.py. Check both paths
+    # so revisions from either side of that split keep resolving.
+    for relative_path in ("localpilot/agent.py", "localpilot/agent_prompt.py"):
+        result = subprocess.run(
+            ["git", "show", f"{revision}:{relative_path}"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        if result.returncode != 0:
+            continue
+        found = _system_prompt_assignment(result.stdout)
+        if found is not None:
+            return found
     raise RuntimeError(f"SYSTEM_PROMPT was not found at {revision}")
 
 

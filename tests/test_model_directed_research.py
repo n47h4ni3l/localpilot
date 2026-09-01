@@ -584,6 +584,62 @@ def test_friendly_planning_prompt_is_direct_low_reasoning_without_memory_or_tool
     assert agent.audit.latest("model_direct_conversation_route") is not None
 
 
+def test_friendly_conversation_invitation_chooses_a_subject_instead_of_returning_a_menu(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path)
+    monkeypatch.setattr(
+        agent,
+        "_learning_context",
+        lambda _prompt: pytest.fail("friendly conversation must not retrieve semantic memory"),
+    )
+    monkeypatch.setattr(
+        agent.systemsense,
+        "compact_context",
+        lambda: pytest.fail("friendly conversation must not receive passive PC telemetry"),
+    )
+    calls = []
+    streams = iter(
+        [
+            [
+                _chunk(
+                    content=(
+                        "1. Curious facts\n2. Book recommendations\n3. Creative brainstorming\n"
+                        "4. What-if scenarios\n\nPick whichever feels comfortable."
+                    )
+                )
+            ],
+            [
+                _chunk(
+                    content=(
+                        "I'd enjoy talking about the small rituals that make a quiet hour feel genuinely "
+                        "restful rather than merely empty. I'm curious which ones work for you and why."
+                    )
+                )
+            ],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "I've got a quiet hour and want something low-key. What kind of conversation would you "
+        "enjoy having with me?"
+    )
+
+    assert answer.startswith("I'd enjoy talking about the small rituals")
+    assert calls[0]["think"] == "low"
+    assert "tools" not in calls[0]
+    assert len(calls) == 2
+    recovery = agent.audit.latest("model_same_context_behavior_recovery_complete")
+    assert recovery["original_issues"] == ["conversation_selection_menu_deferral"]
+    assert recovery["accepted"] is True
+
+
 def test_friendly_personal_advice_skips_systemsense_memory_and_tools(tmp_path, monkeypatch):
     _, agent = _agent(tmp_path)
     monkeypatch.setattr(

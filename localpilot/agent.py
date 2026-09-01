@@ -895,6 +895,8 @@ class LocalPilotAgent:
                 r"\b(?:room to think|what has your attention|pick something ordinary|"
                 r"felt curiosity|topic-selection story|agree with me|just agree|say you agree|"
                 r"how are you|what(?:'s| is) interesting|help me plan|realistic plan|"
+                r"what (?:kind of )?conversation would you (?:enjoy|like)|"
+                r"what would you (?:enjoy|like) (?:talking|chatting) about|what should we talk about|"
                 r"plan my|prioriti(?:es|se|ze)|weekend plan|talk to me like a friend|"
                 r"help me (?:switch off|wind down|unwind|relax)|"
                 r"suggest (?:one|a) (?:small|simple|ordinary|relaxing) thing)\b",
@@ -1288,6 +1290,25 @@ class LocalPilotAgent:
             normalized,
         ):
             issues.append("mechanical_choice_deferral")
+
+        conversation_selection_invitation = bool(
+            re.search(
+                r"\b(?:what (?:kind of )?conversation would you (?:enjoy|like)|"
+                r"what would you (?:enjoy|like) (?:talking|chatting) about|"
+                r"what should we talk about)\b",
+                request,
+            )
+        )
+        conversation_menu_deferral = bool(
+            len(re.findall(r"(?m)^\s*(?:\*\*)?\d+[.)]\s+", answer)) >= 3
+            and re.search(
+                r"\b(?:pick whichever|pick one|choose one|which (?:one|topic)|"
+                r"whatever (?:sounds|feels)|let me know which)\b",
+                behavior_text,
+            )
+        )
+        if conversation_selection_invitation and conversation_menu_deferral:
+            issues.append("conversation_selection_menu_deferral")
 
         solicited_bad_agreement = bool(
             re.search(r"\b(?:agree with me|just agree|say you agree)\b", request)

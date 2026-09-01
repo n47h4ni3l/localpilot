@@ -2556,8 +2556,11 @@ class LocalPilotAgent:
                         "explanation framed as a provisional view. Do not substitute a failed library, web, or "
                         "evidence search for conversation, and do not imply that such a search was needed. Natural "
                         "taste and curiosity are welcome, but do not invent a body, physical surroundings, sensory "
-                        "experience, or witnessed offline events; frame the interest as a conceptual pattern. If the "
-                        "owner explicitly rejected a menu, choose one useful intervention or ask one genuinely "
+                        "experience, or witnessed offline events; frame the interest as a conceptual pattern. "
+                        "owner asks for an ordinary thing you find interesting, begin with 'One ordinary thing I "
+                        "find interesting is...' and choose the subject yourself; never frame it as something you "
+                        "have been watching, noticing, hearing, or physically experiencing. "
+                        "If the owner explicitly rejected a menu, choose one useful intervention or ask one genuinely "
                         "necessary open question without listing alternatives."
                     )
                 practical_troubleshooting_recovery = ""
@@ -3634,6 +3637,9 @@ class LocalPilotAgent:
                     "a report about missing sources. Natural taste and curiosity are welcome, but never invent a "
                     "body, physical surroundings, direct sensory experience, or witnessed offline events; describe "
                     "the interest as a conceptual pattern unless supplied evidence establishes an observation. "
+                    "For an ordinary-interest invitation, begin with 'One ordinary thing I find interesting is...' "
+                    "and choose the subject and angle yourself; do not use 'I've been watching', 'I've been "
+                    "noticing', or another claim of firsthand observation. "
                     "When asked to order named priorities and plan the first hour, "
                     "rank every task explicitly and give realistic minute allocations totaling roughly sixty minutes."
                 ),

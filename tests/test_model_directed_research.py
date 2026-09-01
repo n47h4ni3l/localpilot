@@ -1124,6 +1124,7 @@ def test_ordinary_conversational_question_skips_research_memory_systemsense_and_
     assert calls[0]["think"] == "low"
     assert "tools" not in calls[0]
     assert "DIRECT CONVERSATION ROUTE" in str(snapshots[0])
+    assert "choose the subject and angle yourself" in str(snapshots[0])
 
 
 def test_casual_conversation_rejects_failed_evidence_search_deflection(tmp_path):

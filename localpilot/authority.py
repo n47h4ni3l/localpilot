@@ -364,6 +364,7 @@ class TurnEvidenceVerifier:
         content: str,
         *,
         successful_tools: frozenset[str] = frozenset(),
+        passive_runtime_evidence: bool = False,
     ) -> TurnEvidenceReport:
         issues: list[EvidenceIssue] = []
         for sentence in self._sentences(content):
@@ -436,8 +437,20 @@ class TurnEvidenceVerifier:
                         tuple(sorted(_EXTERNAL_SOURCE_TOOLS)),
                     )
                 )
+            passive_operational_timestamp = bool(
+                passive_runtime_evidence
+                and re.search(
+                    r"\b(?:runtime|worker|process|pid|restart|started|commit|branch|checkout|worktree|broker)\b",
+                    normalized,
+                )
+                and not any(
+                    re.search(expression, normalized)
+                    for expression in _EXTERNAL_SPECIFICITY_PATTERNS[1:]
+                )
+            )
             if (
                 not _EXTERNAL_SOURCE_TOOLS.intersection(successful_tools)
+                and not passive_operational_timestamp
                 and any(
                     re.search(expression, normalized)
                     for expression in _EXTERNAL_SPECIFICITY_PATTERNS

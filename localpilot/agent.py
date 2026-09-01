@@ -2641,6 +2641,15 @@ class LocalPilotAgent:
 
             reasoning_present = bool(str(response.get("thinking") or "").strip())
             if content.strip() and not self._looks_like_generic_reset(content):
+                passive_runtime_evidence = bool(
+                    operational_self_status
+                    and any(
+                        message.get("role") == "system"
+                        and "SYSTEMSENSE PASSIVE STATE" in str(message.get("content") or "")
+                        and '"runtime":' in str(message.get("content") or "")
+                        for message in clean_recovery_messages
+                    )
+                )
                 if authority_review:
                     risks = self._structured_information_authority_risks(content)
                 else:
@@ -2648,6 +2657,7 @@ class LocalPilotAgent:
                 evidence_report = self.turn_evidence.review(
                     content,
                     successful_tools=successful_tools,
+                    passive_runtime_evidence=passive_runtime_evidence,
                 )
                 evidence_risks = [issue.code for issue in evidence_report.issues]
                 contextual_risks = self._contextual_evidence_risks(
@@ -2663,6 +2673,7 @@ class LocalPilotAgent:
                     repository_review=authority_review,
                     issue_codes=risks,
                     successful_tools=sorted(successful_tools),
+                    passive_runtime_evidence=passive_runtime_evidence,
                     prose_rewritten=False,
                 )
                 if risks:
@@ -2709,6 +2720,7 @@ class LocalPilotAgent:
                         corrected_evidence_report = self.turn_evidence.review(
                             corrected_content,
                             successful_tools=successful_tools,
+                            passive_runtime_evidence=passive_runtime_evidence,
                         )
                         corrected_risks = list(dict.fromkeys([
                             *corrected_risks,

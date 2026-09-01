@@ -102,6 +102,49 @@ def test_operational_self_status_uses_passive_evidence_without_memory_or_tools(
     ] is True
 
 
+def test_operational_runtime_timestamp_passes_postvalidation_from_passive_evidence(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path)
+    monkeypatch.setattr(
+        agent.systemsense,
+        "compact_context",
+        lambda: (
+            'SYSTEMSENSE PASSIVE STATE (read-only, derived, current-turn only):\n'
+            '{"runtime":{"repository":{"branch":"main","commit":"abc123"},'
+            '"lifecycle":{"current_process":{"component":"runtime_worker","pid":30992},'
+            '"recent_events":[{"timestamp":"2026-09-01T06:51:47+09:30",'
+            '"reason":"explicit_api_restart"}]}}}'
+        ),
+    )
+
+    def fake_chat(**_kwargs):
+        return iter(
+            [
+                _chunk(
+                    content=(
+                        "The runtime worker is PID 30992. It restarted at "
+                        "2026-09-01T06:51:47+09:30 for an explicit API restart. "
+                        "The current branch is main at commit abc123; the broker PID is unavailable."
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "What is your current branch and commit, what is the runtime worker PID, did it restart, "
+        "and why? Be precise about runtime worker versus broker."
+    )
+
+    assert "PID 30992" in answer
+    assert "2026-09-01T06:51:47+09:30" in answer
+    validation = agent.audit.latest("model_same_context_postvalidation_complete")
+    assert validation["accepted"] is True
+    assert validation["passive_runtime_evidence"] is True
+
+
 def test_operational_status_classifier_covers_owner_handover_and_autonomy_questions():
     for prompt in (
         "LocalPilot, give me a handover of what is stable, blocked, and the next decision.",

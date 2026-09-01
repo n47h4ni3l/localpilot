@@ -284,6 +284,24 @@ def test_external_specifics_need_source_evidence_even_in_casual_prose():
     assert provisional.accepted is True
 
 
+def test_passive_runtime_evidence_grounds_operational_timestamp_only():
+    verifier = TurnEvidenceVerifier()
+
+    operational = verifier.review(
+        "The runtime worker (PID 30992) restarted at 2026-09-01T06:51:47+09:30.",
+        passive_runtime_evidence=True,
+    )
+    unrelated = verifier.review(
+        "Research shows the runtime design was invented by Ada Example in 2026.",
+        passive_runtime_evidence=True,
+    )
+
+    assert operational.accepted is True
+    assert {issue.code for issue in unrelated.issues} == {
+        "external_specific_without_source_evidence"
+    }
+
+
 def test_cited_local_library_observation_can_ground_external_specifics():
     report = TurnEvidenceVerifier().review(
         "Research published in 2024 found the stated effect.",

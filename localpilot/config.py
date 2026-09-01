@@ -131,6 +131,14 @@ class SelfDevConfig:
     auto_promote: bool = False
     research_tool_rounds: int = 6
     max_tool_rounds: int = 14
+    # One evolution invocation shares these budgets across discovery, research,
+    # implementation, repair, and delivery. Per-stage round limits remain useful
+    # but cannot by themselves bound a multi-stage or multi-call response.
+    cycle_wall_clock_seconds: float = 900.0
+    max_tool_calls_per_cycle: int = 32
+    max_web_calls_per_cycle: int = 8
+    opportunity_similarity_threshold: float = 0.82
+    max_queued_opportunities: int = 48
     local_repair_tool_rounds: int = 6
     max_local_repair_attempts: int = 3
     # Candidate complexity is reported after the soft budget, but only the
@@ -302,6 +310,27 @@ def load_config(path: str | Path | None = None) -> Config:
     # Promotion is a human/repository action, never an autonomous config knob.
     if cfg.selfdev.auto_promote:
         raise ValueError("selfdev.auto_promote cannot be enabled; candidates require review and merge")
+    cfg.selfdev.cycle_wall_clock_seconds = float(cfg.selfdev.cycle_wall_clock_seconds)
+    cfg.selfdev.max_tool_calls_per_cycle = int(cfg.selfdev.max_tool_calls_per_cycle)
+    cfg.selfdev.max_web_calls_per_cycle = int(cfg.selfdev.max_web_calls_per_cycle)
+    cfg.selfdev.opportunity_similarity_threshold = float(
+        cfg.selfdev.opportunity_similarity_threshold
+    )
+    cfg.selfdev.max_queued_opportunities = int(cfg.selfdev.max_queued_opportunities)
+    if cfg.selfdev.cycle_wall_clock_seconds < 30:
+        raise ValueError("selfdev.cycle_wall_clock_seconds must be at least 30")
+    if cfg.selfdev.max_tool_calls_per_cycle < 1:
+        raise ValueError("selfdev.max_tool_calls_per_cycle must be positive")
+    if not 0 <= cfg.selfdev.max_web_calls_per_cycle <= cfg.selfdev.max_tool_calls_per_cycle:
+        raise ValueError(
+            "selfdev.max_web_calls_per_cycle must be between zero and max_tool_calls_per_cycle"
+        )
+    if not 0.5 <= cfg.selfdev.opportunity_similarity_threshold <= 1:
+        raise ValueError(
+            "selfdev.opportunity_similarity_threshold must be between 0.5 and 1"
+        )
+    if cfg.selfdev.max_queued_opportunities < 1:
+        raise ValueError("selfdev.max_queued_opportunities must be positive")
     if cfg.selfdev.candidate_file_soft_budget < 1:
         raise ValueError("selfdev.candidate_file_soft_budget must be positive")
     if cfg.selfdev.candidate_file_hard_ceiling < cfg.selfdev.candidate_file_soft_budget:

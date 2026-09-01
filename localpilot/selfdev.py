@@ -24,11 +24,17 @@ from localpilot.config import Config
 from localpilot.evolution import (
     CORE_CAPABILITY_QUESTION,
     EvolutionClass,
+    capability_proposal_score,
     capability_task_id,
     evolution_status_fields,
     normalize_evolution_task,
     parse_capability_proposals,
     select_capability_proposal,
+)
+from localpilot.evolution_orchestrator import (
+    EvolutionBudgetExceeded,
+    EvolutionRunBudget,
+    OpportunityLedger,
 )
 from localpilot.foreground import active_foreground_turns
 from localpilot.github_integration import GitHubIntegration, is_managed_candidate_branch
@@ -1129,6 +1135,13 @@ class SelfDeveloper:
         self.github = GitHubIntegration(self.root, config.github)
         self.progress = progress or (lambda _message: None)
         self._active_checkpoint: dict[str, Any] | None = None
+        self._active_task_id: str | None = None
+        self._budget: EvolutionRunBudget | None = None
+        self.opportunities = OpportunityLedger(
+            self.data_dir / "evolution-opportunities.json",
+            similarity_threshold=config.selfdev.opportunity_similarity_threshold,
+            max_entries=config.selfdev.max_queued_opportunities,
+        )
 
     def _candidate_tools(
         self,
@@ -1723,6 +1736,25 @@ class SelfDeveloper:
         force: bool,
     ) -> dict[str, Any]:
         """Choose a measured capability-growth question from current evidence."""
+        for _attempt in range(self.config.selfdev.max_queued_opportunities):
+            queued = self.opportunities.next_task()
+            if queued is None:
+                break
+            task_id = str(queued.get("id") or "")
+            if task_id and self.memory.experiment_for_task(task_id) is None:
+                self.opportunities.update(task_id, "selected")
+                self.audit.write(
+                    "capability_opportunity_selected",
+                    task_id=task_id,
+                    source="durable_queue",
+                    capability_target=queued.get("capability_target"),
+                )
+                return normalize_evolution_task(queued)
+            self.opportunities.update(
+                task_id,
+                "superseded",
+                "An experiment with this durable task identity already exists.",
+            )
         try:
             from ollama import chat
         except ImportError as exc:
@@ -1737,6 +1769,7 @@ class SelfDeveloper:
         evidence_context = {
             "mission": mission_context(),
             "durable_memory": self.memory.discovery_context(),
+            "durable_opportunity_queue": self.opportunities.context(),
             "study_curriculum": self.memory.curriculum_context(),
             "resource_constraints": {
                 "everyday_model": self.config.model.name,
@@ -1835,17 +1868,37 @@ class SelfDeveloper:
             )
             proposals = parse_capability_proposals(self._content(response))
 
-        eligible = []
+        eligible: list[tuple[Any, dict[str, Any]]] = []
         for candidate in proposals:
-            prior = self.memory.experiment_for_task(capability_task_id(candidate))
-            if prior is None or prior.status == "proposed":
-                eligible.append(candidate)
+            task = normalize_evolution_task(candidate.task(capability_task_id(candidate)))
+            prior = self.memory.experiment_for_task(str(task["id"]))
+            duplicate, similarity = self.opportunities.duplicate(task)
+            if prior is None and duplicate is None:
+                self.opportunities.enqueue(
+                    task,
+                    score=capability_proposal_score(candidate),
+                )
+                eligible.append((candidate, task))
+                continue
+            self.audit.write(
+                "capability_opportunity_rejected",
+                task_id=task["id"],
+                reason="existing_experiment" if prior is not None else "near_duplicate",
+                similar_task_id=(
+                    duplicate.get("task", {}).get("id")
+                    if isinstance(duplicate, dict)
+                    and isinstance(duplicate.get("task"), dict)
+                    else None
+                ),
+                similarity=similarity,
+            )
         if not eligible:
             raise ValueError(
                 "Discovery repeated only previously attempted hypotheses; a new evidence-backed question is required."
             )
-        proposal = select_capability_proposal(eligible)
-        task = normalize_evolution_task(proposal.task(capability_task_id(proposal)))
+        proposal = select_capability_proposal(item[0] for item in eligible)
+        task = next(item[1] for item in eligible if item[0] == proposal)
+        self.opportunities.update(str(task["id"]), "selected")
         self.memory.record_experiment(task)
         fields = evolution_status_fields(task)
         self.audit.write(
@@ -1856,6 +1909,7 @@ class SelfDeveloper:
             hypothesis=fields["hypothesis"],
             evaluation_plan=fields["evaluation_plan"],
             proposals_considered=len(proposals),
+            novel_proposals=len(eligible),
         )
         return task
 
@@ -1967,6 +2021,24 @@ class SelfDeveloper:
         *,
         during_inference: bool = False,
     ) -> None:
+        if self._budget is not None:
+            try:
+                self._budget.check(
+                    f"{branch}:{'inference' if during_inference else 'stage'}"
+                )
+            except EvolutionBudgetExceeded as exc:
+                if self._active_checkpoint is not None:
+                    self._active_checkpoint["next_action"] = (
+                        "Resume from this checkpoint in a fresh bounded evolution invocation."
+                    )
+                    self._persist_active_checkpoint()
+                self.audit.write(
+                    "selfdev_budget_exhausted",
+                    branch=branch,
+                    reason=str(exc),
+                    budget=self._budget.finish("budget_exhausted"),
+                )
+                raise CyclePaused(f"evolution budget exhausted: {exc}") from exc
         current = self.governor.sample(interval=0.05)
         foreground_turns = active_foreground_turns(self.data_dir) if not force else ()
         foreground_reason = (
@@ -2119,6 +2191,23 @@ class SelfDeveloper:
                 return self._content(response)
             for call in calls:
                 name, args = self._call_parts(call)
+                # A foreground turn may begin after the model emitted a batch
+                # of calls. Re-check before every external action instead of
+                # waiting for the next model round to yield.
+                self._check_resources(force, branch)
+                if self._budget is not None:
+                    try:
+                        self._budget.consume_tool(name, stage)
+                    except EvolutionBudgetExceeded as exc:
+                        self.audit.write(
+                            "selfdev_budget_exhausted",
+                            branch=branch,
+                            stage=stage,
+                            tool=name,
+                            reason=str(exc),
+                            budget=self._budget.finish("budget_exhausted"),
+                        )
+                        raise CyclePaused(f"evolution budget exhausted: {exc}") from exc
                 fn = by_name.get(name)
                 self.audit.write(
                     "selfdev_tool",
@@ -2939,7 +3028,7 @@ class SelfDeveloper:
             self._emit(f"Finished: {status} — wrote {len(tools.files_written)} candidate file(s)")
             return EvolutionResult(status, branch, workspace, summary, delivery_validated)
         except CyclePaused as exc:
-            summary = f"User returned or PC became busy: {exc}"
+            summary = f"Evolution cycle paused: {exc}"
             self.memory.finish_cycle(
                 cycle_id,
                 status="paused",
@@ -3304,7 +3393,7 @@ class SelfDeveloper:
                     force=force,
                 )
             except CyclePaused as exc:
-                summary = f"Local candidate repair paused because the PC became busy: {exc}"
+                summary = f"Local candidate repair paused: {exc}"
                 self.memory.finish_cycle(
                     candidate.cycle_id,
                     status="paused",
@@ -3648,7 +3737,7 @@ class SelfDeveloper:
                 "paused",
                 branch,
                 workspace,
-                f"CI repair paused because the PC became busy: {exc}",
+                f"CI repair paused: {exc}",
             )
 
         fallback_error: str | None = None
@@ -3940,10 +4029,19 @@ class SelfDeveloper:
 
     def run_once(self, *, force: bool = False) -> EvolutionResult:
         invocation_id = uuid.uuid4().hex
+        self._active_task_id = None
+        self._budget = EvolutionRunBudget(
+            invocation_id=invocation_id,
+            state_path=self.data_dir / "evolution-run-state.json",
+            wall_clock_seconds=self.config.selfdev.cycle_wall_clock_seconds,
+            max_tool_calls=self.config.selfdev.max_tool_calls_per_cycle,
+            max_web_calls=self.config.selfdev.max_web_calls_per_cycle,
+        )
         self.audit.write(
             "evolve_run_start",
             invocation_id=invocation_id,
             force=force,
+            budget=self._budget.snapshot(),
         )
         try:
             result = self._run_once(force=force)
@@ -3958,7 +4056,9 @@ class SelfDeveloper:
                 invocation_id=invocation_id,
                 status="crashed",
                 summary=f"Unhandled {type(exc).__name__}: {exc}"[:2000],
+                budget=self._budget.finish("crashed"),
             )
+            self._budget = None
             raise
         if self._active_checkpoint is not None:
             if result.status in {"paused", "deferred", "candidate_needs_work"}:
@@ -3966,6 +4066,13 @@ class SelfDeveloper:
             else:
                 self._clear_checkpoint(f"terminal evolve status: {result.status}")
         latest_experiment = self.memory.latest_experiment()
+        if self._active_task_id:
+            self.opportunities.update(
+                self._active_task_id,
+                result.status,
+                result.summary,
+            )
+        budget = self._budget.finish(result.status)
         self.audit.write(
             "evolve_run_end",
             invocation_id=invocation_id,
@@ -3975,7 +4082,9 @@ class SelfDeveloper:
             checks_passed=result.tests_passed,
             summary=result.summary[:2000],
             experiment_id=latest_experiment.id if latest_experiment else None,
+            budget=budget,
         )
+        self._budget = None
         return result
 
     def _run_once(self, *, force: bool = False) -> EvolutionResult:
@@ -4046,7 +4155,7 @@ class SelfDeveloper:
                     "paused",
                     None,
                     None,
-                    f"Capability discovery paused because the resource gate changed: {exc}",
+                    f"Capability discovery paused: {exc}",
                 )
             except Exception as exc:
                 return EvolutionResult(
@@ -4057,6 +4166,8 @@ class SelfDeveloper:
                 )
 
         task = normalize_evolution_task(task)
+        self._active_task_id = str(task["id"])
+        self.opportunities.update(self._active_task_id, "active")
         self.memory.record_experiment(task)
         slug = "".join(char if char.isalnum() else "-" for char in task["id"].lower()).strip("-")[:40]
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")

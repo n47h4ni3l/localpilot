@@ -132,8 +132,8 @@ An idle evolution cycle can:
 
 1. sync only from a verified trusted `main`, stopping if the running build changed;
 2. confirm the machine is idle and resources are available;
-3. inspect durable frontier, capability, experiment, and rejection history;
-4. identify a limiting capability and state a falsifiable hypothesis;
+3. inspect durable frontier, capability, experiment, rejection, and queued-opportunity history;
+4. resume the highest-scoring novel queued opportunity, or identify a new limiting capability and state a falsifiable hypothesis;
 5. research before implementation;
 6. create one isolated candidate workspace;
 7. generate a structured change-plan manifest with read-only tools and verify every claimed repository path, symbol, config field, existing test, integration point, and call relationship against the live candidate tree;
@@ -167,6 +167,8 @@ Evolution proposals are classified as Repair, Extend, Improve Cognition, or Expl
 - Resource, idle-state, trusted-main, and scheduler gates remain fail-closed.
 
 The default candidate budget reports complexity after 100 files and enforces a 500-file hard ceiling. These limits constrain blast radius without prescribing what the candidate is allowed to think about.
+
+A separate whole-cycle budget defaults to 15 minutes, 32 total tool calls, and 8 public-web calls across every stage. The opportunity ledger rejects near-duplicate capability hypotheses and carries unselected measured proposals into later invocations. These controls bound execution and repetition; they do not prescribe conversational style or select one permitted line of reasoning.
 
 ## Learning, teaching, and study
 
@@ -264,7 +266,7 @@ Keep `localpilot.toml`, `localpilot-data/`, audit logs, learning databases, and 
 
 Run `scripts\install-idle-evolve-task.ps1` from a clean trusted `main` checkout to replace the legacy repeating evolve task. The installer starts one windowless `pythonw.exe` worker at user logon, verifies that it is running with no main window, and only then disables `LocalPilot Idle Evolve`. A one-minute Task Scheduler watchdog trigger is ignored while that process remains active (`MultipleInstances=IgnoreNew`) and relaunches it after a hard crash. The worker itself runs the established unforced evolve entry point every 30 seconds without overlapping cycles.
 
-The worker uses an OS-backed lock plus PID metadata in `localpilot-data`, so duplicate launches exit harmlessly and a lock left by a crash is recovered automatically. Worker lifecycle, cadence, duplicate, recovery, and cycle diagnostics are written to the existing `localpilot-data/audit.jsonl`. Disable the watchdog first, then request a clean stop with:
+The worker uses an OS-backed lock plus PID metadata in `localpilot-data`, so duplicate launches exit harmlessly and a lock left by a crash is recovered automatically. When guarded trusted-main sync installs new code, the persistent worker exits cleanly and the watchdog starts a fresh interpreter; it never continues later cycles with stale imported code. Worker lifecycle, cadence, duplicate, recovery, reload, and cycle diagnostics are written to the existing `localpilot-data/audit.jsonl`. Disable the watchdog first, then request a clean stop with:
 
 ```powershell
 Disable-ScheduledTask -TaskName "LocalPilot Background Worker"
@@ -392,6 +394,7 @@ localpilot/
   operator.py              guarded argument-based command foundation
   selfdev.py               discovery, candidate, repair, and delivery loop
   evolution.py             proposals, scoring, and evidence gates
+  evolution_orchestrator.py durable opportunity queue and whole-cycle budgets
   mission.py               stable mission, priorities, and non-goals
   candidate_resources.py   candidate write and complexity budgets
   checkpoint.py            compact versioned self-development resumption

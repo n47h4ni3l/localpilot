@@ -268,13 +268,26 @@ class BackgroundWorker:
                         duration_seconds=round(self._monotonic() - cycle_started, 3),
                     )
                 else:
+                    result_status = str(getattr(result, "status", "completed"))
                     self.audit.write(
                         "background_worker_cycle_end",
                         pid=os.getpid(),
                         sequence=cycles,
-                        status=str(getattr(result, "status", "completed")),
+                        status=result_status,
                         duration_seconds=round(self._monotonic() - cycle_started, 3),
                     )
+                    if result_status == "updated":
+                        # A persistent interpreter cannot load newly synced
+                        # trusted-main code on its next in-process cycle. Exit
+                        # cleanly so Task Scheduler launches the updated source.
+                        self.stop_reason = "trusted_main_updated"
+                        self.audit.write(
+                            "background_worker_reload_required",
+                            pid=os.getpid(),
+                            sequence=cycles,
+                            reason=self.stop_reason,
+                        )
+                        break
                 if max_cycles is not None and cycles >= max_cycles:
                     self.stop_reason = "max_cycles"
                     break

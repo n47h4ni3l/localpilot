@@ -149,7 +149,7 @@ guarded fetch/fast-forward of the clean trusted main checkout
     -> reconcile earlier candidate PR/check state
     -> resume an unfinished local candidate, when present
     -> enforce the one-outstanding-candidate gate
-    -> select an eligible seed task, or discover a capability-growth question
+    -> select an eligible seed task or queued novel opportunity, or discover a capability-growth question
     -> classify Repair / Extend / Improve Cognition / Explore
     -> record limitation, alternatives, falsifiable hypothesis and measured baseline
     -> create isolated candidate
@@ -174,7 +174,7 @@ On a later invocation, an active checkpoint is considered only after guarded mai
 
 The grounding plan is generated with only list/read access immediately before a write-capable implementation stage. `RepositoryGroundingValidator` scans the live candidate tree rather than trusting potentially stale study memory, resolving claimed files, Python symbols and methods, configuration fields, existing test contracts, integration points and direct call relationships. Malformed, unanchored or contradicted plans produce an audited evidence report and fail the cycle before candidate write tools are exposed. The staged-study use of the validator remains available for held-out curriculum evaluation, but durable facts are not the autonomous gate's source of truth.
 
-The self-sync gate acts only on the repository root while it is checked out on the configured main branch. It never switches branches, resets changes, merges divergent history, or enters a candidate worktree. Git operations use argument vectors with `shell=False`. A successful fast-forward ends the current invocation so no evolution work continues in a process that loaded the previous build.
+The self-sync gate acts only on the repository root while it is checked out on the configured main branch. It never switches branches, resets changes, merges divergent history, or enters a candidate worktree. Git operations use argument vectors with `shell=False`. A successful fast-forward ends the current invocation. The persistent background worker then exits cleanly with `trusted_main_updated`, allowing the scheduled watchdog to start a fresh interpreter from the updated source; no later in-process cycle can continue using the previous build.
 
 The fallback is data, not a privileged editing channel. Its paths and complete file contents are parsed into a `ChangePlan`, and every item is applied by calling `CandidateTools.write_project_file`. It therefore keeps the same path confinement, protected-directory rules, file limits, type allow-list, and size limit as ordinary candidate tool calls.
 
@@ -191,6 +191,8 @@ Explicit human rejection is a separate terminal outcome, never inferred from an 
 The scheduler does not treat “nothing is broken” as a terminal state. When no seed task or outstanding candidate blocks new work, the discovery planner asks what highest-leverage change could increase LocalPilot's future capability. It chooses from evidence in committed architecture, prior runs, failures, CI outcomes, resource constraints, benchmarks and recorded capability gaps—not from a hard-coded feature wishlist.
 
 Every proposal belongs to one of four first-class classes: **Repair** for defects/reliability/resources, **Extend** for new tools or abilities, **Improve Cognition** for planning/memory/retrieval/evaluation/routing/context/learning, and **Explore** for bounded high-upside architectural hypotheses. A proposal is ineligible without a falsifiable hypothesis, alternatives, metric, baseline, success criterion and measurement method. Complexity is penalized during selection, and a capability candidate cannot be delivered when its evaluation is regressed or unmeasured.
+
+Novel measured proposals are written to `localpilot-data/evolution-opportunities.json`. This bounded ledger is a scored queue, not a transcript: it stores the task contract, evidence labels, evaluation contract, status and concise outcome. Later invocations consume queued work before paying for fresh discovery. Exact task identities and near-duplicate target/intent combinations are rejected before another model or web round; terminal outcomes remain visible to later planning instead of being rediscovered under slightly different wording.
 
 Exploration remains candidate-only, resource bounded and human controlled. GitHub CI is the executable evaluation boundary; LocalPilot may open a PR for review but has no merge or promotion method.
 
@@ -212,7 +214,9 @@ The schema deliberately has no prompts, transcripts, messages, thinking, or chai
 
 ## Resource and process safety
 
-The existing `ResourceGovernor` remains in charge of self-development eligibility. LocalPilot checks user idle time, CPU, and memory before the cycle and between every model/tool round, lowering its own Windows priority and pausing promptly when the owner returns.
+The existing `ResourceGovernor` remains in charge of self-development eligibility. LocalPilot checks user idle time, CPU, and memory before the cycle, during streamed inference, and before every emitted tool call, lowering its own Windows priority and checkpointing when the owner returns.
+
+Each invocation also has one shared executive budget across discovery, research, implementation and repair. The default ceiling is 900 wall-clock seconds, 32 total tool calls and 8 public-web calls. Usage is atomically published to `localpilot-data/evolution-run-state.json`. Per-stage round limits still shape work, but cannot combine into an unbounded overall cycle or hide a large batch of calls in one model response. Exhaustion produces an audited pause and preserves an existing candidate checkpoint rather than broadening authority or weakening evaluation.
 
 All Git/GitHub/static-check process calls use argument arrays with `shell=False`. Full executable tests remain in GitHub Actions. Stable, developer, and candidate boundaries do not depend on model cooperation: the tool surface enforces them.
 

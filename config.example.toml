@@ -97,6 +97,15 @@ ollama_keep_alive = 0
 auto_promote = false
 research_tool_rounds = 6
 max_tool_rounds = 14
+# Whole-cycle limits apply across discovery, research, implementation, and
+# repair so no sequence of individually bounded stages can monopolise the PC.
+cycle_wall_clock_seconds = 900
+max_tool_calls_per_cycle = 32
+max_web_calls_per_cycle = 8
+# Persist a small scored opportunity queue and reject near-duplicate capability
+# hypotheses before spending another model or web round on them.
+opportunity_similarity_threshold = 0.82
+max_queued_opportunities = 48
 # Static-check failures are fed back into the same candidate, with both a
 # per-repair tool limit and a durable total-attempt limit.
 local_repair_tool_rounds = 6

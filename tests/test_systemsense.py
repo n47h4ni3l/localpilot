@@ -268,6 +268,37 @@ def test_passive_context_includes_durable_runtime_and_checkout_evidence(tmp_path
         checks_passed=True,
         summary="Created one isolated candidate.",
     )
+    (tmp_path / "data" / "evolution-run-state.json").write_text(
+        json.dumps(
+            {
+                "invocation_id": "evolve-1",
+                "status": "paused",
+                "stage": "implementation",
+                "elapsed_seconds": 42.0,
+                "limits": {"wall_clock_seconds": 900, "tool_calls": 32, "web_calls": 8},
+                "usage": {"tool_calls": 7, "web_calls": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "data" / "evolution-opportunities.json").write_text(
+        json.dumps(
+            {
+                "opportunities": [
+                    {
+                        "status": "proposed",
+                        "score": 11,
+                        "task": {
+                            "id": "capability-memory",
+                            "capability_target": "Reliable memory retrieval",
+                            "evaluation": {"metric": "recall"},
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     sense = SystemSense(
         SystemSenseConfig(),
         tmp_path / "data",
@@ -288,6 +319,9 @@ def test_passive_context_includes_durable_runtime_and_checkout_evidence(tmp_path
     activity = summary["runtime"]["autonomous_activity"]
     assert activity["latest_background_cycle"]["status"] == "deferred"
     assert activity["latest_evolution_run"]["branch"] == "selfdev/example"
+    assert activity["latest_evolution_budget"]["usage"]["tool_calls"] == 7
+    assert activity["opportunity_queue"]["status_counts"] == {"proposed": 1}
+    assert activity["opportunity_queue"]["next_proposed"]["task_id"] == "capability-memory"
     assert activity["learning_boundaries"]["model_weights_changed_by_localpilot"] is False
     assert activity["learning_boundaries"]["runtime_restart_counts_as_learning"] is False
     assert activity["learning_boundaries"]["runtime_restart_counts_as_code_change"] is False

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -118,6 +119,54 @@ class RuntimeEvidence:
                 return None
             return {key: row.get(key) for key in fields if key in row}
 
+        def control_file(name: str) -> dict[str, Any]:
+            try:
+                payload = json.loads(
+                    (self.audit.path.parent / name).read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError, TypeError):
+                return {}
+            return payload if isinstance(payload, dict) else {}
+
+        run = control_file("evolution-run-state.json")
+        run_state = {
+            key: run.get(key)
+            for key in (
+                "invocation_id", "started_at", "updated_at", "status", "stage",
+                "elapsed_seconds", "limits", "usage",
+            )
+            if key in run
+        } or None
+        ledger = control_file("evolution-opportunities.json")
+        entries = ledger.get("opportunities")
+        opportunities = [item for item in entries if isinstance(item, dict)] if isinstance(entries, list) else []
+        status_counts: dict[str, int] = {}
+        proposed: list[dict[str, Any]] = []
+        for item in opportunities:
+            status = str(item.get("status") or "unknown")
+            status_counts[status] = status_counts.get(status, 0) + 1
+            if status == "proposed" and isinstance(item.get("task"), dict):
+                proposed.append(item)
+        next_item = max(
+            proposed,
+            key=lambda item: int(item.get("score") or 0),
+            default=None,
+        )
+        queue_state = {
+            "total_entries": len(opportunities),
+            "status_counts": status_counts,
+            "next_proposed": (
+                {
+                    "task_id": next_item["task"].get("id"),
+                    "capability_target": next_item["task"].get("capability_target"),
+                    "metric": next_item["task"].get("evaluation", {}).get("metric"),
+                    "score": next_item.get("score"),
+                }
+                if next_item is not None
+                else None
+            ),
+        }
+
         return {
             "background_worker": bounded(
                 "background_worker_start",
@@ -144,6 +193,8 @@ class RuntimeEvidence:
                     "experiment_id",
                 ),
             ),
+            "latest_evolution_budget": run_state,
+            "opportunity_queue": queue_state,
             "learning_boundaries": {
                 "model_weights_changed_by_localpilot": False,
                 "ordinary_chat_automatically_persisted_as_learning": False,

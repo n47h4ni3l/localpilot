@@ -159,3 +159,26 @@ def test_cycle_failure_is_logged_and_next_cycle_still_runs(tmp_path):
     assert attempts == 2
     assert any(row["event"] == "background_worker_cycle_error" for row in rows)
     assert any(row["event"] == "background_worker_cycle_end" for row in rows)
+
+
+def test_trusted_main_update_exits_persistent_worker_for_code_reload(tmp_path):
+    attempts = 0
+
+    def cycle():
+        nonlocal attempts
+        attempts += 1
+        return SimpleNamespace(status="updated")
+
+    worker = BackgroundWorker(
+        tmp_path,
+        config=Config(),
+        interval_seconds=0.01,
+        cycle_runner=cycle,
+    )
+
+    assert worker.run(max_cycles=3) == 0
+    assert attempts == 1
+    rows = _audit_rows(tmp_path)
+    assert any(row["event"] == "background_worker_reload_required" for row in rows)
+    assert rows[-1]["event"] == "background_worker_stop"
+    assert rows[-1]["reason"] == "trusted_main_updated"

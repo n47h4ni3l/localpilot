@@ -27,6 +27,10 @@ def test_everyday_and_developer_models_are_separate():
     assert cfg.selfdev.candidate_file_soft_budget == 100
     assert cfg.selfdev.candidate_file_hard_ceiling == 500
     assert cfg.selfdev.candidate_resource_quota_gb == 8.0
+    assert cfg.selfdev.cycle_wall_clock_seconds == 900
+    assert cfg.selfdev.max_tool_calls_per_cycle == 32
+    assert cfg.selfdev.max_web_calls_per_cycle == 8
+    assert cfg.selfdev.opportunity_similarity_threshold == 0.82
 
 
 def test_toml_loads_developer_model(tmp_path: Path):

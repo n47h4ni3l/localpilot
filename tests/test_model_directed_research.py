@@ -817,6 +817,21 @@ def test_explicit_no_menu_rejects_menu_shaped_clarification():
     assert "explicit_no_menu_ignored" in issues
 
 
+def test_workplace_judgment_rejects_invented_workflow_resources():
+    issues = LocalPilotAgent._response_behavior_issues(
+        (
+            "An order is late, the supplier is vague, and my client expects an update today. "
+            "What would you do first, and what would you actually say?"
+        ),
+        (
+            "Open the supplier's order-tracking portal, send the draft to a colleague, then prepare "
+            "a 2-slide status deck for the meeting."
+        ),
+    )
+
+    assert "invented_workflow_resources" in issues
+
+
 def test_historical_autonomy_answer_must_scope_window_and_hide_internal_keys():
     prompt = (
         "Be candid: while I was away, what did your autonomous evolution actually accomplish, what did it "

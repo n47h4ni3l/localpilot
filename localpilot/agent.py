@@ -1413,6 +1413,25 @@ class LocalPilotAgent:
         if explicit_no_menu and menu_shaped_clarification:
             issues.append("explicit_no_menu_ignored")
 
+        workplace_judgment = bool(
+            re.search(r"\b(?:supplier|client|customer|order|meeting)\b", request)
+            and re.search(
+                r"\b(?:what would you do first|what would you actually say|"
+                r"what should i do first|how would you handle)\b",
+                request,
+            )
+        )
+        invented_workflow_resources = bool(
+            re.search(
+                r"\b(?:supplier(?:’s|'s)? (?:portal|logistics contact)|order[- ]tracking portal|"
+                r"send (?:the draft|it) to a colleague|quick[- ]review tool|"
+                r"(?:prepare|make|create) (?:a )?(?:brief )?\d[- ]slide)\b",
+                behavior_text,
+            )
+        )
+        if workplace_judgment and invented_workflow_resources:
+            issues.append("invented_workflow_resources")
+
         conversation_selection_invitation = bool(
             re.search(
                 r"\b(?:what (?:kind of )?conversation would you (?:enjoy|like)|"
@@ -2550,6 +2569,7 @@ class LocalPilotAgent:
                     "casual_conversation_replaced_by_evidence_search",
                     "fabricated_embodied_experience",
                     "explicit_no_menu_ignored",
+                    "invented_workflow_resources",
                 }.intersection(behavior_issues):
                     casual_conversation_recovery = (
                         " For an ordinary conversational question, answer directly with a plausible everyday "
@@ -2557,7 +2577,7 @@ class LocalPilotAgent:
                         "evidence search for conversation, and do not imply that such a search was needed. Natural "
                         "taste and curiosity are welcome, but do not invent a body, physical surroundings, sensory "
                         "experience, or witnessed offline events; frame the interest as a conceptual pattern. "
-                        "owner asks for an ordinary thing you find interesting, begin with 'One ordinary thing I "
+                        "If the owner asks for an ordinary thing you find interesting, begin with 'One ordinary thing I "
                         "find interesting is...' and choose the subject yourself; never frame it as something you "
                         "have been watching, noticing, hearing, or physically experiencing. "
                         "If the owner explicitly rejected a menu, choose one useful intervention or ask one genuinely "
@@ -2581,6 +2601,14 @@ class LocalPilotAgent:
                         " For a requested priority order and first-hour plan, rank every named task explicitly and "
                         "give practical minute allocations that total roughly sixty minutes. Keep diagnostics "
                         "bounded to an initial triage block rather than inventing an entire repair procedure."
+                    )
+                if "invented_workflow_resources" in behavior_issues:
+                    work_planning_recovery += (
+                        " For workplace judgment, use only the situation and resources the owner actually named. "
+                        "Do not invent a supplier portal, logistics contact, tracking document, colleague, review "
+                        "tool, or slide deck. Prioritize the shortest action that reduces uncertainty, then give "
+                        "the owner concise words for the supplier and an honest client update with placeholders "
+                        "for facts that are still unknown. Avoid busywork."
                     )
                 behavior_instruction = {
                     "role": "user",
@@ -2630,6 +2658,7 @@ class LocalPilotAgent:
                         "casual_conversation_replaced_by_evidence_search",
                         "fabricated_embodied_experience",
                         "explicit_no_menu_ignored",
+                        "invented_workflow_resources",
                         "internal_evidence_field_leak",
                         "unbounded_autonomy_history_claim",
                     }
@@ -3640,6 +3669,9 @@ class LocalPilotAgent:
                     "For an ordinary-interest invitation, begin with 'One ordinary thing I find interesting is...' "
                     "and choose the subject and angle yourself; do not use 'I've been watching', 'I've been "
                     "noticing', or another claim of firsthand observation. "
+                    "For workplace judgment, use only the situation and resources the owner named. Do not invent "
+                    "portals, contacts, tracking documents, colleagues, review tools, or presentation work. Lead "
+                    "with the shortest action that reduces uncertainty and provide concise words the owner can use. "
                     "When asked to order named priorities and plan the first hour, "
                     "rank every task explicitly and give realistic minute allocations totaling roughly sixty minutes."
                 ),

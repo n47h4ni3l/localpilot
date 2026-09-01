@@ -226,6 +226,13 @@ def test_operational_status_classifier_covers_owner_handover_and_autonomy_questi
         "Do you have learning_memory and can you store or retrieve new learning?",
         "Any reason you didn't search the internet for an answer?",
         "Codex should have opened read-only internet access for you.",
+        (
+            "From current passive evidence only, tell me whether the new bounded evolution "
+            "orchestrator is loaded. Report the latest evolution budget limits and usage, "
+            "opportunity queue state, background-worker PID and latest cycle, plus current "
+            "branch and commit. Then separate out what still remains unproven. Keep it "
+            "human-readable."
+        ),
     ):
         assert LocalPilotAgent._is_operational_self_status_prompt(prompt) is True
 

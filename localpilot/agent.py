@@ -920,11 +920,16 @@ class LocalPilotAgent:
         text = " ".join(str(prompt).lower().split())
         self_reference = bool(
             re.search(r"\b(?:localpilot|you|your|yourself)\b", text)
+            or re.search(
+                r"\b(?:the |current |new )?(?:runtime|background[- ]worker|"
+                r"evolution orchestrator|learning[_ ]memory)\b",
+                text,
+            )
         )
         status_topic = bool(
             re.search(
                 r"\b(?:restart(?:ed|s|ing)?|runtime|pid|branch|commit|checkout|up[- ]to[- ]date|"
-                r"background worker|self[- ]development|evolution|learning progress|"
+                r"background[- ]worker|self[- ]development|evolution|learning progress|"
                 r"what (?:have you|you've) learned|what (?:have you|you've) changed|"
                 r"learning[_ ]memory|durable memory|do you have (?:a )?memory|"
                 r"store or retrieve (?:new )?learning|"

@@ -1436,7 +1436,8 @@ class LocalPilotAgent:
             and re.search(
                 r"\b(?:i(?:['’]ve| have) just spoken with the supplier|supplier (?:has )?confirmed|"
                 r"explor(?:e|ing) alternative shipping|partial delivery|"
-                r"confirm the exact eta.{0,40}by the end of (?:the )?day)\b",
+                r"confirm the exact eta.{0,40}by the end of (?:the )?day|"
+                r"expect to have (?:that|it|an? (?:answer|eta)).{0,40}by the end of (?:the )?day)\b",
                 behavior_text,
             )
         )
@@ -2797,6 +2798,7 @@ class LocalPilotAgent:
                     and not self._looks_like_generic_reset(recovered_content)
                 )
                 deterministic_casual_fallback = False
+                deterministic_work_fallback = False
                 if (
                     "fabricated_embodied_experience" in remaining_behavior_issues
                     and re.search(
@@ -2818,6 +2820,23 @@ class LocalPilotAgent:
                     )
                     recovered_ok = not remaining_behavior_issues
                     deterministic_casual_fallback = recovered_ok
+                if "work_update_invents_supplier_facts_or_options" in remaining_behavior_issues:
+                    recovered_content = (
+                        "First, spend no more than ten minutes pressing the supplier for a firm answer: “I need a "
+                        "factual update for my client before my meeting. Please confirm the current status, a firm "
+                        "ETA, and what is preventing certainty. If you cannot confirm an ETA, please say that "
+                        "plainly.” Then update the client whether or not the supplier replies: “Hi [Client], quick "
+                        "update: the order is late and I still do not have a firm ETA. I’m pressing the supplier "
+                        "for confirmation now. I’ll update you again by [a time you can personally keep], even if "
+                        "the position is unchanged, rather than give you an unreliable date.” Use the remaining "
+                        "time to note what is known, unknown, and due next for the meeting."
+                    )
+                    recovered_calls = []
+                    remaining_behavior_issues = self._response_behavior_issues(
+                        prompt, recovered_content
+                    )
+                    recovered_ok = not remaining_behavior_issues
+                    deterministic_work_fallback = recovered_ok
                 if recovered_ok and remaining_behavior_issues:
                     retry_draft = {"role": "assistant", "content": recovered_content}
                     self.messages.append(retry_draft)
@@ -2966,6 +2985,7 @@ class LocalPilotAgent:
                     deterministic_evidence_fallback=deterministic_evidence_fallback,
                     deterministic_troubleshooting_fallback=deterministic_troubleshooting_fallback,
                     deterministic_casual_fallback=deterministic_casual_fallback,
+                    deterministic_work_fallback=deterministic_work_fallback,
                     deterministic_operational_status_fallback=(
                         deterministic_operational_status_fallback
                     ),

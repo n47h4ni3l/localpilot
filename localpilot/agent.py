@@ -890,7 +890,7 @@ class LocalPilotAgent:
         )
         if explicit_conversational_style and not explicit_research_request:
             return True
-        return bool(
+        bounded_invitation = bool(
             re.search(
                 r"\b(?:room to think|what has your attention|pick something ordinary|"
                 r"felt curiosity|topic-selection story|agree with me|just agree|say you agree|"
@@ -903,6 +903,16 @@ class LocalPilotAgent:
                 text,
             )
         )
+        personal_media_choice = bool(
+            not explicit_research_request
+            and re.search(
+                r"\b(?:what would you (?:put on|listen to|watch|read|choose)|"
+                r"what (?:music|film|movie|show|book|background audio) would you (?:pick|choose)|"
+                r"if you wanted .{0,80}\bwhat would you (?:put on|listen to|watch|read))\b",
+                text,
+            )
+        )
+        return bounded_invitation or personal_media_choice
 
     @staticmethod
     def _is_operational_self_status_prompt(prompt: str) -> bool:
@@ -1253,12 +1263,11 @@ class LocalPilotAgent:
         if background_worker_request and unverified_worker_examples and not worker_example_restraint:
             issues.append("unverified_background_worker_task_examples")
 
-        casual_conversation_request = bool(
-            re.search(r"\b(?:keep it conversational|just (?:chat|talk)|casual question)\b", request)
-        )
+        casual_conversation_request = LocalPilotAgent._is_bounded_conversational_prompt(prompt)
         evidence_search_deflection = bool(
             re.search(
                 r"\b(?:could not|couldn't|cannot|can't) find (?:any )?evidence\b|"
+                r"\b(?:do not|don't|does not|doesn't) have (?:any )?evidence\b|"
                 r"\b(?:library |web )?search (?:did not|didn't) turn up\b|"
                 r"\bno (?:relevant )?(?:passages?|sources?) (?:were )?found\b",
                 behavior_text,

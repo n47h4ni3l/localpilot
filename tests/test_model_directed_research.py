@@ -707,6 +707,61 @@ def test_friendly_personal_advice_skips_systemsense_memory_and_tools(tmp_path, m
     assert "storage_pressure" not in context
 
 
+def test_personal_background_audio_choice_is_direct_and_recovers_from_evidence_deflection(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path)
+    monkeypatch.setattr(
+        agent,
+        "_learning_context",
+        lambda _prompt: pytest.fail("personal media choice must not retrieve semantic memory"),
+    )
+    monkeypatch.setattr(
+        agent.systemsense,
+        "compact_context",
+        lambda: pytest.fail("personal media choice must not receive passive PC telemetry"),
+    )
+    calls = []
+    streams = iter(
+        [
+            [
+                _chunk(
+                    content=(
+                        "I don't have evidence from the supplied sources about specific background audio."
+                    )
+                )
+            ],
+            [
+                _chunk(
+                    content=(
+                        "I'd put on a mellow instrumental jazz record: enough rhythm to keep the room awake, "
+                        "but no lyrics competing with the conversation."
+                    )
+                )
+            ],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "If you wanted something calm but not sleepy in the background for this quiet hour, "
+        "what would you put on?"
+    )
+
+    assert answer.startswith("I'd put on a mellow instrumental jazz record")
+    assert calls[0]["think"] == "low"
+    assert "tools" not in calls[0]
+    assert len(calls) == 2
+    recovery = agent.audit.latest("model_same_context_behavior_recovery_complete")
+    assert recovery["original_issues"] == ["casual_conversation_replaced_by_evidence_search"]
+    assert recovery["accepted"] is True
+
+
 def test_ordinary_conversational_question_skips_research_memory_systemsense_and_tools(
     tmp_path, monkeypatch
 ):

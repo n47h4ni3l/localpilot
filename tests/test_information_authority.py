@@ -302,6 +302,15 @@ def test_passive_runtime_evidence_grounds_operational_timestamp_only():
     }
 
 
+def test_trusted_durable_evidence_grounds_stored_external_specifics():
+    report = TurnEvidenceVerifier().review(
+        "Research published in 2024 found the stated effect.",
+        trusted_durable_evidence=True,
+    )
+
+    assert report.accepted is True
+
+
 def test_cited_local_library_observation_can_ground_external_specifics():
     report = TurnEvidenceVerifier().review(
         "Research published in 2024 found the stated effect.",

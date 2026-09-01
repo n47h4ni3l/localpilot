@@ -2385,6 +2385,7 @@ class LocalPilotAgent:
                     calls = response.get("tool_calls") or []
 
             operational_self_status = self._is_operational_self_status_prompt(prompt)
+            deterministic_operational_status_fallback = False
             behavior_issues = (
                 self._response_behavior_issues(prompt, content)
                 if content.strip() and not calls
@@ -2726,7 +2727,6 @@ class LocalPilotAgent:
                 deterministic_boundary_fallback = False
                 deterministic_evidence_fallback = False
                 deterministic_troubleshooting_fallback = False
-                deterministic_operational_status_fallback = False
                 if "human_promotion_boundary_not_preserved" in remaining_behavior_issues:
                     recovered_content = (
                         "I disagree because passing tests are evidence about the tested conditions, not authority "
@@ -2810,6 +2810,7 @@ class LocalPilotAgent:
                     content,
                     successful_tools=successful_tools,
                     passive_runtime_evidence=passive_runtime_evidence,
+                    trusted_durable_evidence=deterministic_operational_status_fallback,
                 )
                 evidence_risks = [issue.code for issue in evidence_report.issues]
                 contextual_risks = self._contextual_evidence_risks(
@@ -2826,6 +2827,7 @@ class LocalPilotAgent:
                     issue_codes=risks,
                     successful_tools=sorted(successful_tools),
                     passive_runtime_evidence=passive_runtime_evidence,
+                    trusted_durable_evidence=deterministic_operational_status_fallback,
                     prose_rewritten=False,
                 )
                 if risks:
@@ -2873,6 +2875,7 @@ class LocalPilotAgent:
                             corrected_content,
                             successful_tools=successful_tools,
                             passive_runtime_evidence=passive_runtime_evidence,
+                            trusted_durable_evidence=deterministic_operational_status_fallback,
                         )
                         corrected_risks = list(dict.fromkeys([
                             *corrected_risks,

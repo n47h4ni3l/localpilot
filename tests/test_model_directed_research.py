@@ -156,7 +156,7 @@ def test_failed_operational_rewrites_fall_back_to_deterministic_learning_and_wor
                 "fact_key": "fact-1",
                 "fact_type": "library_fact",
                 "subject": "bounded autonomy",
-                "summary": "Idle work must remain bounded and attributable.",
+                "summary": "Research published in 2024 found that idle work must remain bounded and attributable.",
                 "source_uri": "library://guide/page/1",
                 "source_kind": "library",
                 "source_digest": "abc",
@@ -208,12 +208,15 @@ def test_failed_operational_rewrites_fall_back_to_deterministic_learning_and_wor
     )
 
     assert "LearningMemory currently contains 1 current knowledge facts" in answer
-    assert "Idle work must remain bounded and attributable" in answer
+    assert "Research published in 2024 found that idle work must remain bounded" in answer
     assert "latest background-worker cycle was sequence 12 with status deferred" in answer
     assert "Autonomy while you are away:" in answer
     assert "Plans:" in answer
     recovery = agent.audit.latest("model_same_context_behavior_recovery_complete")
     assert recovery["deterministic_operational_status_fallback"] is True
+    validation = agent.audit.latest("model_same_context_postvalidation_complete")
+    assert validation["accepted"] is True
+    assert validation["trusted_durable_evidence"] is True
 
 
 def test_operational_status_classifier_covers_owner_handover_and_autonomy_questions():

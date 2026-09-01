@@ -365,6 +365,7 @@ class TurnEvidenceVerifier:
         *,
         successful_tools: frozenset[str] = frozenset(),
         passive_runtime_evidence: bool = False,
+        trusted_durable_evidence: bool = False,
     ) -> TurnEvidenceReport:
         issues: list[EvidenceIssue] = []
         for sentence in self._sentences(content):
@@ -423,6 +424,7 @@ class TurnEvidenceVerifier:
                 )
             if (
                 not _EXTERNAL_SOURCE_TOOLS.intersection(successful_tools)
+                and not trusted_durable_evidence
                 and re.search(
                     r"\b(?:within (?:its|the) elastic limit|distributes? (?:the )?stress (?:evenly|uniformly)|"
                     r"won['’]?t permanently deform)\b",
@@ -450,6 +452,7 @@ class TurnEvidenceVerifier:
             )
             if (
                 not _EXTERNAL_SOURCE_TOOLS.intersection(successful_tools)
+                and not trusted_durable_evidence
                 and not passive_operational_timestamp
                 and any(
                     re.search(expression, normalized)

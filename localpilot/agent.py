@@ -1437,7 +1437,7 @@ class LocalPilotAgent:
                 r"\b(?:i(?:['’]ve| have) just spoken with the supplier|supplier (?:has )?confirmed|"
                 r"explor(?:e|ing) alternative shipping|partial delivery|"
                 r"confirm the exact eta.{0,40}by the end of (?:the )?day|"
-                r"expect to have (?:that|it|an? (?:answer|eta)).{0,40}by the end of (?:the )?day)\b",
+                r"expect to have .{0,80}by the end of (?:the )?day)\b",
                 behavior_text,
             )
         )

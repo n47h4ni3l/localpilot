@@ -854,6 +854,13 @@ def test_workplace_judgment_keeps_unknown_supplier_facts_and_options_unknown():
 
     assert "work_update_invents_supplier_facts_or_options" in softer_promise
 
+    definitive_date_promise = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        "I expect to have a definitive shipping date by the end of the day and will share it immediately.",
+    )
+
+    assert "work_update_invents_supplier_facts_or_options" in definitive_date_promise
+
 
 def test_historical_autonomy_answer_must_scope_window_and_hide_internal_keys():
     prompt = (

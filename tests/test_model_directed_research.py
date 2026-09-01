@@ -145,6 +145,77 @@ def test_operational_runtime_timestamp_passes_postvalidation_from_passive_eviden
     assert validation["passive_runtime_evidence"] is True
 
 
+def test_failed_operational_rewrites_fall_back_to_deterministic_learning_and_worker_evidence(
+    tmp_path, monkeypatch
+):
+    _, agent = _agent(tmp_path)
+    agent.memory.upsert_knowledge_facts(
+        [
+            {
+                "stage": "library",
+                "fact_key": "fact-1",
+                "fact_type": "library_fact",
+                "subject": "bounded autonomy",
+                "summary": "Idle work must remain bounded and attributable.",
+                "source_uri": "library://guide/page/1",
+                "source_kind": "library",
+                "source_digest": "abc",
+                "confidence": 0.9,
+                "relationships": [],
+            }
+        ]
+    )
+    agent.memory.record_human_lesson(
+        "Separate current evidence from plans.", topic="communication", source="owner"
+    )
+    agent.audit.write(
+        "background_worker_cycle_end",
+        pid=717,
+        sequence=12,
+        status="deferred",
+        duration_seconds=0.02,
+    )
+    agent.audit.write(
+        "evolve_run_end",
+        invocation_id="evolve-12",
+        status="deferred",
+        branch=None,
+        summary="PC is in use or busy.",
+    )
+    streams = iter(
+        [
+            [
+                _chunk(
+                    content=(
+                        "| Area | Status |\n|---|---|\n| Worker | It will do background reading, "
+                        "health checks, and housekeeping. |"
+                    )
+                )
+            ],
+            [_chunk(thinking="I should rewrite the status.")],
+            [_chunk(thinking="I should render it now.")],
+        ]
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "ollama",
+        SimpleNamespace(chat=lambda **_kwargs: iter(next(streams))),
+    )
+
+    answer = agent.ask(
+        "What have you actually learned or changed recently, what is in learning_memory, and what can "
+        "your background worker do autonomously while I'm away? Separate current evidence from plans."
+    )
+
+    assert "LearningMemory currently contains 1 current knowledge facts" in answer
+    assert "Idle work must remain bounded and attributable" in answer
+    assert "latest background-worker cycle was sequence 12 with status deferred" in answer
+    assert "Autonomy while you are away:" in answer
+    assert "Plans:" in answer
+    recovery = agent.audit.latest("model_same_context_behavior_recovery_complete")
+    assert recovery["deterministic_operational_status_fallback"] is True
+
+
 def test_operational_status_classifier_covers_owner_handover_and_autonomy_questions():
     for prompt in (
         "LocalPilot, give me a handover of what is stable, blocked, and the next decision.",

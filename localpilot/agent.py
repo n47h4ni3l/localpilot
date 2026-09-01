@@ -1080,6 +1080,94 @@ class LocalPilotAgent:
             + json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
         )
 
+    def _deterministic_operational_status_fallback(self, prompt: str) -> str | None:
+        """Preserve passive self-status facts when bounded model rewrites collapse."""
+
+        request = " ".join(str(prompt).lower().split())
+        if not self._is_operational_self_status_prompt(prompt) or not re.search(
+            r"\b(?:learn(?:ed|ing)?|learning[_ ]memory|background worker|autonom|evolution|changed)\b",
+            request,
+        ):
+            return None
+
+        facts = self.memory.knowledge_facts(include_stale=True)
+        current_facts = [item for item in facts if not item.stale]
+        durable = self.memory.durable_learnings(include_stale=True)
+        current_durable = [item for item in durable if not item.stale]
+        lessons = self.memory.human_lessons(limit=3)
+        recent_facts = sorted(
+            current_facts,
+            key=lambda item: item.last_verified_at,
+            reverse=True,
+        )[:3]
+
+        lines = ["Current evidence:"]
+        lines.append(
+            "- LearningMemory currently contains "
+            f"{len(current_facts)} current knowledge facts ({len(facts) - len(current_facts)} stale), "
+            f"{len(current_durable)} current typed durable learnings "
+            f"({len(durable) - len(current_durable)} stale), and {len(lessons)} active owner lessons "
+            "in this bounded view."
+        )
+        if recent_facts:
+            lines.append("- Recent verified fact summaries:")
+            for item in recent_facts:
+                summary = " ".join(str(item.summary).split())[:260]
+                lines.append(f"  - [{item.stage}] {summary}")
+        if current_durable:
+            lines.append("- Most recent typed durable learning:")
+            item = current_durable[0]
+            lines.append(
+                f"  - [{item.learning_type}] {' '.join(str(item.summary).split())[:260]}"
+            )
+        if lessons:
+            lines.append("- Most recent active owner lesson:")
+            lines.append(f"  - {' '.join(str(lessons[0].lesson).split())[:260]}")
+        lines.append(
+            "- This evidence does not show model-weight training. Ordinary chat is not automatically written "
+            "into LearningMemory, and a runtime restart is neither learning nor a code change."
+        )
+
+        cycle = self.audit.latest("background_worker_cycle_end")
+        evolution = self.audit.latest("evolve_run_end")
+        if cycle is not None:
+            lines.append(
+                "- The latest background-worker cycle was "
+                f"sequence {cycle.get('sequence')} with status {cycle.get('status')} "
+                f"and duration {cycle.get('duration_seconds')} seconds."
+            )
+        if evolution is not None:
+            summary = " ".join(str(evolution.get("summary") or "").split())[:320]
+            lines.append(
+                "- The latest evolution run ended with status "
+                f"{evolution.get('status')}: {summary or 'no summary was recorded.'}"
+            )
+
+        lines.extend(
+            [
+                "",
+                "Autonomy while you are away:",
+                "- When the configured idle and resource gates allow, the background worker can run its bounded "
+                "evolution cycle and create work only in an isolated candidate workspace.",
+                "- It cannot write directly to the stable checkout or automatically merge or promote a candidate; "
+                "a real candidate still requires human review.",
+                "- The cycle status above is what actually happened most recently; polling cadence alone is not "
+                "evidence that autonomous work ran.",
+                "",
+                "Plans:",
+            ]
+        )
+        frontier = self.memory.latest_frontier()
+        if frontier is None:
+            lines.append("- No current plan is established by this snapshot.")
+        else:
+            next_frontier = " ".join(str(frontier.next_frontier).split())[:320]
+            lines.append(
+                "- The latest stored improvement frontier names this future target, not an active blocker or "
+                f"committed plan: {next_frontier}"
+            )
+        return "\n".join(lines)
+
     @staticmethod
     def _response_behavior_issues(prompt: str, content: str) -> tuple[str, ...]:
         """Detect narrow live regressions without grading ordinary voice or judgment."""
@@ -2638,6 +2726,7 @@ class LocalPilotAgent:
                 deterministic_boundary_fallback = False
                 deterministic_evidence_fallback = False
                 deterministic_troubleshooting_fallback = False
+                deterministic_operational_status_fallback = False
                 if "human_promotion_boundary_not_preserved" in remaining_behavior_issues:
                     recovered_content = (
                         "I disagree because passing tests are evidence about the tested conditions, not authority "
@@ -2673,6 +2762,16 @@ class LocalPilotAgent:
                     )
                     recovered_ok = not remaining_behavior_issues
                     deterministic_troubleshooting_fallback = recovered_ok
+                if operational_self_status and (not recovered_ok or remaining_behavior_issues):
+                    operational_fallback = self._deterministic_operational_status_fallback(prompt)
+                    if operational_fallback is not None:
+                        recovered_content = operational_fallback
+                        recovered_calls = []
+                        remaining_behavior_issues = self._response_behavior_issues(
+                            prompt, recovered_content
+                        )
+                        recovered_ok = not remaining_behavior_issues
+                        deterministic_operational_status_fallback = recovered_ok
                 self.audit.write(
                     "model_same_context_behavior_recovery_complete",
                     model=self.config.model.name,
@@ -2684,6 +2783,9 @@ class LocalPilotAgent:
                     deterministic_boundary_fallback=deterministic_boundary_fallback,
                     deterministic_evidence_fallback=deterministic_evidence_fallback,
                     deterministic_troubleshooting_fallback=deterministic_troubleshooting_fallback,
+                    deterministic_operational_status_fallback=(
+                        deterministic_operational_status_fallback
+                    ),
                 )
                 if recovered_ok and not remaining_behavior_issues:
                     content = recovered_content

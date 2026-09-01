@@ -887,6 +887,36 @@ def test_historical_autonomy_answer_must_scope_window_and_hide_internal_keys():
     assert "internal_evidence_field_leak" not in scoped
 
 
+def test_historical_autonomy_fallback_reports_bounded_counts_and_preemption(tmp_path):
+    _, agent = _agent(tmp_path)
+    agent.audit.write(
+        "evolve_run_end",
+        status="deferred",
+        summary="PC is in use or busy: 1 active foreground chat turn(s)",
+        budget={"elapsed_seconds": 1.5, "usage": {"tool_calls": 0, "web_calls": 0}},
+    )
+    agent.audit.write(
+        "evolve_run_end",
+        status="failed",
+        summary="Capability discovery failed: no measurable proposal was produced",
+        budget={"elapsed_seconds": 2.5, "usage": {"tool_calls": 2, "web_calls": 1}},
+    )
+
+    answer = agent._deterministic_operational_status_fallback(
+        "While I was away, what did your autonomous evolution accomplish and waste time on?"
+    )
+
+    assert "bounded newest 100 durable evolution-run audit events" in answer
+    assert "2 runs: 1 failed, 1 deferred" in answer
+    assert "2 tool calls, 1 web calls, and 1 foreground preemptions" in answer
+    assert "0 completed or updated runs" in answer
+    assert "not a change already present" in answer
+    assert not agent._response_behavior_issues(
+        "While I was away, what did your autonomous evolution accomplish and waste time on?",
+        answer,
+    )
+
+
 def test_desktop_gui_question_receives_honest_interface_context(tmp_path, monkeypatch):
     _, agent = _agent(tmp_path)
     calls = []

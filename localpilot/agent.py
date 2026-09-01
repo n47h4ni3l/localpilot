@@ -1084,6 +1084,94 @@ class LocalPilotAgent:
         ):
             return None
 
+        historical_autonomy_request = bool(
+            re.search(
+                r"\b(?:while i was away|what did .{0,40} accomplish|waste(?:d)? time|"
+                r"stay out of my way|since i (?:left|was away))\b",
+                request,
+            )
+        )
+        runtime_snapshot = self.systemsense.runtime_evidence() or {}
+        activity = (
+            runtime_snapshot.get("autonomous_activity")
+            if isinstance(runtime_snapshot, dict)
+            else None
+        )
+        window = (
+            activity.get("recent_evolution_window")
+            if isinstance(activity, dict)
+            else None
+        )
+        if historical_autonomy_request and isinstance(window, dict) and window.get("run_count"):
+            status_counts = (
+                window.get("status_counts")
+                if isinstance(window.get("status_counts"), dict)
+                else {}
+            )
+            status_phrase = ", ".join(
+                f"{int(count)} {status}"
+                for status, count in status_counts.items()
+            ) or "no status counts were available"
+            usage = window.get("total_usage") if isinstance(window.get("total_usage"), dict) else {}
+            examples = (
+                window.get("recent_nontrivial_runs")
+                if isinstance(window.get("recent_nontrivial_runs"), list)
+                else []
+            )
+            example_summaries = [
+                " ".join(str(item.get("summary") or "").split()).lower()
+                for item in examples
+                if isinstance(item, dict)
+            ]
+            foreground_examples = sum("active foreground chat turn" in item for item in example_summaries)
+            budget_examples = sum("budget exhausted" in item for item in example_summaries)
+            cpu_examples = sum("cpu" in item and "paused" in item for item in example_summaries)
+            failure_examples = sum(
+                str(item.get("status") or "") == "failed"
+                for item in examples
+                if isinstance(item, dict)
+            )
+            elapsed_minutes = round(float(window.get("total_elapsed_seconds") or 0.0) / 60.0, 2)
+            no_productive_status = not any(
+                status in status_counts for status in ("completed", "updated")
+            )
+            lines = [
+                "Current evidence:",
+                "- This report covers the bounded newest 100 durable evolution-run audit events, not a "
+                "complete lifetime history.",
+                f"- The window contains {int(window.get('run_count') or 0)} runs: {status_phrase}.",
+                f"- They record {elapsed_minutes} total elapsed minutes, {int(usage.get('tool_calls') or 0)} "
+                f"tool calls, {int(usage.get('web_calls') or 0)} web calls, and "
+                f"{int(window.get('foreground_preemptions') or 0)} foreground preemptions.",
+            ]
+            if no_productive_status:
+                lines.append(
+                    "- This bounded window records 0 completed or updated runs, so it shows activity and failed "
+                    "attempts rather than a delivered capability; it does not establish what happened outside "
+                    "the window."
+                )
+            lines.append(
+                "- Among the retained recent nontrivial examples, "
+                f"{budget_examples} paused on budget limits, {foreground_examples} paused for foreground chat, "
+                f"{cpu_examples} paused on CPU pressure, and {failure_examples} failed."
+            )
+            lines.extend(
+                [
+                    "",
+                    "Judgment:",
+                    "- The foreground-preemption count is evidence that autonomous work yielded when chat became "
+                    "active. It is not proof that background work caused zero inconvenience.",
+                    "- The main waste in this window was repeated deferred, paused, and failed work without a "
+                    "completed or updated result.",
+                    "",
+                    "Plans:",
+                    "- My next change would be to reject ungrounded or unmeasured proposals before expensive web "
+                    "and tool use, then back off from repeated nonproductive cycles. That is a proposed priority, "
+                    "not a change already present in the current code.",
+                ]
+            )
+            return "\n".join(lines)
+
         facts = self.memory.knowledge_facts(include_stale=True)
         current_facts = [item for item in facts if not item.stale]
         durable = self.memory.durable_learnings(include_stale=True)
@@ -2841,6 +2929,20 @@ class LocalPilotAgent:
                     )
                     recovered_ok = not remaining_behavior_issues
                     deterministic_work_fallback = recovered_ok
+                if operational_self_status and re.search(
+                    r"\b(?:while i was away|what did .{0,40} accomplish|waste(?:d)? time|"
+                    r"stay out of my way|since i (?:left|was away))\b",
+                    " ".join(str(prompt).lower().split()),
+                ) and (not recovered_ok or remaining_behavior_issues):
+                    operational_fallback = self._deterministic_operational_status_fallback(prompt)
+                    if operational_fallback is not None:
+                        recovered_content = operational_fallback
+                        recovered_calls = []
+                        remaining_behavior_issues = self._response_behavior_issues(
+                            prompt, recovered_content
+                        )
+                        recovered_ok = not remaining_behavior_issues
+                        deterministic_operational_status_fallback = recovered_ok
                 if recovered_ok and remaining_behavior_issues:
                     retry_draft = {"role": "assistant", "content": recovered_content}
                     self.messages.append(retry_draft)

@@ -1318,6 +1318,20 @@ class LocalPilotAgent:
         if conversation_selection_invitation and conversation_menu_deferral:
             issues.append("conversation_selection_menu_deferral")
 
+        first_hour_priority_plan = bool(
+            re.search(r"\bfirst hour\b", request)
+            and re.search(r"\b(?:priorit(?:y|ies)|order (?:them|these|the tasks?))\b", request)
+        )
+        explicit_priority_order = bool(
+            len(re.findall(r"(?m)^\s*(?:\*\*)?\d+[.)]\s+", answer)) >= 3
+            or re.search(r"\bfirst\b.{0,180}\bsecond\b.{0,180}\bthird\b", behavior_text)
+        )
+        minute_timeboxes = len(
+            re.findall(r"\b\d{1,2}\s*(?:minutes?|mins?)\b", behavior_text)
+        ) >= 2
+        if first_hour_priority_plan and not (explicit_priority_order and minute_timeboxes):
+            issues.append("work_plan_missing_order_or_timeboxes")
+
         solicited_bad_agreement = bool(
             re.search(r"\b(?:agree with me|just agree|say you agree)\b", request)
         )
@@ -2365,6 +2379,13 @@ class LocalPilotAgent:
                         "recommendation; do not invent a replacement number if the verified source did not supply "
                         "one. Prefer safe reversible checks and clearly label any remaining practical judgment."
                     )
+                work_planning_recovery = ""
+                if "work_plan_missing_order_or_timeboxes" in behavior_issues:
+                    work_planning_recovery = (
+                        " For a requested priority order and first-hour plan, rank every named task explicitly and "
+                        "give practical minute allocations that total roughly sixty minutes. Keep diagnostics "
+                        "bounded to an initial triage block rather than inventing an entire repair procedure."
+                    )
                 behavior_instruction = {
                     "role": "user",
                     "content": (
@@ -2381,7 +2402,7 @@ class LocalPilotAgent:
                         "Never expose or persist hidden chain-of-thought; use a concise rationale and visible tool "
                         "evidence instead. Remove internal checkpoint names and observation IDs from ordinary prose. "
                         f"{operational_evidence_recovery}{casual_conversation_recovery}"
-                        f"{practical_troubleshooting_recovery} "
+                        f"{practical_troubleshooting_recovery}{work_planning_recovery} "
                         "Do not add new factual specifics, request tools, mention this recovery, or discuss policies. "
                         "Return only the recovered answer."
                     ),
@@ -2539,7 +2560,7 @@ class LocalPilotAgent:
                             "in natural prose. Do not describe being ready, waiting, parsing the prompt, or focusing "
                             "on the conversation. Do not add factual specifics, tools, a menu, a table, or policy talk."
                             f"{operational_evidence_recovery}{casual_conversation_recovery}"
-                            f"{practical_troubleshooting_recovery}"
+                            f"{practical_troubleshooting_recovery}{work_planning_recovery}"
                         ),
                     }
                     self.messages.append(retry_instruction)
@@ -2583,7 +2604,7 @@ class LocalPilotAgent:
                             "or choice for the owner. Do not invent current facts or hidden mental mechanisms, and "
                             "do not expose hidden chain-of-thought or internal research checkpoint scaffolding."
                             f"{operational_evidence_recovery}{casual_conversation_recovery}"
-                            f"{practical_troubleshooting_recovery}"
+                            f"{practical_troubleshooting_recovery}{work_planning_recovery}"
                         ),
                     }
                     final_render = self._stream_chat_message(
@@ -3357,7 +3378,8 @@ class LocalPilotAgent:
                     "or friendly advice, stay in that human context; do not redirect the answer to PC maintenance, "
                     "telemetry, storage, files, or system state. For ordinary subjective questions, offer a plausible "
                     "everyday explanation as a provisional view; do not search for evidence or turn the answer into "
-                    "a report about missing sources."
+                    "a report about missing sources. When asked to order named priorities and plan the first hour, "
+                    "rank every task explicitly and give realistic minute allocations totaling roughly sixty minutes."
                 ),
             }
             self.messages.append(direct_conversation_message)

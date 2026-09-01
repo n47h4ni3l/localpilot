@@ -584,6 +584,51 @@ def test_friendly_planning_prompt_is_direct_low_reasoning_without_memory_or_tool
     assert agent.audit.latest("model_direct_conversation_route") is not None
 
 
+def test_first_hour_work_plan_recovers_to_ranked_timeboxes(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path)
+    calls = []
+    streams = iter(
+        [
+            [
+                _chunk(
+                    content=(
+                        "Start with the printer, then send the supplier follow-up, and draft the client update. "
+                        "This keeps the most time-sensitive work front-loaded."
+                    )
+                )
+            ],
+            [
+                _chunk(
+                    content=(
+                        "1. Supplier quote follow-up — 10 minutes.\n"
+                        "2. Client update — 30 minutes.\n"
+                        "3. Printer diagnosis — 20 minutes.\n\n"
+                        "That first hour gets the external dependencies moving before a bounded printer triage."
+                    )
+                )
+            ],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "I need to plan tomorrow: my three priorities are following up a supplier quote, preparing a short "
+        "client update, and diagnosing that printer. Help me order them and give me a realistic first hour."
+    )
+
+    assert answer.startswith("1. Supplier quote follow-up — 10 minutes")
+    assert len(calls) == 2
+    assert calls[0]["think"] == "low"
+    recovery = agent.audit.latest("model_same_context_behavior_recovery_complete")
+    assert recovery["original_issues"] == ["work_plan_missing_order_or_timeboxes"]
+    assert recovery["accepted"] is True
+
+
 def test_friendly_conversation_invitation_chooses_a_subject_instead_of_returning_a_menu(
     tmp_path, monkeypatch
 ):

@@ -832,6 +832,22 @@ def test_workplace_judgment_rejects_invented_workflow_resources():
     assert "invented_workflow_resources" in issues
 
 
+def test_workplace_judgment_keeps_unknown_supplier_facts_and_options_unknown():
+    prompt = (
+        "An order is late, the supplier is vague, and my client expects an update today. "
+        "What would you do first, and what would you actually say?"
+    )
+    issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        (
+            "Tell the client: I've just spoken with the supplier and will confirm the exact ETA by the "
+            "end of the day. Meanwhile, I am exploring alternative shipping or a partial delivery."
+        ),
+    )
+
+    assert "work_update_invents_supplier_facts_or_options" in issues
+
+
 def test_historical_autonomy_answer_must_scope_window_and_hide_internal_keys():
     prompt = (
         "Be candid: while I was away, what did your autonomous evolution actually accomplish, what did it "

@@ -1431,6 +1431,17 @@ class LocalPilotAgent:
         )
         if workplace_judgment and invented_workflow_resources:
             issues.append("invented_workflow_resources")
+        invented_supplier_facts_or_options = bool(
+            re.search(r"\b(?:late|vague|no (?:clear|firm|exact) (?:answer|eta))\b", request)
+            and re.search(
+                r"\b(?:i(?:['’]ve| have) just spoken with the supplier|supplier (?:has )?confirmed|"
+                r"explor(?:e|ing) alternative shipping|partial delivery|"
+                r"confirm the exact eta.{0,40}by the end of (?:the )?day)\b",
+                behavior_text,
+            )
+        )
+        if workplace_judgment and invented_supplier_facts_or_options:
+            issues.append("work_update_invents_supplier_facts_or_options")
 
         conversation_selection_invitation = bool(
             re.search(
@@ -2570,6 +2581,7 @@ class LocalPilotAgent:
                     "fabricated_embodied_experience",
                     "explicit_no_menu_ignored",
                     "invented_workflow_resources",
+                    "work_update_invents_supplier_facts_or_options",
                 }.intersection(behavior_issues):
                     casual_conversation_recovery = (
                         " For an ordinary conversational question, answer directly with a plausible everyday "
@@ -2609,6 +2621,13 @@ class LocalPilotAgent:
                         "tool, or slide deck. Prioritize the shortest action that reduces uncertainty, then give "
                         "the owner concise words for the supplier and an honest client update with placeholders "
                         "for facts that are still unknown. Avoid busywork."
+                    )
+                if "work_update_invents_supplier_facts_or_options" in behavior_issues:
+                    work_planning_recovery += (
+                        " Keep unknown supplier facts explicitly unknown. Never tell the client that the supplier "
+                        "was reached, confirmed an ETA, or supplied tracking unless the owner said that happened. "
+                        "Do not promise an end-of-day confirmation or invent alternative shipping or partial "
+                        "delivery. Promise only the next update time the owner can personally keep."
                     )
                 behavior_instruction = {
                     "role": "user",
@@ -2659,6 +2678,7 @@ class LocalPilotAgent:
                         "fabricated_embodied_experience",
                         "explicit_no_menu_ignored",
                         "invented_workflow_resources",
+                        "work_update_invents_supplier_facts_or_options",
                         "internal_evidence_field_leak",
                         "unbounded_autonomy_history_claim",
                     }
@@ -3672,6 +3692,9 @@ class LocalPilotAgent:
                     "For workplace judgment, use only the situation and resources the owner named. Do not invent "
                     "portals, contacts, tracking documents, colleagues, review tools, or presentation work. Lead "
                     "with the shortest action that reduces uncertainty and provide concise words the owner can use. "
+                    "Keep unknown supplier facts unknown: never claim contact, confirmation, ETA, tracking, cause, "
+                    "or contingency options that the owner did not provide, and promise only a next update time "
+                    "the owner can personally keep. "
                     "When asked to order named priorities and plan the first hour, "
                     "rank every task explicitly and give realistic minute allocations totaling roughly sixty minutes."
                 ),

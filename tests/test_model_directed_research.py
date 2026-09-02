@@ -948,20 +948,18 @@ def test_historical_autonomy_handover_skips_model_inference(tmp_path, monkeypatc
 
 def test_desktop_gui_question_receives_honest_interface_context(tmp_path, monkeypatch):
     _, agent = _agent(tmp_path)
-    calls = []
-    snapshots = []
 
-    def fake_chat(**kwargs):
-        calls.append(kwargs)
-        snapshots.append([dict(message) for message in kwargs["messages"]])
-        return iter([_chunk(content="You are using the desktop chat, but I cannot see its current controls.")])
+    def unexpected_chat(**_kwargs):
+        pytest.fail("desktop interface inventory questions must not call the generative model")
 
-    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=unexpected_chat))
 
     answer = agent.ask("Do I have any available options or commands within this GUI?", interface="desktop")
 
     assert "desktop chat" in answer
-    assert "DESKTOP INTERFACE CONTEXT" in str(snapshots[0])
+    assert "do not receive a screenshot" in answer
+    assert "cannot honestly enumerate" in answer
+    assert agent.audit.latest("model_desktop_interface_deterministic_route") is not None
     assert "DESKTOP INTERFACE CONTEXT" not in str(agent.messages)
 
 

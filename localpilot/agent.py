@@ -4104,6 +4104,22 @@ class LocalPilotAgent:
             )
 
         try:
+            if desktop_interface_question:
+                interface_answer = (
+                    "You’re using LocalPilot’s desktop chat. This conversation establishes that you can send "
+                    "messages and receive replies. I do not receive a screenshot or a verified inventory of the "
+                    "controls currently visible, so I cannot honestly enumerate any additional buttons, menus, "
+                    "or commands from this turn."
+                )
+                self.messages.append({"role": "assistant", "content": interface_answer})
+                self.audit.write(
+                    "model_desktop_interface_deterministic_route",
+                    query_digest=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                    source="desktop_transport_boundary",
+                    model_inference_skipped=True,
+                    content_chars=len(interface_answer),
+                )
+                return interface_answer
             if operational_self_status and self._is_historical_autonomy_status_prompt(prompt):
                 operational_handover = self._deterministic_operational_status_fallback(prompt)
                 if operational_handover is not None:

@@ -917,6 +917,35 @@ def test_historical_autonomy_fallback_reports_bounded_counts_and_preemption(tmp_
     )
 
 
+def test_historical_autonomy_handover_skips_model_inference(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path)
+    agent.audit.write(
+        "evolve_run_end",
+        status="deferred",
+        summary="PC is in use or busy: 1 active foreground chat turn(s)",
+        budget={"elapsed_seconds": 1.5, "usage": {"tool_calls": 0, "web_calls": 0}},
+    )
+
+    def unexpected_chat(**_kwargs):
+        pytest.fail("historical operational handovers must not call the generative model")
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=unexpected_chat))
+
+    answer = agent.ask(
+        "Be candid: while I was away, what did your autonomous evolution accomplish, waste time on, "
+        "and did it stay out of my way?",
+        interface="desktop",
+    )
+
+    assert "bounded newest 100 durable evolution-run audit events" in answer
+    assert "1 runs: 1 deferred" in answer
+    assert agent.audit.latest("model_operational_history_deterministic_route") is not None
+    assert not any(
+        "OPERATIONAL SELF-STATUS ROUTE" in str(message.get("content") or "")
+        for message in agent.messages
+    )
+
+
 def test_desktop_gui_question_receives_honest_interface_context(tmp_path, monkeypatch):
     _, agent = _agent(tmp_path)
     calls = []

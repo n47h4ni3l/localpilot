@@ -1074,6 +1074,17 @@ class LocalPilotAgent:
             + json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
         )
 
+    @staticmethod
+    def _is_historical_autonomy_status_prompt(prompt: str) -> bool:
+        request = " ".join(str(prompt).lower().split())
+        return bool(
+            re.search(
+                r"\b(?:while i was away|what did .{0,40} accomplish|waste(?:d)? time|"
+                r"stay out of my way|since i (?:left|was away))\b",
+                request,
+            )
+        )
+
     def _deterministic_operational_status_fallback(self, prompt: str) -> str | None:
         """Preserve passive self-status facts when bounded model rewrites collapse."""
 
@@ -1084,13 +1095,7 @@ class LocalPilotAgent:
         ):
             return None
 
-        historical_autonomy_request = bool(
-            re.search(
-                r"\b(?:while i was away|what did .{0,40} accomplish|waste(?:d)? time|"
-                r"stay out of my way|since i (?:left|was away))\b",
-                request,
-            )
-        )
+        historical_autonomy_request = self._is_historical_autonomy_status_prompt(prompt)
         runtime_snapshot = self.systemsense.runtime_evidence() or {}
         activity = (
             runtime_snapshot.get("autonomous_activity")
@@ -4099,6 +4104,18 @@ class LocalPilotAgent:
             )
 
         try:
+            if operational_self_status and self._is_historical_autonomy_status_prompt(prompt):
+                operational_handover = self._deterministic_operational_status_fallback(prompt)
+                if operational_handover is not None:
+                    self.messages.append({"role": "assistant", "content": operational_handover})
+                    self.audit.write(
+                        "model_operational_history_deterministic_route",
+                        query_digest=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                        source="systemsense_passive_runtime_evidence",
+                        model_inference_skipped=True,
+                        content_chars=len(operational_handover),
+                    )
+                    return operational_handover
             if (
                 len(verification_targets) >= 3
                 and len(learning_verification_messages) == len(verification_targets)

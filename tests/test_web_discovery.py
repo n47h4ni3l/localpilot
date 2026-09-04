@@ -190,3 +190,76 @@ def test_registry_exposes_web_discovery_as_read_only(tmp_path):
     tools = registry(tmp_path)
     assert tools["search_public_web"].risk is RiskLevel.READ_ONLY
     assert tools["fetch_public_https"].risk is RiskLevel.READ_ONLY
+
+
+def test_resolve_validated_address_rejects_private_and_accepts_public(monkeypatch):
+    from localpilot.tools.web import _resolve_validated_address
+
+    monkeypatch.setattr(
+        "localpilot.tools.web.socket.getaddrinfo",
+        lambda host, port, type=None: [(None, None, None, None, ("172.16.0.9", port))],
+    )
+    with pytest.raises(OSError, match="private, reserved"):
+        _resolve_validated_address("attacker.example", 443)
+
+    monkeypatch.setattr(
+        "localpilot.tools.web.socket.getaddrinfo",
+        lambda host, port, type=None: [(None, None, None, None, ("93.184.216.34", port))],
+    )
+    assert _resolve_validated_address("example.com", 443) == "93.184.216.34"
+
+
+def test_validated_https_connection_rejects_rebinding_at_connect_time(monkeypatch):
+    """DNS-rebinding regression test. A naive implementation validates a
+    hostname once and lets the real TCP connection re-resolve it later --
+    an attacker's DNS server can answer differently between those two
+    lookups. This asserts the connection performs its own resolution and
+    validation *inside* connect(), so whatever the real connection would
+    use is exactly what gets checked, with no separate answer to spoof."""
+    from localpilot.tools.web import _ValidatedHTTPSConnection
+
+    monkeypatch.setattr(
+        "localpilot.tools.web.socket.getaddrinfo",
+        lambda host, port, type=None: [(None, None, None, None, ("10.0.0.5", port))],
+    )
+    def _must_not_connect(*args, **kwargs):
+        raise AssertionError("must not connect to a rebound private address")
+
+    monkeypatch.setattr("localpilot.tools.web.socket.create_connection", _must_not_connect)
+
+    conn = _ValidatedHTTPSConnection("attacker.example", timeout=15)
+    with pytest.raises(OSError, match="private, reserved"):
+        conn.connect()
+
+
+def test_validated_https_connection_uses_the_freshly_resolved_public_address(monkeypatch):
+    from localpilot.tools.web import _ValidatedHTTPSConnection
+
+    monkeypatch.setattr(
+        "localpilot.tools.web.socket.getaddrinfo",
+        lambda host, port, type=None: [(None, None, None, None, ("93.184.216.34", port))],
+    )
+    connect_calls = []
+
+    def _fake_create_connection(address, timeout=None):
+        connect_calls.append(address)
+        return object()
+
+    monkeypatch.setattr("localpilot.tools.web.socket.create_connection", _fake_create_connection)
+
+    class _FakeContext:
+        def __init__(self):
+            self.wrapped_with_hostname = None
+
+        def wrap_socket(self, sock, server_hostname=None):
+            self.wrapped_with_hostname = server_hostname
+            return sock
+
+    context = _FakeContext()
+    conn = _ValidatedHTTPSConnection("example.com", timeout=15, context=context)
+    conn.connect()
+
+    assert connect_calls == [("93.184.216.34", 443)]
+    # TLS still verifies the certificate against the real hostname, not the
+    # resolved IP -- pinning the address must not weaken certificate checks.
+    assert context.wrapped_with_hostname == "example.com"

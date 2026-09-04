@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from localpilot.audit import AuditLog
+from localpilot.tools.web import _SafeRedirectHandler, _ValidatedHTTPSHandler
 
 
 _BLOCKED_SUFFIXES = {
@@ -51,6 +52,22 @@ class CandidateResource:
     stale: bool
 
 
+def _default_https_opener(request: urllib.request.Request, *, timeout: float) -> object:
+    """Default opener for CandidateResourceStore.download().
+
+    The previous default was bare urllib.request.urlopen: no validation on
+    redirect targets before they were followed, and a TOCTOU gap between
+    _validate_https_url's resolution and the separate one a plain
+    HTTPSConnection performs when it actually connects (DNS rebinding).
+    This routes through the same protected handlers tools/web.py and
+    study.py use for their own public-HTTPS reads. Tests that need to avoid
+    real network access already inject their own `opener=`, so this only
+    changes behaviour for real (non-test) construction.
+    """
+    opener = urllib.request.build_opener(_SafeRedirectHandler(), _ValidatedHTTPSHandler())
+    return opener.open(request, timeout=timeout)
+
+
 class CandidateResourceStore:
     """Bounded, provenance-preserving storage for inert candidate resources."""
 
@@ -62,7 +79,7 @@ class CandidateResourceStore:
         max_file_bytes: int,
         governor_check: Callable[[], None] | None = None,
         audit: AuditLog | None = None,
-        opener: Callable[..., object] = urllib.request.urlopen,
+        opener: Callable[..., object] = _default_https_opener,
         resolver: Callable[..., list] = socket.getaddrinfo,
     ) -> None:
         self.root = Path(root).resolve()

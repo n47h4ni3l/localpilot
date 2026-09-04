@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import http.client
 import ipaddress
 import io
 import socket
@@ -96,6 +97,50 @@ def _validate_public_https(url: str) -> urllib.parse.ParseResult:
         if not ip.is_global:
             raise ValueError("Local, private, reserved, or otherwise non-public network targets are blocked.")
     return parsed
+
+
+def _resolve_validated_address(hostname: str, port: int) -> str:
+    """Resolve hostname and return one address, having confirmed every
+    candidate the resolver offered is public. Called from inside
+    _ValidatedHTTPSConnection.connect() so resolution and the actual TCP
+    connection use the same lookup -- a separate pre-check-then-connect
+    sequence would let a rebinding DNS server pass validation with one
+    answer and hand back a private address for the real connection."""
+    try:
+        resolved = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise OSError(f"HTTPS hostname could not be resolved: {hostname}") from exc
+    if not resolved:
+        raise OSError(f"HTTPS hostname could not be resolved: {hostname}")
+    for item in resolved:
+        address = item[4][0]
+        try:
+            ip = ipaddress.ip_address(address.split("%", 1)[0])
+        except ValueError as exc:
+            raise OSError("HTTPS hostname resolved to an invalid address.") from exc
+        if not ip.is_global:
+            raise OSError(
+                "Local, private, reserved, or otherwise non-public network targets are blocked."
+            )
+    return resolved[0][4][0]
+
+
+class _ValidatedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection that resolves and validates the address it actually
+    connects to, rather than trusting a validation pass done earlier against
+    a lookup the real connection doesn't reuse. TLS still verifies against
+    the original hostname via server_hostname, so certificate checking is
+    unaffected."""
+
+    def connect(self) -> None:
+        target = _resolve_validated_address(self.host, self.port)
+        sock = socket.create_connection((target, self.port), timeout=self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _ValidatedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_ValidatedHTTPSConnection, req, context=self._context)
 
 
 def _safe_search_result_url(url: str) -> str | None:
@@ -228,7 +273,7 @@ def search_public_web(query: str, max_results: int = 5) -> str:
     max_results = max(1, min(int(max_results), 10))
     search_url = _SEARCH_ENDPOINT + "?" + urllib.parse.urlencode({"q": clean_query})
     _validate_public_https(search_url)
-    opener = urllib.request.build_opener(_SafeRedirectHandler())
+    opener = urllib.request.build_opener(_SafeRedirectHandler(), _ValidatedHTTPSHandler())
     request = urllib.request.Request(
         search_url,
         headers={
@@ -288,7 +333,7 @@ def fetch_public_https(url: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
     """Fetch bounded public HTTPS text for research; never sends LocalPilot/GitHub credentials."""
     _validate_public_https(url)
     max_chars = max(1000, min(int(max_chars), 50_000))
-    opener = urllib.request.build_opener(_SafeRedirectHandler())
+    opener = urllib.request.build_opener(_SafeRedirectHandler(), _ValidatedHTTPSHandler())
     request = urllib.request.Request(
         str(url).strip(),
         headers={

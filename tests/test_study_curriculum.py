@@ -281,3 +281,51 @@ def test_broad_web_research_is_opt_in_and_rejects_private_hosts(tmp_path: Path):
     with pytest.raises(ValueError, match="Local/private"):
         allowed.inspect_web_source("https://localhost/research")
     assert memory.knowledge_facts() == []
+
+
+def test_inspect_web_source_uses_redirect_and_rebinding_safe_opener(tmp_path: Path, monkeypatch):
+    """inspect_web_source used to call urllib.request.urlopen() directly:
+    no validation on redirect targets before they were followed, and no
+    protection against a connection separately re-resolving the hostname
+    from the earlier check (DNS rebinding). This confirms the fetch now
+    goes through the same protected opener tools/web.py uses for its own
+    public-HTTPS reads, rather than a duplicated, weaker path."""
+    from localpilot.tools.web import _SafeRedirectHandler, _ValidatedHTTPSHandler
+
+    _, memory = _engine(tmp_path)
+    allowed = StudyEngine(ROOT, memory, Config(), allow_web=True, model_metadata=_metadata)
+
+    class _FakeResponse:
+        def geturl(self):
+            return "https://example.org/research"
+
+        def read(self, limit=-1):
+            return b"body"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _FakeOpener:
+        def open(self, request, timeout=15):
+            return _FakeResponse()
+
+    built_with = []
+
+    def fake_build_opener(*handlers):
+        built_with.extend(handlers)
+        return _FakeOpener()
+
+    monkeypatch.setattr("localpilot.study.urllib.request.build_opener", fake_build_opener)
+    monkeypatch.setattr(
+        "localpilot.study.socket.getaddrinfo",
+        lambda host, port, type=None: [(None, None, None, None, ("93.184.216.34", port))],
+    )
+
+    source = allowed.inspect_web_source("https://example.org/research")
+
+    assert source.bytes_read == 4
+    assert any(isinstance(h, _SafeRedirectHandler) for h in built_with)
+    assert any(isinstance(h, _ValidatedHTTPSHandler) for h in built_with)

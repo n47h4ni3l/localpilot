@@ -22,6 +22,7 @@ from localpilot.learning import (
     StudyRun,
 )
 from localpilot.process import hidden_process_creation_flags
+from localpilot.tools.web import _SafeRedirectHandler, _ValidatedHTTPSHandler
 
 
 STAGES = ("self", "qwen", "python")
@@ -740,8 +741,14 @@ class StudyEngine:
             headers={"User-Agent": "LocalPilot-study/0.2 (+read-only research)"},
             method="GET",
         )
+        # A bare urlopen() here would follow redirects with no validation at
+        # all on the target, and would let a plain HTTPSConnection re-resolve
+        # the hostname at connect time separately from the check above --
+        # both gaps are closed by routing through the same handlers
+        # tools/web.py uses for its own public-HTTPS reads.
+        opener = urllib.request.build_opener(_SafeRedirectHandler(), _ValidatedHTTPSHandler())
         try:
-            with urllib.request.urlopen(request, timeout=15) as response:
+            with opener.open(request, timeout=15) as response:
                 final_url = response.geturl()
                 final = self._validate_public_https(final_url)
                 raw = response.read(_MAX_WEB_SOURCE_BYTES + 1)

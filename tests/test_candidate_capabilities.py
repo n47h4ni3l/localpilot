@@ -235,3 +235,44 @@ def test_candidate_research_can_search_and_read_public_web_without_write_authori
         == "source:https://docs.python.org/3/:12000"
     )
     assert tools.files_written == set()
+
+
+def test_candidate_resource_store_default_opener_is_redirect_and_rebinding_safe(
+    tmp_path: Path, monkeypatch
+):
+    """download() used to default opener= to bare urllib.request.urlopen:
+    no validation on redirect targets before they were followed, and no
+    protection against a connection separately re-resolving the hostname
+    from the earlier _validate_https_url check (DNS rebinding). This
+    confirms a store built the normal way -- the way selfdev.py actually
+    constructs one, with no opener= override -- now defaults to the same
+    protected handlers tools/web.py and study.py use. (Every other test in
+    this file injects its own opener=, so none of them would have caught a
+    regression here.)"""
+    from localpilot.tools.web import _SafeRedirectHandler, _ValidatedHTTPSHandler
+
+    store = CandidateResourceStore(
+        tmp_path / "resources",
+        quota_bytes=1024 * 1024,
+        max_file_bytes=1024 * 1024,
+        resolver=lambda *_args, **_kwargs: PUBLIC_RESOLUTION,
+    )
+
+    built_with = []
+
+    def fake_build_opener(*handlers):
+        built_with.extend(handlers)
+        return type("_Opener", (), {"open": staticmethod(lambda *a, **k: FakeResponse(b"data"))})()
+
+    monkeypatch.setattr("localpilot.candidate_resources.urllib.request.build_opener", fake_build_opener)
+
+    store.download(
+        "https://example.com/data.json",
+        "data.json",
+        candidate_branch="candidate/test",
+        task_id="task-1",
+        cycle_id=1,
+    )
+
+    assert any(isinstance(h, _SafeRedirectHandler) for h in built_with)
+    assert any(isinstance(h, _ValidatedHTTPSHandler) for h in built_with)

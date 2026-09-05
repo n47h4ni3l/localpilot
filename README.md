@@ -256,7 +256,6 @@ LocalPilot has the machinery required for meaningful autonomous improvement, but
 
 A complete long-term success would look like:
 
-```text
 observe limitation
     ↓
 form hypothesis

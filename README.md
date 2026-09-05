@@ -525,4 +525,6 @@ Claims should be evaluated against the current code, tests, recorded experiment 
 
 ## License
 
-No license file is currently included. Unless the owner adds one, treat the repository as all rights reserved.
+LocalPilot is distributed under the [LocalPilot Source-Visible License 1.0](LICENSE.md). The source is visible for transparency, study, discussion, and private non-commercial evaluation, but this is not an open-source license.
+
+Redistribution, derivative works, commercial or hosted use, and use of LocalPilot source or project-specific artifacts to train another AI system require prior written permission from the copyright holder. Third-party components remain subject to their own licenses. Read [LICENSE.md](LICENSE.md) for the complete terms.

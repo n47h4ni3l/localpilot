@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import re
 import shutil
 import subprocess
 import time
 import uuid
 import zipfile
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -42,6 +38,46 @@ from localpilot.learning import LearningMemory
 from localpilot.mission import mission_context
 from localpilot.process import hidden_process_creation_flags
 from localpilot.resource import ResourceGovernor
+from localpilot import selfdev_model_selection, selfdev_response_parsing, selfdev_results
+from localpilot.selfdev_frontend_validation import (
+    _FRONTEND_SUFFIXES,
+    _validate_frontend_candidate,
+)
+from localpilot.selfdev_response_parsing import (
+    ChangePlan,
+    PlannedChange,
+    StaticRepairResult,
+    _GROUNDING_PLAN_FIELDS,
+    apply_change_plan,
+    build_read_context,
+    build_static_repair_context,
+    parse_change_plan,
+    parse_grounding_plan,
+)
+from localpilot.selfdev_model_selection import (
+    DeveloperModelSelection,
+    developer_chat,
+    installed_ollama_models,
+    ollama_keep_alive_seconds,
+    running_ollama_models,
+    select_developer_model,  # noqa: F401 -- re-exported, no internal caller left; tests/test_selfdev_architecture.py imports this directly from here
+    select_resource_aware_developer_model,
+)
+from localpilot.selfdev_results import (
+    _ALLOWED_SUFFIXES,
+    _ALLOWED_SUFFIXES_NOTE,
+    _IGNORE_NAMES,
+    CandidateRejectionError,
+    CandidateRejectionResult,
+    CandidateRetryError,
+    CandidateRetryResult,
+    CyclePaused,
+    EvolutionResult,
+    GroundingGateError,
+    candidate_write_integrity_failure,
+    choose_next_task,
+    classify_candidate_result,
+)
 from localpilot.study import (
     GroundingIssue,
     GroundingReport,
@@ -52,691 +88,72 @@ from localpilot.tools.web import (
     search_public_web as _search_public_web,
 )
 
-_IGNORE_NAMES = {".git", ".github", ".venv", "__pycache__", ".pytest_cache", "localpilot-data"}
-_ALLOWED_SUFFIXES = {
-    ".py", ".toml", ".md", ".txt", ".json", ".jsonl", ".csv", ".tsv",
-    ".yml", ".yaml", ".ps1", ".gitignore", ".zip", ".html", ".css", ".js",
-}
-_FRONTEND_SUFFIXES = {".html", ".css", ".js"}
-_FRONTEND_ROOT = Path("localpilot/webview")
-_FRONTEND_BRIDGE_METHODS = {
-    "expand",
-    "collapse",
-    "set_always_on_top",
-    "get_start_with_windows",
-    "set_start_with_windows",
-    "open_config_file",
-}
-_REQUIRED_CSP = {
-    "default-src": {"'none'"},
-    "script-src": {"'self'"},
-    "style-src": {"'self'"},
-    "connect-src": {"http://127.0.0.1:*", "http://localhost:*"},
-    "img-src": {"'self'", "data:"},
-    "font-src": {"'self'"},
-    "object-src": {"'none'"},
-    "base-uri": {"'none'"},
-    "form-action": {"'none'"},
-    "worker-src": {"'none'"},
-}
-# Derived from _ALLOWED_SUFFIXES so prompt guidance can never drift out of
-# sync with what CandidateTools.write_project_file actually enforces.
-_ALLOWED_SUFFIXES_NOTE = (
-    "Directories may be created freely inside the isolated candidate with "
-    "create_project_directory; directories do not consume the file budget. "
-    "Allowed file types for autonomous writes: "
-    f"{', '.join(sorted(_ALLOWED_SUFFIXES))}. write_project_file rejects any "
-    "other extension, including .sh — this project is Windows-first, so use "
-    ".ps1 for scripts, not .sh. HTML, CSS, and JavaScript writes are confined "
-    "to localpilot/webview and must pass local-resource, strict-CSP, DOM-sink, "
-    "storage, navigation, and native-bridge validation. Any rejected write attempt blocks candidate "
-    "delivery for the current cycle. Use create_zip for bounded, inert archives "
-    "and download_candidate_resource for provenance-tracked HTTPS research/data. "
-    "Resources are stored outside the repository, never executed, and remain "
-    "subject to resource-governor and quota checks."
-)
-
-
-def _is_frontend_path(relative: Path) -> bool:
-    return relative == _FRONTEND_ROOT or _FRONTEND_ROOT in relative.parents
-
-
-def _validate_frontend_reference(owner: Path, value: str) -> None:
-    reference = str(value).strip()
-    if not reference or reference.startswith("#"):
-        return
-    if (
-        reference.startswith(("//", "\\\\", "/", "\\"))
-        or re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", reference)
-    ):
-        raise ValueError("Frontend resources must be local relative files.")
-    path_text = reference.split("#", 1)[0].split("?", 1)[0].replace("\\", "/")
-    raw = Path(path_text)
-    if raw.is_absolute() or ".." in raw.parts:
-        raise ValueError("Frontend resource reference escapes localpilot/webview.")
-    target = owner.parent / raw
-    if not _is_frontend_path(target):
-        raise ValueError("Frontend resource reference escapes localpilot/webview.")
-
-
-def _parse_csp(content: str) -> dict[str, set[str]]:
-    directives: dict[str, set[str]] = {}
-    for raw in content.split(";"):
-        tokens = raw.strip().split()
-        if tokens:
-            directives[tokens[0].lower()] = set(tokens[1:])
-    return directives
-
-
-class _CandidateHTMLValidator(HTMLParser):
-    """Reject active or remote HTML outside the companion's fixed policy."""
-
-    _FORBIDDEN_TAGS = {"base", "embed", "form", "iframe", "object"}
-    _REFERENCE_ATTRIBUTES = {"href", "poster", "src"}
-
-    def __init__(self, relative: Path) -> None:
-        super().__init__(convert_charrefs=True)
-        self.relative = relative
-        self.csp: str | None = None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        normalized_tag = tag.lower()
-        if normalized_tag in self._FORBIDDEN_TAGS:
-            raise ValueError(f"Frontend HTML tag is not allowed: {normalized_tag}")
-        values = {str(name).lower(): value for name, value in attrs}
-        for name, value in values.items():
-            if name.startswith("on") or name == "style":
-                raise ValueError(f"Inline frontend HTML attribute is not allowed: {name}")
-            if name in self._REFERENCE_ATTRIBUTES and value is not None:
-                _validate_frontend_reference(self.relative, value)
-        if normalized_tag == "script" and not values.get("src"):
-            raise ValueError("Inline frontend scripts are not allowed.")
-        if (
-            normalized_tag == "meta"
-            and str(values.get("http-equiv") or "").lower() == "content-security-policy"
-        ):
-            self.csp = str(values.get("content") or "")
-
-    handle_startendtag = handle_starttag
-
-
-def _validate_frontend_candidate(relative: Path, content: str) -> None:
-    suffix = relative.suffix.lower()
-    if suffix not in _FRONTEND_SUFFIXES:
-        return
-    if not _is_frontend_path(relative):
-        raise ValueError("Frontend files may be edited only inside localpilot/webview.")
-
-    if suffix == ".html":
-        parser = _CandidateHTMLValidator(relative)
-        parser.feed(content)
-        parser.close()
-        if parser.csp is None:
-            raise ValueError("Frontend HTML must declare a Content-Security-Policy meta tag.")
-        directives = _parse_csp(parser.csp)
-        for directive, required in _REQUIRED_CSP.items():
-            if directives.get(directive) != required:
-                raise ValueError(f"Frontend CSP must keep the exact {directive} policy.")
-        if "'unsafe-inline'" in parser.csp or "'unsafe-eval'" in parser.csp:
-            raise ValueError("Frontend CSP may not enable unsafe inline or eval execution.")
-        return
-
-    if suffix == ".css":
-        if re.search(r"@import\b|expression\s*\(|-moz-binding\b|\bbehavior\s*:", content, re.I):
-            raise ValueError("Frontend CSS contains a disallowed active-content feature.")
-        for match in re.finditer(r"url\(\s*(['\"]?)(.*?)\1\s*\)", content, re.I):
-            _validate_frontend_reference(relative, match.group(2))
-        return
-
-    forbidden_javascript = {
-        "dynamic code execution": r"\beval\s*\(|\bnew\s+Function\b|\bFunction\s*\(",
-        "HTML injection sink": r"\.innerHTML\b|\.outerHTML\b|insertAdjacentHTML\s*\(|document\.write\s*\(",
-        "browser persistence": r"\blocalStorage\b|\bsessionStorage\b|\bindexedDB\b|document\.cookie\b",
-        "page navigation": r"\b(?:window\.)?(?:location|opener|parent|top)\b\s*(?:=|\.)",
-        "alternate network channel": r"\bWebSocket\s*\(|\bEventSource\s*\(|sendBeacon\s*\(|XMLHttpRequest\b",
-        "remote URL": r"(?:https?|wss?)://|['\"]//",
-        "direct native bridge call": r"window\.pywebview\.api\.[A-Za-z_$]",
-    }
-    for label, pattern in forbidden_javascript.items():
-        if re.search(pattern, content):
-            raise ValueError(f"Frontend JavaScript contains a disallowed {label}.")
-    for match in re.finditer(r"\bbridge\s*\(\s*(['\"])([^'\"]+)\1", content):
-        if match.group(2) not in _FRONTEND_BRIDGE_METHODS:
-            raise ValueError(f"Frontend JavaScript requests an unapproved native bridge method: {match.group(2)}")
-
-
-@dataclass(slots=True)
-class EvolutionResult:
-    status: str
-    branch: str | None
-    workspace: Path | None
-    summary: str
-    tests_passed: bool | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class CandidateRejectionResult:
-    pull_request_number: int
-    branch: str
-    task_id: str
-    reason: str
-    already_rejected: bool
-    checkpoint_cleared: bool
-    worktree_cleanup: str
-
-
-class CandidateRejectionError(RuntimeError):
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class CandidateRetryResult:
-    prior_cycle_id: int
-    retry_cycle_id: int
-    prior_branch: str
-    branch: str
-    task_id: str
-    reason: str
-    already_authorized: bool
-    resume_mode: str
-
-
-class CandidateRetryError(RuntimeError):
-    pass
-
-
-class GroundingGateError(RuntimeError):
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class PlannedChange:
-    path: str
-    content: str
-    reason: str
-
-
-@dataclass(frozen=True, slots=True)
-class ChangePlan:
-    summary: str
-    reusable_lesson: str
-    changes: tuple[PlannedChange, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class StaticRepairResult:
-    check_result: str
-    passed: bool
-    final_text: str
-    attempts_used: int
-
-
-@dataclass(frozen=True, slots=True)
-class DeveloperModelSelection:
-    model: str | None
-    size_bytes: int | None
-    projected_memory_percent: float | None
-    reason: str
-
-
-@dataclass(slots=True)
-class StreamedChatResponse:
-    message: dict[str, Any]
-
-
-class CyclePaused(RuntimeError):
-    pass
-
-
-def classify_candidate_result(files_written: int, checks_passed: bool | None) -> str:
-    if files_written == 0:
-        return "no_changes"
-    return "candidate_ready" if checks_passed else "candidate_needs_work"
-
-
-def choose_next_task(
-    tasks: Iterable[dict[str, Any]],
-    completed_task_ids: set[str],
-    pending_task_ids: set[str] | None = None,
-    rejected_task_ids: set[str] | None = None,
-) -> dict[str, Any] | None:
-    """Select the next unfinished task without retrying terminal rejections."""
-    pending = pending_task_ids or set()
-    rejected = rejected_task_ids or set()
-    for task in tasks:
-        if task.get("status", "todo") != "todo":
-            continue
-        task_id = str(task.get("id"))
-        if task_id in completed_task_ids or task_id in rejected:
-            continue
-        if task_id in pending:
-            return None
-        return task
-    return None
-
-
-def select_developer_model(preferred: str, everyday: str, available: Iterable[str]) -> str:
-    installed = {str(name).strip() for name in available}
-    return preferred if preferred in installed else everyday
-
-
-def available_ollama_models() -> set[str]:
-    """Read model names through the Ollama SDK without invoking a shell."""
-    return set(installed_ollama_models())
-
-
-def installed_ollama_models() -> dict[str, int | None]:
-    """Return installed Ollama model names and their on-disk byte sizes."""
-    try:
-        from ollama import list as list_models
-
-        response = list_models()
-    except Exception:
-        return set()
-    models = getattr(response, "models", None)
-    if models is None and isinstance(response, dict):
-        models = response.get("models", [])
-    installed: dict[str, int | None] = {}
-    for model in models or []:
-        if isinstance(model, dict):
-            name = model.get("model") or model.get("name")
-            size = model.get("size")
-        else:
-            name = getattr(model, "model", None) or getattr(model, "name", None)
-            size = getattr(model, "size", None)
-        if name:
-            try:
-                size_bytes = int(size) if size is not None else None
-            except (TypeError, ValueError):
-                size_bytes = None
-            installed[str(name)] = size_bytes
-    return installed
-
-
-def running_ollama_models() -> set[str]:
-    """Return models currently resident in Ollama without starting one."""
-    try:
-        from ollama import ps
-
-        response = ps()
-    except Exception:
-        return set()
-    models = getattr(response, "models", None)
-    if models is None and isinstance(response, dict):
-        models = response.get("models", [])
-    running: set[str] = set()
-    for model in models or []:
-        if isinstance(model, dict):
-            name = model.get("model") or model.get("name")
-        else:
-            name = getattr(model, "model", None) or getattr(model, "name", None)
-        if name:
-            running.add(str(name))
-    return running
-
-
-def ollama_keep_alive_seconds(value: float | str) -> float:
-    """Parse the bounded Ollama duration forms used by LocalPilot."""
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float("inf") if float(value) < 0 else float(value)
-    text = str(value).strip().lower()
-    if text in {"-1", "-1s"}:
-        return float("inf")
-    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(ms|s|m|h)?", text)
-    if not match:
-        return 0.0
-    amount = float(match.group(1))
-    multiplier = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, None: 1.0}
-    return amount * multiplier[match.group(2)]
-
-
-def select_resource_aware_developer_model(
-    preferred: str,
-    everyday: str,
-    fallbacks: Iterable[str],
-    installed: dict[str, int | None],
-    *,
-    total_memory_bytes: int,
-    available_memory_bytes: int,
-    max_memory_percent: float,
-    overhead_bytes: int = 0,
-    resident_models: Iterable[str] = (),
-) -> DeveloperModelSelection:
-    """Select the first configured model that preserves the memory ceiling."""
-    candidates: list[str] = []
-    for name in (preferred, everyday, *fallbacks):
-        normalized = str(name).strip()
-        if normalized and normalized not in candidates:
-            candidates.append(normalized)
-
-    total = max(1, int(total_memory_bytes))
-    available = max(0, int(available_memory_bytes))
-    used = max(0, total - available)
-    ceiling = total * max(0.0, min(float(max_memory_percent), 100.0)) / 100.0
-    rejected: list[str] = []
-    resident = {str(name).strip() for name in resident_models}
-    if everyday in resident and everyday in candidates:
-        candidates = [everyday, *(name for name in candidates if name != everyday)]
-
-    for name in candidates:
-        if name not in installed:
-            rejected.append(f"{name} is not installed")
-            continue
-        size = installed[name]
-        if size is None:
-            rejected.append(f"{name} has no usable size metadata")
-            continue
-        if name in resident:
-            projected = used + max(0, int(overhead_bytes))
-            projected_percent = projected * 100.0 / total
-            if projected <= ceiling:
-                skipped = f"Skipped {'; '.join(rejected)}. " if rejected else ""
-                return DeveloperModelSelection(
-                    name,
-                    size,
-                    projected_percent,
-                    f"{skipped}Reused resident {name}; projected incremental memory "
-                    f"{projected_percent:.1f}% within the {max_memory_percent:.1f}% "
-                    "background ceiling. This preserves foreground model residency.",
-                )
-            rejected.append(
-                f"resident {name} plus context overhead would project memory to "
-                f"{projected_percent:.1f}% > {max_memory_percent:.1f}%"
-            )
-            return DeveloperModelSelection(
-                None,
-                None,
-                projected_percent,
-                "Preserved the resident foreground model instead of evicting it for a fallback: "
-                + rejected[-1]
-                + ".",
-            )
-        projected = used + max(0, int(size)) + max(0, int(overhead_bytes))
-        projected_percent = projected * 100.0 / total
-        if projected <= ceiling:
-            skipped = f"Skipped {'; '.join(rejected)}. " if rejected else ""
-            return DeveloperModelSelection(
-                name,
-                size,
-                projected_percent,
-                f"{skipped}Selected {name}; projected memory {projected_percent:.1f}% "
-                f"within the {max_memory_percent:.1f}% background ceiling.",
-            )
-        rejected.append(
-            f"{name} would project memory to {projected_percent:.1f}% "
-            f"> {max_memory_percent:.1f}%"
-        )
-
-    detail = "; ".join(rejected) or "no configured model candidates were provided"
-    return DeveloperModelSelection(
-        None,
-        None,
-        None,
-        f"No installed developer model fits the background memory budget: {detail}.",
-    )
-
-
-def developer_chat(
-    chat: Callable[..., Any],
-    *,
-    request_think: bool | str,
-    context_tokens: int | None = None,
-    keep_alive: float | str | None = None,
-    stream_guard: Callable[[], None] | None = None,
-    preempt_before_first_chunk: bool = False,
-    guard_poll_seconds: float = 0.5,
-    **kwargs: Any,
-) -> Any:
-    """Use thinking when supported and permit prompt cancellation while streaming."""
-
-    def add_chunk(
-        chunk: Any,
-        content: list[str],
-        thinking: list[str],
-        tool_calls: list[Any],
-    ) -> None:
-        message = getattr(chunk, "message", chunk)
-        if isinstance(message, dict) and isinstance(message.get("message"), dict):
-            message = message["message"]
-        if isinstance(message, dict):
-            content.append(str(message.get("content") or ""))
-            thinking.append(str(message.get("thinking") or ""))
-            tool_calls.extend(list(message.get("tool_calls") or []))
-        else:
-            content.append(str(getattr(message, "content", "") or ""))
-            thinking.append(str(getattr(message, "thinking", "") or ""))
-            tool_calls.extend(list(getattr(message, "tool_calls", None) or []))
-
-    def merged_response(
-        content: list[str],
-        thinking: list[str],
-        tool_calls: list[Any],
-    ) -> StreamedChatResponse:
-        message = {"role": "assistant", "content": "".join(content), "tool_calls": tool_calls}
-        if any(thinking):
-            message["thinking"] = "".join(thinking)
-        return StreamedChatResponse(message)
-
-    async def invoke_preemptible(call_kwargs: dict[str, Any]) -> Any:
-        from ollama import AsyncClient
-
-        client = AsyncClient()
-        response_stream = None
-        pending_chunk = None
-        content: list[str] = []
-        thinking: list[str] = []
-        tool_calls: list[Any] = []
-        try:
-            if stream_guard is not None:
-                stream_guard()
-            response_stream = await client.chat(**call_kwargs)
-            pending_chunk = asyncio.create_task(anext(response_stream))
-            while True:
-                done, _ = await asyncio.wait(
-                    {pending_chunk},
-                    timeout=max(0.01, float(guard_poll_seconds)),
-                )
-                if not done:
-                    if stream_guard is not None:
-                        stream_guard()
-                    continue
-                try:
-                    chunk = pending_chunk.result()
-                except StopAsyncIteration:
-                    break
-                if stream_guard is not None:
-                    stream_guard()
-                add_chunk(chunk, content, thinking, tool_calls)
-                pending_chunk = asyncio.create_task(anext(response_stream))
-        except BaseException:
-            if pending_chunk is not None and not pending_chunk.done():
-                pending_chunk.cancel()
-                try:
-                    await pending_chunk
-                except (asyncio.CancelledError, StopAsyncIteration):
-                    pass
-            if response_stream is not None:
-                await response_stream.aclose()
-            raise
-        finally:
-            await client.close()
-        return merged_response(content, thinking, tool_calls)
-
-    def invoke(*, think: bool | str | None) -> Any:
-        call_kwargs = dict(kwargs)
-        if context_tokens is not None:
-            options = dict(call_kwargs.get("options") or {})
-            options["num_ctx"] = int(context_tokens)
-            call_kwargs["options"] = options
-        if think is not None:
-            call_kwargs["think"] = think
-        if keep_alive is not None:
-            call_kwargs["keep_alive"] = keep_alive
-        if stream_guard is None:
-            return chat(**call_kwargs)
-
-        call_kwargs["stream"] = True
-        if preempt_before_first_chunk:
-            return asyncio.run(invoke_preemptible(call_kwargs))
-        response_stream = chat(**call_kwargs)
-        content: list[str] = []
-        thinking: list[str] = []
-        tool_calls: list[Any] = []
-        try:
-            for chunk in response_stream:
-                stream_guard()
-                add_chunk(chunk, content, thinking, tool_calls)
-        finally:
-            close = getattr(response_stream, "close", None)
-            if callable(close):
-                close()
-        return merged_response(content, thinking, tool_calls)
-
-    if request_think:
-        model = str(kwargs.get("model") or "").lower()
-        think: bool | str = request_think
-        if "gpt-oss" not in model:
-            think = True
-        try:
-            return invoke(think=think)
-        except Exception as exc:
-            message = str(exc).lower()
-            if "does not support thinking" not in message:
-                raise
-    return invoke(think=None)
-
-
-def _json_object(text: str) -> dict[str, Any]:
-    candidate = text.strip()
-    if candidate.startswith("```"):
-        lines = candidate.splitlines()
-        candidate = "\n".join(lines[1:-1]).strip()
-    start = candidate.find("{")
-    end = candidate.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("Model response did not contain a JSON object.")
-    value = json.loads(candidate[start : end + 1])
-    if not isinstance(value, dict):
-        raise ValueError("Change plan must be a JSON object.")
-    return value
-
-
-def parse_change_plan(text: str, max_files: int = 8) -> ChangePlan:
-    value = _json_object(text)
-    changes = value.get("changes")
-    if not isinstance(changes, list) or not changes:
-        raise ValueError("Change plan must contain at least one change.")
-    if len(changes) > max_files:
-        raise ValueError("Change plan exceeds the candidate file limit.")
-    parsed: list[PlannedChange] = []
-    for item in changes:
-        if not isinstance(item, dict):
-            raise ValueError("Each planned change must be an object.")
-        path, content = item.get("path"), item.get("content")
-        if not isinstance(path, str) or not path.strip() or not isinstance(content, str):
-            raise ValueError("Each planned change requires string path and content fields.")
-        parsed.append(PlannedChange(path.strip(), content, str(item.get("reason") or "")))
-    return ChangePlan(
-        str(value.get("summary") or "Structured fallback plan applied."),
-        str(value.get("reusable_lesson") or "Use a structured write plan when direct tool editing stalls."),
-        tuple(parsed),
-    )
-
-
-_GROUNDING_PLAN_FIELDS = (
-    "referenced_symbols",
-    "referenced_config_fields",
-    "referenced_paths",
-    "required_test_contracts",
-    "integration_points",
-    "expected_call_relationships",
-    "planned_subsystems",
-    "new_runtime_paths",
-)
-
-
-def parse_grounding_plan(text: str) -> dict[str, list[Any]]:
-    """Parse the repository-claim manifest produced before implementation."""
-    value = _json_object(text)
-    candidate = value.get("change_plan", value)
-    if not isinstance(candidate, dict):
-        raise ValueError("Grounding change_plan must be a JSON object.")
-    plan: dict[str, list[Any]] = {}
-    for field in _GROUNDING_PLAN_FIELDS:
-        items = candidate.get(field)
-        if not isinstance(items, list):
-            raise ValueError(f"Grounding change_plan field {field!r} must be a list.")
-        plan[field] = items[:50]
-    return plan
-
-
-def apply_change_plan(plan: ChangePlan, tools: "CandidateTools") -> list[str]:
-    """Preflight the complete fallback plan, then apply it through CandidateTools.
-
-    Validation is deliberately a separate first pass. Deterministic safety
-    failures therefore reject the whole plan before any file is written. An
-    unexpected filesystem failure during the write pass is recorded by
-    CandidateTools and blocks candidate delivery for the current cycle.
-    """
-    if len(plan.changes) > tools.max_files:
-        raise ValueError("Change plan exceeds the candidate file limit.")
-    tools.validate_write_plan(plan.changes)
-    return [tools.write_project_file(change.path, change.content) for change in plan.changes]
-
-
-def build_read_context(
-    tools: "CandidateTools",
-    *,
-    max_files: int = 8,
-    max_chars_per_file: int = 16000,
-) -> str:
-    """Return bounded source context only for files already inspected through CandidateTools."""
-    rows: list[str] = []
-    paths = sorted(
-        tools.files_read,
-        key=lambda item: item.relative_to(tools.workspace).as_posix(),
-    )
-
-    for file_path in paths[:max_files]:
-        try:
-            relative = file_path.relative_to(tools.workspace).as_posix()
-            content = file_path.read_text(
-                encoding="utf-8",
-                errors="replace",
-            )[:max_chars_per_file]
-        except Exception:
-            continue
-
-        rows.append(f"--- {relative} ---\n{content}")
-
-    return "\n\n".join(rows) or "(No candidate files were successfully inspected.)"
-
-
-def build_static_repair_context(
-    tools: "CandidateTools",
-    check_result: str,
-    *,
-    max_files: int = 8,
-    max_chars_per_file: int = 5000,
-) -> str:
-    """Build bounded failure, diff, and changed-file feedback for a repair."""
-    rows: list[str] = []
-    paths = sorted(
-        tools.files_written,
-        key=lambda item: item.relative_to(tools.workspace).as_posix(),
-    )
-    for file_path in paths[:max_files]:
-        relative = file_path.relative_to(tools.workspace).as_posix()
-        content = tools.read_project_file(relative, max_chars=max_chars_per_file)
-        rows.append(f"--- {relative} ---\n{content}")
-
-    changed_files = "\n\n".join(rows) or "(No changed file content is available.)"
-    candidate_diff = tools.show_candidate_diff()[-16000:]
-    return (
-        f"Static-check failure:\n{check_result[:8000]}\n\n"
-        f"Candidate diff:\n{candidate_diff}\n\n"
-        f"Changed candidate files:\n{changed_files}"
-    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class CandidateTools:
@@ -1168,15 +585,6 @@ class CandidateTools:
         return completed.stdout[-30000:] or "(no diff)"
 
 
-def candidate_write_integrity_failure(tools: CandidateTools) -> str | None:
-    """Return the fail-closed delivery reason for rejected write attempts."""
-    if not tools.failed_write_attempts:
-        return None
-    attempts = "; ".join(tools.failed_write_attempts[:10])
-    return (
-        "Candidate delivery blocked because one or more autonomous write attempts "
-        f"were rejected during this cycle: {attempts}"
-    )
 
 
 class SelfDeveloper:
@@ -1245,23 +653,9 @@ class SelfDeveloper:
         self.progress(message)
         self.audit.write("selfdev_progress", message=message)
 
-    @staticmethod
-    def _checkpoint_paths(tools: CandidateTools, paths: Iterable[Path]) -> list[str]:
-        return sorted(path.relative_to(tools.workspace).as_posix() for path in paths)
+    _checkpoint_paths = staticmethod(selfdev_results._checkpoint_paths)
 
-    @staticmethod
-    def _check_summary(check_result: str) -> tuple[str, list[str]]:
-        lines = [line.strip() for line in str(check_result).splitlines() if line.strip()]
-        if not lines:
-            return "not run", []
-        first = lines[0].lower()
-        if first.startswith("static_checks=passed"):
-            return "passed", []
-        if first.startswith("static_checks=failed"):
-            return "failed", lines[1:31]
-        if "disabled" in first:
-            return "disabled", []
-        return first[:100], lines[1:31]
+    _check_summary = staticmethod(selfdev_response_parsing._check_summary)
 
     def _activate_checkpoint(
         self,
@@ -2220,26 +1614,11 @@ class SelfDeveloper:
             **kwargs,
         )
 
-    @staticmethod
-    def _content(response: Any) -> str:
-        message = getattr(response, "message", response)
-        if isinstance(message, dict):
-            return str(message.get("content") or "")
-        return str(getattr(message, "content", "") or "")
+    _content = staticmethod(selfdev_model_selection._content)
 
-    @staticmethod
-    def _calls(response: Any) -> list[Any]:
-        message = getattr(response, "message", response)
-        if isinstance(message, dict):
-            return list(message.get("tool_calls") or [])
-        return list(getattr(message, "tool_calls", None) or [])
+    _calls = staticmethod(selfdev_model_selection._calls)
 
-    @staticmethod
-    def _call_parts(call: Any) -> tuple[str, dict[str, Any]]:
-        function = call.get("function", {}) if isinstance(call, dict) else getattr(call, "function", None)
-        if isinstance(function, dict):
-            return str(function.get("name") or ""), dict(function.get("arguments") or {})
-        return str(getattr(function, "name", "")), dict(getattr(function, "arguments", None) or {})
+    _call_parts = staticmethod(selfdev_model_selection._call_parts)
 
     def _tool_stage(
         self,
@@ -2310,47 +1689,9 @@ class SelfDeveloper:
                 self._persist_active_checkpoint()
         return f"{stage} stopped at its tool-call limit."
 
-    @staticmethod
-    def _outcome(text: str, default_lesson: str) -> tuple[str, str]:
-        try:
-            value = _json_object(text)
-        except (ValueError, json.JSONDecodeError):
-            return (text.strip() or "Candidate cycle completed.")[:4000], default_lesson
-        return (
-            str(value.get("summary") or "Candidate cycle completed.")[:4000],
-            str(value.get("reusable_lesson") or default_lesson)[:2000],
-        )
+    _outcome = staticmethod(selfdev_response_parsing._outcome)
 
-    @staticmethod
-    def _research_handoff(
-        text: str,
-    ) -> tuple[list[str], list[str], list[str], str]:
-        """Accept only explicit reviewable facts for durable research context."""
-        try:
-            value = _json_object(text)
-        except (ValueError, json.JSONDecodeError):
-            return (
-                ["Read-only repository research completed; use the recorded inspected paths."],
-                [],
-                ["The research response was not a valid structured handoff."],
-                "Re-inspect the recorded paths before implementation if more detail is needed.",
-            )
-
-        def strings(name: str, limit: int = 20) -> list[str]:
-            items = value.get(name)
-            if not isinstance(items, list):
-                return []
-            return [str(item)[:1000] for item in items[:limit] if isinstance(item, str) and item.strip()]
-
-        findings = strings("findings") or [
-            "Read-only repository research completed; use the recorded inspected paths."
-        ]
-        return (
-            findings,
-            strings("decisions"),
-            strings("unresolved_questions"),
-            str(value.get("next_action") or "Implement the focused task.")[:1000],
-        )
+    _research_handoff = staticmethod(selfdev_response_parsing._research_handoff)
 
     def _enforce_grounding_gate(
         self,
@@ -2393,66 +1734,11 @@ class SelfDeveloper:
             )
         return plan, report
 
-    @staticmethod
-    def _checkpoint_outcome(text: str, default_lesson: str) -> tuple[str, str]:
-        """Never place an unstructured model response in the durable checkpoint."""
-        try:
-            value = _json_object(text)
-        except (ValueError, json.JSONDecodeError):
-            return (
-                "Implementation stage completed; inspect the verified candidate diff.",
-                default_lesson,
-            )
-        return (
-            str(value.get("summary") or "Implementation stage completed.")[:1000],
-            str(value.get("reusable_lesson") or default_lesson)[:1000],
-        )
+    _checkpoint_outcome = staticmethod(selfdev_response_parsing._checkpoint_outcome)
 
-    @staticmethod
-    def _evaluation_report(text: str, task: dict[str, Any]) -> dict[str, str]:
-        plan = normalize_evolution_task(task)["evaluation"]
-        report: dict[str, Any] = {}
-        try:
-            value = _json_object(text)
-            candidate = value.get("evaluation_evidence") or value.get("evaluation")
-            if isinstance(candidate, dict):
-                report = candidate
-        except (ValueError, json.JSONDecodeError):
-            pass
-        result = str(report.get("result") or "unmeasured").strip().lower()
-        if result not in {"improved", "no_change", "regressed", "inconclusive", "pending_ci"}:
-            result = "unmeasured"
-        return {
-            "metric": str(report.get("metric") or plan["metric"])[:1000],
-            "baseline_evidence": str(report.get("baseline_evidence") or plan["baseline"])[:2000],
-            "candidate_evidence": str(report.get("candidate_evidence") or "")[:2000],
-            "result": result,
-            "measurement_artifact": str(report.get("measurement_artifact") or "")[:1000],
-        }
+    _evaluation_report = staticmethod(selfdev_response_parsing._evaluation_report)
 
-    @staticmethod
-    def _candidate_pr_body(
-        task: dict[str, Any],
-        report: dict[str, str],
-        check_result: str,
-    ) -> str:
-        fields = evolution_status_fields(task)
-        return (
-            "## Capability-growth experiment\n\n"
-            f"- Evolution class: {fields['evolution_class']}\n"
-            f"- Capability target: {fields['capability_target']}\n"
-            f"- Research question: {task['question']}\n"
-            f"- Hypothesis: {fields['hypothesis']}\n"
-            f"- Evaluation plan: {fields['evaluation_plan']}\n"
-            f"- Baseline evidence: {report['baseline_evidence']}\n"
-            f"- Candidate evidence: {report['candidate_evidence'] or 'Pending GitHub CI evaluation'}\n"
-            f"- Current evaluation outcome: {report['result']}\n"
-            f"- Measurement artifact: {report['measurement_artifact'] or 'Defined by the candidate/CI plan'}\n\n"
-            "## Safety boundary\n\n"
-            "This is an isolated candidate for human review. It was not executed locally and cannot merge or "
-            "promote itself. Reviewer-controlled tests and all existing safety/resource gates remain authoritative.\n\n"
-            f"## Local static validation\n\n````text\n{check_result[:4000]}\n````\n"
-        )
+    _candidate_pr_body = staticmethod(selfdev_response_parsing._candidate_pr_body)
 
     def _repair_static_failures(
         self,

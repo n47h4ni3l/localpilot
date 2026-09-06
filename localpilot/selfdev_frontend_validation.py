@@ -144,4 +144,3 @@ def _validate_frontend_candidate(relative: Path, content: str) -> None:
     for match in re.finditer(r"\bbridge\s*\(\s*(['\"])([^'\"]+)\1", content):
         if match.group(2) not in _FRONTEND_BRIDGE_METHODS:
             raise ValueError(f"Frontend JavaScript requests an unapproved native bridge method: {match.group(2)}")
-

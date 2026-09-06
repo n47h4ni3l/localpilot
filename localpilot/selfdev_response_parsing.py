@@ -300,4 +300,3 @@ def _candidate_pr_body(
         "promote itself. Reviewer-controlled tests and all existing safety/resource gates remain authoritative.\n\n"
         f"## Local static validation\n\n````text\n{check_result[:4000]}\n````\n"
     )
-

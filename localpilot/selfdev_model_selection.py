@@ -343,4 +343,3 @@ def _call_parts(call: Any) -> tuple[str, dict[str, Any]]:
     if isinstance(function, dict):
         return str(function.get("name") or ""), dict(function.get("arguments") or {})
     return str(getattr(function, "name", "")), dict(getattr(function, "arguments", None) or {})
-

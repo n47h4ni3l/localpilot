@@ -16,6 +16,7 @@ from localpilot.checkpoint import CheckpointStore
 from localpilot.config import load_config
 from localpilot.doctor import doctor
 from localpilot.github_integration import GitHubIntegration
+from localpilot.implementation_backend import ClaudeCodeBackend
 from localpilot.learning import LearningMemory
 from localpilot.mission import mission_context
 from localpilot.resource import ResourceGovernor
@@ -44,6 +45,27 @@ def _show_status(console: Console, config, root: Path) -> None:
     table.add_column("Item")
     table.add_column("Value")
     table.add_row("Model", f"{config.model.provider}:{config.model.name}")
+    if config.selfdev.implementation_backend == "claude_code":
+        preflight = ClaudeCodeBackend(
+            executable=config.selfdev.implementation_executable,
+            model=config.selfdev.implementation_model,
+            context_tokens=config.selfdev.implementation_context_tokens,
+            max_turns=config.selfdev.implementation_max_turns,
+            timeout_seconds=config.selfdev.implementation_timeout_seconds,
+            max_output_chars=config.selfdev.implementation_max_output_chars,
+            base_url=config.selfdev.implementation_base_url,
+        ).preflight()
+        backend_detail = (
+            f"{preflight.backend}:{preflight.model}; context {preflight.context_tokens}; "
+            f"{'healthy' if preflight.healthy else 'unavailable'}"
+        )
+        if preflight.version:
+            backend_detail += f"\nCLI {preflight.version}"
+        if preflight.messages:
+            backend_detail += "\n" + "; ".join(preflight.messages)
+    else:
+        backend_detail = "local_tools rollback path (explicitly configured)"
+    table.add_row("Implementation backend", backend_detail[:1200])
     mission = mission_context()
     table.add_row(
         "Mission",

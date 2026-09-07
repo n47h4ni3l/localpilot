@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -35,6 +36,13 @@ from localpilot.evolution_orchestrator import (
 from localpilot.foreground import active_foreground_turns
 from localpilot.github_integration import GitHubIntegration, is_managed_candidate_branch
 from localpilot.learning import LearningMemory
+from localpilot.implementation_backend import (
+    ClaudeCodeBackend,
+    ImplementationBackend,
+    ImplementationRequest,
+    ImplementationResult,
+    ImplementationStatus,
+)
 from localpilot.mission import mission_context
 from localpilot.process import hidden_process_creation_flags
 from localpilot.resource import ResourceGovernor
@@ -595,6 +603,7 @@ class SelfDeveloper:
         config: Config,
         project_root: str | Path,
         progress: Callable[[str], None] | None = None,
+        implementation_backend: ImplementationBackend | None = None,
     ) -> None:
         self.config = config
         if config.selfdev.auto_promote:
@@ -608,6 +617,7 @@ class SelfDeveloper:
         self.governor = ResourceGovernor(config.resource)
         self.github = GitHubIntegration(self.root, config.github)
         self.progress = progress or (lambda _message: None)
+        self._injected_implementation_backend = implementation_backend
         self._active_checkpoint: dict[str, Any] | None = None
         self._active_task_id: str | None = None
         self._budget: EvolutionRunBudget | None = None
@@ -1139,6 +1149,15 @@ class SelfDeveloper:
             self.memory.update_experiment_review(
                 candidate.task_id,
                 validation_state=lifecycle.validation_state,
+                merged=lifecycle.merged,
+            )
+            self.audit.write(
+                "selfdev_implementation_outcome",
+                cycle_id=candidate.cycle_id,
+                task_id=candidate.task_id,
+                branch=candidate.branch,
+                pull_request_url=lifecycle.pull_request_url,
+                ci_validation_state=lifecycle.validation_state,
                 merged=lifecycle.merged,
             )
 
@@ -1740,6 +1759,284 @@ class SelfDeveloper:
 
     _candidate_pr_body = staticmethod(selfdev_response_parsing._candidate_pr_body)
 
+    def _claude_code_backend(self, *, force: bool, branch: str) -> ImplementationBackend:
+        if self._injected_implementation_backend is not None:
+            return self._injected_implementation_backend
+        cfg = self.config.selfdev
+        return ClaudeCodeBackend(
+            executable=cfg.implementation_executable,
+            model=cfg.implementation_model,
+            context_tokens=cfg.implementation_context_tokens,
+            max_turns=cfg.implementation_max_turns,
+            timeout_seconds=cfg.implementation_timeout_seconds,
+            max_output_chars=cfg.implementation_max_output_chars,
+            base_url=cfg.implementation_base_url,
+            resource_guard=lambda: self._check_resources(force, branch, during_inference=True),
+        )
+
+    @staticmethod
+    def _implementation_review_payload(text: str) -> tuple[bool, str, str]:
+        decoder = json.JSONDecoder()
+        candidates: list[dict[str, Any]] = []
+        for start, char in enumerate(str(text or "")):
+            if char != "{":
+                continue
+            try:
+                value, _end = decoder.raw_decode(str(text)[start:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                candidates.append(value)
+        for payload in reversed(candidates):
+            if isinstance(payload.get("approved"), bool):
+                feedback = payload.get("feedback")
+                if isinstance(feedback, list):
+                    feedback_text = "\n".join(str(item) for item in feedback[:12])
+                else:
+                    feedback_text = str(feedback or "")
+                return (
+                    bool(payload["approved"]),
+                    feedback_text[:12000],
+                    str(payload.get("summary") or "")[:2000],
+                )
+        raise ValueError("LocalPilot review did not return the required approved/feedback JSON")
+
+    def _record_backend_evidence(
+        self,
+        *,
+        cycle_id: int,
+        task: dict[str, Any],
+        result: ImplementationResult,
+        review_passes: int,
+        review_status: str,
+    ) -> None:
+        contract = json.dumps(
+            {
+                "hypothesis": task.get("hypothesis"),
+                "acceptance": task.get("acceptance"),
+                "evaluation": task.get("evaluation"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        self.audit.write(
+            "selfdev_implementation_backend",
+            cycle_id=cycle_id,
+            task_id=str(task.get("id") or ""),
+            contract_digest=hashlib.sha256(contract.encode("utf-8")).hexdigest(),
+            backend=result.backend,
+            model=result.model,
+            changed_paths=list(result.changed_paths),
+            diff_digest=result.diff_digest,
+            tests=[
+                {
+                    "command": str(item.get("command") or "")[:300],
+                    "passed": bool(item.get("passed")),
+                    "exit_code": item.get("exit_code"),
+                    "output_digest": str(item.get("output_digest") or "")[:128],
+                }
+                for item in result.tests[:20]
+            ],
+            review_repair_pass_count=review_passes,
+            review_status=review_status,
+            final_status=result.status.value,
+            session_id=result.session_id,
+            exit_code=result.exit_code,
+            usage=result.usage,
+            duration_seconds=round(result.duration_seconds, 3),
+        )
+
+    def _run_claude_code_implementation(
+        self,
+        *,
+        chat: Callable[..., Any],
+        developer_model: str,
+        task: dict[str, Any],
+        branch: str,
+        workspace: Path,
+        tools: CandidateTools,
+        cycle_id: int,
+        research: str,
+        grounding_plan: dict[str, list[Any]],
+        grounding_evidence: list[str],
+        evolution_context: str,
+        lessons: list[Any],
+        force: bool,
+    ) -> str:
+        allowed_paths = tuple(
+            sorted(
+                {
+                    Path(str(item)).as_posix()
+                    for field in ("referenced_paths", "new_runtime_paths")
+                    for item in grounding_plan.get(field, [])
+                    if str(item).strip()
+                }
+            )
+        )
+        if not allowed_paths:
+            raise RuntimeError("Claude Code implementation requires grounded allowed paths")
+        prompt = (
+            "Work only inside the current isolated candidate Git workspace. Implement the focused contract below. "
+            "Perform the complete read, edit, repository-test, and repair loop before returning. Do not access parent "
+            "directories, localpilot-data, training/evals, training/evolution_execution/acceptance, secrets, the web, "
+            "GitHub, package managers, or any network endpoint. Do not commit, push, checkout, switch, branch, reset, "
+            "clean, delete files, spawn another shell, or weaken tests. Use only the explicitly available file tools, "
+            "narrow git inspection, Python compile checks, and existing repository tests. Change only the exact grounded "
+            f"paths listed here: {json.dumps(allowed_paths)}. Reviewer-protected paths are read-only: "
+            f"{json.dumps(sorted(tools.protected_paths))}. Finish with one strict JSON object containing summary and "
+            "tests. tests must be a non-empty list of {command, passed, exit_code, output_digest}; output_digest is a "
+            "SHA-256 digest of bounded command output, never raw logs or reasoning. Do not return chain-of-thought.\n"
+            f"Task: {task['title']}\nAcceptance: {json.dumps(task.get('acceptance', []), ensure_ascii=False)}\n"
+            f"Capability experiment contract:\n{evolution_context}\n"
+            f"LocalPilot research brief:\n{research[:12000]}\n"
+            f"Verified grounding plan:\n{json.dumps(grounding_plan, ensure_ascii=False)}\n"
+            f"Grounding evidence:\n{json.dumps(grounding_evidence, ensure_ascii=False)}\n"
+            f"Earlier reusable lessons:\n{json.dumps(lessons, ensure_ascii=False)}"
+        )
+        backend = self._claude_code_backend(force=force, branch=branch)
+        preflight = backend.preflight()
+        self.audit.write(
+            "selfdev_implementation_preflight",
+            cycle_id=cycle_id,
+            backend=preflight.backend,
+            model=preflight.model,
+            executable=preflight.executable,
+            version=preflight.version,
+            context_tokens=preflight.context_tokens,
+            healthy=preflight.healthy,
+            messages=list(preflight.messages),
+        )
+        if not preflight.healthy:
+            raise RuntimeError("implementation backend unavailable: " + "; ".join(preflight.messages))
+
+        request = ImplementationRequest(
+            workspace=workspace,
+            prompt=prompt,
+            allowed_paths=allowed_paths,
+            protected_paths=tuple(sorted(tools.protected_paths)),
+        )
+        result = backend.run(request)
+        repair_count = 0
+        review_status = "not_reviewed"
+        terminal_without_review = {
+            ImplementationStatus.BACKEND_UNAVAILABLE,
+            ImplementationStatus.TIMEOUT,
+            ImplementationStatus.RESOURCE_PRESSURE,
+            ImplementationStatus.CLI_ERROR,
+            ImplementationStatus.CONFINEMENT_VIOLATION,
+        }
+        if result.status in terminal_without_review:
+            if result.status == ImplementationStatus.CONFINEMENT_VIOLATION:
+                self.memory.record_write_integrity_failure(cycle_id, result.summary)
+            self._record_backend_evidence(
+                cycle_id=cycle_id, task=task, result=result,
+                review_passes=repair_count, review_status=review_status,
+            )
+            raise RuntimeError(f"implementation backend {result.status.value}: {result.summary}")
+
+        max_repairs = self.config.selfdev.implementation_review_repair_passes
+        while True:
+            static_result = tools.run_candidate_static_checks()
+            diff = tools.show_candidate_diff()
+            review_response = self._developer_chat(
+                chat,
+                force=force,
+                branch=branch,
+                model=developer_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are LocalPilot's independent acceptance reviewer. You did not implement this change. "
+                            "Review the bounded diff, test evidence, static checks, task contract, and scope. Reject missing "
+                            "tests, failed tests, incomplete acceptance, unsafe scope, or unsupported evidence. Return one "
+                            "strict JSON object with approved (boolean), feedback (list of concrete repair instructions), "
+                            "and summary. Do not reveal hidden reasoning.\n"
+                            f"Task: {task['title']}\nAcceptance: {json.dumps(task.get('acceptance', []))}\n"
+                            f"Backend status: {result.status.value}\nChanged paths: {json.dumps(result.changed_paths)}\n"
+                            f"Test evidence: {json.dumps(result.tests, ensure_ascii=False)}\n"
+                            f"Static checks:\n{static_result[:6000]}\nDiff:\n{diff[-24000:]}"
+                        ),
+                    },
+                    {"role": "user", "content": "Independently accept or reject this candidate implementation."},
+                ],
+                options={"temperature": 0.0},
+            )
+            try:
+                approved, feedback, review_summary = self._implementation_review_payload(
+                    self._content(review_response)
+                )
+            except ValueError as exc:
+                approved, feedback, review_summary = False, str(exc), "malformed LocalPilot review"
+            if result.status != ImplementationStatus.COMPLETED:
+                approved = False
+                feedback = (
+                    f"Backend reported {result.status.value}: {result.summary}. " + feedback
+                )[:12000]
+            if not static_result.startswith("static_checks=passed"):
+                approved = False
+                feedback = (f"LocalPilot static checks failed:\n{static_result}\n" + feedback)[:12000]
+            if approved:
+                review_status = "approved"
+                break
+            if repair_count >= max_repairs:
+                review_status = "rejected"
+                result = ImplementationResult(
+                    ImplementationStatus.REVIEW_REJECTED,
+                    result.backend,
+                    result.model,
+                    review_summary or feedback or "LocalPilot rejected the candidate implementation.",
+                    changed_paths=result.changed_paths,
+                    diff_digest=result.diff_digest,
+                    tests=result.tests,
+                    session_id=result.session_id,
+                    exit_code=result.exit_code,
+                    usage=result.usage,
+                    duration_seconds=result.duration_seconds,
+                    repair_pass=repair_count,
+                    sanitized_output=result.sanitized_output,
+                )
+                break
+            repair_count += 1
+            self._emit(f"LocalPilot review requested Claude Code repair pass {repair_count}/{max_repairs}")
+            result = backend.run(
+                ImplementationRequest(
+                    workspace=workspace,
+                    prompt=prompt,
+                    allowed_paths=allowed_paths,
+                    protected_paths=tuple(sorted(tools.protected_paths)),
+                    review_feedback=feedback or review_summary,
+                ),
+                repair_pass=repair_count,
+            )
+            if result.status in terminal_without_review:
+                review_status = "repair_failed"
+                break
+
+        for relative in result.changed_paths:
+            path = tools.validate_project_write(relative, (workspace / relative).read_text(encoding="utf-8"))
+            tools.files_written.add(path)
+            tools.write_count += 1
+        self._record_backend_evidence(
+            cycle_id=cycle_id, task=task, result=result,
+            review_passes=repair_count, review_status=review_status,
+        )
+        if result.status != ImplementationStatus.COMPLETED or review_status != "approved":
+            raise RuntimeError(f"implementation backend {result.status.value}: {result.summary}")
+        return json.dumps(
+            {
+                "summary": result.summary,
+                "reusable_lesson": "Use Claude Code inside the candidate boundary and retain independent LocalPilot acceptance review.",
+                "evaluation_evidence": {
+                    "metric": task["evaluation"]["metric"],
+                    "baseline_evidence": task["evaluation"]["baseline"],
+                    "candidate_evidence": f"Claude Code tests passed; diff sha256={result.diff_digest}; LocalPilot review approved.",
+                    "result": "pending_ci",
+                    "measurement_artifact": task["evaluation"]["measurement_method"],
+                },
+            }
+        )
+
     def _repair_static_failures(
         self,
         *,
@@ -2134,30 +2431,47 @@ class SelfDeveloper:
                     },
                     {"role": "user", "content": "Implement the task now and make concrete candidate changes."},
                 ]
-                final_text = self._tool_stage(
-                    chat=chat,
-                    model=developer_model,
-                    messages=implementation_messages,
-                    functions=[
-                        tools.list_project_files,
-                        tools.read_project_file,
-                        tools.create_project_directory,
-                        tools.write_project_file,
-                        tools.create_zip,
-                        tools.download_candidate_resource,
-                        tools.search_public_web,
-                        tools.fetch_public_https,
-                        tools.complexity_report,
-                        tools.run_candidate_static_checks,
-                        tools.show_candidate_diff,
-                    ],
-                    rounds=self.config.selfdev.max_tool_rounds,
-                    force=force,
-                    branch=branch,
-                    stage="implementation",
-                )
+                if self.config.selfdev.implementation_backend == "claude_code":
+                    final_text = self._run_claude_code_implementation(
+                        chat=chat,
+                        developer_model=developer_model,
+                        task=task,
+                        branch=branch,
+                        workspace=workspace,
+                        tools=tools,
+                        cycle_id=cycle_id,
+                        research=research,
+                        grounding_plan=grounding_plan,
+                        grounding_evidence=grounding_evidence,
+                        evolution_context=evolution_context,
+                        lessons=lessons,
+                        force=force,
+                    )
+                else:
+                    final_text = self._tool_stage(
+                        chat=chat,
+                        model=developer_model,
+                        messages=implementation_messages,
+                        functions=[
+                            tools.list_project_files,
+                            tools.read_project_file,
+                            tools.create_project_directory,
+                            tools.write_project_file,
+                            tools.create_zip,
+                            tools.download_candidate_resource,
+                            tools.search_public_web,
+                            tools.fetch_public_https,
+                            tools.complexity_report,
+                            tools.run_candidate_static_checks,
+                            tools.show_candidate_diff,
+                        ],
+                        rounds=self.config.selfdev.max_tool_rounds,
+                        force=force,
+                        branch=branch,
+                        stage="implementation",
+                    )
 
-                if not tools.files_written:
+                if self.config.selfdev.implementation_backend == "local_tools" and not tools.files_written:
                     self._check_resources(force, branch)
                     self._emit("Direct editing stalled; requesting structured fallback change plan")
                     response = self._developer_chat(

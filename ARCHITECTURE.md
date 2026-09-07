@@ -3,10 +3,10 @@
 LocalPilot has three isolated roles and two model responsibilities:
 
 1. **Stable operator** — the installed everyday agent. It uses `[model].name` and may interact with the PC only through the normal safety policy.
-2. **Developer** — an idle-time engineering process. It prefers `[selfdev].developer_model` (`qwen2.5:32b` by default) when that model is installed, otherwise it explicitly falls back to the everyday model.
+2. **Developer** — an idle-time engineering process. LocalPilot uses `gpt-oss:20b` for discovery, research, grounding, and independent acceptance review. Claude Code is the confined implementation harness and also targets local Ollama `gpt-oss:20b`.
 3. **Candidate** — an isolated Git worktree or copied workspace. Autonomous construction is possible only through candidate tools inside this boundary: file writes, free inert directory scaffolding, bounded ZIP creation, and provenance-tracked HTTPS resources stored outside the repository.
 
-Stable is never rewritten in place, candidate code is not executed locally by the autonomous loop, and there is no automatic promotion path.
+Stable is never rewritten in place. Repository tests may run only through the bounded Claude Code process inside the isolated candidate workspace. LocalPilot revalidates changed paths and content, independently reviews the diff and evidence, and retains no automatic promotion path.
 
 ### Stable operator actions
 

@@ -243,6 +243,29 @@ class RuntimeEvidence:
                     "experiment_id",
                 ),
             ),
+            "latest_implementation_backend": bounded(
+                "selfdev_implementation_backend",
+                (
+                    "timestamp", "cycle_id", "task_id", "contract_digest", "backend",
+                    "model", "changed_paths", "diff_digest", "tests",
+                    "review_repair_pass_count", "review_status", "final_status",
+                    "session_id", "exit_code", "usage", "duration_seconds",
+                ),
+            ),
+            "latest_implementation_preflight": bounded(
+                "selfdev_implementation_preflight",
+                (
+                    "timestamp", "cycle_id", "backend", "model", "executable",
+                    "version", "context_tokens", "healthy", "messages",
+                ),
+            ),
+            "latest_implementation_outcome": bounded(
+                "selfdev_implementation_outcome",
+                (
+                    "timestamp", "cycle_id", "task_id", "branch", "pull_request_url",
+                    "ci_validation_state", "merged",
+                ),
+            ),
             "latest_evolution_budget": run_state,
             "recent_evolution_window": recent_window,
             "opportunity_queue": queue_state,

@@ -313,7 +313,13 @@ def test_localpilot_rejection_drives_one_bounded_claude_rework_pass(tmp_path: Pa
             {"content": json.dumps({"approved": True, "feedback": [], "summary": "accept"})},
         ]
     )
-    monkeypatch.setattr(developer, "_developer_chat", lambda *args, **kwargs: next(responses))
+    review_calls: list[dict] = []
+
+    def review_chat(*args, **kwargs):
+        review_calls.append(kwargs)
+        return next(responses)
+
+    monkeypatch.setattr(developer, "_developer_chat", review_chat)
     tools = CandidateTools(root)
     task = {
         "id": "fixture", "title": "repair fixture", "acceptance": ["tests pass"],
@@ -327,6 +333,9 @@ def test_localpilot_rejection_drives_one_bounded_claude_rework_pass(tmp_path: Pa
         grounding_evidence=["module.py"], evolution_context="bounded", lessons=[], force=True,
     )
     assert backend.calls == 2
+    assert len(review_calls) == 2
+    assert review_calls[0]["format"]["required"] == ["approved", "feedback", "summary"]
+    assert review_calls[0]["options"]["num_predict"] == 1024
     assert "LocalPilot review approved" in result
     evidence = [
         json.loads(line) for line in (root / "data" / "audit.jsonl").read_text(encoding="utf-8").splitlines()

@@ -1966,6 +1966,20 @@ class SelfDeveloper:
                 force=force,
                 branch=branch,
                 model=developer_model,
+                format={
+                    "type": "object",
+                    "properties": {
+                        "approved": {"type": "boolean"},
+                        "feedback": {
+                            "type": "array",
+                            "maxItems": 12,
+                            "items": {"type": "string", "maxLength": 1000},
+                        },
+                        "summary": {"type": "string", "maxLength": 2000},
+                    },
+                    "required": ["approved", "feedback", "summary"],
+                    "additionalProperties": False,
+                },
                 messages=[
                     {
                         "role": "system",
@@ -1983,7 +1997,7 @@ class SelfDeveloper:
                     },
                     {"role": "user", "content": "Independently accept or reject this candidate implementation."},
                 ],
-                options={"temperature": 0.0},
+                options={"temperature": 0.0, "num_predict": 1024},
             )
             try:
                 approved, feedback, review_summary = self._implementation_review_payload(

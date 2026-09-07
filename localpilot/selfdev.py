@@ -1968,20 +1968,6 @@ class SelfDeveloper:
                 branch=branch,
                 model=developer_model,
                 _request_think=False,
-                format={
-                    "type": "object",
-                    "properties": {
-                        "approved": {"type": "boolean"},
-                        "feedback": {
-                            "type": "array",
-                            "maxItems": 12,
-                            "items": {"type": "string", "maxLength": 1000},
-                        },
-                        "summary": {"type": "string", "maxLength": 2000},
-                    },
-                    "required": ["approved", "feedback", "summary"],
-                    "additionalProperties": False,
-                },
                 messages=[
                     {
                         "role": "system",

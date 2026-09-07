@@ -335,7 +335,7 @@ def test_localpilot_rejection_drives_one_bounded_claude_rework_pass(tmp_path: Pa
     assert backend.calls == 2
     assert len(review_calls) == 2
     assert review_calls[0]["_request_think"] is False
-    assert review_calls[0]["format"]["required"] == ["approved", "feedback", "summary"]
+    assert "format" not in review_calls[0]
     assert review_calls[0]["options"]["num_predict"] == 1024
     assert "LocalPilot review approved" in result
     evidence = [

@@ -1604,6 +1604,7 @@ class SelfDeveloper:
         branch: str,
         **kwargs: Any,
     ) -> Any:
+        request_think = kwargs.pop("_request_think", self.config.model.think)
         last_check = 0.0
 
         def stream_guard() -> None:
@@ -1623,7 +1624,7 @@ class SelfDeveloper:
         )
         return developer_chat(
             chat,
-            request_think=self.config.model.think,
+            request_think=request_think,
             context_tokens=self.config.selfdev.context_tokens,
             keep_alive=keep_alive,
             stream_guard=stream_guard,
@@ -1966,6 +1967,7 @@ class SelfDeveloper:
                 force=force,
                 branch=branch,
                 model=developer_model,
+                _request_think=False,
                 format={
                     "type": "object",
                     "properties": {

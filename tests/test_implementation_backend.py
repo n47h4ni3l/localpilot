@@ -83,6 +83,7 @@ def _backend(tmp_path: Path, behavior: str, **kwargs) -> ClaudeCodeBackend:
         True, "claude_code", "gpt-oss:20b", sys.executable,
         version="2.1.263", context_tokens=65536,
     )
+    backend._cancel_ollama_inference = lambda: None
     return backend
 
 
@@ -181,11 +182,15 @@ def test_wrapper_times_out_and_never_uses_shell(tmp_path: Path, monkeypatch):
         return real_popen(*args, **kwargs)
 
     monkeypatch.setattr("localpilot.implementation_backend.subprocess.Popen", recording_popen)
-    result = _backend(tmp_path, "timeout", timeout=0.2).run(
+    backend = _backend(tmp_path, "timeout", timeout=0.2)
+    cancellations: list[bool] = []
+    backend._cancel_ollama_inference = lambda: cancellations.append(True)
+    result = backend.run(
         ImplementationRequest(root, "implement", ("module.py",))
     )
     assert result.status == ImplementationStatus.TIMEOUT
     assert observed["shell"] is False
+    assert cancellations == [True]
 
 
 def test_command_has_narrow_tools_and_no_permission_bypass(tmp_path: Path):
@@ -197,6 +202,10 @@ def test_command_has_narrow_tools_and_no_permission_bypass(tmp_path: Path):
     assert "Bash(git commit *)" in command
     assert "WebSearch" in command
     assert "--no-session-persistence" in command
+    env = _backend(tmp_path, "success")._environment()
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "65536"
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "2048"
+    assert env["MAX_THINKING_TOKENS"] == "0"
 
 
 def test_localpilot_rejection_drives_one_bounded_claude_rework_pass(tmp_path: Path, monkeypatch):

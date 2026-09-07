@@ -52,6 +52,7 @@ def _show_status(console: Console, config, root: Path) -> None:
             context_tokens=config.selfdev.implementation_context_tokens,
             max_turns=config.selfdev.implementation_max_turns,
             timeout_seconds=config.selfdev.implementation_timeout_seconds,
+            max_output_tokens=config.selfdev.implementation_max_output_tokens,
             max_output_chars=config.selfdev.implementation_max_output_chars,
             base_url=config.selfdev.implementation_base_url,
         ).preflight()

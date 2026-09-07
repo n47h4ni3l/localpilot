@@ -130,6 +130,7 @@ class SelfDevConfig:
     implementation_max_turns: int = 24
     implementation_timeout_seconds: float = 600.0
     implementation_review_repair_passes: int = 1
+    implementation_max_output_tokens: int = 2048
     implementation_max_output_chars: int = 120_000
     implementation_executable: str = "claude"
     implementation_base_url: str = "http://localhost:11434"
@@ -314,6 +315,9 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg.selfdev.implementation_max_output_chars = int(
         cfg.selfdev.implementation_max_output_chars
     )
+    cfg.selfdev.implementation_max_output_tokens = int(
+        cfg.selfdev.implementation_max_output_tokens
+    )
     if not 1 <= cfg.selfdev.implementation_max_turns <= 100:
         raise ValueError("selfdev.implementation_max_turns must be between 1 and 100")
     if not 30 <= cfg.selfdev.implementation_timeout_seconds <= 3600:
@@ -322,6 +326,8 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ValueError("selfdev.implementation_review_repair_passes must be between 1 and 5")
     if not 10_000 <= cfg.selfdev.implementation_max_output_chars <= 1_000_000:
         raise ValueError("selfdev.implementation_max_output_chars must be between 10000 and 1000000")
+    if not 256 <= cfg.selfdev.implementation_max_output_tokens <= 8192:
+        raise ValueError("selfdev.implementation_max_output_tokens must be between 256 and 8192")
     cfg.selfdev.implementation_executable = str(cfg.selfdev.implementation_executable).strip()
     if not cfg.selfdev.implementation_executable:
         raise ValueError("selfdev.implementation_executable is required")

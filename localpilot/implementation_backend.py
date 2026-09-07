@@ -258,6 +258,7 @@ class ClaudeCodeBackend:
         context_tokens: int = 65536,
         max_turns: int = 24,
         timeout_seconds: float = 600.0,
+        max_output_tokens: int = 2048,
         max_output_chars: int = 120_000,
         base_url: str = "http://localhost:11434",
         resource_guard: Callable[[], None] | None = None,
@@ -268,6 +269,7 @@ class ClaudeCodeBackend:
         self.context_tokens = int(context_tokens)
         self.max_turns = int(max_turns)
         self.timeout_seconds = float(timeout_seconds)
+        self.max_output_tokens = int(max_output_tokens)
         self.max_output_chars = int(max_output_chars)
         self.base_url = str(base_url).rstrip("/")
         self.resource_guard = resource_guard
@@ -467,6 +469,11 @@ class ClaudeCodeBackend:
                 "ANTHROPIC_BASE_URL": self.base_url,
                 "CLAUDE_CODE_SKIP_PROMPT_HISTORY": "1",
                 "CLAUDE_CODE_USE_POWERSHELL_TOOL": "0",
+                "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(self.context_tokens),
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(self.max_output_tokens),
+                "MAX_THINKING_TOKENS": "0",
+                "DISABLE_COMPACT": "1",
+                "CLAUDE_CODE_MAX_RETRIES": "1",
                 "HTTP_PROXY": "http://127.0.0.1:9",
                 "HTTPS_PROXY": "http://127.0.0.1:9",
                 "ALL_PROXY": "http://127.0.0.1:9",
@@ -474,6 +481,23 @@ class ClaudeCodeBackend:
             }
         )
         return env
+
+    def _cancel_ollama_inference(self) -> None:
+        env = os.environ.copy()
+        env["OLLAMA_HOST"] = self.base_url
+        try:
+            subprocess.run(
+                ["ollama", "stop", self.model],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                shell=False,
+                env=env,
+                creationflags=hidden_process_creation_flags(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
 
     def _validate_candidate(
         self,
@@ -589,6 +613,7 @@ class ClaudeCodeBackend:
                 elapsed = time.monotonic() - started
                 if elapsed >= self.timeout_seconds:
                     _kill_process_tree(process)
+                    self._cancel_ollama_inference()
                     return stopped_result(
                         ImplementationStatus.TIMEOUT,
                         f"Claude Code exceeded the {self.timeout_seconds:.0f}s timeout.",
@@ -607,6 +632,7 @@ class ClaudeCodeBackend:
                             self.resource_guard()
                         except Exception as exc:
                             _kill_process_tree(process)
+                            self._cancel_ollama_inference()
                             return stopped_result(
                                 ImplementationStatus.RESOURCE_PRESSURE,
                                 f"Claude Code stopped at the resource boundary: {type(exc).__name__}: {_bounded(exc, 500)}",

@@ -28,6 +28,7 @@ def test_one_model_is_used_across_operator_planning_review_and_implementation():
     assert cfg.selfdev.implementation_model == "gpt-oss:20b"
     assert cfg.selfdev.implementation_context_tokens == 65536
     assert cfg.selfdev.implementation_review_repair_passes == 1
+    assert cfg.selfdev.implementation_max_output_tokens == 2048
     assert cfg.selfdev.ollama_keep_alive == 0
     assert cfg.selfdev.candidate_file_soft_budget == 100
     assert cfg.selfdev.candidate_file_hard_ceiling == 500
@@ -136,6 +137,13 @@ def test_implementation_backend_bounds_and_loopback_are_validated(tmp_path: Path
     )
     with pytest.raises(ValueError, match="loopback"):
         load_config(remote)
+
+    too_many_tokens = tmp_path / "tokens.toml"
+    too_many_tokens.write_text(
+        '[selfdev]\nimplementation_max_output_tokens = 128\n', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="max_output_tokens"):
+        load_config(too_many_tokens)
 
 
 def test_local_tools_backend_is_an_explicit_rollback_setting(tmp_path: Path):

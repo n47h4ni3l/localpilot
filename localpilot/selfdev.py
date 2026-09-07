@@ -1769,6 +1769,7 @@ class SelfDeveloper:
             context_tokens=cfg.implementation_context_tokens,
             max_turns=cfg.implementation_max_turns,
             timeout_seconds=cfg.implementation_timeout_seconds,
+            max_output_tokens=cfg.implementation_max_output_tokens,
             max_output_chars=cfg.implementation_max_output_chars,
             base_url=cfg.implementation_base_url,
             resource_guard=lambda: self._check_resources(force, branch, during_inference=True),

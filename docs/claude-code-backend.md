@@ -24,6 +24,7 @@ implementation_context_tokens = 65536
 implementation_max_turns = 24
 implementation_timeout_seconds = 600
 implementation_review_repair_passes = 1
+implementation_max_output_tokens = 2048
 implementation_max_output_chars = 120000
 implementation_executable = "E:\\Tools\\ClaudeCode\\claude.exe"
 implementation_base_url = "http://localhost:11434"
@@ -51,6 +52,8 @@ LocalPilot fails preflight with an explanation when the configured or observed c
 ## Security boundary
 
 The wrapper fixes `cwd` to the candidate, uses `shell=False`, restricted and bare modes, disables session persistence, ignores external MCP servers and customizations, and makes permission prompts fail closed. File tools are confined to the working directory. Web tools, subagents, skills, hidden evaluation data, LocalPilot data, parent traversal, package managers, destructive commands, shell nesting, and Git mutation commands are denied. Only repository file reads/edits, narrow Git inspection, Python compilation, and existing pytest/unittest commands are allowed.
+
+Each implementation request also fixes Claude Code's assumed context to 65,536, caps model output at 2,048 tokens, disables extended-thinking output in the implementation harness, limits retries and turns, and retains the outer wall-clock/output-character limits. On a timeout or resource stop, LocalPilot terminates the Claude process tree and asks local Ollama to stop the still-running model request.
 
 After every process run, LocalPilot derives changed paths from Git and rejects ungrounded paths, protected tests, deletions, links, disallowed file types, oversized files, invalid UTF-8, and secret-like assignments. A passing Claude run is still reviewed by LocalPilot and then by CI and a human. Human merge remains mandatory.
 

@@ -1967,7 +1967,7 @@ class SelfDeveloper:
                 force=force,
                 branch=branch,
                 model=developer_model,
-                _request_think=False,
+                _request_think="low",
                 messages=[
                     {
                         "role": "system",

@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import ctypes
 from dataclasses import dataclass, field
@@ -50,6 +51,7 @@ class ImplementationRequest:
     prompt: str
     allowed_paths: tuple[str, ...]
     protected_paths: tuple[str, ...] = ()
+    test_commands: tuple[tuple[str, ...], ...] = ()
     review_feedback: str = ""
     session_id: str = ""
 
@@ -193,6 +195,16 @@ def parse_claude_json_output(output: str) -> dict[str, Any]:
                     if key in candidate:
                         merged[f"_claude_{key}"] = candidate[key]
                 return merged
+            if candidate.get("subtype") in {"success", "error_max_turns"}:
+                return {
+                    "summary": _bounded(result, 2000) or "Claude Code returned a completion envelope.",
+                    "tests": [],
+                    "_claude_session_id": candidate.get("session_id", ""),
+                    "_claude_usage": candidate.get("usage", {}),
+                    "_claude_is_error": candidate.get("is_error"),
+                    "_claude_subtype": candidate.get("subtype"),
+                    "_claude_stop_reason": candidate.get("stop_reason"),
+                }
         if any(key in candidate for key in ("summary", "tests", "status")):
             return candidate
     raise ValueError("Claude Code output did not contain the required JSON result object")
@@ -286,7 +298,7 @@ class ClaudeCodeBackend:
         executable_argv: Sequence[str] | None = None,
         model: str = "gpt-oss:20b",
         context_tokens: int = 65536,
-        max_turns: int = 24,
+        max_turns: int = 40,
         timeout_seconds: float = 600.0,
         max_output_tokens: int = 2048,
         max_output_chars: int = 120_000,
@@ -536,6 +548,71 @@ class ClaudeCodeBackend:
         except (OSError, subprocess.SubprocessError):
             pass
 
+    @staticmethod
+    def _test_environment() -> dict[str, str]:
+        retained = (
+            "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "PROGRAMDATA",
+            "TEMP", "TMP", "COMSPEC", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
+        )
+        env = {name: os.environ[name] for name in retained if name in os.environ}
+        env.update(
+            {
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "HTTP_PROXY": "http://127.0.0.1:9",
+                "HTTPS_PROXY": "http://127.0.0.1:9",
+                "ALL_PROXY": "http://127.0.0.1:9",
+                "NO_PROXY": "localhost,127.0.0.1,::1",
+            }
+        )
+        return env
+
+    @staticmethod
+    def _validate_test_command(command: Sequence[str]) -> tuple[str, ...]:
+        argv = tuple(str(item) for item in command)
+        if len(argv) < 3 or Path(argv[0]).resolve() != Path(sys.executable).resolve():
+            raise ValueError("candidate test commands must use LocalPilot's Python executable")
+        if argv[1:3] not in (("-m", "pytest"), ("-m", "unittest")):
+            raise ValueError("candidate test command must invoke pytest or unittest as a module")
+        if len(argv) > 12 or any(".." in Path(item).parts for item in argv[3:]):
+            raise ValueError("candidate test command exceeds its bounded argument policy")
+        return argv
+
+    def _run_candidate_tests(
+        self, workspace: Path, commands: Sequence[Sequence[str]]
+    ) -> tuple[dict[str, Any], ...]:
+        evidence: list[dict[str, Any]] = []
+        for raw_command in commands[:3]:
+            command = self._validate_test_command(raw_command)
+            process = subprocess.Popen(
+                command,
+                cwd=str(workspace),
+                env=self._test_environment(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                shell=False,
+                creationflags=hidden_process_creation_flags(),
+            )
+            try:
+                stdout, stderr = process.communicate(timeout=min(180.0, self.timeout_seconds))
+                exit_code = int(process.returncode or 0)
+            except subprocess.TimeoutExpired:
+                _kill_process_tree(process)
+                stdout, stderr, exit_code = "", "candidate test timeout", 124
+            bounded_output = sanitize_process_output(
+                (stdout or "") + "\n" + (stderr or ""), workspace=workspace
+            )
+            evidence.append(
+                {
+                    "command": " ".join(("python", *command[1:])),
+                    "passed": exit_code == 0,
+                    "exit_code": exit_code,
+                    "output_digest": hashlib.sha256(bounded_output.encode("utf-8")).hexdigest(),
+                }
+            )
+        return tuple(evidence)
+
     def _validate_candidate(
         self,
         workspace: Path,
@@ -706,12 +783,16 @@ class ClaudeCodeBackend:
             payload = parse_claude_json_output(stdout)
         except ValueError as exc:
             parse_error = exc
+        envelope_subtype = str(payload.get("_claude_subtype") or "") if payload else ""
         explicit_envelope_success = bool(
             payload
-            and payload.get("_claude_subtype") == "success"
+            and envelope_subtype == "success"
             and payload.get("_claude_is_error") is not True
         )
-        if process.returncode != 0 and not explicit_envelope_success:
+        bounded_turn_completion = bool(
+            payload and envelope_subtype == "error_max_turns" and changed
+        )
+        if process.returncode != 0 and not (explicit_envelope_success or bounded_turn_completion):
             detail = _claude_error_detail(stdout, stderr, workspace=workspace)
             return ImplementationResult(
                 ImplementationStatus.CLI_ERROR, self.name, self.model,
@@ -730,7 +811,20 @@ class ClaudeCodeBackend:
                 sanitized_output=sanitized,
             )
         tests_raw = payload.get("tests")
-        tests = tuple(item for item in tests_raw if isinstance(item, dict)) if isinstance(tests_raw, list) else ()
+        reported_tests = (
+            tuple(item for item in tests_raw if isinstance(item, dict))
+            if isinstance(tests_raw, list) else ()
+        )
+        try:
+            verified_tests = self._run_candidate_tests(workspace, request.test_commands)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return ImplementationResult(
+                ImplementationStatus.CANDIDATE_TEST_FAILURE, self.name, self.model,
+                f"LocalPilot could not verify candidate tests: {type(exc).__name__}: {_bounded(exc, 500)}",
+                changed_paths=changed, diff_digest=digest, exit_code=process.returncode,
+                duration_seconds=duration, repair_pass=repair_pass, sanitized_output=sanitized,
+            )
+        tests = verified_tests or reported_tests
         tests_ok = bool(tests) and all(bool(item.get("passed")) for item in tests)
         status = ImplementationStatus.COMPLETED if tests_ok else ImplementationStatus.CANDIDATE_TEST_FAILURE
         usage = payload.get("_claude_usage") if isinstance(payload.get("_claude_usage"), dict) else {}

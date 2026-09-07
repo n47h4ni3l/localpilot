@@ -127,7 +127,7 @@ class SelfDevConfig:
     implementation_backend: str = "claude_code"
     implementation_model: str = "gpt-oss:20b"
     implementation_context_tokens: int = 65536
-    implementation_max_turns: int = 24
+    implementation_max_turns: int = 40
     implementation_timeout_seconds: float = 600.0
     implementation_review_repair_passes: int = 1
     implementation_max_output_tokens: int = 2048

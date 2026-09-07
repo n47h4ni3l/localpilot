@@ -5,6 +5,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 import zipfile
@@ -1910,11 +1911,32 @@ class SelfDeveloper:
         if not preflight.healthy:
             raise RuntimeError("implementation backend unavailable: " + "; ".join(preflight.messages))
 
+        if (workspace / "tests").is_dir():
+            uses_pytest = any(
+                (workspace / name).is_file()
+                for name in ("pytest.ini", "conftest.py")
+            )
+            pyproject = workspace / "pyproject.toml"
+            if pyproject.is_file() and "[tool.pytest" in pyproject.read_text(
+                encoding="utf-8", errors="replace"
+            ):
+                uses_pytest = True
+            test_command = (
+                (sys.executable, "-m", "pytest", "-q")
+                if uses_pytest
+                else (
+                    sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"
+                )
+            )
+            test_commands = (test_command,)
+        else:
+            test_commands = ()
         request = ImplementationRequest(
             workspace=workspace,
             prompt=prompt,
             allowed_paths=allowed_paths,
             protected_paths=tuple(sorted(tools.protected_paths)),
+            test_commands=test_commands,
         )
         result = backend.run(request)
         repair_count = 0
@@ -2006,6 +2028,7 @@ class SelfDeveloper:
                     prompt=prompt,
                     allowed_paths=allowed_paths,
                     protected_paths=tuple(sorted(tools.protected_paths)),
+                    test_commands=test_commands,
                     review_feedback=feedback or review_summary,
                 ),
                 repair_pass=repair_count,

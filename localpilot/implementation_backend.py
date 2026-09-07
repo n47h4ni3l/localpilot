@@ -499,6 +499,7 @@ class ClaudeCodeBackend:
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                 "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
                 "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1",
+                "PYTHONDONTWRITEBYTECODE": "1",
                 "HTTP_PROXY": "http://127.0.0.1:9",
                 "HTTPS_PROXY": "http://127.0.0.1:9",
                 "ALL_PROXY": "http://127.0.0.1:9",

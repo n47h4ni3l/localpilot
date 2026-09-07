@@ -211,6 +211,7 @@ def test_command_has_narrow_tools_and_no_permission_bypass(tmp_path: Path):
     assert env["CLAUDE_CODE_DISABLE_THINKING"] == "1"
     assert env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] == "1"
     assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
     if sys.platform == "win32":
         assert env["SYSTEMDRIVE"]
         assert env["PROGRAMDATA"]

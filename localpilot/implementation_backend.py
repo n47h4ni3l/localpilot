@@ -187,6 +187,25 @@ def parse_claude_json_output(output: str) -> dict[str, Any]:
     raise ValueError("Claude Code output did not contain the required JSON result object")
 
 
+def _claude_error_detail(stdout: str, stderr: str, *, workspace: Path) -> str:
+    fields: list[str] = []
+    for line in reversed(str(stdout or "").splitlines()):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for key in ("subtype", "error", "errors", "stop_reason"):
+            if payload.get(key) not in (None, "", []):
+                fields.append(f"{key}={_bounded(payload[key], 500)}")
+        break
+    stderr_tail = sanitize_process_output(stderr, workspace=workspace)
+    if stderr_tail:
+        fields.append(f"stderr={_bounded(stderr_tail, 1000)}")
+    return "; ".join(fields)[:1600]
+
+
 def _kill_process_tree(process: subprocess.Popen[str]) -> None:
     try:
         parent = psutil.Process(process.pid)
@@ -665,9 +684,11 @@ class ClaudeCodeBackend:
                 sanitized_output=sanitized,
             )
         if process.returncode != 0:
+            detail = _claude_error_detail(stdout, stderr, workspace=workspace)
             return ImplementationResult(
                 ImplementationStatus.CLI_ERROR, self.name, self.model,
-                f"Claude Code exited with code {process.returncode}.",
+                f"Claude Code exited with code {process.returncode}."
+                + (f" {detail}" if detail else ""),
                 changed_paths=changed, diff_digest=digest,
                 exit_code=process.returncode, duration_seconds=duration, repair_pass=repair_pass,
                 sanitized_output=sanitized,

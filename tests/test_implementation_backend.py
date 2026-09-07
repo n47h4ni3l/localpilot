@@ -170,6 +170,8 @@ def test_wrapper_distinguishes_failure_classes(tmp_path: Path, behavior: str, ex
         ImplementationRequest(root, "implement", ("module.py",))
     )
     assert result.status == expected
+    if behavior == "cli_error":
+        assert "stderr=failed" in result.summary
 
 
 def test_wrapper_times_out_and_never_uses_shell(tmp_path: Path, monkeypatch):

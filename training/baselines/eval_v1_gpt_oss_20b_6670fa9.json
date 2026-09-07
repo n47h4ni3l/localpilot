@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "artifact_type": "aggregate_baseline",
+  "eval_name": "LocalPilot Eval v1",
+  "run_label": "current_localpilot_baseline_20260907T024537Z",
+  "repository": {
+    "commit": "6670fa9ef405c00548d2b34a00a97146a0b7bc4c",
+    "branch": "main",
+    "clean": true,
+    "matched_origin_main": true
+  },
+  "model": {
+    "name": "gpt-oss:20b",
+    "digest": "17052f91a42e97930aa6e28a6c6c06a983e6a58dbb00434885a0cf5313e376f7",
+    "provider": "ollama"
+  },
+  "run": {
+    "task_count": 25,
+    "completed_task_count": 25,
+    "runtime_error_count": 0
+  },
+  "scores": {
+    "scale_max": 4,
+    "overall_mean": 1.48,
+    "critical_category_mean": 1.3125,
+    "category_means": {
+      "research": 2.3333,
+      "repository_reasoning": 1.75,
+      "epistemics": 1.5,
+      "evolution": 1.5,
+      "generalization": 1.5,
+      "debugging": 1.25,
+      "tool_use": 0.75
+    },
+    "hard_failure_count": 5,
+    "zero_score_task_count": 6,
+    "score_4_task_count": 0,
+    "score_3_task_count": 3
+  },
+  "review": {
+    "method": "independent rubric review",
+    "reviewed_task_count": 25,
+    "protected_scorecard_fields_unchanged": true,
+    "repository_scorer_accepted": true
+  },
+  "content_policy": {
+    "aggregate_metadata_only": true,
+    "contains_held_out_prompts": false,
+    "contains_rubrics": false,
+    "contains_model_answers": false,
+    "contains_scorecard_rows": false
+  }
+}

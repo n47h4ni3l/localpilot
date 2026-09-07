@@ -13,6 +13,12 @@ Status: **baseline evaluation tooling active; no model training authorized yet**
 - `scripts/score_eval_v1.py` — post-run scorecard preparation and aggregate scoring; the evaluated model never receives its rubric.
 - `tests/test_run_eval_v1.py` — checkout, snapshot-isolation, held-out loading, and tool-surface tests.
 - `tests/test_score_eval_v1.py` — scorecard and aggregate-scoring tests.
+- `baselines/eval_v1_gpt_oss_20b_6670fa9.json` — durable aggregate-only current-model baseline; contains no held-out task content or scorecard rows.
+- `evolution_execution/cases.json` — four synthetic implementation contracts plus declarative deterministic criteria; no target patches.
+- `evolution_execution/acceptance/*` — evaluator-only acceptance tests, mounted temporarily and never exposed through model tools.
+- `scripts/run_evolution_execution.py` — disposable-fixture runner for the current pre-Claude-Code candidate implementation and bounded repair path.
+- `scripts/score_evolution_execution.py` — deterministic 0–4 aggregate scorer for execution reports.
+- `tests/test_evolution_execution.py` — isolation, fixture, scope, ordering, and scoring regression tests.
 - `reports/.gitignore` — keeps local responses/scorecards/summaries out of Git and future training data by default.
 - `README.md` — data authority, split, provenance, licensing, isolation, scoring, and rollout policy.
 
@@ -64,10 +70,9 @@ This prevents the public held-out benchmark or its scoring rubric from being ret
 
 ## Next gates
 
-1. CI-validate the baseline runner/scorer and existing dataset validator.
-2. Run the 25-task current `gpt-oss:20b` baseline locally and save the ignored response report.
-3. Prepare the scorecard and obtain an independent/human 0–4 review for every response.
-4. Freeze a small **evolution-execution baseline** for the current Qwen/self-development implementation path; Eval v1 alone does not directly measure candidate-building performance.
-5. Implement the full Claude Code evolution backend.
-6. Re-run both the unchanged Eval v1 and the execution benchmark.
-7. Only then begin Corpus v1 construction and backend-specific adapter training work.
+1. CI-validate the evolution-execution runner, deterministic scorer, and existing evaluation tooling.
+2. Merge the benchmark tooling without changing LocalPilot runtime behavior.
+3. Run the four-task evolution-execution baseline on clean current `main` and retain the ignored local raw/scored reports.
+4. Implement the full Claude Code evolution backend.
+5. Re-run both the unchanged Eval v1 and the unchanged execution benchmark.
+6. Only then begin Corpus v1 construction and backend-specific adapter training work.

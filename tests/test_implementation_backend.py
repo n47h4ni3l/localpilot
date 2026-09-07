@@ -58,7 +58,7 @@ elif behavior == 'cli_error':
     raise SystemExit(7)
 elif behavior == 'malformed':
     print('not json')
-elif behavior in {'success', 'nonzero_success', 'plain_success', 'max_turns', 'escape'}:
+elif behavior in {'success', 'nonzero_success', 'plain_success', 'null_success', 'max_turns', 'escape'}:
     target = pathlib.Path('module.py' if behavior != 'escape' else 'other.py')
     target.write_text('VALUE = 2\\n', encoding='utf-8')
     result = {
@@ -68,6 +68,7 @@ elif behavior in {'success', 'nonzero_success', 'plain_success', 'max_turns', 'e
     }
     envelope_result = (
         result if behavior == 'nonzero_success'
+        else None if behavior == 'null_success'
         else 'implementation finished' if behavior in {'plain_success', 'max_turns'}
         else json.dumps(result)
     )
@@ -76,7 +77,7 @@ elif behavior in {'success', 'nonzero_success', 'plain_success', 'max_turns', 'e
                       'usage': {'input_tokens': 10, 'output_tokens': 5},
                       'subtype': 'error_max_turns' if behavior == 'max_turns' else 'success',
                       'is_error': behavior == 'max_turns', 'stop_reason': 'stop_sequence'}))
-    if behavior in {'nonzero_success', 'plain_success', 'max_turns'}:
+    if behavior in {'nonzero_success', 'plain_success', 'null_success', 'max_turns'}:
         raise SystemExit(1)
 """.lstrip(),
         encoding="utf-8",
@@ -175,7 +176,7 @@ def test_explicit_success_envelope_retains_nonzero_exit_as_evidence(tmp_path: Pa
     assert result.exit_code == 1
 
 
-@pytest.mark.parametrize("behavior", ["plain_success", "max_turns"])
+@pytest.mark.parametrize("behavior", ["plain_success", "null_success", "max_turns"])
 def test_localpilot_test_verification_recovers_bounded_custom_model_envelope(
     tmp_path: Path, behavior: str
 ):

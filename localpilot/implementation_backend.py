@@ -205,6 +205,16 @@ def parse_claude_json_output(output: str) -> dict[str, Any]:
                     "_claude_subtype": candidate.get("subtype"),
                     "_claude_stop_reason": candidate.get("stop_reason"),
                 }
+        if candidate.get("subtype") in {"success", "error_max_turns"}:
+            return {
+                "summary": "Claude Code returned a completion envelope without an inner result object.",
+                "tests": [],
+                "_claude_session_id": candidate.get("session_id", ""),
+                "_claude_usage": candidate.get("usage", {}),
+                "_claude_is_error": candidate.get("is_error"),
+                "_claude_subtype": candidate.get("subtype"),
+                "_claude_stop_reason": candidate.get("stop_reason"),
+            }
         if any(key in candidate for key in ("summary", "tests", "status")):
             return candidate
     raise ValueError("Claude Code output did not contain the required JSON result object")

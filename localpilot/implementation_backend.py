@@ -458,7 +458,8 @@ class ClaudeCodeBackend:
 
     def _environment(self) -> dict[str, str]:
         retained = (
-            "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "COMSPEC",
+            "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "PROGRAMDATA",
+            "TEMP", "TMP", "COMSPEC",
             "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
         )
         env = {name: os.environ[name] for name in retained if name in os.environ}

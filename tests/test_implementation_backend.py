@@ -206,6 +206,9 @@ def test_command_has_narrow_tools_and_no_permission_bypass(tmp_path: Path):
     assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "65536"
     assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "2048"
     assert env["MAX_THINKING_TOKENS"] == "0"
+    if sys.platform == "win32":
+        assert env["SYSTEMDRIVE"]
+        assert env["PROGRAMDATA"]
 
 
 def test_localpilot_rejection_drives_one_bounded_claude_rework_pass(tmp_path: Path, monkeypatch):

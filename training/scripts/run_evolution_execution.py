@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import json
 import os
 import shutil
@@ -608,7 +609,9 @@ def main() -> int:
     except ImportError as exc:
         raise RuntimeError("Ollama Python package is required for this benchmark.") from exc
 
-    with tempfile.TemporaryDirectory(prefix="localpilot-evoexec-") as temp_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="localpilot-evoexec-", ignore_cleanup_errors=True
+    ) as temp_dir:
         temp_root = Path(temp_dir)
         controller_root = temp_root / "controller"
         controller_root.mkdir()
@@ -646,6 +649,8 @@ def main() -> int:
                     repair_rounds=max(1, args.repair_rounds),
                 )
             )
+        del developer
+        gc.collect()
 
     state_after = repository_state()
     if state_after != state_before:

@@ -1,1 +1,103 @@
-# TODO: Define LocalPilot Eval v1.
+version: 1
+name: LocalPilot Eval v1
+split: held_out_eval
+root: training/evals
+
+isolation:
+  forbidden_from_training: true
+  forbidden_from_retrieval_during_eval: true
+  forbid_assistant_answers_in_eval_files: true
+  leakage_check: normalized_prompt
+
+baseline:
+  model: gpt-oss:20b
+  purpose: score current LocalPilot before Claude Code integration
+
+categories:
+  repository_reasoning:
+    target_count: 30
+    seed_count: 4
+    critical: true
+    metrics:
+      - evidence_grounding
+      - cross_module_reasoning
+      - current_repo_over_stale_assumption
+  debugging:
+    target_count: 30
+    seed_count: 4
+    critical: true
+    metrics:
+      - fault_localization
+      - infrastructure_vs_code_failure
+      - discriminating_test_quality
+  tool_use:
+    target_count: 20
+    seed_count: 4
+    critical: true
+    metrics:
+      - tool_selection
+      - evidence_authority
+      - observation_before_conclusion
+  research:
+    target_count: 20
+    seed_count: 3
+    critical: false
+    metrics:
+      - source_quality
+      - conflicting_evidence_handling
+      - stop_or_continue_judgment
+  evolution:
+    target_count: 20
+    seed_count: 4
+    critical: false
+    metrics:
+      - hypothesis_quality
+      - measurable_acceptance_contract
+      - novelty_and_leverage
+  epistemics:
+    target_count: 20
+    seed_count: 4
+    critical: true
+    metrics:
+      - uncertainty_calibration
+      - hypothesis_revision
+      - absence_vs_not_found
+  generalization:
+    target_count: 10
+    seed_count: 2
+    critical: false
+    metrics:
+      - transfer_to_novel_structure
+      - principle_over_memorization
+
+seed_total: 25
+target_total: 150
+
+scoring:
+  task_score_min: 0
+  task_score_max: 4
+  rubric:
+    0: unsupported_or_fundamentally_wrong
+    1: partially_relevant_but_unsafe_or_ungrounded
+    2: mostly_correct_with_material_gaps
+    3: correct_grounded_and_actionable
+    4: correct_grounded_efficient_and_self_correcting
+  report:
+    - overall_mean
+    - category_means
+    - critical_category_means
+    - hard_failure_count
+
+promotion_gate:
+  improve_overall_score: true
+  no_critical_category_regression: true
+  max_generalization_regression_percent: 2
+  max_grounding_regression_percent: 0
+  notes: >-
+    Thresholds are deliberately conservative for the first baseline. Revisit only
+    after repeated runs establish measurement noise.
+
+planned_comparisons:
+  - current_localpilot_baseline
+  - post_claude_code_integration
+  - first_trained_adapter_candidate

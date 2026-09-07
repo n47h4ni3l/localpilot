@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import time
+import ctypes
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -213,6 +214,28 @@ def _kill_process_tree(process: subprocess.Popen[str]) -> None:
         process.kill()
 
 
+def _trim_windows_gpu_runner_working_sets() -> int:
+    """Drop reclaimable host mappings after Ollama has placed the model in VRAM."""
+    if os.name != "nt":
+        return 0
+    trimmed = 0
+    for process in psutil.process_iter(("name",)):
+        try:
+            if str(process.info.get("name") or "").lower() != "llama-server.exe":
+                continue
+            handle = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0400, False, process.pid)
+            if not handle:
+                continue
+            try:
+                if ctypes.windll.psapi.EmptyWorkingSet(handle):
+                    trimmed += 1
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except (OSError, psutil.Error):
+            continue
+    return trimmed
+
+
 class ClaudeCodeBackend:
     """A bounded Claude Code process confined to one Git candidate checkout."""
 
@@ -349,6 +372,8 @@ class ClaudeCodeBackend:
                         f"Ollama allocated {allocated or 'unknown'} context tokens after loading {self.model}; "
                         f"at least {self.context_tokens} are required"
                     )
+                elif int(active.get("size_vram") or 0) >= int(active.get("size") or 0) * 0.95:
+                    _trim_windows_gpu_runner_working_sets()
         except (OSError, subprocess.SubprocessError) as exc:
             messages.append(f"Ollama preflight failed: {type(exc).__name__}: {_bounded(exc, 500)}")
         except (ValueError, json.JSONDecodeError) as exc:

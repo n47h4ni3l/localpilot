@@ -114,11 +114,21 @@ def test_preflight_loads_model_at_target_context_and_verifies_allocation(
         lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="installed", stderr=""),
     )
     calls: list[tuple[str, dict | None]] = []
+    trims: list[bool] = []
+    monkeypatch.setattr(
+        "localpilot.implementation_backend._trim_windows_gpu_runner_working_sets",
+        lambda: trims.append(True) or 1,
+    )
 
     def ollama_json(path, payload=None):
         calls.append((path, payload))
         if path == "/api/ps":
-            return {"models": [{"name": "gpt-oss:20b", "context_length": allocated}]}
+            return {
+                "models": [{
+                    "name": "gpt-oss:20b", "context_length": allocated,
+                    "size": 100, "size_vram": 100,
+                }]
+            }
         return {"done": True}
 
     backend._ollama_json = ollama_json
@@ -127,6 +137,7 @@ def test_preflight_loads_model_at_target_context_and_verifies_allocation(
     assert calls[0][0] == "/api/generate"
     assert calls[0][1]["options"]["num_ctx"] == 65536
     assert calls[1][0] == "/api/ps"
+    assert trims == ([True] if healthy else [])
     if not healthy:
         assert "allocated 32768" in "; ".join(result.messages)
 

@@ -78,6 +78,21 @@ $allocated = if ($activeModel) { [int]$activeModel.context_length } else { 0 }
 if ($allocated -lt $RequiredContext) {
     throw "Ollama allocated $allocated context tokens after loading $Model; at least $RequiredContext are required."
 }
+if ($activeModel.size -gt 0 -and $activeModel.size_vram -ge ($activeModel.size * 0.95)) {
+    if (-not ([System.Management.Automation.PSTypeName]'LocalPilotWorkingSet').Type) {
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class LocalPilotWorkingSet {
+    [DllImport("psapi.dll")]
+    public static extern bool EmptyWorkingSet(IntPtr process);
+}
+'@
+    }
+    Get-Process -Name "llama-server" -ErrorAction SilentlyContinue | ForEach-Object {
+        [LocalPilotWorkingSet]::EmptyWorkingSet($_.Handle) | Out-Null
+    }
+}
 
 [pscustomobject]@{
     Healthy = $true

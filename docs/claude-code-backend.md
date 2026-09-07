@@ -37,7 +37,7 @@ Run the checked-in preflight:
 .\scripts\preflight-claude-code.ps1 -ClaudePath E:\Tools\ClaudeCode\claude.exe -Model gpt-oss:20b -RequiredContext 65536
 ```
 
-Preflight performs a real local load and then reads Ollama's live allocation, so the first run can take several minutes while the model is mapped into memory. A metadata-only model check is not treated as proof that 64K is viable.
+Preflight performs a real local load and then reads Ollama's live allocation, so the first run can take several minutes while the model is mapped into memory. A metadata-only model check is not treated as proof that 64K is viable. On Windows, when Ollama reports the model fully resident in VRAM, preflight trims the runner's reclaimable host working-set mapping so the existing background memory governor measures usable RAM instead of the duplicate memory-mapped model pages.
 
 Claude Code with Ollama needs at least 64K context. If `ollama ps` reports less, stop the running model, set the Ollama app context slider to at least 65536, or restart the server with:
 

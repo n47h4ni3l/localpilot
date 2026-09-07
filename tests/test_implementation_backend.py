@@ -158,7 +158,7 @@ def test_preflight_loads_model_at_target_context_and_verifies_allocation(
 def test_real_process_wrapper_edits_only_candidate_and_returns_structured_evidence(tmp_path: Path):
     root = _repo(tmp_path)
     result = _backend(tmp_path, "success").run(
-        ImplementationRequest(root, "implement", ("module.py",))
+        ImplementationRequest(root, "implement the non‑ASCII boundary", ("module.py",))
     )
     assert result.status == ImplementationStatus.COMPLETED
     assert result.changed_paths == ("module.py",)

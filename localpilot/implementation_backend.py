@@ -605,6 +605,8 @@ class ClaudeCodeBackend:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="strict",
                 shell=False,
                 creationflags=hidden_process_creation_flags(),
             )
@@ -728,7 +730,8 @@ class ClaudeCodeBackend:
                     session_id=request.session_id, allowed_paths=request.allowed_paths
                 ), cwd=str(workspace), env=env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, shell=False, creationflags=hidden_process_creation_flags(),
+                text=True, encoding="utf-8", errors="strict", shell=False,
+                creationflags=hidden_process_creation_flags(),
             )
         except OSError as exc:
             return ImplementationResult(

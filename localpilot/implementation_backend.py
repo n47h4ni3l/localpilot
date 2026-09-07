@@ -803,7 +803,6 @@ class ClaudeCodeBackend:
         explicit_envelope_success = bool(
             payload
             and envelope_subtype == "success"
-            and payload.get("_claude_is_error") is not True
         )
         bounded_turn_completion = bool(
             payload and envelope_subtype == "error_max_turns" and changed

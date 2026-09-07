@@ -76,7 +76,8 @@ elif behavior in {'success', 'nonzero_success', 'plain_success', 'null_success',
     print(json.dumps({envelope_key: envelope_result, 'session_id': 'session-1',
                       'usage': {'input_tokens': 10, 'output_tokens': 5},
                       'subtype': 'error_max_turns' if behavior == 'max_turns' else 'success',
-                      'is_error': behavior == 'max_turns', 'stop_reason': 'stop_sequence'}))
+                      'is_error': behavior in {'null_success', 'max_turns'},
+                      'stop_reason': 'stop_sequence'}))
     if behavior in {'nonzero_success', 'plain_success', 'null_success', 'max_turns'}:
         raise SystemExit(1)
 """.lstrip(),

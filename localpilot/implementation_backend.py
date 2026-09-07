@@ -450,13 +450,17 @@ class ClaudeCodeBackend:
         ]
         return json.dumps({"permissions": {"deny": deny}}, separators=(",", ":"))
 
-    def _command(self, *, session_id: str = "") -> list[str]:
+    def _command(
+        self, *, session_id: str = "", allowed_paths: Sequence[str] = ()
+    ) -> list[str]:
         allowed = [
-            "Read", "Glob", "Grep", "Edit", "Write",
+            "Read", "Glob", "Grep",
             "Bash(git status *)", "Bash(git diff *)", "Bash(git log *)",
             "Bash(python -m compileall *)", "Bash(python -m pytest *)",
             "Bash(python -m unittest *)", "Bash(py -m pytest *)", "Bash(py -m unittest *)",
         ]
+        for relative in sorted({_relative_path(item) for item in allowed_paths}):
+            allowed.extend((f"Edit(./{relative})", f"Write(./{relative})"))
         result_schema = json.dumps(
             {
                 "type": "object",
@@ -710,7 +714,9 @@ class ClaudeCodeBackend:
         env = self._environment()
         try:
             process = subprocess.Popen(
-                self._command(session_id=request.session_id), cwd=str(workspace), env=env,
+                self._command(
+                    session_id=request.session_id, allowed_paths=request.allowed_paths
+                ), cwd=str(workspace), env=env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, shell=False, creationflags=hidden_process_creation_flags(),
             )

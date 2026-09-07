@@ -246,7 +246,7 @@ def test_wrapper_times_out_and_never_uses_shell(tmp_path: Path, monkeypatch):
 
 
 def test_command_has_narrow_tools_and_no_permission_bypass(tmp_path: Path):
-    command = _backend(tmp_path, "success")._command()
+    command = _backend(tmp_path, "success")._command(allowed_paths=("module.py",))
     joined = " ".join(command)
     assert "--dangerously-skip-permissions" not in joined
     assert "--allowedTools" in command
@@ -254,6 +254,10 @@ def test_command_has_narrow_tools_and_no_permission_bypass(tmp_path: Path):
     assert "Bash(git commit *)" in command
     assert "WebSearch" in command
     assert "--no-session-persistence" in command
+    assert "Edit" not in command
+    assert "Write" not in command
+    assert "Edit(./module.py)" in command
+    assert "Write(./module.py)" in command
     env = _backend(tmp_path, "success")._environment()
     assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "65536"
     assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "2048"

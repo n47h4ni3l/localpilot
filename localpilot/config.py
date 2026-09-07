@@ -116,16 +116,24 @@ class SystemSenseConfig:
 @dataclass(slots=True)
 class SelfDevConfig:
     enabled: bool = True
-    # This is deliberately distinct from model.name. If it is unavailable,
-    # LocalPilot falls back to the everyday model for that cycle.
-    developer_model: str = "qwen2.5:32b"
-    # Ordered fallbacks are considered only when the preferred/everyday model
-    # would exceed the background memory ceiling on the current machine.
-    developer_model_fallbacks: list[str] = field(default_factory=lambda: ["qwen2.5:14b"])
+    # Planning, research, and independent review stay on the everyday model.
+    developer_model: str = "gpt-oss:20b"
+    # The one-model design has no alternate implementation or review model.
+    developer_model_fallbacks: list[str] = field(default_factory=list)
     # Give repository/tool loops a deliberate context allocation instead of
-    # inheriting Ollama's runtime default. 16K is conservative for background
-    # Qwen work; owners with more headroom can raise it up to the validated cap.
+    # inheriting Ollama's runtime default. This remains separate from the
+    # Claude Code implementation context target below.
     context_tokens: int = 16384
+    implementation_backend: str = "claude_code"
+    implementation_model: str = "gpt-oss:20b"
+    implementation_context_tokens: int = 65536
+    implementation_max_turns: int = 40
+    implementation_timeout_seconds: float = 600.0
+    implementation_review_repair_passes: int = 1
+    implementation_max_output_tokens: int = 2048
+    implementation_max_output_chars: int = 120_000
+    implementation_executable: str = "claude"
+    implementation_base_url: str = "http://localhost:11434"
     # Model file size is a useful lower-bound estimate for resident memory.
     # Reserve additional space for context/KV cache before starting inference.
     model_memory_overhead_gb: float = 1.0
@@ -161,7 +169,6 @@ class SelfDevConfig:
     candidate_resource_quota_gb: float = 8.0
     max_resource_file_mb: int = 512
     run_static_checks: bool = True
-    allow_local_candidate_execution: bool = False
     learning_database: str = "learning.sqlite3"
     lesson_limit: int = 6
 
@@ -252,6 +259,13 @@ def load_config(path: str | Path | None = None) -> Config:
         _apply(cfg.systemsense, raw.get("systemsense", {}))
         selfdev_raw = raw.get("selfdev", {})
         _apply(cfg.selfdev, selfdev_raw)
+        # Migrate the former shipped Qwen defaults to the one-model contract.
+        # Custom model choices still fail validation below instead of silently
+        # changing owner intent.
+        if selfdev_raw.get("developer_model") == "qwen2.5:32b":
+            cfg.selfdev.developer_model = "gpt-oss:20b"
+        if selfdev_raw.get("developer_model_fallbacks") == ["qwen2.5:14b"]:
+            cfg.selfdev.developer_model_fallbacks = []
         legacy_limit = selfdev_raw.get("max_files_per_cycle")
         if legacy_limit is not None:
             if "candidate_file_hard_ceiling" in selfdev_raw:
@@ -275,6 +289,55 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg.selfdev.context_tokens = _validate_context_tokens(
         "selfdev.context_tokens", cfg.selfdev.context_tokens
     )
+    cfg.selfdev.implementation_context_tokens = _validate_context_tokens(
+        "selfdev.implementation_context_tokens", cfg.selfdev.implementation_context_tokens
+    )
+    cfg.selfdev.implementation_backend = str(cfg.selfdev.implementation_backend).strip().lower()
+    if cfg.selfdev.implementation_backend not in {"claude_code", "local_tools"}:
+        raise ValueError("selfdev.implementation_backend must be claude_code or local_tools")
+    if cfg.selfdev.implementation_model != "gpt-oss:20b":
+        raise ValueError("selfdev.implementation_model must remain gpt-oss:20b")
+    if cfg.selfdev.developer_model != "gpt-oss:20b" or cfg.selfdev.developer_model_fallbacks:
+        raise ValueError(
+            "selfdev planning/research/review must use only gpt-oss:20b; remove developer fallbacks"
+        )
+    if cfg.selfdev.implementation_context_tokens < 65536:
+        raise ValueError(
+            "selfdev.implementation_context_tokens must be at least 65536 for Claude Code with Ollama"
+        )
+    cfg.selfdev.implementation_max_turns = int(cfg.selfdev.implementation_max_turns)
+    cfg.selfdev.implementation_timeout_seconds = float(
+        cfg.selfdev.implementation_timeout_seconds
+    )
+    cfg.selfdev.implementation_review_repair_passes = int(
+        cfg.selfdev.implementation_review_repair_passes
+    )
+    cfg.selfdev.implementation_max_output_chars = int(
+        cfg.selfdev.implementation_max_output_chars
+    )
+    cfg.selfdev.implementation_max_output_tokens = int(
+        cfg.selfdev.implementation_max_output_tokens
+    )
+    if not 1 <= cfg.selfdev.implementation_max_turns <= 100:
+        raise ValueError("selfdev.implementation_max_turns must be between 1 and 100")
+    if not 30 <= cfg.selfdev.implementation_timeout_seconds <= 3600:
+        raise ValueError("selfdev.implementation_timeout_seconds must be between 30 and 3600")
+    if not 1 <= cfg.selfdev.implementation_review_repair_passes <= 5:
+        raise ValueError("selfdev.implementation_review_repair_passes must be between 1 and 5")
+    if not 10_000 <= cfg.selfdev.implementation_max_output_chars <= 1_000_000:
+        raise ValueError("selfdev.implementation_max_output_chars must be between 10000 and 1000000")
+    if not 256 <= cfg.selfdev.implementation_max_output_tokens <= 8192:
+        raise ValueError("selfdev.implementation_max_output_tokens must be between 256 and 8192")
+    cfg.selfdev.implementation_executable = str(cfg.selfdev.implementation_executable).strip()
+    if not cfg.selfdev.implementation_executable:
+        raise ValueError("selfdev.implementation_executable is required")
+    from urllib.parse import urlparse
+
+    implementation_url = urlparse(str(cfg.selfdev.implementation_base_url))
+    if implementation_url.scheme != "http" or implementation_url.hostname not in {
+        "localhost", "127.0.0.1", "::1"
+    }:
+        raise ValueError("selfdev.implementation_base_url must be a loopback HTTP Ollama URL")
     if not isinstance(cfg.model.memory_embeddings_enabled, bool):
         raise ValueError("model.memory_embeddings_enabled must be a boolean")
     cfg.model.memory_embedding_model = str(cfg.model.memory_embedding_model).strip()

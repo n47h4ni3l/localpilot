@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import json
 import os
 import shutil
@@ -60,15 +61,19 @@ def repository_state(root: Path = ROOT) -> dict[str, Any]:
     }
 
 
-def require_benchmark_checkout(state: dict[str, Any]) -> None:
-    if state.get("branch") != "main":
+def require_benchmark_checkout(state: dict[str, Any], *, post_cc: bool = False) -> None:
+    if not post_cc and state.get("branch") != "main":
         raise RuntimeError("Evolution-execution baseline must be launched from main after merge.")
     if not state.get("clean"):
         raise RuntimeError("Evolution-execution baseline requires a clean working tree.")
     if not state.get("origin_main"):
         raise RuntimeError("origin/main is unavailable; fetch and pull before running the baseline.")
     if state.get("head") != state.get("origin_main"):
-        raise RuntimeError("HEAD does not match origin/main; pull latest main before running the baseline.")
+        if not post_cc:
+            raise RuntimeError("HEAD does not match origin/main; pull latest main before running the baseline.")
+        merge_base = _git(ROOT, "merge-base", "HEAD", "origin/main").strip()
+        if merge_base != state.get("origin_main"):
+            raise RuntimeError("Post-CC benchmark branch must be based on the latest origin/main.")
 
 
 def load_case_document(path: Path = CASES_PATH) -> dict[str, Any]:
@@ -465,6 +470,96 @@ def run_case(
     }
 
 
+def run_post_cc_case(
+    case: dict[str, Any],
+    workspace: Path,
+    developer: SelfDeveloper,
+    chat: Callable[..., Any],
+    model: str,
+) -> dict[str, Any]:
+    create_fixture_repository(case, workspace)
+    baseline_checks = run_checks(case, workspace)
+    readable = set(case["initial_files"]).union(case["allowed_paths"])
+    tools = RecordingCandidateTools(
+        workspace,
+        allowed_paths=case["allowed_paths"],
+        readable_paths=readable,
+        max_files=len(case["allowed_paths"]),
+    )
+    initial_mtimes = {
+        path: (workspace / path).stat().st_mtime_ns
+        for path in case["allowed_paths"]
+        if (workspace / path).is_file()
+    }
+    task = {
+        "id": f"post-cc-{case['id']}",
+        "title": str(case["id"]),
+        "acceptance": [str(case["instruction"])],
+        "hypothesis": "The Claude Code implementation backend will complete this held-out fixture contract.",
+        "evaluation": {
+            "metric": "Evolution Execution v1 deterministic criteria",
+            "baseline": "pre-CC execution mean 3.0/4 with two hard failures",
+            "success_criterion": "task passes all four deterministic criteria",
+            "measurement_method": "hidden fixture checks owned by the evaluator",
+        },
+    }
+    existing = [path for path in case["allowed_paths"] if (workspace / path).is_file()]
+    new_paths = [path for path in case["allowed_paths"] if not (workspace / path).exists()]
+    runtime_error: dict[str, str] | None = None
+    try:
+        developer._run_claude_code_implementation(
+            chat=chat,
+            developer_model=model,
+            task=task,
+            branch=f"benchmark/{case['id']}",
+            workspace=workspace,
+            tools=tools,
+            cycle_id=0,
+            research="The disposable fixture files are the complete repository evidence for this task.",
+            grounding_plan={"referenced_paths": existing, "new_runtime_paths": new_paths},
+            grounding_evidence=existing,
+            evolution_context=str(case["instruction"]),
+            lessons=[],
+            force=True,
+        )
+        initial_checks = run_checks(case, workspace)
+    except Exception as exc:
+        runtime_error = {"type": type(exc).__name__, "message": str(exc)[:2000]}
+        initial_checks = []
+    final_checks = run_checks(case, workspace)
+    ordered_paths = sorted(
+        changed_paths(workspace),
+        key=lambda path: (
+            (workspace / path).stat().st_mtime_ns
+            if (workspace / path).is_file()
+            else initial_mtimes.get(path, 0)
+        ),
+    )
+    evidence = developer.audit.latest("selfdev_implementation_backend") or {}
+    return {
+        "task_id": str(case["id"]),
+        "baseline_checks": baseline_checks,
+        "initial_checks": initial_checks,
+        "final_checks": final_checks,
+        "repair_used": int(evidence.get("review_repair_pass_count") or 0) > 0,
+        "changed_paths": changed_paths(workspace),
+        "write_events": [
+            {"sequence": index, "stage": "claude_code", "path": path}
+            for index, path in enumerate(ordered_paths, start=1)
+        ],
+        "out_of_scope_attempts": [],
+        "rejected_write_attempt_count": len(tools.failed_write_attempts),
+        "runtime_error": runtime_error,
+        "implementation_evidence": {
+            key: evidence.get(key)
+            for key in (
+                "backend", "model", "diff_digest", "tests", "review_repair_pass_count",
+                "review_status", "final_status", "exit_code", "usage", "duration_seconds",
+            )
+        },
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -478,10 +573,16 @@ def main() -> int:
     parser.add_argument("--repair-rounds", type=int, default=5)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--no-score", action="store_true")
+    parser.add_argument(
+        "--post-cc",
+        action="store_true",
+        help="Exercise the Claude Code backend on the same four disposable tasks.",
+    )
+    parser.add_argument("--claude-path", help="Absolute Claude Code executable path for post-CC mode.")
     args = parser.parse_args()
 
     state_before = repository_state()
-    require_benchmark_checkout(state_before)
+    require_benchmark_checkout(state_before, post_cc=args.post_cc)
     document = load_case_document()
     selected_ids = set(args.task_id)
     cases = [
@@ -495,6 +596,10 @@ def main() -> int:
     config = copy.deepcopy(load_config(ROOT / "localpilot.toml"))
     config.github.auto_push_candidates = False
     config.selfdev.auto_promote = False
+    if args.post_cc:
+        config.selfdev.implementation_backend = "claude_code"
+        if args.claude_path:
+            config.selfdev.implementation_executable = args.claude_path
     started_at = _utc_now()
     label = f"evolution_execution_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     task_results: list[dict[str, Any]] = []
@@ -504,7 +609,9 @@ def main() -> int:
     except ImportError as exc:
         raise RuntimeError("Ollama Python package is required for this benchmark.") from exc
 
-    with tempfile.TemporaryDirectory(prefix="localpilot-evoexec-") as temp_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="localpilot-evoexec-", ignore_cleanup_errors=True
+    ) as temp_dir:
         temp_root = Path(temp_dir)
         controller_root = temp_root / "controller"
         controller_root.mkdir()
@@ -524,7 +631,15 @@ def main() -> int:
         for index, case in enumerate(cases, start=1):
             print(f"[{index}/{len(cases)}] Running {case['id']} in a disposable fixture")
             task_results.append(
-                run_case(
+                run_post_cc_case(
+                    case,
+                    temp_root / f"fixture-{index}",
+                    developer,
+                    chat,
+                    selected_model,
+                )
+                if args.post_cc
+                else run_case(
                     case,
                     temp_root / f"fixture-{index}",
                     developer,
@@ -534,6 +649,8 @@ def main() -> int:
                     repair_rounds=max(1, args.repair_rounds),
                 )
             )
+        del developer
+        gc.collect()
 
     state_after = repository_state()
     if state_after != state_before:
@@ -549,6 +666,7 @@ def main() -> int:
         "completed_at": _utc_now(),
         "repository": state_before,
         "model": {**model_identity, "selection_reason": selection_reason},
+        "implementation_backend": "claude_code" if args.post_cc else "local_tools",
         "isolation": {
             "disposable_fixture_repository_per_task": True,
             "real_repository_writes": False,
@@ -556,8 +674,9 @@ def main() -> int:
             "hidden_acceptance_removed_during_model_stages": True,
             "hidden_acceptance_paths_excluded_from_model_tools": True,
             "target_patches_present": False,
-            "candidate_execution_available_to_model": False,
+            "candidate_execution_available_to_model": bool(args.post_cc),
             "deterministic_execution_owned_by_evaluator": True,
+            "localpilot_independent_review": bool(args.post_cc),
             "repair_pass_limit": 1,
         },
         "task_count": len(task_results),

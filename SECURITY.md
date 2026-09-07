@@ -134,7 +134,7 @@ These controls are foundations for bounded autonomy. They do not authorize:
 - arbitrary desktop control;
 - arbitrary process termination;
 - destructive filesystem actions;
-- execution of untrusted Candidate code on the workstation;
+- execution of arbitrary candidate commands outside the confined Claude Code allowlist;
 - autonomous merge or promotion;
 - silent weakening of security controls; or
 - treating correlation, memory, a model response, or a passing test as proof.

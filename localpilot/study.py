@@ -139,7 +139,7 @@ _BENCHMARKS: dict[str, tuple[BenchmarkQuestion, ...]] = {
             "self.safety_invariants",
             "safety invariants",
             lambda memory, root: _has_fact(
-                memory, "self", "invariant:no_local_candidate_execution"
+                memory, "self", "invariant:confined_candidate_execution"
             )
             and _has_fact(memory, "self", "invariant:human_only_promotion"),
         ),
@@ -1162,7 +1162,10 @@ class StudyEngine:
             "trusted_main_sync": "Evolution accepts only a verified fast-forward of a clean trusted-main checkout.",
             "resource_governor": "Background self-development remains subject to CPU, memory, and user-idle gates.",
             "interruptibility": "Model and tool work is rechecked and can pause when resources or user activity change.",
-            "no_local_candidate_execution": "Autonomous candidate code is not executed locally; local validation is non-executing.",
+            "confined_candidate_execution": (
+                "Autonomous candidate code executes only inside the isolated candidate workspace under the "
+                "bounded implementation-backend command and path policy."
+            ),
             "reviewer_test_immutability": "Reviewer-controlled test contracts cannot be changed during autonomous repair.",
             "argv_shell_false": "Processes use argument vectors with shell disabled.",
             "human_only_promotion": "Only a human merge may promote a candidate.",

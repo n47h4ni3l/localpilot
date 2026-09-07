@@ -86,11 +86,24 @@ compact_context_enabled = true
 
 [selfdev]
 enabled = true
-# Used only for research/implementation cycles when installed. Otherwise the
-# everyday model and then these ordered fallbacks are considered. A model is
-# skipped when loading it would exceed the background memory ceiling.
-developer_model = "qwen2.5:32b"
-developer_model_fallbacks = ["qwen2.5:14b"]
+# LocalPilot keeps planning, repository research, and independent acceptance
+# review on the same local model used by the everyday operator.
+developer_model = "gpt-oss:20b"
+developer_model_fallbacks = []
+# Claude Code is the default implementation harness. Set implementation_backend
+# to "local_tools" only for an explicit rollback to the previous editor loop.
+implementation_backend = "claude_code"
+implementation_model = "gpt-oss:20b"
+implementation_context_tokens = 65536
+implementation_max_turns = 40
+implementation_timeout_seconds = 600
+implementation_review_repair_passes = 1
+implementation_max_output_tokens = 2048
+implementation_max_output_chars = 120000
+# Use an absolute path when Claude Code is not on PATH, for example:
+# implementation_executable = "E:\\Tools\\ClaudeCode\\claude.exe"
+implementation_executable = "claude"
+implementation_base_url = "http://localhost:11434"
 # Reserve space beyond the model file size for context/KV cache.
 model_memory_overhead_gb = 1.0
 # Unload after every response so a pause returns RAM/VRAM immediately.
@@ -123,6 +136,5 @@ max_zip_size_mb = 1024
 candidate_resource_quota_gb = 8.0
 max_resource_file_mb = 512
 run_static_checks = true
-allow_local_candidate_execution = false
 learning_database = "learning.sqlite3"
 lesson_limit = 6

@@ -69,6 +69,7 @@ def _developer(tmp_path: Path):
     config = Config()
     config.agent.data_dir = "data"
     config.selfdev.run_static_checks = False
+    config.selfdev.implementation_backend = "local_tools"
     config.github.auto_push_candidates = False
     developer = SelfDeveloper(config, project)
     task = _task()

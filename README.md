@@ -23,7 +23,7 @@ In practical terms, LocalPilot works for the owner while the PC is active and ma
 | Candidate branch, pull request, and CI lifecycle | Implemented when GitHub is configured |
 | Autonomous merge or stable-code promotion | Not enabled |
 | Arbitrary desktop or shell control | Not implemented |
-| Local execution of autonomous candidate code | Disabled |
+| Candidate implementation and repository tests | Claude Code in a confined candidate workspace; independently reviewed by LocalPilot |
 | Model-weight training or fine-tuning | Not implemented |
 | Sustained recursive self-improvement | Not demonstrated |
 
@@ -94,7 +94,7 @@ A Candidate is a proposed version of LocalPilot, not the installed stable agent.
 
 Candidate tools enforce path, symlink, file-type, file-size, archive, resource, and file-count restrictions. Reviewer-protected tests, Git metadata, CI definitions, virtual environments, caches, and private LocalPilot data are protected.
 
-Local validation parses or compiles candidate files without importing or executing untrusted candidate code. Executable validation occurs in GitHub Actions. Passing CI still does not merge or promote the candidate.
+Claude Code may run only existing repository tests inside the isolated candidate workspace under a bounded tool policy. LocalPilot then independently reviews the diff, test evidence, static checks, and acceptance contract. GitHub Actions remains the external validation boundary, and passing either local tests or CI still does not merge or promote the candidate.
 
 For the complete lifecycle, read [ARCHITECTURE.md](ARCHITECTURE.md). For enforced authority boundaries, read [SECURITY.md](SECURITY.md).
 
@@ -394,7 +394,7 @@ GitHub is an executable validation and review boundary, not a promotion authorit
 - `[systemsense]`: collection cadence, retention, baselines, correlations, and compact context; and
 - `[selfdev]`: developer models, cycle budgets, candidate limits, resources, repair, and learning storage.
 
-The default everyday model is `gpt-oss:20b`. The preferred background developer model is `qwen2.5:32b`, with `qwen2.5:14b` configured as a fallback. LocalPilot uses installed model metadata and resource limits; it does not assume those models are available or download them automatically during evolution.
+The operational model is `gpt-oss:20b`: LocalPilot uses it for everyday work, self-development planning/research/review, and Claude Code targets it through the local Ollama Anthropic-compatible endpoint. Claude Code is the implementation harness, not a second reasoning authority. See [the Claude Code backend guide](docs/claude-code-backend.md).
 
 Read the example and corresponding tests before changing security-critical limits.
 

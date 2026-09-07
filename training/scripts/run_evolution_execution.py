@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -272,12 +273,15 @@ def run_model_stage(
 
 def _run_command(workspace: Path, argv: list[str], *, timeout: float = 30.0) -> dict[str, Any]:
     started = time.perf_counter()
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         completed = subprocess.run(
-            [sys.executable, *argv],
+            [sys.executable, "-B", *argv],
             cwd=workspace,
             check=False,
             capture_output=True,
+            env=env,
             text=True,
             timeout=timeout,
         )
@@ -356,8 +360,16 @@ def changed_paths(workspace: Path) -> list[str]:
         if len(row) < 4:
             continue
         value = row[3:].split(" -> ")[-1].strip().strip('"')
-        paths.append(Path(value).as_posix())
+        normalized = Path(value).as_posix()
+        if not is_evaluator_python_cache_artifact(normalized):
+            paths.append(normalized)
     return sorted(set(paths))
+
+
+def is_evaluator_python_cache_artifact(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    parts = normalized.split("/")
+    return "__pycache__" in parts and normalized.lower().endswith((".pyc", ".pyo"))
 
 
 def out_of_scope_attempts(tools: RecordingCandidateTools) -> list[str]:

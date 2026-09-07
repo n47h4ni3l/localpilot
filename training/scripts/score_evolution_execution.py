@@ -49,6 +49,12 @@ def _check_result(result: dict[str, Any], stage: str, check_id: str) -> dict[str
     return None
 
 
+def is_evaluator_python_cache_artifact(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    parts = normalized.split("/")
+    return "__pycache__" in parts and normalized.lower().endswith((".pyc", ".pyo"))
+
+
 def evaluate_criterion(
     criterion: dict[str, Any],
     result: dict[str, Any],
@@ -67,7 +73,11 @@ def evaluate_criterion(
             passed = returncode != 0 and not timed_out
         return passed, f"returncode={returncode} timed_out={timed_out}"
 
-    changed_paths = {str(item) for item in result.get("changed_paths", [])}
+    changed_paths = {
+        str(item)
+        for item in result.get("changed_paths", [])
+        if not is_evaluator_python_cache_artifact(str(item))
+    }
     if kind == "changed_paths_include":
         required = {str(item) for item in criterion.get("paths", [])}
         missing = sorted(required.difference(changed_paths))

@@ -5,12 +5,13 @@ This workspace exists to improve the single operational LocalPilot model. It is 
 ## Current sequence
 
 1. Freeze and score the current `gpt-oss:20b` LocalPilot baseline with `LocalPilot Eval v1`.
-2. Integrate the full Claude Code implementation backend into the existing evolution loop.
-3. Re-run the same held-out Eval v1 to measure the architectural change.
-4. Build Training Corpus v1 from verified LocalPilot history, verified Claude Code evolution traces, and carefully licensed external material.
-5. Select and verify the AMD-compatible LoRA/QLoRA backend.
-6. Train the first adapter candidate.
-7. Re-run the same held-out evaluation and promote only if the candidate improves without critical regression.
+2. Establish a small evolution-execution baseline for the current implementation path so the Claude Code cutover is measured on actual candidate work, not only conversational reasoning.
+3. Integrate the full Claude Code implementation backend into the existing evolution loop.
+4. Re-run the unchanged held-out Eval v1 and evolution-execution benchmark.
+5. Build Training Corpus v1 from verified LocalPilot history, verified Claude Code evolution traces, and carefully licensed external material.
+6. Select and verify the AMD-compatible LoRA/QLoRA backend.
+7. Train the first adapter candidate.
+8. Re-run the same held-out evaluation and promote only if the candidate improves without critical regression.
 
 Actual model training must not begin before the baseline/evaluation foundation and Claude Code cutover are measurable.
 
@@ -82,7 +83,7 @@ Allowed values are:
 
 `review_required` and `unverified` are never acceptable for active train/validation examples. Held-out eval accepts independently verified A/B material only.
 
-## Validation
+## Dataset validation
 
 Validate individual files or entire directories:
 
@@ -123,6 +124,46 @@ Exit code `0` means valid, `1` means dataset validation failed, and `2` is reser
 - generalization.
 
 The seed intentionally targets known LocalPilot failure classes with novel/paraphrased tasks rather than copying training examples. It is a starting set, not the final benchmark.
+
+### Running the baseline
+
+Run from a clean, up-to-date `main` checkout with Ollama and the configured model available:
+
+```powershell
+.\.venv\Scripts\python.exe training\scripts\run_eval_v1.py
+```
+
+The runner fails closed when the checkout is not clean `main` or does not match the locally known `origin/main`. It records the exact Git HEAD, configured model settings, and Ollama model digest/size metadata in the report.
+
+Before any prompt reaches LocalPilot, the runner exports tracked `HEAD` into a temporary snapshot and removes the entire `training/` tree. Each task gets a fresh empty LocalPilot data directory. Memory embeddings, the owner library, SystemSense, self-development, GitHub/web tools, machine-state tools, and reversible actions are disabled. The only available tools are bounded repository tree/read/search/dependency inspection against the sanitized snapshot. This prevents LocalPilot from finding the public benchmark/rubric through its own repository or web tools.
+
+Local response reports are written under `training/reports/` and ignored by Git so benchmark answers do not become accidental repository/training material.
+
+A quick smoke run can target one task:
+
+```powershell
+.\.venv\Scripts\python.exe training\scripts\run_eval_v1.py --task-id lp-eval-repo-001
+```
+
+### Scoring
+
+The model under evaluation must not see `expected_behavior`. After the run completes, create a separate review scorecard:
+
+```powershell
+.\.venv\Scripts\python.exe training\scripts\score_eval_v1.py training\reports\<run>.json --prepare
+```
+
+The resulting local JSONL combines each response with its held-out rubric and leaves the score blank. A human or independent reviewer assigns the 0–4 score, hard-failure flag, and a short rationale. Do not have the evaluated model score its own answers.
+
+After review:
+
+```powershell
+.\.venv\Scripts\python.exe training\scripts\score_eval_v1.py training\reports\<run>.json --scorecard training\reports\<run>_scorecard.jsonl
+```
+
+The summary records overall mean, category means, critical-category means, hard failures, repository identity, model identity, and the isolation contract used for the run.
+
+`LocalPilot Eval v1` measures reasoning, grounding, tool judgment, and epistemics. Because the Claude Code change primarily replaces the self-development implementation backend, it is not sufficient by itself to claim that the cutover improved autonomous software engineering. A separate bounded evolution-execution baseline must be frozen before the Claude Code integration and repeated afterward.
 
 ## Corpus policy
 

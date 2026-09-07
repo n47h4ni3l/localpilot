@@ -178,7 +178,9 @@ def parse_claude_json_output(output: str) -> dict[str, Any]:
                 inner = None
             if isinstance(inner, dict):
                 merged = dict(inner)
-                for key in ("session_id", "usage", "total_cost_usd", "is_error"):
+                for key in (
+                    "session_id", "usage", "total_cost_usd", "is_error", "subtype", "stop_reason"
+                ):
                     if key in candidate:
                         merged[f"_claude_{key}"] = candidate[key]
                 return merged
@@ -689,7 +691,18 @@ class ClaudeCodeBackend:
                 exit_code=process.returncode, duration_seconds=duration, repair_pass=repair_pass,
                 sanitized_output=sanitized,
             )
-        if process.returncode != 0:
+        payload: dict[str, Any] | None = None
+        parse_error: ValueError | None = None
+        try:
+            payload = parse_claude_json_output(stdout)
+        except ValueError as exc:
+            parse_error = exc
+        explicit_envelope_success = bool(
+            payload
+            and payload.get("_claude_subtype") == "success"
+            and payload.get("_claude_is_error") is not True
+        )
+        if process.returncode != 0 and not explicit_envelope_success:
             detail = _claude_error_detail(stdout, stderr, workspace=workspace)
             return ImplementationResult(
                 ImplementationStatus.CLI_ERROR, self.name, self.model,
@@ -699,11 +712,10 @@ class ClaudeCodeBackend:
                 exit_code=process.returncode, duration_seconds=duration, repair_pass=repair_pass,
                 sanitized_output=sanitized,
             )
-        try:
-            payload = parse_claude_json_output(stdout)
-        except ValueError as exc:
+        if payload is None:
             return ImplementationResult(
-                ImplementationStatus.MALFORMED_OUTPUT, self.name, self.model, str(exc),
+                ImplementationStatus.MALFORMED_OUTPUT, self.name, self.model,
+                str(parse_error or "Claude Code returned no structured result"),
                 changed_paths=changed, diff_digest=digest,
                 exit_code=process.returncode, duration_seconds=duration, repair_pass=repair_pass,
                 sanitized_output=sanitized,

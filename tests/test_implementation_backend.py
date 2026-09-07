@@ -58,8 +58,8 @@ elif behavior == 'cli_error':
     raise SystemExit(7)
 elif behavior == 'malformed':
     print('not json')
-elif behavior in {'success', 'escape'}:
-    target = pathlib.Path('module.py' if behavior == 'success' else 'other.py')
+elif behavior in {'success', 'nonzero_success', 'escape'}:
+    target = pathlib.Path('module.py' if behavior != 'escape' else 'other.py')
     target.write_text('VALUE = 2\\n', encoding='utf-8')
     result = {
         'summary': 'implemented and tested',
@@ -67,7 +67,10 @@ elif behavior in {'success', 'escape'}:
                    'output_digest': 'a' * 64}],
     }
     print(json.dumps({'result': json.dumps(result), 'session_id': 'session-1',
-                      'usage': {'input_tokens': 10, 'output_tokens': 5}}))
+                      'usage': {'input_tokens': 10, 'output_tokens': 5},
+                      'subtype': 'success', 'is_error': False, 'stop_reason': 'stop_sequence'}))
+    if behavior == 'nonzero_success':
+        raise SystemExit(1)
 """.lstrip(),
         encoding="utf-8",
     )
@@ -154,6 +157,15 @@ def test_real_process_wrapper_edits_only_candidate_and_returns_structured_eviden
     assert result.session_id == "session-1"
     assert result.usage == {"input_tokens": 10, "output_tokens": 5}
     assert result.tests[0]["passed"] is True
+
+
+def test_explicit_success_envelope_retains_nonzero_exit_as_evidence(tmp_path: Path):
+    root = _repo(tmp_path)
+    result = _backend(tmp_path, "nonzero_success").run(
+        ImplementationRequest(root, "implement", ("module.py",))
+    )
+    assert result.status == ImplementationStatus.COMPLETED
+    assert result.exit_code == 1
 
 
 @pytest.mark.parametrize(

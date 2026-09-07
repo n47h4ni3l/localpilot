@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "benchmark_name": "LocalPilot Evolution Execution v1",
+  "score_scale_max": 4,
+  "cases": [
+    {
+      "id": "evoexec-compatibility-move",
+      "title": "Move a helper without breaking its public import",
+      "instruction": "Move normalize_tag's implementation from acme/legacy.py into a new acme/text.py module. Preserve `from acme.legacy import normalize_tag` as a compatibility re-export of the same function object. Add acme/slug.py with `slug_for(label, prefix='item')`, returning `<normalized-prefix>-<normalized-label>`. Add focused tests in tests/test_text.py. Change only the allowed files.",
+      "initial_files": {
+        "acme/__init__.py": "from .legacy import normalize_tag\n\n__all__ = [\"normalize_tag\"]\n",
+        "acme/legacy.py": "def normalize_tag(value: str) -> str:\n    return \"-\".join(value.strip().lower().split())\n",
+        "tests/test_legacy.py": "import unittest\n\nfrom acme.legacy import normalize_tag\n\n\nclass LegacyTests(unittest.TestCase):\n    def test_normalizes_whitespace(self):\n        self.assertEqual(normalize_tag(\"  Hello  World \"), \"hello-world\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "allowed_paths": [
+        "acme/legacy.py",
+        "acme/text.py",
+        "acme/slug.py",
+        "tests/test_text.py"
+      ],
+      "hidden_fixture": "acceptance/compatibility_move",
+      "checks": [
+        {"id": "project_tests", "kind": "project_tests"},
+        {"id": "hidden_acceptance", "kind": "hidden_acceptance"}
+      ],
+      "criteria": [
+        {"id": "project_tests_pass", "kind": "check_passed", "stage": "final_checks", "check": "project_tests"},
+        {"id": "hidden_acceptance_pass", "kind": "check_passed", "stage": "final_checks", "check": "hidden_acceptance"},
+        {"id": "multi_file_contract", "kind": "changed_paths_include", "paths": ["acme/legacy.py", "acme/text.py", "acme/slug.py", "tests/test_text.py"]},
+        {"id": "scope_preserved", "kind": "scope_clean"}
+      ]
+    },
+    {
+      "id": "evoexec-regression-first",
+      "title": "Add a boundary regression before fixing a narrow bug",
+      "instruction": "bulk_total should apply the 10% bulk discount when quantity is 10 or greater, but the quantity-10 boundary is wrong. Add a regression test for quantity 10 in tests/test_pricing.py before editing pricing.py, then make the smallest source fix. Change only those two files.",
+      "initial_files": {
+        "pricing.py": "def bulk_total(quantity: int, unit_price: float) -> float:\n    total = quantity * unit_price\n    if quantity > 10:\n        total *= 0.9\n    return round(total, 2)\n",
+        "tests/test_pricing.py": "import unittest\n\nfrom pricing import bulk_total\n\n\nclass PricingTests(unittest.TestCase):\n    def test_discount_above_threshold(self):\n        self.assertEqual(bulk_total(11, 10.0), 99.0)\n\n    def test_no_discount_below_threshold(self):\n        self.assertEqual(bulk_total(9, 10.0), 90.0)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "allowed_paths": ["pricing.py", "tests/test_pricing.py"],
+      "hidden_fixture": "acceptance/regression_first",
+      "checks": [
+        {"id": "project_tests", "kind": "project_tests"},
+        {"id": "hidden_acceptance", "kind": "hidden_acceptance"}
+      ],
+      "criteria": [
+        {"id": "hidden_acceptance_pass", "kind": "check_passed", "stage": "final_checks", "check": "hidden_acceptance"},
+        {"id": "regression_and_fix_written", "kind": "changed_paths_include", "paths": ["tests/test_pricing.py", "pricing.py"]},
+        {"id": "regression_written_first", "kind": "write_before", "before": "tests/test_pricing.py", "after": "pricing.py"},
+        {"id": "scope_preserved", "kind": "scope_clean"}
+      ]
+    },
+    {
+      "id": "evoexec-diagnose-repair",
+      "title": "Diagnose a failing parser test and repair it",
+      "instruction": "The committed parser tests currently fail for values followed by an inline `#` comment. Diagnose the failure from parser.py and tests/test_parser.py, then make the smallest repair in parser.py so valid integers with or without inline comments parse correctly. Do not weaken or edit the tests, and change no other file.",
+      "initial_files": {
+        "parser.py": "def parse_setting(line: str) -> tuple[str, int]:\n    key, raw = line.split(\"=\", 1)\n    return key.strip(), int(raw.strip())\n",
+        "tests/test_parser.py": "import unittest\n\nfrom parser import parse_setting\n\n\nclass ParserTests(unittest.TestCase):\n    def test_plain_integer(self):\n        self.assertEqual(parse_setting(\"timeout=30\"), (\"timeout\", 30))\n\n    def test_inline_comment(self):\n        self.assertEqual(parse_setting(\"timeout=30 # seconds\"), (\"timeout\", 30))\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "allowed_paths": ["parser.py"],
+      "hidden_fixture": "acceptance/diagnose_repair",
+      "checks": [
+        {"id": "project_tests", "kind": "project_tests"},
+        {"id": "hidden_acceptance", "kind": "hidden_acceptance"}
+      ],
+      "criteria": [
+        {"id": "baseline_failure_reproduced", "kind": "check_failed", "stage": "baseline_checks", "check": "project_tests"},
+        {"id": "project_tests_repaired", "kind": "check_passed", "stage": "final_checks", "check": "project_tests"},
+        {"id": "hidden_acceptance_pass", "kind": "check_passed", "stage": "final_checks", "check": "hidden_acceptance"},
+        {"id": "narrow_scope_preserved", "kind": "scope_clean", "require_changed": ["parser.py"]}
+      ]
+    },
+    {
+      "id": "evoexec-scoped-multifile",
+      "title": "Implement a scoped multi-file alert contract",
+      "instruction": "Add alerts/severity.py with a string-valued Severity enum containing info, warning, and critical. Update Alert in alerts/models.py to carry a Severity while preserving the existing two-argument construction by defaulting to Severity.info. Update alerts/render.py so render_alert returns `[LEVEL] message`, using the enum value uppercased. Add tests in tests/test_alerts.py. Do not touch README.md or any file outside the allowed list.",
+      "initial_files": {
+        "alerts/__init__.py": "from .models import Alert\nfrom .render import render_alert\n\n__all__ = [\"Alert\", \"render_alert\"]\n",
+        "alerts/models.py": "from dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass Alert:\n    code: str\n    message: str\n",
+        "alerts/render.py": "from .models import Alert\n\n\ndef render_alert(alert: Alert) -> str:\n    return alert.message\n",
+        "tests/test_alerts.py": "import unittest\n\nfrom alerts import Alert, render_alert\n\n\nclass AlertTests(unittest.TestCase):\n    def test_existing_construction(self):\n        self.assertEqual(render_alert(Alert(\"ready\", \"Ready\")), \"Ready\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
+        "README.md": "# Alert fixture\n\nThis file is deliberately out of scope.\n"
+      },
+      "allowed_paths": [
+        "alerts/severity.py",
+        "alerts/models.py",
+        "alerts/render.py",
+        "tests/test_alerts.py"
+      ],
+      "hidden_fixture": "acceptance/scoped_multifile",
+      "checks": [
+        {"id": "project_tests", "kind": "project_tests"},
+        {"id": "hidden_acceptance", "kind": "hidden_acceptance"}
+      ],
+      "criteria": [
+        {"id": "project_tests_pass", "kind": "check_passed", "stage": "final_checks", "check": "project_tests"},
+        {"id": "hidden_acceptance_pass", "kind": "check_passed", "stage": "final_checks", "check": "hidden_acceptance"},
+        {"id": "multi_file_contract", "kind": "changed_paths_include", "paths": ["alerts/severity.py", "alerts/models.py", "alerts/render.py", "tests/test_alerts.py"]},
+        {"id": "scope_preserved", "kind": "scope_clean"}
+      ]
+    }
+  ]
+}

@@ -165,6 +165,22 @@ The summary records overall mean, category means, critical-category means, hard 
 
 `LocalPilot Eval v1` measures reasoning, grounding, tool judgment, and epistemics. Because the Claude Code change primarily replaces the self-development implementation backend, it is not sufficient by itself to claim that the cutover improved autonomous software engineering. A separate bounded evolution-execution baseline must be frozen before the Claude Code integration and repeated afterward.
 
+The independently reviewed pre-cutover aggregate is frozen in `training/baselines/eval_v1_gpt_oss_20b_6670fa9.json`. That durable artifact contains aggregate metadata only: no held-out prompts, rubrics, model answers, or scorecard rows.
+
+## Evolution-execution baseline
+
+`LocalPilot Evolution Execution v1` is a four-task synthetic benchmark for the current pre-Claude-Code implementation path. It measures multi-file contract completion, compatibility re-export preservation, regression-test-first ordering, failing-test diagnosis and repair, and strict scope control.
+
+Each task runs in a disposable Git repository outside the LocalPilot checkout. The model sees only its contract and visible fixture files through candidate-scoped file tools. Hidden acceptance tests are mounted only while the evaluator runs and removed before model implementation or repair. No target patch exists in the benchmark or enters model context. Deterministic checks execute outside the model's tool surface, and at most one bounded repair pass receives failing output.
+
+Run the complete baseline after this tooling is merged, from clean and current `main`:
+
+```powershell
+.\.venv\Scripts\python.exe training\scripts\run_evolution_execution.py
+```
+
+The runner records the selected current-path developer model and digest, verifies the real repository remains unchanged, writes the ignored raw report under `training/reports/`, and invokes `score_evolution_execution.py` automatically. See `training/evolution_execution/README.md` for the task inventory and isolation contract.
+
 ## Corpus policy
 
 Preferred order of training sources:

@@ -66,7 +66,9 @@ elif behavior in {'success', 'nonzero_success', 'escape'}:
         'tests': [{'command': 'python -m pytest -q', 'passed': True, 'exit_code': 0,
                    'output_digest': 'a' * 64}],
     }
-    print(json.dumps({'result': json.dumps(result), 'session_id': 'session-1',
+    envelope_result = result if behavior == 'nonzero_success' else json.dumps(result)
+    envelope_key = 'structured_output' if behavior == 'nonzero_success' else 'result'
+    print(json.dumps({envelope_key: envelope_result, 'session_id': 'session-1',
                       'usage': {'input_tokens': 10, 'output_tokens': 5},
                       'subtype': 'success', 'is_error': False, 'stop_reason': 'stop_sequence'}))
     if behavior == 'nonzero_success':

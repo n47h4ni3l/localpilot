@@ -170,6 +170,15 @@ def parse_claude_json_output(output: str) -> dict[str, Any]:
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
+        structured = candidate.get("structured_output")
+        if isinstance(structured, dict):
+            merged = dict(structured)
+            for key in (
+                "session_id", "usage", "total_cost_usd", "is_error", "subtype", "stop_reason"
+            ):
+                if key in candidate:
+                    merged[f"_claude_{key}"] = candidate[key]
+            return merged
         result = candidate.get("result")
         if isinstance(result, str):
             try:

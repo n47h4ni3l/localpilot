@@ -64,6 +64,15 @@ class EvolutionExecutionDefinitionTests(unittest.TestCase):
             self.assertEqual({item["id"] for item in results}, {"project_tests", "hidden_acceptance"})
             self.assertFalse((workspace / runner.ACCEPTANCE_DIR_NAME).exists())
 
+    def test_evaluator_checks_do_not_pollute_changed_paths_with_bytecode(self) -> None:
+        case = runner.load_case_document()["cases"][0]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "fixture"
+            runner.create_fixture_repository(case, workspace)
+            runner.run_checks(case, workspace)
+            self.assertEqual(runner.changed_paths(workspace), [])
+            self.assertEqual(list(workspace.rglob("*.py[co]")), [])
+
     def test_diagnosis_fixture_reproduces_its_committed_failure(self) -> None:
         case = next(
             item
@@ -154,13 +163,60 @@ class EvolutionExecutionScorerTests(unittest.TestCase):
         self.assertEqual(summary["perfect_task_count"], 4)
         self.assertEqual(summary["hard_failure_count"], 0)
 
-    def test_scope_attempt_loses_scope_criterion(self) -> None:
+    def test_evaluator_bytecode_is_ignored_by_scope_scoring(self) -> None:
         report = self._perfect_report()
+        report["tasks"][0]["changed_paths"].extend(
+            [
+                "acme/__pycache__/legacy.cpython-312.pyc",
+                "tests/__pycache__/test_legacy.cpython-312.pyo",
+            ]
+        )
+        summary = scorer.score_report(report)
+        first = next(
+            item for item in summary["tasks"]
+            if item["task_id"] == report["tasks"][0]["task_id"]
+        )
+        scope = next(
+            item for item in first["criteria"]
+            if item["criterion_id"] == "scope_preserved"
+        )
+        self.assertEqual(first["score"], 4)
+        self.assertTrue(scope["passed"])
+
+    def test_unexpected_source_file_loses_scope_criterion(self) -> None:
+        report = self._perfect_report()
+        report["tasks"][0]["changed_paths"].append("acme/unexpected.py")
+        summary = scorer.score_report(report)
+        first = next(
+            item for item in summary["tasks"]
+            if item["task_id"] == report["tasks"][0]["task_id"]
+        )
+        scope = next(
+            item for item in first["criteria"]
+            if item["criterion_id"] == "scope_preserved"
+        )
+        self.assertEqual(first["score"], 3)
+        self.assertFalse(scope["passed"])
+        self.assertIn("acme/unexpected.py", scope["detail"])
+
+    def test_scope_attempt_loses_scope_criterion_even_with_evaluator_bytecode(self) -> None:
+        report = self._perfect_report()
+        report["tasks"][0]["changed_paths"].append(
+            "acme/__pycache__/legacy.cpython-312.pyc"
+        )
         report["tasks"][0]["out_of_scope_attempts"] = ["README.md: rejected"]
         summary = scorer.score_report(report)
-        first = next(item for item in summary["tasks"] if item["task_id"] == report["tasks"][0]["task_id"])
+        first = next(
+            item for item in summary["tasks"]
+            if item["task_id"] == report["tasks"][0]["task_id"]
+        )
         self.assertEqual(first["score"], 3)
-        self.assertFalse(next(item for item in first["criteria"] if item["criterion_id"] == "scope_preserved")["passed"])
+        self.assertFalse(
+            next(
+                item for item in first["criteria"]
+                if item["criterion_id"] == "scope_preserved"
+            )["passed"]
+        )
 
     def test_timeout_does_not_count_as_reproduced_failure(self) -> None:
         report = self._perfect_report()

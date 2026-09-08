@@ -1,1 +1,109 @@
-# TODO: Define QLoRA v1.
+{
+  "schema_version": 1,
+  "name": "LocalPilot gpt-oss-20b QLoRA v1",
+  "status": "proposed",
+  "status_note": "Do not change to approved_after_dry_run until the exact tracked config and corpus pass train_adapter.py --dry-run on the target WSL2 ROCm environment.",
+  "backend": {
+    "name": "unsloth",
+    "environment": "WSL2 Ubuntu 24.04 stored on E:",
+    "python_version": [3, 12],
+    "rocm_version": "7.14.1",
+    "pytorch_version": "2.12.0+rocm7.14.1",
+    "triton_version": "bundled with the AMD PyTorch wheel; verify at dry-run",
+    "unsloth_version": "2026.9.2",
+    "bitsandbytes_version": "0.50.2",
+    "package_versions": {
+      "unsloth": "2026.9.2",
+      "unsloth_zoo": "2026.9.1",
+      "bitsandbytes": "0.50.2",
+      "transformers": "4.56.2",
+      "peft": "0.18.0",
+      "trl": "0.22.2",
+      "datasets": "4.3.0"
+    },
+    "notes": "Use the current Unsloth AMD path. Do not install CUDA packages."
+  },
+  "model": {
+    "base_identity": "openai/gpt-oss-20b",
+    "base_revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+    "training_model_id": "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
+    "revision": "093fba6992ef5a7152481afec0bdfca1ac486998",
+    "use_exact_model_name": true,
+    "cache_directory": "~/.cache/huggingface-localpilot",
+    "ollama_baseline": "gpt-oss:20b",
+    "ollama_architecture": "gptoss",
+    "model_native_context_length": 131072,
+    "license": "Apache-2.0"
+  },
+  "adapter": {
+    "type": "qlora",
+    "peft_type": "lora",
+    "rank": 8,
+    "alpha": 16,
+    "dropout": 0.0,
+    "bias": "none",
+    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  },
+  "data": {
+    "corpus_path": "training/datasets/corpus_v1_seed.jsonl",
+    "eval_manifest": "training/manifests/eval_v1_manifest.json",
+    "eval_manifest_records_sha256": "3954ce3bb45523abbfa535cbfd8e93d1e615f00e3ea7c14a05d0dbed3ee1ab42",
+    "max_sequence_length": 1024,
+    "packing": false,
+    "chat_template": "tokenizer-native gpt-oss Harmony-compatible template",
+    "train_split": "train",
+    "validation_split": "validation"
+  },
+  "quantization": {
+    "load_in_4bit": true,
+    "type": "nf4",
+    "double_quantization": true,
+    "compute_dtype": "bfloat16",
+    "source_weight_format": "Pinned Unsloth NF4 conversion of the MXFP4 base"
+  },
+  "training": {
+    "micro_batch_size": 1,
+    "gradient_accumulation_steps": 4,
+    "effective_batch_size": 4,
+    "precision": "bf16",
+    "optimizer": "adamw_8bit",
+    "learning_rate": 0.0001,
+    "warmup_ratio": 0.05,
+    "weight_decay": 0.01,
+    "epochs": 3,
+    "max_steps": null,
+    "estimated_optimizer_steps": 15,
+    "validation_steps": 5,
+    "checkpoint_steps": 5,
+    "logging_steps": 1,
+    "save_total_limit": 3,
+    "seed": 3407
+  },
+  "resources": {
+    "minimum_vram_gib": 14.0,
+    "estimated_peak_vram_gib": 13.5,
+    "minimum_system_ram_gib": 27.5,
+    "minimum_storage_free_gib": 50.0,
+    "estimated_peak_is_measured": false,
+    "offload_embeddings": true,
+    "cpu_offload": "embeddings_only",
+    "gradient_checkpointing": "unsloth",
+    "dataloader_workers": 0,
+    "pin_memory": false,
+    "reserve_system_ram_gib": 4.0
+  },
+  "output": {
+    "directory": "training/outputs/adapter_v1",
+    "save_adapter_only": true,
+    "checkpoint_format": "safetensors",
+    "deployment_path": "merge with the exact base in Unsloth, export GGUF, then import the merged GGUF into Ollama",
+    "direct_ollama_adapter_import_supported": false
+  },
+  "promotion": {
+    "requires_eval_v1": true,
+    "requires_evolution_execution": true,
+    "training_loss_is_sufficient": false,
+    "comparison_script": "training/scripts/compare_models.py",
+    "human_merge_required": true
+  }
+}

@@ -4,16 +4,15 @@ This workspace exists to improve the single operational LocalPilot model. It is 
 
 ## Current sequence
 
-1. Freeze and score the current `gpt-oss:20b` LocalPilot baseline with `LocalPilot Eval v1`.
-2. Establish a small evolution-execution baseline for the current implementation path so the Claude Code cutover is measured on actual candidate work, not only conversational reasoning.
-3. Integrate the full Claude Code implementation backend into the existing evolution loop.
-4. Re-run the unchanged held-out Eval v1 and evolution-execution benchmark.
-5. Build Training Corpus v1 from verified LocalPilot history, verified Claude Code evolution traces, and carefully licensed external material.
-6. Select and verify the AMD-compatible LoRA/QLoRA backend.
-7. Train the first adapter candidate.
-8. Re-run the same held-out evaluation and promote only if the candidate improves without critical regression.
+1. **Complete:** freeze the pre- and post-Claude-Code aggregate benchmarks.
+2. **Complete:** build the first verified, project-owned Corpus v1 seed and held-out hash manifest.
+3. **Proposed:** validate the pinned WSL2/ROCm/Unsloth adapter environment on the target machine.
+4. Change `qlora_v1.yaml` from `proposed` only after an exact dry-run passes locally and its report matches the config and corpus digests.
+5. Train the first adapter in a separate, explicitly authorized run.
+6. Re-run the unchanged Eval v1 and Evolution Execution v1 benchmarks.
+7. Consider promotion only from held-out and execution evidence, with human review and merge.
 
-Actual model training must not begin before the baseline/evaluation foundation and Claude Code cutover are measurable.
+This change prepares training but does not install PyTorch, download model weights, or launch training.
 
 ## Data authority tiers
 
@@ -167,6 +166,8 @@ The summary records overall mean, category means, critical-category means, hard 
 
 The independently reviewed pre-cutover aggregate is frozen in `training/baselines/eval_v1_gpt_oss_20b_6670fa9.json`. That durable artifact contains aggregate metadata only: no held-out prompts, rubrics, model answers, or scorecard rows.
 
+The corresponding post-Claude-Code aggregate is frozen in `training/baselines/eval_v1_post_cc_gpt_oss_20b_f619abb.json`: overall 1.88/4, critical 1.6875/4, and one hard failure. It points back to the existing pre-cutover aggregate for comparison and likewise contains no held-out content.
+
 ## Evolution-execution baseline
 
 `LocalPilot Evolution Execution v1` is a four-task synthetic benchmark for the current pre-Claude-Code implementation path. It measures multi-file contract completion, compatibility re-export preservation, regression-test-first ordering, failing-test diagnosis and repair, and strict scope control.
@@ -181,6 +182,32 @@ Run the complete baseline after this tooling is merged, from clean and current `
 
 The runner records the selected current-path developer model and digest, verifies the real repository remains unchanged, writes the ignored raw report under `training/reports/`, and invokes `score_evolution_execution.py` automatically. See `training/evolution_execution/README.md` for the task inventory and isolation contract.
 
+Aggregate-only execution records preserve the corrected pre-cutover result (3.0/4, two perfect tasks, two hard failures) and the post-Claude-Code result (3.75/4, three perfect tasks, zero hard failures, zero scope violations). They contain no contracts, hidden acceptance fixtures, model output, or target patch.
+
+## Corpus v1 seed
+
+`training/sources/corpus_v1_seed_sources.jsonl` is the reviewable, hand-curated source recipe. `build_localpilot_history_dataset.py` validates every record against its cited Git commit, merged PR number, changed files, and tests before emitting `training/datasets/corpus_v1_seed.jsonl`.
+
+The initial seed has 24 Tier A, project-owned, source-verified examples: three examples in each of software engineering, debugging, agent planning/tool use, epistemics/self-correction, AI/LLM/agent systems, architecture/code review, LocalPilot architecture, and evolution/experimental reasoning. The split is 20 train and 4 validation. These are curated derivations of verified project changes, not raw conversations or claims that CI verified the wording. Immutable Git blob IDs identify the files and tests supporting each answer. This small seed validates the pipeline; its size alone is not evidence that a 20B adapter will improve.
+
+The builder uses an explicit project-owned path allowlist and rejects `training/evals/**`, scorecards, reports, hidden acceptance fixtures, rubrics, target patches, and benchmark answers before reading them. Tier D and non-training splits are fatal. This history builder also refuses Tier C because it does not implement an independent synthetic-validation executor. Exact/normalized duplicates and repeated prompts across splits are rejected. The generated corpus is checked against a schema-validated held-out manifest for IDs, normalized prompts/content, role-independent prompt/rubric fragments, and shared 16-token shingles, including text nested in metadata. Symlinks, junctions, conflicting IDs, malformed or empty manifests, and output paths outside the designated folders fail closed.
+
+The builder requires complete Git history and a LocalPilot origin. It verifies each commit is on known `origin/main` (or local `main`), its subject matches the declared merged PR, and cited source paths are regular Git files. New source recipes require source review; substring/hash checks cannot detect every paraphrase or prove the semantic truth of an answer. The held-out files must never be opened to generate or repair corpus examples.
+
+Generate and verify the artifacts from the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe training\scripts\build_eval_manifest.py --check
+.\.venv\Scripts\python.exe training\scripts\build_localpilot_history_dataset.py --check
+.\.venv\Scripts\python.exe training\scripts\validate_dataset.py training\datasets\corpus_v1_seed.jsonl
+```
+
+Corpus statistics are written to the ignored `training/reports/corpus_v1_stats.json`, including category/tier/split/source/license counts, provenance completeness, duplicate and leakage rejections, size estimates, and split ratio.
+
+## Promotion comparison
+
+`compare_models.py` compares a baseline and candidate across both Eval v1 and Evolution Execution v1. It reports category deltas and requires no overall Eval regression, no material regression in the critical aggregate or any critical category, no increase in Eval or execution hard failures, execution performance at least at baseline, and zero scope violations. Complete matching task/category coverage, frozen suite hashes, and matching model identity across each model's two benchmark runs are required. Missing evidence produces an incomplete comparison, never a recommendation. Historical aggregates remain useful for deltas, but lack enough recorded metadata to authorize a model promotion. The scoring tools now emit the coverage, scope, and suite metadata needed for future comparisons. Training loss is deliberately not a promotion signal; final promotion requires human review.
+
 ## Corpus policy
 
 Preferred order of training sources:
@@ -192,6 +219,16 @@ Preferred order of training sources:
 
 Do not ingest arbitrary public GitHub code, scraped conversations, proprietary material, private chats, secrets, or model-generated output merely because it is available. Publicly accessible is not equivalent to licensed for training.
 
-## Training backend
+## Training backend and dry-run
 
-`training/configs/qlora_v1.yaml` and `training/scripts/train_adapter.py` remain placeholders intentionally. Backend selection comes after Eval v1 and the Claude Code architecture change because the target environment is Windows/AMD and current compatibility must be verified rather than assumed.
+See `training/BACKEND_DECISION.md` for the current primary-source compatibility research and exact E:-backed Windows/WSL2 setup commands. The proposed backend is Ubuntu 24.04 under WSL2, AMD ROCm 7.14.1/PyTorch 2.12, and the current Unsloth AMD gpt-oss path. Native Windows is retained as an experimental fallback, not the primary path.
+
+The proposed `qlora_v1.yaml` pins model revisions and all adapter, data, optimization, validation, checkpoint, seed, and resource settings. It remains `status: proposed` until the actual target environment passes:
+
+```powershell
+wsl -d LocalPilot-Training --cd <repo> -- bash -lc '~/.venvs/localpilot-training/bin/python training/scripts/train_adapter.py --dry-run --allow-downloads'
+```
+
+The dry-run performs no training. It verifies the WSL/Ubuntu/Python environment, pinned backend versions, a small BF16 GPU operation, the HIP Triton target, free VRAM/RAM/storage, local dataset schema and splits, the frozen manifest digest and leakage, all cached model shards, tokenizer/chat-template lengths, PEFT configuration, output safety, and the exact resolved training command. `--allow-downloads` explicitly permits downloading the pinned model weights and tokenizer into the configured cache in the E:-stored WSL distro. Omit it for an offline cache check. The dry-run does not allocate the 20B model or measure its training peak; the memory estimate remains unmeasured.
+
+Real training additionally requires an approved config, a matching passing local dry-run report, `--train`, and an explicit confirmation string. Changing only the approval status preserves the tested training-settings digest; changing any model/data/resource/training setting invalidates it. The entry point rechecks the environment, corpus, manifest, cached model, and output immediately before loading. Do not approve or execute training in this phase.

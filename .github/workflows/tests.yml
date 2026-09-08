@@ -15,8 +15,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest -q
+      - run: python -m pytest training/tests -q
+      - run: python training/scripts/build_eval_manifest.py --check
+      - run: python training/scripts/build_localpilot_history_dataset.py --check

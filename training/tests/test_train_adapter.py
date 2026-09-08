@@ -85,7 +85,7 @@ class TrainAdapterTests(unittest.TestCase):
         self.assertTrue(result["passed"], [item for item in result["checks"] if not item["passed"]])
         self.assertFalse(result["training_performed"])
         self.assertEqual(result["dataset_sha256"], sha256_json(self.rows))
-        self.assertIn(str(report_path), result["resolved_training_command"])
+        self.assertIn(str(report_path.resolve()), result["resolved_training_command"])
         self.assertEqual(self.importer.call_args_list[0].args, ("unsloth",))
         self.assertTrue(self.snapshot_loader.call_args.kwargs["local_files_only"])
         self.assertTrue(self.tokenizer_loader.call_args.kwargs["local_files_only"])

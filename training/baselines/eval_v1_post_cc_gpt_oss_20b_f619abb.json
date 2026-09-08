@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "artifact_type": "aggregate_baseline",
+  "eval_name": "LocalPilot Eval v1",
+  "phase": "post_claude_code",
+  "repository": {
+    "commit": "f619abb9f099d9204339f4d830fd8783e99c7134",
+    "branch": "main",
+    "pr": 89
+  },
+  "model": {
+    "name": "gpt-oss:20b",
+    "provider": "ollama"
+  },
+  "run": {
+    "task_count": 25
+  },
+  "scores": {
+    "scale_max": 4,
+    "overall_mean": 1.88,
+    "critical_category_mean": 1.6875,
+    "hard_failure_count": 1
+  },
+  "comparison_baseline": "eval_v1_gpt_oss_20b_6670fa9.json",
+  "measurement_provenance": {
+    "source": "Owner-supplied post-CC aggregate measurements for merged PR #89",
+    "recorded_date": "2026-09-08",
+    "rerun_in_this_change": false
+  },
+  "content_policy": {
+    "aggregate_metadata_only": true,
+    "contains_held_out_prompts": false,
+    "contains_rubrics": false,
+    "contains_model_answers": false,
+    "contains_scorecard_rows": false
+  }
+}

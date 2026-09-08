@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import statistics
 from datetime import UTC, datetime
@@ -144,18 +145,30 @@ def score_report(
             )
         score = sum(item["passed"] for item in outcomes)
         runtime_error = result.get("runtime_error")
+        changed_paths = {
+            str(path) for path in result.get("changed_paths", [])
+            if not is_evaluator_python_cache_artifact(str(path))
+        }
+        scope_violation = bool(
+            changed_paths.difference(str(path) for path in case.get("allowed_paths", []))
+            or result.get("out_of_scope_attempts")
+        )
         scored_tasks.append(
             {
                 "task_id": task_id,
                 "score": score,
                 "score_max": 4,
                 "hard_failure": bool(runtime_error) or score == 0,
+                "scope_violation": scope_violation,
                 "runtime_error": runtime_error,
                 "criteria": outcomes,
             }
         )
 
     scores = [float(item["score"]) for item in scored_tasks]
+    def digest(value: Any) -> str:
+        return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
     return {
         "schema_version": 1,
         "benchmark_name": "LocalPilot Evolution Execution v1",
@@ -165,10 +178,15 @@ def score_report(
         "model": report.get("model"),
         "isolation": report.get("isolation"),
         "task_count": len(scored_tasks),
+        "expected_task_count": len(definitions),
+        "task_ids_sha256": digest(sorted(result_ids)),
+        "expected_task_ids_sha256": digest(sorted(definitions)),
+        "suite_sha256": digest(definitions),
         "score_scale_max": 4,
         "overall_mean": round(statistics.fmean(scores), 4) if scores else None,
         "perfect_task_count": sum(item["score"] == 4 for item in scored_tasks),
         "hard_failure_count": sum(bool(item["hard_failure"]) for item in scored_tasks),
+        "scope_violation_count": sum(item["scope_violation"] for item in scored_tasks),
         "tasks": scored_tasks,
     }
 

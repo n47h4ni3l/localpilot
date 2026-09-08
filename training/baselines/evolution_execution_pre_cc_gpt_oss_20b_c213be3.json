@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "artifact_type": "aggregate_baseline",
+  "benchmark_name": "LocalPilot Evolution Execution v1",
+  "phase": "pre_claude_code",
+  "repository": {
+    "commit": "c213be31a1b5b12f61c27019bc48602be31e161d",
+    "branch": "main",
+    "pr": 88
+  },
+  "model": {
+    "name": "gpt-oss:20b",
+    "provider": "ollama",
+    "implementation_backend": "local_tools"
+  },
+  "scores": {
+    "scale_max": 4,
+    "overall_mean": 3.0,
+    "perfect_task_count": 2,
+    "hard_failure_count": 2,
+    "scope_violation_count": null
+  },
+  "measurement_provenance": {
+    "source": "Owner-confirmed corrected pre-CC baseline after PR #88",
+    "recorded_date": "2026-09-08",
+    "scope_violation_count_note": "Not supplied in the retained aggregate evidence; unknown rather than inferred zero"
+  },
+  "content_policy": {
+    "aggregate_metadata_only": true,
+    "contains_benchmark_instructions": false,
+    "contains_hidden_acceptance": false,
+    "contains_model_outputs": false,
+    "contains_target_patch": false
+  }
+}

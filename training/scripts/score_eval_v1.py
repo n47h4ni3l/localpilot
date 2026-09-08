@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import statistics
 from datetime import UTC, datetime
 from pathlib import Path
@@ -133,7 +135,7 @@ def validate_scorecard(
         score = card.get("score")
         if isinstance(score, bool) or not isinstance(score, (int, float)):
             raise RuntimeError(f"Task {task_id} needs a numeric score from 0 to 4.")
-        if float(score) < 0 or float(score) > 4:
+        if not math.isfinite(score) or float(score) < 0 or float(score) > 4:
             raise RuntimeError(f"Task {task_id} score must be between 0 and 4.")
         rationale = str(card.get("rationale") or "").strip()
         if not rationale:
@@ -145,6 +147,7 @@ def validate_scorecard(
 def summarize(
     cards: list[dict[str, Any]],
     run: dict[str, Any],
+    rubrics: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     by_category: dict[str, list[float]] = {}
     for card in cards:
@@ -160,6 +163,9 @@ def summarize(
         for card in cards
         if str(card["task_type"]) in CRITICAL_CATEGORIES
     ]
+    def digest(value: Any) -> str:
+        return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
     return {
         "schema_version": 1,
         "eval_name": "LocalPilot Eval v1",
@@ -169,8 +175,13 @@ def summarize(
         "model": run.get("model"),
         "isolation": run.get("isolation"),
         "task_count": len(cards),
+        "expected_task_count": len(rubrics) if rubrics is not None else None,
+        "task_ids_sha256": digest(sorted(str(card["task_id"]) for card in cards)),
+        "expected_task_ids_sha256": digest(sorted(rubrics)) if rubrics is not None else None,
+        "suite_sha256": digest(rubrics) if rubrics is not None else None,
         "overall_mean": round(statistics.fmean(all_scores), 4) if all_scores else None,
         "category_means": category_means,
+        "category_counts": {category: len(scores) for category, scores in sorted(by_category.items())},
         "critical_category_means": {
             category: mean
             for category, mean in category_means.items()
@@ -240,7 +251,7 @@ def main() -> int:
     assert args.scorecard is not None
     cards = load_scorecard(args.scorecard)
     validate_scorecard(cards, run, rubrics)
-    summary = summarize(cards, run)
+    summary = summarize(cards, run, rubrics)
     output = args.output or default_summary_path(args.run)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

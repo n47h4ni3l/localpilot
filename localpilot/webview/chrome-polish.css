@@ -30,8 +30,9 @@ body {
   min-height: 0;
   max-width: none;
   max-height: none;
-  border-radius: 14px;
-  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.44), 0 0 0 1px rgba(255, 255, 255, 0.018);
+  /* radius + shadow intentionally omitted: .panel is never visible without
+     .app.is-expanded, so re-declaring them here only forked the two values
+     from app.css's --radius-lg / --shadow-panel. Edit those tokens instead. */
 }
 
 .panel-header {
@@ -67,14 +68,14 @@ body {
   min-width: 22px;
   padding: 0;
   margin: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
   font-size: 16px;
   font-weight: 300;
   line-height: 1;
   color: var(--text-tertiary);
   opacity: 0.45;
-  transition: opacity 150ms ease, color 150ms ease, background 150ms ease;
+  transition: opacity var(--duration-fast) ease, color var(--duration-fast) ease, background var(--duration-fast) ease;
 }
 
 .panel-header:hover #close-app-btn {

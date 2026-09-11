@@ -3,17 +3,14 @@ from __future__ import annotations
 """Frame-sequence LocalPilot desktop avatar.
 
 The original pixel companion is preserved in :mod:`native_avatar_legacy` and
-remains the fail-safe.  The illustrated companion now uses real per-state
-animation strips rather than moving one static drawing around the window.
+remains the fail-safe.  The illustrated companion uses one compact PNG atlas
+containing real per-state animation frames rather than moving a static drawing
+around the window.
 
-Each state asset contains:
-- four enter frames;
-- a state-specific animated loop;
-- four exit frames.
-
-On a state change the native avatar finishes the current state's exit frames,
-plays the new state's enter frames, then loops.  The WebView uses the same
-assets and crossfades the simultaneously animated exit/enter sequences.
+Each state owns four enter frames, a state-specific animated loop, and four
+exit frames.  On state changes the native companion plays the old exit sequence
+and the new enter sequence before settling into the new loop.  The WebView uses
+the same atlas and crossfades those simultaneously animated sequences.
 """
 
 import ctypes
@@ -26,9 +23,6 @@ from typing import Any
 
 from localpilot import native_avatar_legacy as _legacy
 
-# Compatibility surface retained for the existing desktop/window tests and for
-# callers that imported helpers from localpilot.native_avatar before the visual
-# renderer changed.
 AVATAR_SIZE = _legacy.AVATAR_SIZE
 EDGE_INSET = _legacy.EDGE_INSET
 EXPANDED_SIZE = _legacy.EXPANDED_SIZE
@@ -56,8 +50,6 @@ _desktop_python_executable = _legacy._desktop_python_executable
 
 
 def _recover_avatar_position(x: int, y: int) -> tuple[int, int]:
-    """Compatibility wrapper that remains monkeypatchable at this module."""
-
     work_area = _monitor_work_area_for_point(
         int(x) + AVATAR_SIZE // 2,
         int(y) + AVATAR_SIZE // 2,
@@ -72,8 +64,6 @@ def _chat_position_from_avatar(
     y: int,
     work_area: tuple[int, int, int, int] | None = None,
 ) -> tuple[int, int]:
-    """Retain the original pure chat-placement contract."""
-
     width, height = EXPANDED_SIZE
     raw_x = int(x) + AVATAR_SIZE - width
     raw_y = int(y) + AVATAR_SIZE - height
@@ -92,8 +82,6 @@ def _launch_webview(
     x: int | None = None,
     y: int | None = None,
 ) -> subprocess.Popen[Any] | None:
-    """Start expanded chat while preserving the original patchable launcher."""
-
     executable = _desktop_python_executable()
     argv = [
         str(executable),
@@ -156,6 +144,10 @@ def _animation_manifest_path() -> Path:
     return _animation_dir() / "animation-manifest.json"
 
 
+def _animation_atlas_path() -> Path:
+    return _animation_dir() / "avatar-animation.png"
+
+
 def _png_dimensions(raw: bytes) -> tuple[int, int] | None:
     if len(raw) < 24 or not raw.startswith(b"\x89PNG\r\n\x1a\n"):
         return None
@@ -163,37 +155,49 @@ def _png_dimensions(raw: bytes) -> tuple[int, int] | None:
 
 
 def _load_animation_manifest() -> dict[str, Any] | None:
-    """Load and verify the committed animation manifest and every PNG strip.
-
-    Returning ``None`` is intentional fail-closed behavior: the legacy pixel
-    avatar remains available and will render instead of partially loading a
-    damaged illustrated animation set.
-    """
+    """Verify the complete atlas/manifest pair or fail closed to pixel art."""
 
     try:
         payload = json.loads(_animation_manifest_path().read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
-    if payload.get("version") != 2 or int(payload.get("frame_size") or 0) != AVATAR_SIZE:
+    if payload.get("version") != 3 or int(payload.get("frame_size") or 0) != AVATAR_SIZE:
         return None
+    columns = int(payload.get("columns") or 0)
+    rows = int(payload.get("rows") or 0)
+    if columns < 1 or rows < len(_REQUIRED_ANIMATION_STATES):
+        return None
+
+    atlas = payload.get("atlas")
+    if not isinstance(atlas, dict):
+        return None
+    filename = atlas.get("file")
+    expected_hash = atlas.get("sha256")
+    if filename != "avatar-animation.png":
+        return None
+    if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+        return None
+
+    try:
+        raw = _animation_atlas_path().read_bytes()
+    except OSError:
+        return None
+    if hashlib.sha256(raw).hexdigest() != expected_hash:
+        return None
+    if _png_dimensions(raw) != (AVATAR_SIZE * columns, AVATAR_SIZE * rows):
+        return None
+
     states = payload.get("states")
     if not isinstance(states, dict) or not _REQUIRED_ANIMATION_STATES <= set(states):
         return None
-
-    animation_dir = _animation_dir().resolve()
+    seen_rows: set[int] = set()
     for state in sorted(_REQUIRED_ANIMATION_STATES):
         spec = states.get(state)
         if not isinstance(spec, dict):
             return None
-        filename = spec.get("file")
-        expected_hash = spec.get("sha256")
-        if not isinstance(filename, str) or Path(filename).name != filename:
-            return None
-        if not isinstance(expected_hash, str) or len(expected_hash) != 64:
-            return None
-
         try:
+            row = int(spec["row"])
             frames = int(spec["frames"])
             frame_ms = int(spec["frame_ms"])
             enter_start = int(spec["enter_start"])
@@ -206,26 +210,16 @@ def _load_animation_manifest() -> dict[str, Any] | None:
         except (KeyError, TypeError, ValueError):
             return None
 
-        if frames < 8 or not 50 <= frame_ms <= 500:
+        if not 0 <= row < rows or row in seen_rows:
+            return None
+        seen_rows.add(row)
+        if frames < 8 or frames > columns or not 50 <= frame_ms <= 500:
             return None
         if not (
             0 <= enter_start <= enter_end < loop_start <= loop_end < exit_start <= exit_end < frames
         ):
             return None
         if not 0 <= representative < frames:
-            return None
-
-        path = (_animation_dir() / filename).resolve()
-        if path.parent != animation_dir:
-            return None
-        try:
-            raw = path.read_bytes()
-        except OSError:
-            return None
-        if hashlib.sha256(raw).hexdigest() != expected_hash:
-            return None
-        dimensions = _png_dimensions(raw)
-        if dimensions != (AVATAR_SIZE * frames, AVATAR_SIZE):
             return None
 
     return payload
@@ -236,34 +230,27 @@ def _normalized_state(state: str) -> str:
 
 
 class NativeAvatarApp(_legacy.NativeAvatarApp):
-    """Native companion rendered from real frame-sequence animation strips."""
+    """Native companion rendered from a verified frame-sequence atlas."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        # legacy __init__ calls self._draw() before returning, so every field
-        # touched by _draw must exist before super().__init__.
         self._animation_manifest = _load_animation_manifest()
-        self._animation_images: dict[str, Any] = {}
+        self._animation_atlas: Any | None = None
         self._display_state = "restarting"
         self._pending_state: str | None = None
         self._animation_phase = "loop"
         self._frame_cursor = 0
         super().__init__(*args, **kwargs)
 
-        manifest = self._animation_manifest
-        loaded: dict[str, Any] = {}
-        if manifest is not None:
+        if self._animation_manifest is not None:
             try:
-                for state in sorted(_REQUIRED_ANIMATION_STATES):
-                    filename = manifest["states"][state]["file"]
-                    loaded[state] = self.tk.PhotoImage(
-                        file=str(_animation_dir() / filename),
-                        format="png",
-                    )
+                self._animation_atlas = self.tk.PhotoImage(
+                    file=str(_animation_atlas_path()),
+                    format="png",
+                )
             except Exception:
-                loaded = {}
+                self._animation_atlas = None
 
-        self._animation_images = loaded
-        if len(loaded) == len(_REQUIRED_ANIMATION_STATES):
+        if self._animation_ready():
             self._display_state = _normalized_state(self.runtime_state)
             spec = self._spec(self._display_state)
             self._animation_phase = "enter"
@@ -277,10 +264,7 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
         return manifest["states"][_normalized_state(state)]
 
     def _animation_ready(self) -> bool:
-        return (
-            self._animation_manifest is not None
-            and len(self._animation_images) == len(_REQUIRED_ANIMATION_STATES)
-        )
+        return self._animation_manifest is not None and self._animation_atlas is not None
 
     def _request_runtime_state(self) -> None:
         if not self._animation_ready():
@@ -343,16 +327,12 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
             return
 
         self._request_runtime_state()
-        sprite = self._animation_images.get(self._display_state)
-        if sprite is None:
-            _legacy.NativeAvatarApp._draw(self)
-            return
-
+        spec = self._spec(self._display_state)
         self.canvas.delete("all")
         self.canvas.create_image(
             -int(self._frame_cursor) * AVATAR_SIZE,
-            0,
-            image=sprite,
+            -int(spec["row"]) * AVATAR_SIZE,
+            image=self._animation_atlas,
             anchor="nw",
         )
 

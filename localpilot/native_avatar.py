@@ -124,9 +124,9 @@ def _launch_webview(
         return None
 
 
-# Two columns are independent redraws of the same pose.  Their alternation is
-# deliberately slow and slight: it reads primarily as imperfect outer-line
-# movement rather than as a pose change.
+# Each row asset is 256x128: two independently redrawn 128x128 versions of
+# one pose.  Alternating those redraws provides the passive hand-drawn line
+# boil.  The state loop and state transition are deliberately separate.
 _SPRITE_ROWS = {
     "idle": 0,
     "listening": 1,
@@ -142,7 +142,17 @@ _SPRITE_ROWS = {
     "sleeping": 0,
     "offline": 6,
 }
-_SPRITE_SHA256 = "59579cf6e01c721c867a133b60388c9a3157b43ecf21d68be708b24b480268f4"
+_STATE_ASSET_SHA256 = {
+    0: "476ecfc97875732958a4102b8b5cae0e2e939cbb55e5e94f8d318c54cdf6e99e",
+    1: "facd009c7304fd7de68daa58cd72a6f698444fd1f6312a6395ecefd4b5f10cfa",
+    2: "b5608f9807f749eb09c79e154e995b43be8b4d411ec9ab678c0a07484138c052",
+    3: "bed5adfc48afc5e25c05bc4e9a8d8cd7c35b3560abb06ee0c93cbe6398087219",
+    4: "9de87db31faf742b29ce0a3d719233bf635719c607c458444e3abd30f7d6bf7e",
+    5: "4384d6f772287ed5cb8cf72f57284aa34bef8ad283371a226083b44621b6ea51",
+    6: "052250cf4589b49c84eb0778201fccfa7f89adc4c2f5a12217532b38c3b50411",
+    7: "3c916bd39c799887ff603904e32faefb5c45859e3ba3eae996d467868aed5d71",
+    8: "967adff9291fb67da74f978954ddcfd9f581dfda6b5a469eedcf2530ef40aced",
+}
 _LINE_BOIL_TICKS = 3          # 3 * legacy 180 ms ~= 540 ms per redraw
 _TRANSITION_TICKS = 3         # short old-pose -> new-pose settle
 
@@ -151,18 +161,21 @@ def _asset_dir() -> Path:
     return Path(__file__).resolve().parent / "webview" / "avatar"
 
 
-def _sprite_path() -> Path:
-    return _asset_dir() / "sprite.png"
+def _state_asset_path(row: int) -> Path:
+    return _asset_dir() / f"state-{int(row)}.png"
 
 
-def _read_avatar_sprite_data() -> bytes | None:
-    """Return the committed sprite only when its exact source hash is intact."""
+def _read_state_asset(row: int) -> bytes | None:
+    """Return one committed state asset only when its source hash is intact."""
 
+    expected = _STATE_ASSET_SHA256.get(int(row))
+    if expected is None:
+        return None
     try:
-        raw = _sprite_path().read_bytes()
+        raw = _state_asset_path(row).read_bytes()
     except OSError:
         return None
-    if hashlib.sha256(raw).hexdigest() != _SPRITE_SHA256:
+    if hashlib.sha256(raw).hexdigest() != expected:
         return None
     return raw
 
@@ -209,24 +222,30 @@ def _loop_offset(state: str, frame: int) -> tuple[int, int]:
 
 
 class NativeAvatarApp(_legacy.NativeAvatarApp):
-    """Native companion using the illustrated state sprite when available."""
+    """Native companion using verified illustrated state assets when available."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         # legacy __init__ calls self._draw(), so these must exist beforehand.
-        self._illustrated_sprite: Any | None = None
+        self._illustrated_sprites: dict[int, Any] = {}
         self._display_state = "restarting"
         self._previous_state = "restarting"
         self._transition_tick = _TRANSITION_TICKS
         self._state_age = 0
         super().__init__(*args, **kwargs)
 
-        if _read_avatar_sprite_data() is not None:
+        loaded: dict[int, Any] = {}
+        for row in sorted(_STATE_ASSET_SHA256):
+            if _read_state_asset(row) is None:
+                loaded = {}
+                break
             try:
-                self._illustrated_sprite = self.tk.PhotoImage(
-                    file=str(_sprite_path()), format="png"
+                loaded[row] = self.tk.PhotoImage(
+                    file=str(_state_asset_path(row)), format="png"
                 )
             except Exception:
-                self._illustrated_sprite = None
+                loaded = {}
+                break
+        self._illustrated_sprites = loaded
         self._draw()
 
     def _animate(self) -> None:
@@ -239,20 +258,20 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
             self.root.after(180, self._animate)
 
     def _draw_sprite(self, state: str, frame: int, *, dx: int = 0, dy: int = 0) -> None:
-        sprite = self._illustrated_sprite
+        row = _SPRITE_ROWS.get(state, _SPRITE_ROWS["error"])
+        sprite = self._illustrated_sprites.get(row)
         if sprite is None:
             return
-        row = _SPRITE_ROWS.get(state, _SPRITE_ROWS["error"])
         self.canvas.create_image(
             dx - frame * AVATAR_SIZE,
-            dy - row * AVATAR_SIZE,
+            dy,
             image=sprite,
             anchor="nw",
         )
 
     def _draw(self) -> None:
-        sprite = getattr(self, "_illustrated_sprite", None)
-        if sprite is None:
+        sprites = getattr(self, "_illustrated_sprites", {})
+        if len(sprites) != len(_STATE_ASSET_SHA256):
             _legacy.NativeAvatarApp._draw(self)
             return
 
@@ -279,7 +298,8 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
             self._draw_sprite(self._display_state, line_frame, dy=1)
             return
 
-        dx, dy = _loop_offset(self._display_state, self._state_age)
+        motion_age = max(0, self._state_age - _TRANSITION_TICKS)
+        dx, dy = _loop_offset(self._display_state, motion_age)
         self._draw_sprite(self._display_state, line_frame, dx=dx, dy=dy)
 
 

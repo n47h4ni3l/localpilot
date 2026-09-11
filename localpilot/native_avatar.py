@@ -1,21 +1,24 @@
 from __future__ import annotations
 
-"""Illustrated LocalPilot desktop avatar.
+"""Frame-sequence LocalPilot desktop avatar.
 
 The original pixel companion is preserved in :mod:`native_avatar_legacy` and
-remains the fail-safe.  The illustrated character has three distinct motion
-layers:
+remains the fail-safe.  The illustrated companion now uses real per-state
+animation strips rather than moving one static drawing around the window.
 
-* a slow two-redraw line boil that keeps the hand-drawn contours alive;
-* small state-specific loops (breathing, writing, typing, listening, etc.);
-* a short settle animation whenever LocalPilot changes state.
+Each state asset contains:
+- four enter frames;
+- a state-specific animated loop;
+- four exit frames.
 
-Keeping those layers separate is intentional: the line boil is texture, not
-the state animation itself.
+On a state change the native avatar finishes the current state's exit frames,
+plays the new state's enter frames, then loops.  The WebView uses the same
+assets and crossfades the simultaneously animated exit/enter sequences.
 """
 
 import ctypes
 import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -124,183 +127,234 @@ def _launch_webview(
         return None
 
 
-# Each row asset is 256x128: two independently redrawn 128x128 versions of
-# one pose.  Alternating those redraws provides the passive hand-drawn line
-# boil.  The state loop and state transition are deliberately separate.
-_SPRITE_ROWS = {
-    "idle": 0,
-    "listening": 1,
-    "thinking": 2,
-    "researching": 3,
-    "working": 4,
-    "speaking": 1,
-    "success": 5,
-    "error": 6,
-    "uncertain": 7,
-    "learning": 8,
-    "restarting": 4,
-    "sleeping": 0,
-    "offline": 6,
+_REQUIRED_ANIMATION_STATES = {
+    "idle",
+    "listening",
+    "thinking",
+    "researching",
+    "working",
+    "speaking",
+    "success",
+    "uncertain",
+    "error",
+    "learning",
+    "restarting",
+    "sleeping",
+    "offline",
 }
-_STATE_ASSET_SHA256 = {
-    0: "476ecfc97875732958a4102b8b5cae0e2e939cbb55e5e94f8d318c54cdf6e99e",
-    1: "facd009c7304fd7de68daa58cd72a6f698444fd1f6312a6395ecefd4b5f10cfa",
-    2: "b5608f9807f749eb09c79e154e995b43be8b4d411ec9ab678c0a07484138c052",
-    3: "bed5adfc48afc5e25c05bc4e9a8d8cd7c35b3560abb06ee0c93cbe6398087219",
-    4: "9de87db31faf742b29ce0a3d719233bf635719c607c458444e3abd30f7d6bf7e",
-    5: "4384d6f772287ed5cb8cf72f57284aa34bef8ad283371a226083b44621b6ea51",
-    6: "052250cf4589b49c84eb0778201fccfa7f89adc4c2f5a12217532b38c3b50411",
-    7: "3c916bd39c799887ff603904e32faefb5c45859e3ba3eae996d467868aed5d71",
-    8: "967adff9291fb67da74f978954ddcfd9f581dfda6b5a469eedcf2530ef40aced",
-}
-_LINE_BOIL_TICKS = 3          # 3 * legacy 180 ms ~= 540 ms per redraw
-_TRANSITION_TICKS = 3         # short old-pose -> new-pose settle
 
 
 def _asset_dir() -> Path:
     return Path(__file__).resolve().parent / "webview" / "avatar"
 
 
-def _state_asset_path(row: int) -> Path:
-    return _asset_dir() / f"state-{int(row)}.png"
+def _animation_dir() -> Path:
+    return _asset_dir() / "anim"
 
 
-def _read_state_asset(row: int) -> bytes | None:
-    """Return one committed state asset only when its source hash is intact."""
+def _animation_manifest_path() -> Path:
+    return _animation_dir() / "animation-manifest.json"
 
-    expected = _STATE_ASSET_SHA256.get(int(row))
-    if expected is None:
+
+def _png_dimensions(raw: bytes) -> tuple[int, int] | None:
+    if len(raw) < 24 or not raw.startswith(b"\x89PNG\r\n\x1a\n"):
         return None
+    return int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
+
+
+def _load_animation_manifest() -> dict[str, Any] | None:
+    """Load and verify the committed animation manifest and every PNG strip.
+
+    Returning ``None`` is intentional fail-closed behavior: the legacy pixel
+    avatar remains available and will render instead of partially loading a
+    damaged illustrated animation set.
+    """
+
     try:
-        raw = _state_asset_path(row).read_bytes()
-    except OSError:
+        payload = json.loads(_animation_manifest_path().read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
-    if hashlib.sha256(raw).hexdigest() != expected:
+
+    if payload.get("version") != 2 or int(payload.get("frame_size") or 0) != AVATAR_SIZE:
         return None
-    return raw
+    states = payload.get("states")
+    if not isinstance(states, dict) or not _REQUIRED_ANIMATION_STATES <= set(states):
+        return None
+
+    animation_dir = _animation_dir().resolve()
+    for state in sorted(_REQUIRED_ANIMATION_STATES):
+        spec = states.get(state)
+        if not isinstance(spec, dict):
+            return None
+        filename = spec.get("file")
+        expected_hash = spec.get("sha256")
+        if not isinstance(filename, str) or Path(filename).name != filename:
+            return None
+        if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+            return None
+
+        try:
+            frames = int(spec["frames"])
+            frame_ms = int(spec["frame_ms"])
+            enter_start = int(spec["enter_start"])
+            enter_end = int(spec["enter_end"])
+            loop_start = int(spec["loop_start"])
+            loop_end = int(spec["loop_end"])
+            exit_start = int(spec["exit_start"])
+            exit_end = int(spec["exit_end"])
+            representative = int(spec["representative_frame"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+        if frames < 8 or not 50 <= frame_ms <= 500:
+            return None
+        if not (
+            0 <= enter_start <= enter_end < loop_start <= loop_end < exit_start <= exit_end < frames
+        ):
+            return None
+        if not 0 <= representative < frames:
+            return None
+
+        path = (_animation_dir() / filename).resolve()
+        if path.parent != animation_dir:
+            return None
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return None
+        if hashlib.sha256(raw).hexdigest() != expected_hash:
+            return None
+        dimensions = _png_dimensions(raw)
+        if dimensions != (AVATAR_SIZE * frames, AVATAR_SIZE):
+            return None
+
+    return payload
 
 
-def _loop_offset(state: str, frame: int) -> tuple[int, int]:
-    """Tiny state-specific movement, independent from the line boil redraw."""
-
-    phase = frame % 12
-    if state == "idle":
-        return (0, 1 if phase >= 6 else 0)  # quiet breathing
-    if state == "listening":
-        return (1 if 3 <= phase < 6 else 0, 0)  # lean toward the sound
-    if state == "thinking":
-        # Small two-axis rhythm makes the pencil/notepad pose read as writing
-        # without shaking the whole character around the screen.
-        return ((phase // 2) % 2, 1 if phase in {3, 4, 9, 10} else 0)
-    if state == "researching":
-        return (0, 1 if 4 <= phase < 8 else 0)
-    if state == "working":
-        return ((phase // 2) % 2, 0)  # restrained typing rhythm
-    if state == "speaking":
-        return (0, -1 if phase in {2, 3, 8, 9} else 0)
-    if state == "success":
-        age = frame % 18
-        if age == 1:
-            return (0, -4)
-        if age == 2:
-            return (0, -2)
-        return (0, 0)
-    if state == "uncertain":
-        return (-1 if phase < 3 else (1 if 6 <= phase < 9 else 0), 0)
-    if state == "error":
-        age = frame % 20
-        if age < 4:
-            return ((-2, 2, -1, 1)[age], 0)
-        return (0, 0)
-    if state == "restarting":
-        return (0, 1 if phase % 4 >= 2 else 0)
-    if state == "sleeping":
-        return (0, 1 if phase >= 6 else 0)
-    if state == "learning":
-        return (0, -1 if 4 <= phase < 7 else 0)  # small notebook nod
-    return (0, 0)
+def _normalized_state(state: str) -> str:
+    return state if state in _REQUIRED_ANIMATION_STATES else "error"
 
 
 class NativeAvatarApp(_legacy.NativeAvatarApp):
-    """Native companion using verified illustrated state assets when available."""
+    """Native companion rendered from real frame-sequence animation strips."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        # legacy __init__ calls self._draw(), so these must exist beforehand.
-        self._illustrated_sprites: dict[int, Any] = {}
+        # legacy __init__ calls self._draw() before returning, so every field
+        # touched by _draw must exist before super().__init__.
+        self._animation_manifest = _load_animation_manifest()
+        self._animation_images: dict[str, Any] = {}
         self._display_state = "restarting"
-        self._previous_state = "restarting"
-        self._transition_tick = _TRANSITION_TICKS
-        self._state_age = 0
+        self._pending_state: str | None = None
+        self._animation_phase = "loop"
+        self._frame_cursor = 0
         super().__init__(*args, **kwargs)
 
-        loaded: dict[int, Any] = {}
-        for row in sorted(_STATE_ASSET_SHA256):
-            if _read_state_asset(row) is None:
-                loaded = {}
-                break
+        manifest = self._animation_manifest
+        loaded: dict[str, Any] = {}
+        if manifest is not None:
             try:
-                loaded[row] = self.tk.PhotoImage(
-                    file=str(_state_asset_path(row)), format="png"
-                )
+                for state in sorted(_REQUIRED_ANIMATION_STATES):
+                    filename = manifest["states"][state]["file"]
+                    loaded[state] = self.tk.PhotoImage(
+                        file=str(_animation_dir() / filename),
+                        format="png",
+                    )
             except Exception:
                 loaded = {}
-                break
-        self._illustrated_sprites = loaded
+
+        self._animation_images = loaded
+        if len(loaded) == len(_REQUIRED_ANIMATION_STATES):
+            self._display_state = _normalized_state(self.runtime_state)
+            spec = self._spec(self._display_state)
+            self._animation_phase = "enter"
+            self._frame_cursor = int(spec["enter_start"])
         self._draw()
+
+    def _spec(self, state: str) -> dict[str, Any]:
+        manifest = self._animation_manifest
+        if manifest is None:
+            raise RuntimeError("animation manifest unavailable")
+        return manifest["states"][_normalized_state(state)]
+
+    def _animation_ready(self) -> bool:
+        return (
+            self._animation_manifest is not None
+            and len(self._animation_images) == len(_REQUIRED_ANIMATION_STATES)
+        )
+
+    def _request_runtime_state(self) -> None:
+        if not self._animation_ready():
+            return
+        target = _normalized_state(self.runtime_state)
+        if target == self._display_state and self._pending_state is None:
+            return
+        if target == self._pending_state:
+            return
+
+        self._pending_state = target
+        if self._animation_phase != "exit":
+            spec = self._spec(self._display_state)
+            self._animation_phase = "exit"
+            self._frame_cursor = int(spec["exit_start"])
+
+    def _advance_animation(self) -> None:
+        if not self._animation_ready():
+            return
+
+        spec = self._spec(self._display_state)
+        if self._animation_phase == "exit":
+            self._frame_cursor += 1
+            if self._frame_cursor > int(spec["exit_end"]):
+                next_state = self._pending_state or _normalized_state(self.runtime_state)
+                self._display_state = next_state
+                self._pending_state = None
+                next_spec = self._spec(next_state)
+                self._animation_phase = "enter"
+                self._frame_cursor = int(next_spec["enter_start"])
+            return
+
+        if self._animation_phase == "enter":
+            self._frame_cursor += 1
+            if self._frame_cursor > int(spec["enter_end"]):
+                self._animation_phase = "loop"
+                self._frame_cursor = int(spec["loop_start"])
+            return
+
+        self._frame_cursor += 1
+        if self._frame_cursor > int(spec["loop_end"]):
+            self._frame_cursor = int(spec["loop_start"])
+
+    def _current_delay_ms(self) -> int:
+        if not self._animation_ready():
+            return 180
+        return int(self._spec(self._display_state)["frame_ms"])
 
     def _animate(self) -> None:
         self.frame += 1
-        self._state_age += 1
-        if self._transition_tick < _TRANSITION_TICKS:
-            self._transition_tick += 1
+        self._request_runtime_state()
+        self._advance_animation()
         self._draw()
         if not self._stop.is_set():
-            self.root.after(180, self._animate)
-
-    def _draw_sprite(self, state: str, frame: int, *, dx: int = 0, dy: int = 0) -> None:
-        row = _SPRITE_ROWS.get(state, _SPRITE_ROWS["error"])
-        sprite = self._illustrated_sprites.get(row)
-        if sprite is None:
-            return
-        self.canvas.create_image(
-            dx - frame * AVATAR_SIZE,
-            dy,
-            image=sprite,
-            anchor="nw",
-        )
+            self.root.after(self._current_delay_ms(), self._animate)
 
     def _draw(self) -> None:
-        sprites = getattr(self, "_illustrated_sprites", {})
-        if len(sprites) != len(_STATE_ASSET_SHA256):
+        if not self._animation_ready():
             _legacy.NativeAvatarApp._draw(self)
             return
 
-        state = self.runtime_state if self.runtime_state in _SPRITE_ROWS else "error"
-        if state != self._display_state:
-            self._previous_state = self._display_state
-            self._display_state = state
-            self._transition_tick = 0
-            self._state_age = 0
+        self._request_runtime_state()
+        sprite = self._animation_images.get(self._display_state)
+        if sprite is None:
+            _legacy.NativeAvatarApp._draw(self)
+            return
 
         self.canvas.delete("all")
-        line_frame = (self.frame // _LINE_BOIL_TICKS) % 2
-
-        # Tk does not give canvas images a cheap per-item alpha channel, so the
-        # native transition uses a tiny old-pose departure/new-pose settle.  It
-        # is intentionally restrained; the richer WebView transition crossfades.
-        if self._transition_tick == 0:
-            self._draw_sprite(self._previous_state, line_frame, dy=-1)
-            return
-        if self._transition_tick == 1:
-            self._draw_sprite(self._display_state, line_frame, dy=3)
-            return
-        if self._transition_tick == 2:
-            self._draw_sprite(self._display_state, line_frame, dy=1)
-            return
-
-        motion_age = max(0, self._state_age - _TRANSITION_TICKS)
-        dx, dy = _loop_offset(self._display_state, motion_age)
-        self._draw_sprite(self._display_state, line_frame, dx=dx, dy=dy)
+        self.canvas.create_image(
+            -int(self._frame_cursor) * AVATAR_SIZE,
+            0,
+            image=sprite,
+            anchor="nw",
+        )
 
 
 def main(

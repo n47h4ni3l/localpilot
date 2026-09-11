@@ -1,75 +1,100 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 from localpilot import native_avatar
 
 
-def test_illustrated_state_assets_are_committed_and_match_source_hashes():
-    assert set(native_avatar._STATE_ASSET_SHA256) == set(range(9))
-
-    for row, expected in native_avatar._STATE_ASSET_SHA256.items():
-        raw = native_avatar._read_state_asset(row)
-        assert raw is not None
-        assert raw.startswith(b"\x89PNG\r\n\x1a\n")
-        assert hashlib.sha256(raw).hexdigest() == expected
-
-        # Every state asset contains two 128x128 independent redraws side by side.
-        # PNG IHDR stores width/height as big-endian uint32 at bytes 16..24.
-        assert int.from_bytes(raw[16:20], "big") == native_avatar.AVATAR_SIZE * 2
-        assert int.from_bytes(raw[20:24], "big") == native_avatar.AVATAR_SIZE
-
-        path = native_avatar._state_asset_path(row)
-        assert path.name == f"state-{row}.png"
-        assert path.is_file()
+REQUIRED_STATES = {
+    "idle",
+    "listening",
+    "thinking",
+    "researching",
+    "working",
+    "speaking",
+    "success",
+    "uncertain",
+    "error",
+    "learning",
+    "restarting",
+    "sleeping",
+    "offline",
+}
 
 
-def test_illustrated_sprite_maps_every_existing_runtime_state_and_future_personality_states():
-    required = {
-        "idle",
-        "listening",
-        "thinking",
-        "working",
-        "speaking",
-        "success",
-        "uncertain",
-        "error",
-        "restarting",
-        "sleeping",
-        "offline",
-        "researching",
-        "learning",
-    }
-    assert required <= set(native_avatar._SPRITE_ROWS)
-    assert native_avatar._SPRITE_ROWS["thinking"] == 2
-    assert native_avatar._SPRITE_ROWS["researching"] == 3
-    assert native_avatar._SPRITE_ROWS["working"] == 4
-    assert native_avatar._SPRITE_ROWS["success"] == 5
-    assert native_avatar._SPRITE_ROWS["error"] == 6
-    assert native_avatar._SPRITE_ROWS["uncertain"] == 7
-    assert native_avatar._SPRITE_ROWS["learning"] == 8
+def test_full_animation_atlas_is_committed_verified_and_correct_size():
+    manifest = json.loads(native_avatar._animation_manifest_path().read_text(encoding="utf-8"))
+    assert manifest["version"] == 5
+    assert manifest["frame_size"] == native_avatar.AVATAR_SIZE
+    assert manifest["columns"] == 24
+    assert manifest["rows"] == 13
+    assert manifest["atlas"]["file"] == "avatar-animation.png"
+
+    raw = native_avatar._read_animation_atlas_data(manifest)
+    assert raw is not None
+    assert raw.startswith(b"\x89PNG\r\n\x1a\n")
+    assert hashlib.sha256(raw).hexdigest() == manifest["atlas"]["sha256"]
+    assert native_avatar._png_dimensions(raw) == (
+        native_avatar.AVATAR_SIZE * manifest["columns"],
+        native_avatar.AVATAR_SIZE * manifest["rows"],
+    )
+    atlas_path = native_avatar._animation_atlas_path(manifest)
+    assert atlas_path is not None
+    assert atlas_path.name == "avatar-animation.png"
+    assert atlas_path.is_file()
+    # A production atlas must contain substantive artwork rather than a tiny placeholder.
+    assert len(raw) > 250_000
 
 
-def test_native_motion_separates_line_boil_state_loop_and_transition():
+def test_animation_manifest_covers_every_state_with_enter_loop_and_exit_frames():
+    manifest = native_avatar._load_animation_manifest()
+    assert manifest is not None
+    assert REQUIRED_STATES <= set(manifest["states"])
+
+    rows = set()
+    for state in REQUIRED_STATES:
+        spec = manifest["states"][state]
+        rows.add(spec["row"])
+        assert spec["frames"] >= 20
+        assert 50 <= spec["frame_ms"] <= 500
+        assert 0 <= spec["enter_start"] <= spec["enter_end"]
+        assert spec["enter_end"] < spec["loop_start"] <= spec["loop_end"]
+        assert spec["loop_end"] < spec["exit_start"] <= spec["exit_end"]
+        assert spec["exit_end"] < spec["frames"] <= manifest["columns"]
+        assert spec["loop_start"] <= spec["representative_frame"] <= spec["loop_end"]
+
+    assert len(rows) == len(REQUIRED_STATES)
+    assert manifest["states"]["thinking"]["row"] == 2
+    assert manifest["states"]["researching"]["row"] == 3
+    assert manifest["states"]["working"]["row"] == 4
+    assert manifest["states"]["speaking"]["row"] == 5
+    assert manifest["states"]["success"]["row"] == 6
+    assert manifest["states"]["sleeping"]["frames"] == 24
+    assert manifest["states"]["offline"]["frames"] == 24
+
+
+def test_native_renderer_uses_real_frame_sequences_and_animated_state_transitions():
     source = Path(native_avatar.__file__).read_text(encoding="utf-8")
-    assert native_avatar._LINE_BOIL_TICKS >= 2
-    assert native_avatar._TRANSITION_TICKS >= 2
-    assert "line_frame = (self.frame // _LINE_BOIL_TICKS) % 2" in source
-    assert "_loop_offset" in source
-    assert "_transition_tick" in source
-    assert "motion_age = max(0, self._state_age - _TRANSITION_TICKS)" in source
+    assert "_animation_phase = \"exit\"" in source
+    assert "_animation_phase = \"enter\"" in source
+    assert "_animation_phase = \"loop\"" in source
+    assert "_frame_cursor" in source
+    assert "loop_start" in source
+    assert "loop_end" in source
+    assert "exit_start" in source
+    assert "enter_start" in source
+    assert "create_image" in source
 
-    # State animation is real movement, not just swapping the redraw frame.
-    thinking_offsets = {native_avatar._loop_offset("thinking", frame) for frame in range(12)}
-    working_offsets = {native_avatar._loop_offset("working", frame) for frame in range(12)}
-    listening_offsets = {native_avatar._loop_offset("listening", frame) for frame in range(12)}
-    assert len(thinking_offsets) > 1
-    assert len(working_offsets) > 1
-    assert len(listening_offsets) > 1
+    # Regression guard: the previous implementation faked animation by moving a
+    # static pose with state-specific x/y offsets and line-boil frame swapping.
+    assert "_loop_offset" not in source
+    assert "_LINE_BOIL_TICKS" not in source
+    assert "line_frame" not in source
 
 
-def test_webview_has_passive_line_boil_short_state_loops_and_animated_transitions():
+def test_webview_uses_atlas_frames_not_whole_character_transform_motion():
     webview_dir = Path(native_avatar.__file__).resolve().parent / "webview"
     index = (webview_dir / "index.html").read_text(encoding="utf-8")
     script = (webview_dir / "illustrated-avatar.js").read_text(encoding="utf-8")
@@ -77,30 +102,41 @@ def test_webview_has_passive_line_boil_short_state_loops_and_animated_transition
     assert '<script src="app.js"></script>' in index
     assert '<script src="illustrated-avatar.js"></script>' in index
     assert "document.documentElement.dataset.state" in script
-    assert 'return "avatar/state-" + rowForState(state) + ".png";' in script
-    assert 'image.src = "avatar/state-" + row + ".png";' in script
-    assert "Promise.all" in script
+    assert 'const MANIFEST_URL = "avatar/anim/animation-manifest.json"' in script
+    assert 'const atlasUrl = "avatar/anim/" + manifest.atlas.file' in script
+    assert "backgroundPosition" in script
+    assert "transitionFrame" in script
+    assert "frameForElapsed" in script
+    assert "this.previousState" in script
+    assert "exit_start" in script
+    assert "enter_start" in script
+    assert "prefers-reduced-motion" in script
     assert 'this.canvas.style.opacity = "0"' in script
     assert "pixel fallback" in script
 
-    # These are deliberately separate concerns: redraw texture, pose movement,
-    # and a dual-layer old->new state transition.
-    assert "LINE_BOIL_MS = 520" in script
-    assert "TRANSITION_MS = 280" in script
-    assert "function stateMotion" in script
-    assert "this.previousState" in script
-    assert "illustrated-avatar-frame--previous" in script
-    assert "illustrated-avatar-frame--current" in script
-    assert "stateMotion(this.state, now - this.stateStart - TRANSITION_MS)" in script
-    assert "prefers-reduced-motion" in script
+    # No transform-driven fake writing/typing/breathing animation remains.
+    assert "function stateMotion" not in script
+    assert "motionTransform" not in script
+    assert "translate(" not in script
+    assert "rotate(" not in script
+    assert "LINE_BOIL_MS" not in script
 
 
-def test_missing_or_tampered_state_asset_keeps_pixel_fallback(tmp_path, monkeypatch):
-    missing = tmp_path / "missing.png"
-    monkeypatch.setattr(native_avatar, "_state_asset_path", lambda _row: missing)
-    assert native_avatar._read_state_asset(0) is None
+def test_missing_or_tampered_animation_atlas_keeps_pixel_fallback(tmp_path, monkeypatch):
+    manifest = json.loads(native_avatar._animation_manifest_path().read_text(encoding="utf-8"))
 
-    bad = tmp_path / "state-0.png"
-    bad.write_bytes(b"not the approved state asset")
-    monkeypatch.setattr(native_avatar, "_state_asset_path", lambda _row: bad)
-    assert native_avatar._read_state_asset(0) is None
+    missing = tmp_path / "avatar-animation.png"
+    monkeypatch.setattr(native_avatar, "_animation_atlas_path", lambda _payload: missing)
+    assert native_avatar._read_animation_atlas_data(manifest) is None
+
+    bad = tmp_path / "avatar-animation.png"
+    bad.write_bytes(b"not the approved animation atlas")
+    monkeypatch.setattr(native_avatar, "_animation_atlas_path", lambda _payload: bad)
+    assert native_avatar._read_animation_atlas_data(manifest) is None
+
+
+def test_researching_and_learning_are_valid_native_runtime_states():
+    assert "researching" in native_avatar._STATE_COLORS
+    assert "learning" in native_avatar._STATE_COLORS
+    assert native_avatar._normalized_state("researching") == "researching"
+    assert native_avatar._normalized_state("learning") == "learning"

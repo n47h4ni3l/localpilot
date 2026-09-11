@@ -2,13 +2,13 @@
 
 /* LocalPilot illustrated avatar: real frame-sequence animation.
  *
- * app.js still owns runtime state and the original pixel canvas remains the
- * fail-safe. This layer loads one compact animation atlas plus a manifest.
+ * app.js owns runtime state and the original pixel canvas remains the fail-safe.
+ * This renderer uses one production PNG atlas plus a manifest. Every status has
+ * enter frames, a genuine character-action loop, and exit frames. State changes
+ * animate both the old and new sequences during a short crossfade.
  *
- * Each state has enter frames, a genuine state-specific animated loop, and
- * exit frames. State changes play the old exit and new enter sequences at the
- * same time during a short crossfade. No whole-character CSS nudging is used
- * to fake writing, typing, talking, breathing, celebrating, or sleeping.
+ * No whole-character CSS nudge/rotate/scale is used as a substitute for actual
+ * writing, typing, talking, breathing, celebrating, reading, or sleeping frames.
  */
 (function () {
   "use strict";
@@ -78,6 +78,7 @@
       this.current = this.makeFrame("illustrated-avatar-frame illustrated-avatar-frame--current");
       this.root.appendChild(this.previous);
       this.root.appendChild(this.current);
+
       const parent = canvas.parentElement;
       if (parent && window.getComputedStyle(parent).position === "static") {
         parent.style.position = "relative";
@@ -155,6 +156,7 @@
 
     draw(now) {
       if (!this.enabled) return;
+
       if (reducedMotion) {
         const spec = this.spec(this.state);
         this.setFrame(this.current, this.state, Number(spec.representative_frame));
@@ -168,8 +170,16 @@
         const p = clamp01(transitionProgress);
         const oldSpec = this.spec(this.previousState);
         const newSpec = this.spec(this.state);
-        this.setFrame(this.previous, this.previousState, transitionFrame(oldSpec, "exit_start", "exit_end", p));
-        this.setFrame(this.current, this.state, transitionFrame(newSpec, "enter_start", "enter_end", p));
+        this.setFrame(
+          this.previous,
+          this.previousState,
+          transitionFrame(oldSpec, "exit_start", "exit_end", p)
+        );
+        this.setFrame(
+          this.current,
+          this.state,
+          transitionFrame(newSpec, "enter_start", "enter_end", p)
+        );
         this.previous.style.opacity = String(1 - p);
         this.current.style.opacity = String(p);
         return;
@@ -178,7 +188,7 @@
       this.previous.style.opacity = "0";
       const spec = this.spec(this.state);
       this.setFrame(this.current, this.state, frameForElapsed(spec, now - this.stateStart));
-      this.current.style.opacity = "1";
+      this.current.style.opacity = this.state === "offline" ? "0.72" : "1";
     }
   }
 
@@ -191,34 +201,40 @@
     if (!response.ok) throw new Error("animation manifest unavailable");
     const manifest = await response.json();
     if (
-      Number(manifest.version) !== 4 ||
+      Number(manifest.version) !== 5 ||
       Number(manifest.frame_size) !== 128 ||
       Number(manifest.columns) < 1 ||
       Number(manifest.rows) < REQUIRED_STATES.length ||
       !manifest.states ||
       !manifest.atlas ||
-      !Array.isArray(manifest.atlas.chunks) ||
-      manifest.atlas.chunks.length < 1
+      typeof manifest.atlas.file !== "string" ||
+      !/^[A-Za-z0-9._-]+\.png$/.test(manifest.atlas.file)
     ) {
       throw new Error("invalid animation manifest");
     }
+
+    const seenRows = new Set();
     for (const state of REQUIRED_STATES) {
       const spec = manifest.states[state];
       if (!spec || Number(spec.frames) < 8 || Number(spec.row) < 0) {
         throw new Error("missing animation state: " + state);
       }
+      const row = Number(spec.row);
+      if (seenRows.has(row)) throw new Error("duplicate animation row");
+      seenRows.add(row);
+      if (
+        !(Number(spec.enter_start) <= Number(spec.enter_end) &&
+          Number(spec.enter_end) < Number(spec.loop_start) &&
+          Number(spec.loop_start) <= Number(spec.loop_end) &&
+          Number(spec.loop_end) < Number(spec.exit_start) &&
+          Number(spec.exit_start) <= Number(spec.exit_end) &&
+          Number(spec.exit_end) < Number(spec.frames))
+      ) {
+        throw new Error("invalid animation ranges: " + state);
+      }
     }
 
-    const parts = await Promise.all(manifest.atlas.chunks.map(async function (name) {
-      if (typeof name !== "string" || !/^atlas\.\d\d\.b64$/.test(name)) {
-        throw new Error("invalid atlas chunk name");
-      }
-      const chunkResponse = await fetch("avatar/anim/" + name, { cache: "no-store" });
-      if (!chunkResponse.ok) throw new Error("animation atlas chunk unavailable");
-      return (await chunkResponse.text()).trim();
-    }));
-    const atlasUrl = "data:image/png;base64," + parts.join("");
-
+    const atlasUrl = "avatar/anim/" + manifest.atlas.file;
     await new Promise(function (resolve, reject) {
       const image = new Image();
       image.onload = function () {
@@ -242,6 +258,7 @@
     const layers = canvases.map(function (canvas) {
       return new IllustratedAvatarLayer(canvas, manifest, loaded.atlasUrl);
     });
+
     const observer = new MutationObserver(function (records) {
       if (!records.some(function (record) { return record.attributeName === "data-state"; })) return;
       const state = currentState();
@@ -249,12 +266,15 @@
       layers.forEach(function (layer) { layer.setState(state, now); });
     });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-state"] });
+
     window.addEventListener("resize", function () {
       layers.forEach(function (layer) { layer.syncGeometry(); });
     });
+
     const state = currentState();
     const now = performance.now();
     layers.forEach(function (layer) { layer.enable(state, now); });
+
     function animate(timestamp) {
       layers.forEach(function (layer) { layer.draw(timestamp); });
       requestAnimationFrame(animate);

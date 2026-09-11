@@ -3,25 +3,25 @@
   "frame_size": 128,
   "columns": 24,
   "rows": 13,
-  "transition_ms": 360,
-  "notes": "Real frame-sequence character animation atlas; no passive line-boil layer and no whole-image motion used as a substitute for character animation.",
+  "transition_ms": 420,
+  "notes": "True-alpha RGBA living-character animation atlas. Real alternate drawings drive blink, writing, reading, typing, speaking, reactions and sleep; no passive line-boil and no whole-image squeeze/scale/rotate animation.",
   "atlas": {
     "file": "avatar-animation.png",
-    "sha256": "6c89de519c2127d039091e76e12bac897b6bc0afa0236882778593d4129a52f7"
+    "sha256": "86611c1dee6e6c5b6d7914d16ebfc3ae9682b4b65d4e247f32ed5d55467a1d69"
   },
   "states": {
-    "idle": {"row": 0, "frames": 20, "frame_ms": 110, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "listening": {"row": 1, "frames": 20, "frame_ms": 100, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "thinking": {"row": 2, "frames": 20, "frame_ms": 95, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "researching": {"row": 3, "frames": 20, "frame_ms": 110, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "working": {"row": 4, "frames": 20, "frame_ms": 85, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "speaking": {"row": 5, "frames": 20, "frame_ms": 95, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "success": {"row": 6, "frames": 20, "frame_ms": 95, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "uncertain": {"row": 7, "frames": 20, "frame_ms": 115, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "error": {"row": 8, "frames": 20, "frame_ms": 105, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "learning": {"row": 9, "frames": 20, "frame_ms": 110, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "restarting": {"row": 10, "frames": 20, "frame_ms": 80, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "sleeping": {"row": 11, "frames": 24, "frame_ms": 150, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 19, "exit_start": 20, "exit_end": 23, "representative_frame": 4},
-    "offline": {"row": 12, "frames": 24, "frame_ms": 180, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 19, "exit_start": 20, "exit_end": 23, "representative_frame": 4}
+    "idle": {"row": 0, "frames": 20, "frame_ms": 220, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "listening": {"row": 1, "frames": 20, "frame_ms": 140, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "thinking": {"row": 2, "frames": 20, "frame_ms": 110, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "researching": {"row": 3, "frames": 20, "frame_ms": 150, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "working": {"row": 4, "frames": 20, "frame_ms": 100, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "speaking": {"row": 5, "frames": 20, "frame_ms": 115, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "success": {"row": 6, "frames": 20, "frame_ms": 130, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "uncertain": {"row": 7, "frames": 20, "frame_ms": 170, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "error": {"row": 8, "frames": 20, "frame_ms": 150, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "learning": {"row": 9, "frames": 20, "frame_ms": 160, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "restarting": {"row": 10, "frames": 20, "frame_ms": 95, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "sleeping": {"row": 11, "frames": 24, "frame_ms": 180, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 19, "exit_start": 20, "exit_end": 23, "representative_frame": 4},
+    "offline": {"row": 12, "frames": 24, "frame_ms": 240, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 19, "exit_start": 20, "exit_end": 23, "representative_frame": 4}
   }
 }

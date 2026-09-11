@@ -14,7 +14,6 @@
   "use strict";
 
   const MANIFEST_URL = "avatar/anim/animation-manifest.json";
-  const ATLAS_URL = "avatar/anim/avatar-animation.png";
   const REQUIRED_STATES = [
     "idle", "listening", "thinking", "researching", "working", "speaking",
     "success", "uncertain", "error", "learning", "restarting", "sleeping", "offline",
@@ -53,12 +52,12 @@
   }
 
   class IllustratedAvatarLayer {
-    constructor(canvas, manifest) {
+    constructor(canvas, manifest, atlasUrl) {
       this.canvas = canvas;
       this.manifest = manifest;
+      this.atlasUrl = atlasUrl;
       this.transitionMs = Number(manifest.transition_ms);
       this.enabled = false;
-
       this.state = "restarting";
       this.previousState = "restarting";
       this.stateStart = performance.now();
@@ -79,7 +78,6 @@
       this.current = this.makeFrame("illustrated-avatar-frame illustrated-avatar-frame--current");
       this.root.appendChild(this.previous);
       this.root.appendChild(this.current);
-
       const parent = canvas.parentElement;
       if (parent && window.getComputedStyle(parent).position === "static") {
         parent.style.position = "relative";
@@ -96,7 +94,7 @@
         inset: "0",
         display: "block",
         pointerEvents: "none",
-        backgroundImage: 'url("' + ATLAS_URL + '")',
+        backgroundImage: 'url("' + this.atlasUrl + '")',
         backgroundRepeat: "no-repeat",
         backgroundOrigin: "border-box",
         backgroundClip: "border-box",
@@ -157,7 +155,6 @@
 
     draw(now) {
       if (!this.enabled) return;
-
       if (reducedMotion) {
         const spec = this.spec(this.state);
         this.setFrame(this.current, this.state, Number(spec.representative_frame));
@@ -171,16 +168,8 @@
         const p = clamp01(transitionProgress);
         const oldSpec = this.spec(this.previousState);
         const newSpec = this.spec(this.state);
-        this.setFrame(
-          this.previous,
-          this.previousState,
-          transitionFrame(oldSpec, "exit_start", "exit_end", p)
-        );
-        this.setFrame(
-          this.current,
-          this.state,
-          transitionFrame(newSpec, "enter_start", "enter_end", p)
-        );
+        this.setFrame(this.previous, this.previousState, transitionFrame(oldSpec, "exit_start", "exit_end", p));
+        this.setFrame(this.current, this.state, transitionFrame(newSpec, "enter_start", "enter_end", p));
         this.previous.style.opacity = String(1 - p);
         this.current.style.opacity = String(p);
         return;
@@ -201,25 +190,34 @@
     const response = await fetch(MANIFEST_URL, { cache: "no-store" });
     if (!response.ok) throw new Error("animation manifest unavailable");
     const manifest = await response.json();
-
     if (
-      Number(manifest.version) !== 3 ||
+      Number(manifest.version) !== 4 ||
       Number(manifest.frame_size) !== 128 ||
       Number(manifest.columns) < 1 ||
       Number(manifest.rows) < REQUIRED_STATES.length ||
       !manifest.states ||
       !manifest.atlas ||
-      manifest.atlas.file !== "avatar-animation.png"
+      !Array.isArray(manifest.atlas.chunks) ||
+      manifest.atlas.chunks.length < 1
     ) {
       throw new Error("invalid animation manifest");
     }
-
     for (const state of REQUIRED_STATES) {
       const spec = manifest.states[state];
       if (!spec || Number(spec.frames) < 8 || Number(spec.row) < 0) {
         throw new Error("missing animation state: " + state);
       }
     }
+
+    const parts = await Promise.all(manifest.atlas.chunks.map(async function (name) {
+      if (typeof name !== "string" || !/^atlas\.\d\d\.b64$/.test(name)) {
+        throw new Error("invalid atlas chunk name");
+      }
+      const chunkResponse = await fetch("avatar/anim/" + name, { cache: "no-store" });
+      if (!chunkResponse.ok) throw new Error("animation atlas chunk unavailable");
+      return (await chunkResponse.text()).trim();
+    }));
+    const atlasUrl = "data:image/png;base64," + parts.join("");
 
     await new Promise(function (resolve, reject) {
       const image = new Image();
@@ -234,36 +232,29 @@
         resolve();
       };
       image.onerror = reject;
-      image.src = ATLAS_URL;
+      image.src = atlasUrl;
     });
-
-    return manifest;
+    return { manifest: manifest, atlasUrl: atlasUrl };
   }
 
-  loadManifestAndAtlas().then(function (manifest) {
+  loadManifestAndAtlas().then(function (loaded) {
+    const manifest = loaded.manifest;
     const layers = canvases.map(function (canvas) {
-      return new IllustratedAvatarLayer(canvas, manifest);
+      return new IllustratedAvatarLayer(canvas, manifest, loaded.atlasUrl);
     });
-
     const observer = new MutationObserver(function (records) {
       if (!records.some(function (record) { return record.attributeName === "data-state"; })) return;
       const state = currentState();
       const now = performance.now();
       layers.forEach(function (layer) { layer.setState(state, now); });
     });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["data-state"],
-    });
-
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-state"] });
     window.addEventListener("resize", function () {
       layers.forEach(function (layer) { layer.syncGeometry(); });
     });
-
     const state = currentState();
     const now = performance.now();
     layers.forEach(function (layer) { layer.enable(state, now); });
-
     function animate(timestamp) {
       layers.forEach(function (layer) { layer.draw(timestamp); });
       requestAnimationFrame(animate);

@@ -50,6 +50,12 @@
   function wave(seconds, period) {
     return Math.sin((seconds / period) * Math.PI * 2);
   }
+  function rowForState(state) {
+    return Object.prototype.hasOwnProperty.call(ROW, state) ? ROW[state] : ROW.error;
+  }
+  function stateAssetUrl(state) {
+    return "avatar/state-" + rowForState(state) + ".png";
+  }
 
   function stateMotion(state, ageMs) {
     if (reducedMotion) return { x: 0, y: 0, scale: 1, rotate: 0, opacity: 1 };
@@ -198,14 +204,11 @@
       this.root.style.width = width + "px";
       this.root.style.height = height + "px";
       [this.previous, this.current].forEach(function (frame) {
-        frame.style.backgroundSize = (width * 2) + "px " + (height * 9) + "px";
+        frame.style.backgroundSize = (width * 2) + "px " + height + "px";
       });
     }
 
-    enable(spriteUrl, state, now) {
-      const image = 'url("' + spriteUrl + '")';
-      this.previous.style.backgroundImage = image;
-      this.current.style.backgroundImage = image;
+    enable(state, now) {
       this.canvas.style.opacity = "0";
       this.enabled = true;
       this.state = state;
@@ -224,9 +227,8 @@
     }
 
     setSpriteFrame(element, state, lineFrame) {
-      const row = Object.prototype.hasOwnProperty.call(ROW, state) ? ROW[state] : ROW.error;
-      element.style.backgroundPosition =
-        (-lineFrame * this.width) + "px " + (-row * this.height) + "px";
+      element.style.backgroundImage = 'url("' + stateAssetUrl(state) + '")';
+      element.style.backgroundPosition = (-lineFrame * this.width) + "px 0px";
     }
 
     draw(now, lineFrame) {
@@ -254,7 +256,7 @@
       }
 
       this.previous.style.opacity = "0";
-      const motion = stateMotion(this.state, now - this.stateStart);
+      const motion = stateMotion(this.state, now - this.stateStart - TRANSITION_MS);
       this.current.style.opacity = String(motion.opacity);
       this.current.style.transform = motionTransform(motion);
     }
@@ -279,18 +281,26 @@
     layers.forEach(function (layer) { layer.syncGeometry(); });
   });
 
-  const sprite = new Image();
-  sprite.onload = function () {
+  // Preload every illustrated pose before hiding the known-good pixel avatar.
+  // A missing or damaged file therefore degrades atomically to the existing
+  // companion rather than failing halfway through a state transition.
+  const rows = Array.from(new Set(Object.keys(ROW).map(function (state) { return ROW[state]; })));
+  Promise.all(rows.map(function (row) {
+    return new Promise(function (resolve, reject) {
+      const image = new Image();
+      image.onload = resolve;
+      image.onerror = reject;
+      image.src = "avatar/state-" + row + ".png";
+    });
+  })).then(function () {
     const state = currentState();
     const now = performance.now();
-    layers.forEach(function (layer) { layer.enable(sprite.src, state, now); });
+    layers.forEach(function (layer) { layer.enable(state, now); });
     requestAnimationFrame(animate);
-  };
-  sprite.onerror = function () {
+  }).catch(function () {
     // Deliberately do nothing: app.js' existing canvas avatar remains visible.
-    console.warn("LocalPilot: illustrated avatar asset unavailable; using pixel fallback.");
-  };
-  sprite.src = "avatar/sprite.png";
+    console.warn("LocalPilot: illustrated avatar assets unavailable; using pixel fallback.");
+  });
 
   function animate(now) {
     // Line boil is deliberately independent of state motion.  Offline and

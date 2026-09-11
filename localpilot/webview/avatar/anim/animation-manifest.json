@@ -1,12 +1,12 @@
 {
-  "version": 4,
+  "version": 5,
   "frame_size": 128,
   "columns": 24,
   "rows": 13,
   "transition_ms": 360,
-  "notes": "Real frame-sequence character animation atlas stored as verified base64 chunks; no passive line-boil layer.",
+  "notes": "Real frame-sequence character animation atlas; no passive line-boil layer and no whole-image motion used as a substitute for character animation.",
   "atlas": {
-    "chunks": ["atlas.00.b64", "atlas.01.b64", "atlas.02.b64", "atlas.03.b64", "atlas.04.b64", "atlas.05.b64", "atlas.06.b64", "atlas.07.b64"],
+    "file": "avatar-animation.png",
     "sha256": "6c89de519c2127d039091e76e12bac897b6bc0afa0236882778593d4129a52f7"
   },
   "states": {

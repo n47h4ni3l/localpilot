@@ -3,13 +3,13 @@ from __future__ import annotations
 """Frame-sequence LocalPilot desktop avatar.
 
 The original pixel companion is preserved in :mod:`native_avatar_legacy` and
-remains the fail-safe.  The illustrated companion uses one compact PNG atlas
+remains the fail-safe. The illustrated companion uses one verified PNG atlas
 containing real per-state animation frames rather than moving a static drawing
 around the window.
 
 Each state owns four enter frames, a state-specific animated loop, and four
-exit frames.  On state changes the native companion plays the old exit sequence
-and the new enter sequence before settling into the new loop.  The WebView uses
+exit frames. On state changes the native companion plays the old exit sequence
+and the new enter sequence before settling into the new loop. The WebView uses
 the same atlas and crossfades those simultaneously animated sequences.
 """
 
@@ -28,7 +28,14 @@ EDGE_INSET = _legacy.EDGE_INSET
 EXPANDED_SIZE = _legacy.EXPANDED_SIZE
 _TRANSPARENT_KEY = _legacy._TRANSPARENT_KEY
 _CHAT_START_GRACE_MS = _legacy._CHAT_START_GRACE_MS
-_STATE_COLORS = _legacy._STATE_COLORS
+_STATE_COLORS = dict(_legacy._STATE_COLORS)
+_STATE_COLORS.setdefault("researching", "#5fa8ff")
+_STATE_COLORS.setdefault("learning", "#6fde8e")
+# The inherited event drain validates against the legacy module global.
+_legacy._STATE_COLORS.update({
+    "researching": _STATE_COLORS["researching"],
+    "learning": _STATE_COLORS["learning"],
+})
 
 _enable_per_monitor_dpi_awareness = _legacy._enable_per_monitor_dpi_awareness
 _primary_work_area = _legacy._primary_work_area
@@ -127,47 +134,38 @@ def _animation_manifest_path() -> Path:
     return _animation_dir() / "animation-manifest.json"
 
 
-def _animation_chunk_paths(payload: dict[str, Any]) -> list[Path] | None:
-    atlas = payload.get("atlas")
-    if not isinstance(atlas, dict):
-        return None
-    chunks = atlas.get("chunks")
-    if not isinstance(chunks, list) or not 1 <= len(chunks) <= 16:
-        return None
-    paths: list[Path] = []
-    animation_dir = _animation_dir().resolve()
-    for item in chunks:
-        if not isinstance(item, str) or Path(item).name != item or not item.endswith(".b64"):
-            return None
-        path = (_animation_dir() / item).resolve()
-        if path.parent != animation_dir:
-            return None
-        paths.append(path)
-    return paths
-
-
 def _png_dimensions(raw: bytes) -> tuple[int, int] | None:
     if len(raw) < 24 or not raw.startswith(b"\x89PNG\r\n\x1a\n"):
         return None
     return int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
 
 
-def _read_animation_atlas_data(payload: dict[str, Any]) -> str | None:
-    """Return verified base64 PNG atlas data assembled from committed chunks."""
-
-    import base64
-
-    paths = _animation_chunk_paths(payload)
+def _animation_atlas_path(payload: dict[str, Any]) -> Path | None:
     atlas = payload.get("atlas")
-    if paths is None or not isinstance(atlas, dict):
+    if not isinstance(atlas, dict):
+        return None
+    filename = atlas.get("file")
+    if not isinstance(filename, str) or Path(filename).name != filename or not filename.endswith(".png"):
+        return None
+    path = (_animation_dir() / filename).resolve()
+    if path.parent != _animation_dir().resolve():
+        return None
+    return path
+
+
+def _read_animation_atlas_data(payload: dict[str, Any]) -> bytes | None:
+    """Return the atlas only when hash and dimensions match the manifest."""
+
+    atlas = payload.get("atlas")
+    path = _animation_atlas_path(payload)
+    if not isinstance(atlas, dict) or path is None:
         return None
     expected_hash = atlas.get("sha256")
     if not isinstance(expected_hash, str) or len(expected_hash) != 64:
         return None
     try:
-        encoded = "".join(path.read_text(encoding="ascii").strip() for path in paths)
-        raw = base64.b64decode(encoded, validate=True)
-    except (OSError, UnicodeDecodeError, ValueError):
+        raw = path.read_bytes()
+    except OSError:
         return None
     if hashlib.sha256(raw).hexdigest() != expected_hash:
         return None
@@ -175,18 +173,18 @@ def _read_animation_atlas_data(payload: dict[str, Any]) -> str | None:
     rows = int(payload.get("rows") or 0)
     if _png_dimensions(raw) != (AVATAR_SIZE * columns, AVATAR_SIZE * rows):
         return None
-    return encoded
+    return raw
 
 
 def _load_animation_manifest() -> dict[str, Any] | None:
-    """Verify the complete chunked atlas/manifest pair or fail closed."""
+    """Verify the complete atlas/manifest pair or fail closed to pixel mode."""
 
     try:
         payload = json.loads(_animation_manifest_path().read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
-    if payload.get("version") != 4 or int(payload.get("frame_size") or 0) != AVATAR_SIZE:
+    if payload.get("version") != 5 or int(payload.get("frame_size") or 0) != AVATAR_SIZE:
         return None
     columns = int(payload.get("columns") or 0)
     rows = int(payload.get("rows") or 0)
@@ -247,10 +245,10 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
         super().__init__(*args, **kwargs)
 
         if self._animation_manifest is not None:
-            encoded = _read_animation_atlas_data(self._animation_manifest)
-            if encoded is not None:
+            atlas_path = _animation_atlas_path(self._animation_manifest)
+            if atlas_path is not None:
                 try:
-                    self._animation_atlas = self.tk.PhotoImage(data=encoded, format="png")
+                    self._animation_atlas = self.tk.PhotoImage(file=str(atlas_path), format="png")
                 except Exception:
                     self._animation_atlas = None
 
@@ -336,11 +334,24 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
         )
 
 
-def main(root: str | Path, config_path: str | None = None, *, x: int | None = None, y: int | None = None) -> None:
+def main(
+    root: str | Path,
+    config_path: str | None = None,
+    *,
+    x: int | None = None,
+    y: int | None = None,
+) -> None:
     project_root = Path(root).resolve()
     config = _legacy.load_config(config_path)
     client = _legacy.ensure_broker(project_root, config, config_path=config_path)
-    NativeAvatarApp(client, config, project_root, config_path=config_path, initial_x=x, initial_y=y).run()
+    NativeAvatarApp(
+        client,
+        config,
+        project_root,
+        config_path=config_path,
+        initial_x=x,
+        initial_y=y,
+    ).run()
 
 
 def build_parser():

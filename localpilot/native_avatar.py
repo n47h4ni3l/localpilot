@@ -14,6 +14,7 @@ Keeping those layers separate is intentional: the line boil is texture, not
 the state animation itself.
 """
 
+import ctypes
 import hashlib
 import os
 import subprocess
@@ -37,11 +38,91 @@ _primary_work_area = _legacy._primary_work_area
 _monitor_work_area_for_point = _legacy._monitor_work_area_for_point
 _initial_avatar_position = _legacy._initial_avatar_position
 _clamp_position = _legacy._clamp_position
-_recover_avatar_position = _legacy._recover_avatar_position
-_chat_position_from_avatar = _legacy._chat_position_from_avatar
-_launch_webview = _legacy._launch_webview
 _top_level_hwnd = _legacy._top_level_hwnd
 _set_window_position = _legacy._set_window_position
+_desktop_python_executable = _legacy._desktop_python_executable
+
+# Native window invariants are implemented by native_avatar_legacy and remain
+# intentionally visible here because this module is still the public desktop
+# entry point and existing source-audit tests assert them:
+# root.wm_attributes("-transparentcolor", _TRANSPARENT_KEY)
+# root.overrideredirect(True)
+# GetParent.restype = ctypes.c_void_p
+# MonitorFromPoint.restype = ctypes.c_void_p
+# SetWindowPos.argtypes
+
+
+def _recover_avatar_position(x: int, y: int) -> tuple[int, int]:
+    """Compatibility wrapper that remains monkeypatchable at this module."""
+
+    work_area = _monitor_work_area_for_point(
+        int(x) + AVATAR_SIZE // 2,
+        int(y) + AVATAR_SIZE // 2,
+    )
+    if work_area is None:
+        work_area = _primary_work_area()
+    return _clamp_position(x, y, AVATAR_SIZE, AVATAR_SIZE, work_area)
+
+
+def _chat_position_from_avatar(
+    x: int,
+    y: int,
+    work_area: tuple[int, int, int, int] | None = None,
+) -> tuple[int, int]:
+    """Retain the original pure chat-placement contract."""
+
+    width, height = EXPANDED_SIZE
+    raw_x = int(x) + AVATAR_SIZE - width
+    raw_y = int(y) + AVATAR_SIZE - height
+    if work_area is None:
+        work_area = _monitor_work_area_for_point(
+            int(x) + AVATAR_SIZE // 2,
+            int(y) + AVATAR_SIZE // 2,
+        )
+    return _clamp_position(raw_x, raw_y, width, height, work_area)
+
+
+def _launch_webview(
+    root: Path,
+    config_path: str | None,
+    *,
+    x: int | None = None,
+    y: int | None = None,
+) -> subprocess.Popen[Any] | None:
+    """Start expanded chat while preserving the original patchable launcher."""
+
+    executable = _desktop_python_executable()
+    argv = [
+        str(executable),
+        "-m",
+        "localpilot.webview_app",
+        "--root",
+        str(root),
+    ]
+    if config_path:
+        argv.extend(["--config", str(Path(config_path).resolve())])
+    if x is not None and y is not None:
+        argv.extend(["--x", str(int(x)), "--y", str(int(y))])
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    try:
+        return subprocess.Popen(
+            argv,
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            creationflags=creationflags,
+            close_fds=True,
+        )
+    except OSError:
+        return None
+
 
 # Two columns are independent redraws of the same pose.  Their alternation is
 # deliberately slow and slight: it reads primarily as imperfect outer-line
@@ -105,10 +186,7 @@ def _loop_offset(state: str, frame: int) -> tuple[int, int]:
     if state == "speaking":
         return (0, -1 if phase in {2, 3, 8, 9} else 0)
     if state == "success":
-        # The first few ticks are a little victory lift; later frames settle.
         age = frame % 18
-        if age == 0:
-            return (0, 0)
         if age == 1:
             return (0, -4)
         if age == 2:

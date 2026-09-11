@@ -83,13 +83,7 @@ def _launch_webview(
     y: int | None = None,
 ) -> subprocess.Popen[Any] | None:
     executable = _desktop_python_executable()
-    argv = [
-        str(executable),
-        "-m",
-        "localpilot.webview_app",
-        "--root",
-        str(root),
-    ]
+    argv = [str(executable), "-m", "localpilot.webview_app", "--root", str(root)]
     if config_path:
         argv.extend(["--config", str(Path(config_path).resolve())])
     if x is not None and y is not None:
@@ -116,19 +110,8 @@ def _launch_webview(
 
 
 _REQUIRED_ANIMATION_STATES = {
-    "idle",
-    "listening",
-    "thinking",
-    "researching",
-    "working",
-    "speaking",
-    "success",
-    "uncertain",
-    "error",
-    "learning",
-    "restarting",
-    "sleeping",
-    "offline",
+    "idle", "listening", "thinking", "researching", "working", "speaking",
+    "success", "uncertain", "error", "learning", "restarting", "sleeping", "offline",
 }
 
 
@@ -144,8 +127,23 @@ def _animation_manifest_path() -> Path:
     return _animation_dir() / "animation-manifest.json"
 
 
-def _animation_atlas_path() -> Path:
-    return _animation_dir() / "avatar-animation.png"
+def _animation_chunk_paths(payload: dict[str, Any]) -> list[Path] | None:
+    atlas = payload.get("atlas")
+    if not isinstance(atlas, dict):
+        return None
+    chunks = atlas.get("chunks")
+    if not isinstance(chunks, list) or not 1 <= len(chunks) <= 16:
+        return None
+    paths: list[Path] = []
+    animation_dir = _animation_dir().resolve()
+    for item in chunks:
+        if not isinstance(item, str) or Path(item).name != item or not item.endswith(".b64"):
+            return None
+        path = (_animation_dir() / item).resolve()
+        if path.parent != animation_dir:
+            return None
+        paths.append(path)
+    return paths
 
 
 def _png_dimensions(raw: bytes) -> tuple[int, int] | None:
@@ -154,38 +152,47 @@ def _png_dimensions(raw: bytes) -> tuple[int, int] | None:
     return int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
 
 
+def _read_animation_atlas_data(payload: dict[str, Any]) -> str | None:
+    """Return verified base64 PNG atlas data assembled from committed chunks."""
+
+    import base64
+
+    paths = _animation_chunk_paths(payload)
+    atlas = payload.get("atlas")
+    if paths is None or not isinstance(atlas, dict):
+        return None
+    expected_hash = atlas.get("sha256")
+    if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+        return None
+    try:
+        encoded = "".join(path.read_text(encoding="ascii").strip() for path in paths)
+        raw = base64.b64decode(encoded, validate=True)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    if hashlib.sha256(raw).hexdigest() != expected_hash:
+        return None
+    columns = int(payload.get("columns") or 0)
+    rows = int(payload.get("rows") or 0)
+    if _png_dimensions(raw) != (AVATAR_SIZE * columns, AVATAR_SIZE * rows):
+        return None
+    return encoded
+
+
 def _load_animation_manifest() -> dict[str, Any] | None:
-    """Verify the complete atlas/manifest pair or fail closed to pixel art."""
+    """Verify the complete chunked atlas/manifest pair or fail closed."""
 
     try:
         payload = json.loads(_animation_manifest_path().read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
-    if payload.get("version") != 3 or int(payload.get("frame_size") or 0) != AVATAR_SIZE:
+    if payload.get("version") != 4 or int(payload.get("frame_size") or 0) != AVATAR_SIZE:
         return None
     columns = int(payload.get("columns") or 0)
     rows = int(payload.get("rows") or 0)
     if columns < 1 or rows < len(_REQUIRED_ANIMATION_STATES):
         return None
-
-    atlas = payload.get("atlas")
-    if not isinstance(atlas, dict):
-        return None
-    filename = atlas.get("file")
-    expected_hash = atlas.get("sha256")
-    if filename != "avatar-animation.png":
-        return None
-    if not isinstance(expected_hash, str) or len(expected_hash) != 64:
-        return None
-
-    try:
-        raw = _animation_atlas_path().read_bytes()
-    except OSError:
-        return None
-    if hashlib.sha256(raw).hexdigest() != expected_hash:
-        return None
-    if _png_dimensions(raw) != (AVATAR_SIZE * columns, AVATAR_SIZE * rows):
+    if _read_animation_atlas_data(payload) is None:
         return None
 
     states = payload.get("states")
@@ -215,9 +222,7 @@ def _load_animation_manifest() -> dict[str, Any] | None:
         seen_rows.add(row)
         if frames < 8 or frames > columns or not 50 <= frame_ms <= 500:
             return None
-        if not (
-            0 <= enter_start <= enter_end < loop_start <= loop_end < exit_start <= exit_end < frames
-        ):
+        if not (0 <= enter_start <= enter_end < loop_start <= loop_end < exit_start <= exit_end < frames):
             return None
         if not 0 <= representative < frames:
             return None
@@ -242,13 +247,12 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
         super().__init__(*args, **kwargs)
 
         if self._animation_manifest is not None:
-            try:
-                self._animation_atlas = self.tk.PhotoImage(
-                    file=str(_animation_atlas_path()),
-                    format="png",
-                )
-            except Exception:
-                self._animation_atlas = None
+            encoded = _read_animation_atlas_data(self._animation_manifest)
+            if encoded is not None:
+                try:
+                    self._animation_atlas = self.tk.PhotoImage(data=encoded, format="png")
+                except Exception:
+                    self._animation_atlas = None
 
         if self._animation_ready():
             self._display_state = _normalized_state(self.runtime_state)
@@ -274,7 +278,6 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
             return
         if target == self._pending_state:
             return
-
         self._pending_state = target
         if self._animation_phase != "exit":
             spec = self._spec(self._display_state)
@@ -284,7 +287,6 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
     def _advance_animation(self) -> None:
         if not self._animation_ready():
             return
-
         spec = self._spec(self._display_state)
         if self._animation_phase == "exit":
             self._frame_cursor += 1
@@ -296,14 +298,12 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
                 self._animation_phase = "enter"
                 self._frame_cursor = int(next_spec["enter_start"])
             return
-
         if self._animation_phase == "enter":
             self._frame_cursor += 1
             if self._frame_cursor > int(spec["enter_end"]):
                 self._animation_phase = "loop"
                 self._frame_cursor = int(spec["loop_start"])
             return
-
         self._frame_cursor += 1
         if self._frame_cursor > int(spec["loop_end"]):
             self._frame_cursor = int(spec["loop_start"])
@@ -325,7 +325,6 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
         if not self._animation_ready():
             _legacy.NativeAvatarApp._draw(self)
             return
-
         self._request_runtime_state()
         spec = self._spec(self._display_state)
         self.canvas.delete("all")
@@ -337,24 +336,11 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
         )
 
 
-def main(
-    root: str | Path,
-    config_path: str | None = None,
-    *,
-    x: int | None = None,
-    y: int | None = None,
-) -> None:
+def main(root: str | Path, config_path: str | None = None, *, x: int | None = None, y: int | None = None) -> None:
     project_root = Path(root).resolve()
     config = _legacy.load_config(config_path)
     client = _legacy.ensure_broker(project_root, config, config_path=config_path)
-    NativeAvatarApp(
-        client,
-        config,
-        project_root,
-        config_path=config_path,
-        initial_x=x,
-        initial_y=y,
-    ).run()
+    NativeAvatarApp(client, config, project_root, config_path=config_path, initial_x=x, initial_y=y).run()
 
 
 def build_parser():

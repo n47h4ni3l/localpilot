@@ -3,19 +3,18 @@
 /* LocalPilot illustrated avatar: real frame-sequence animation.
  *
  * app.js still owns runtime state and the original pixel canvas remains the
- * fail-safe.  This layer loads a verified manifest of per-state PNG strips.
- * Each strip contains enter frames, a state-specific loop, and exit frames.
+ * fail-safe. This layer loads one compact animation atlas plus a manifest.
  *
- * No whole-character CSS nudging is used to fake activity.  Thinking really
- * writes, working really types, speaking changes mouth/gesture frames, success
- * pumps a fist, sleeping breathes, etc.  State changes play the old exit and
- * new enter sequences simultaneously during a short crossfade.
+ * Each state has enter frames, a genuine state-specific animated loop, and
+ * exit frames. State changes play the old exit and new enter sequences at the
+ * same time during a short crossfade. No whole-character CSS nudging is used
+ * to fake writing, typing, talking, breathing, celebrating, or sleeping.
  */
 (function () {
   "use strict";
 
   const MANIFEST_URL = "avatar/anim/animation-manifest.json";
-  const ASSET_ROOT = "avatar/anim/";
+  const ATLAS_URL = "avatar/anim/avatar-animation.png";
   const REQUIRED_STATES = [
     "idle", "listening", "thinking", "researching", "working", "speaking",
     "success", "uncertain", "error", "learning", "restarting", "sleeping", "offline",
@@ -57,7 +56,6 @@
     constructor(canvas, manifest) {
       this.canvas = canvas;
       this.manifest = manifest;
-      this.frameSize = Number(manifest.frame_size);
       this.transitionMs = Number(manifest.transition_ms);
       this.enabled = false;
 
@@ -98,6 +96,7 @@
         inset: "0",
         display: "block",
         pointerEvents: "none",
+        backgroundImage: 'url("' + ATLAS_URL + '")',
         backgroundRepeat: "no-repeat",
         backgroundOrigin: "border-box",
         backgroundClip: "border-box",
@@ -120,14 +119,17 @@
       this.root.style.top = this.canvas.offsetTop + "px";
       this.root.style.width = width + "px";
       this.root.style.height = height + "px";
+      const atlasWidth = width * Number(this.manifest.columns);
+      const atlasHeight = height * Number(this.manifest.rows);
+      [this.previous, this.current].forEach(function (frame) {
+        frame.style.backgroundSize = atlasWidth + "px " + atlasHeight + "px";
+      });
     }
 
     setFrame(element, state, frameIndex) {
       const spec = this.spec(state);
-      const frames = Number(spec.frames);
-      element.style.backgroundImage = 'url("' + ASSET_ROOT + spec.file + '")';
-      element.style.backgroundSize = (this.width * frames) + "px " + this.height + "px";
-      element.style.backgroundPosition = (-frameIndex * this.width) + "px 0px";
+      element.style.backgroundPosition =
+        (-frameIndex * this.width) + "px " + (-Number(spec.row) * this.height) + "px";
     }
 
     enable(state, now) {
@@ -169,11 +171,16 @@
         const p = clamp01(transitionProgress);
         const oldSpec = this.spec(this.previousState);
         const newSpec = this.spec(this.state);
-        const oldFrame = transitionFrame(oldSpec, "exit_start", "exit_end", p);
-        const newFrame = transitionFrame(newSpec, "enter_start", "enter_end", p);
-
-        this.setFrame(this.previous, this.previousState, oldFrame);
-        this.setFrame(this.current, this.state, newFrame);
+        this.setFrame(
+          this.previous,
+          this.previousState,
+          transitionFrame(oldSpec, "exit_start", "exit_end", p)
+        );
+        this.setFrame(
+          this.current,
+          this.state,
+          transitionFrame(newSpec, "enter_start", "enter_end", p)
+        );
         this.previous.style.opacity = String(1 - p);
         this.current.style.opacity = String(p);
         return;
@@ -181,8 +188,7 @@
 
       this.previous.style.opacity = "0";
       const spec = this.spec(this.state);
-      const frame = frameForElapsed(spec, now - this.stateStart);
-      this.setFrame(this.current, this.state, frame);
+      this.setFrame(this.current, this.state, frameForElapsed(spec, now - this.stateStart));
       this.current.style.opacity = "1";
     }
   }
@@ -191,49 +197,50 @@
     return normalizeState(document.documentElement.dataset.state || "restarting");
   }
 
-  async function loadManifestAndAssets() {
+  async function loadManifestAndAtlas() {
     const response = await fetch(MANIFEST_URL, { cache: "no-store" });
     if (!response.ok) throw new Error("animation manifest unavailable");
     const manifest = await response.json();
 
     if (
-      Number(manifest.version) !== 2 ||
+      Number(manifest.version) !== 3 ||
       Number(manifest.frame_size) !== 128 ||
-      !manifest.states
+      Number(manifest.columns) < 1 ||
+      Number(manifest.rows) < REQUIRED_STATES.length ||
+      !manifest.states ||
+      !manifest.atlas ||
+      manifest.atlas.file !== "avatar-animation.png"
     ) {
       throw new Error("invalid animation manifest");
     }
 
     for (const state of REQUIRED_STATES) {
       const spec = manifest.states[state];
-      if (!spec || !spec.file || Number(spec.frames) < 8) {
+      if (!spec || Number(spec.frames) < 8 || Number(spec.row) < 0) {
         throw new Error("missing animation state: " + state);
       }
     }
 
-    await Promise.all(REQUIRED_STATES.map(function (state) {
-      return new Promise(function (resolve, reject) {
-        const spec = manifest.states[state];
-        const image = new Image();
-        image.onload = function () {
-          if (
-            image.naturalWidth !== Number(manifest.frame_size) * Number(spec.frames) ||
-            image.naturalHeight !== Number(manifest.frame_size)
-          ) {
-            reject(new Error("invalid animation strip dimensions: " + state));
-            return;
-          }
-          resolve();
-        };
-        image.onerror = reject;
-        image.src = ASSET_ROOT + spec.file;
-      });
-    }));
+    await new Promise(function (resolve, reject) {
+      const image = new Image();
+      image.onload = function () {
+        if (
+          image.naturalWidth !== Number(manifest.frame_size) * Number(manifest.columns) ||
+          image.naturalHeight !== Number(manifest.frame_size) * Number(manifest.rows)
+        ) {
+          reject(new Error("invalid animation atlas dimensions"));
+          return;
+        }
+        resolve();
+      };
+      image.onerror = reject;
+      image.src = ATLAS_URL;
+    });
 
     return manifest;
   }
 
-  loadManifestAndAssets().then(function (manifest) {
+  loadManifestAndAtlas().then(function (manifest) {
     const layers = canvases.map(function (canvas) {
       return new IllustratedAvatarLayer(canvas, manifest);
     });

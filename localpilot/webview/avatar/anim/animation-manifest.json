@@ -1,21 +1,27 @@
 {
-  "version": 2,
+  "version": 3,
   "frame_size": 128,
+  "columns": 24,
+  "rows": 13,
   "transition_ms": 360,
-  "notes": "Real frame-sequence character animation; no passive line-boil layer.",
+  "notes": "Real frame-sequence character animation atlas; no passive line-boil layer.",
+  "atlas": {
+    "file": "avatar-animation.png",
+    "sha256": "6c89de519c2127d039091e76e12bac897b6bc0afa0236882778593d4129a52f7"
+  },
   "states": {
-    "idle": {"file": "idle.png", "frames": 20, "frame_ms": 110, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4, "sha256": "9531370c37fc6a1ab836af2e940de449e705740cb7b27a1eaab7bedbb772440c"},
-    "listening": {"file": "listening.png", "frames": 20, "frame_ms": 100, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4, "sha256": "de2002be0162eb8c89b06d6001dbea408a597d050abab6da5cfbdd3df454d650"},
-    "thinking": {"file": "thinking.png", "frames": 20, "frame_ms": 95, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4, "sha256": "0b90be2f1559bb96732a72c4db330518018df407b47732e49478c8dfe366b2ba"},
-    "researching": {"file": "researching.png", "frames": 20, "frame_ms": 110, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4, "sha256": "13219ed2300357568c233c5463fc563cb8cce42cef0c9570af844677bc2bc92d"},
-    "working": {"file": "working.png", "frames": 20, "frame_ms": 85, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4, "sha256": "faa93589f42f5d4f885209768af28afa2c980173c95c83e768ae1c223519eea3"},
-    "speaking": {"file": "speaking.png", "frames": 20, "frame_ms": 95, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4, "sha256": "7bb6bd94656c8df402d5db2df2fe952391cfe40e76ab4fa1cd2ccaa7a66acf93"},
-    "success": {"file": "success.png", "frames": 20, "frame_ms": 95, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4, "sha256": "589e826fdd031fac362727bc73fb101972578e289c808eb721fd67bcf44ce0f7"},
-    "uncertain": {"file": "uncertain.png", "frames": 20, "frame_ms": 115, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4, "sha256": "de3a14b2e47d3610784884c242cb7e1561ee27466c6cf6b531ab002d65461a2a"},
-    "error": {"file": "error.png", "frames": 20, "frame_ms": 105, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4, "sha256": "3d64e47f0b5bff24f8a9df173c6c064a5854edbf07f137540e3a26c67e0a1c4b"},
-    "learning": {"file": "learning.png", "frames": 20, "frame_ms": 110, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4, "sha256": "a9dd254ec1757040b45a09b796b6d423ee09168249f5beae03335fa4447e5c1f"},
-    "restarting": {"file": "restarting.png", "frames": 20, "frame_ms": 80, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4, "sha256": "103173f790fcada6dd2ed5c77cbff8ed9ba612be8d34d1f71526dfc8e1a868dd"},
-    "sleeping": {"file": "sleeping.png", "frames": 24, "frame_ms": 150, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 19, "exit_start": 20, "exit_end": 23, "representative_frame": 4, "sha256": "32833ce906c92b6ccb61b04af2f631829ad154022165f3902518601dc95ada99"},
-    "offline": {"file": "offline.png", "frames": 24, "frame_ms": 180, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 19, "exit_start": 20, "exit_end": 23, "representative_frame": 4, "sha256": "b3dc7c1726c0796ac819397ce37af6c262d99017e8c4b3886b03e52f630bcc8c"}
+    "idle": {"row": 0, "frames": 20, "frame_ms": 110, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "listening": {"row": 1, "frames": 20, "frame_ms": 100, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "thinking": {"row": 2, "frames": 20, "frame_ms": 95, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "researching": {"row": 3, "frames": 20, "frame_ms": 110, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "working": {"row": 4, "frames": 20, "frame_ms": 85, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "speaking": {"row": 5, "frames": 20, "frame_ms": 95, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "success": {"row": 6, "frames": 20, "frame_ms": 95, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "uncertain": {"row": 7, "frames": 20, "frame_ms": 115, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "error": {"row": 8, "frames": 20, "frame_ms": 105, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "learning": {"row": 9, "frames": 20, "frame_ms": 110, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "restarting": {"row": 10, "frames": 20, "frame_ms": 80, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
+    "sleeping": {"row": 11, "frames": 24, "frame_ms": 150, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 19, "exit_start": 20, "exit_end": 23, "representative_frame": 4},
+    "offline": {"row": 12, "frames": 24, "frame_ms": 180, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 19, "exit_start": 20, "exit_end": 23, "representative_frame": 4}
   }
 }

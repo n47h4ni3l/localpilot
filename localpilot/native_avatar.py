@@ -5,8 +5,8 @@ from __future__ import annotations
 The original pixel companion is preserved in :mod:`native_avatar_legacy` and
 remains the fail-safe. The illustrated companion uses one independently drawn
 sprite sheet per state. Each sheet is cropped into real frames at runtime,
-trimmed to its visible artwork, and fitted into the 128px native avatar without
-stretching or whole-character transform animation.
+registered to one stable alpha envelope per sheet, and fitted into the 128px
+native avatar without stretching or whole-character transform animation.
 
 Dedicated transition sheets are intentionally deferred. Until those are added,
 state changes switch directly in native mode while the WebView uses a short
@@ -236,27 +236,93 @@ def _normalized_state(state: str) -> str:
     return state if state in _REQUIRED_ANIMATION_STATES else "error"
 
 
-def _crop_sheet_frame(sheet: Image.Image, asset: dict[str, Any], frame_index: int) -> Image.Image:
-    """Crop, alpha-trim and letterbox one generated sheet cell without distortion."""
-
+def _sheet_cell_box(
+    sheet: Image.Image,
+    asset: dict[str, Any],
+    frame_index: int,
+) -> tuple[int, int, int, int]:
     columns = int(asset["columns"])
     rows = int(asset["rows"])
     frames = int(asset["frames"])
     index = int(frame_index) % frames
     column = index % columns
     row = index // columns
-
     x0 = round(column * sheet.width / columns)
     x1 = round((column + 1) * sheet.width / columns)
     y0 = round(row * sheet.height / rows)
     y1 = round((row + 1) * sheet.height / rows)
+    return x0, y0, x1, y1
+
+
+def _visible_alpha_bbox(cell: Image.Image) -> tuple[int, int, int, int] | None:
+    alpha = cell.getchannel("A")
+    # Match the WebView's alpha > 2 threshold so tiny antialiasing noise does not
+    # enlarge the registration envelope and shrink the whole character.
+    visible = alpha.point(lambda value: 255 if value > 2 else 0)
+    return visible.getbbox()
+
+
+def _sheet_registration_box(
+    sheet: Image.Image,
+    asset: dict[str, Any],
+) -> tuple[int, int, int, int]:
+    """Return one stable relative crop box that contains every visible frame."""
+
+    frames = int(asset["frames"])
+    left: int | None = None
+    top: int | None = None
+    right: int | None = None
+    bottom: int | None = None
+    min_cell_width: int | None = None
+    min_cell_height: int | None = None
+
+    for index in range(frames):
+        x0, y0, x1, y1 = _sheet_cell_box(sheet, asset, index)
+        cell = sheet.crop((x0, y0, x1, y1)).convert("RGBA")
+        bbox = _visible_alpha_bbox(cell)
+        if bbox is None:
+            raise ValueError(f"empty animation frame: {index}")
+        frame_left, frame_top, frame_right, frame_bottom = bbox
+        left = frame_left if left is None else min(left, frame_left)
+        top = frame_top if top is None else min(top, frame_top)
+        right = frame_right if right is None else max(right, frame_right)
+        bottom = frame_bottom if bottom is None else max(bottom, frame_bottom)
+        min_cell_width = cell.width if min_cell_width is None else min(min_cell_width, cell.width)
+        min_cell_height = cell.height if min_cell_height is None else min(min_cell_height, cell.height)
+
+    if None in (left, top, right, bottom, min_cell_width, min_cell_height):
+        raise ValueError("animation sheet has no frames")
+
+    assert left is not None and top is not None
+    assert right is not None and bottom is not None
+    assert min_cell_width is not None and min_cell_height is not None
+    left = max(0, min(left, min_cell_width - 1))
+    top = max(0, min(top, min_cell_height - 1))
+    right = max(left + 1, min(right, min_cell_width))
+    bottom = max(top + 1, min(bottom, min_cell_height))
+    return left, top, right, bottom
+
+
+def _crop_sheet_frame(
+    sheet: Image.Image,
+    asset: dict[str, Any],
+    frame_index: int,
+    registration_box: tuple[int, int, int, int] | None = None,
+) -> Image.Image:
+    """Crop and letterbox one registered sheet frame without distortion."""
+
+    x0, y0, x1, y1 = _sheet_cell_box(sheet, asset, frame_index)
     cell = sheet.crop((x0, y0, x1, y1)).convert("RGBA")
 
-    bbox = cell.getchannel("A").getbbox()
-    if bbox is not None:
-        cell = cell.crop(bbox)
-    if cell.width < 1 or cell.height < 1:
+    bbox = registration_box if registration_box is not None else _visible_alpha_bbox(cell)
+    if bbox is None:
         raise ValueError("empty animation frame")
+    left, top, right, bottom = bbox
+    left = max(0, min(int(left), cell.width - 1))
+    top = max(0, min(int(top), cell.height - 1))
+    right = max(left + 1, min(int(right), cell.width))
+    bottom = max(top + 1, min(int(bottom), cell.height))
+    cell = cell.crop((left, top, right, bottom))
 
     available = AVATAR_SIZE - 4
     scale = min(available / cell.width, available / cell.height)
@@ -273,7 +339,7 @@ def _crop_sheet_frame(sheet: Image.Image, asset: dict[str, Any], frame_index: in
 
 
 def _load_native_frames(payload: dict[str, Any], root: Any) -> dict[str, list[Any]]:
-    """Materialize each unique sheet into Tk-ready 128px frames."""
+    """Materialize each unique sheet into registered Tk-ready 128px frames."""
 
     loaded: dict[str, list[Any]] = {}
     for name, asset in payload["assets"].items():
@@ -282,8 +348,12 @@ def _load_native_frames(payload: dict[str, Any], root: Any) -> dict[str, list[An
             raise ValueError("invalid animation sheet path")
         with Image.open(path) as opened:
             sheet = opened.convert("RGBA")
+            registration_box = _sheet_registration_box(sheet, asset)
             frames = [
-                ImageTk.PhotoImage(_crop_sheet_frame(sheet, asset, index), master=root)
+                ImageTk.PhotoImage(
+                    _crop_sheet_frame(sheet, asset, index, registration_box),
+                    master=root,
+                )
                 for index in range(int(asset["frames"]))
             ]
         loaded[name] = frames
@@ -327,14 +397,15 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
     def _animation_ready(self) -> bool:
         return self._animation_manifest is not None and bool(self._animation_frames)
 
-    def _request_runtime_state(self) -> None:
+    def _request_runtime_state(self) -> bool:
         if not self._animation_ready():
-            return
+            return False
         target = _normalized_state(self.runtime_state)
         if target == self._display_state:
-            return
+            return False
         self._display_state = target
         self._frame_cursor = 0
+        return True
 
     def _advance_animation(self) -> None:
         if not self._animation_ready():
@@ -349,8 +420,12 @@ class NativeAvatarApp(_legacy.NativeAvatarApp):
 
     def _animate(self) -> None:
         self.frame += 1
-        self._request_runtime_state()
-        self._advance_animation()
+        state_changed = self._request_runtime_state()
+        # The old ordering advanced immediately after resetting the cursor, so a
+        # new state always skipped frame zero. Preserve frame zero for a full
+        # frame interval on entry, then continue the loop normally.
+        if not state_changed:
+            self._advance_animation()
         self._draw()
         if not self._stop.is_set():
             self.root.after(self._current_delay_ms(), self._animate)

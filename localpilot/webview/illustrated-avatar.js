@@ -15,6 +15,8 @@
   "use strict";
 
   const MANIFEST_URL = "avatar/anim/animation-manifest.json";
+  const BODY_MOTION_RETENTION = 0.15;
+  const MAX_STABILIZATION_PX = 6;
   const REQUIRED_STATES = [
     "idle", "listening", "thinking", "researching", "working", "speaking",
     "success", "uncertain", "error", "learning", "restarting", "sleeping", "offline",
@@ -34,6 +36,13 @@
   function smoothstep(value) {
     const p = clamp01(value);
     return p * p * (3 - 2 * p);
+  }
+
+  function median(values) {
+    const sorted = values.slice().sort(function (a, b) { return a - b; });
+    const middle = Math.floor(sorted.length / 2);
+    if (sorted.length % 2) return sorted[middle];
+    return (sorted[middle - 1] + sorted[middle]) / 2;
   }
 
   function normalizeState(state) {
@@ -121,6 +130,8 @@
         top: relativeTop,
         right: relativeRight,
         bottom: relativeBottom,
+        anchorX: (relativeLeft + relativeRight) / 2,
+        anchorY: relativeBottom,
       });
       minCellWidth = Math.min(minCellWidth, cell.width);
       minCellHeight = Math.min(minCellHeight, cell.height);
@@ -137,12 +148,19 @@
 
     const width = right - left;
     const height = bottom - top;
-    return cells.map(function (cell) {
+    const referenceX = median(trims.map(function (trim) { return trim.anchorX; }));
+    const referenceY = median(trims.map(function (trim) { return trim.anchorY; }));
+    const correction = 1 - BODY_MOTION_RETENTION;
+
+    return cells.map(function (cell, index) {
+      const trim = trims[index];
       return {
         x: cell.x + left,
         y: cell.y + top,
         width: width,
         height: height,
+        stabilizeX: (referenceX - trim.anchorX) * correction,
+        stabilizeY: (referenceY - trim.anchorY) * correction,
       };
     });
   }
@@ -160,8 +178,12 @@
     );
     const drawWidth = Math.max(1, sourceRect.width * scale);
     const drawHeight = Math.max(1, sourceRect.height * scale);
-    const x = (width - drawWidth) / 2;
-    const y = height - drawHeight - 2;
+    const rawDx = Number(sourceRect.stabilizeX || 0) * scale;
+    const rawDy = Number(sourceRect.stabilizeY || 0) * scale;
+    const dx = Math.max(-MAX_STABILIZATION_PX, Math.min(MAX_STABILIZATION_PX, rawDx));
+    const dy = Math.max(-MAX_STABILIZATION_PX, Math.min(MAX_STABILIZATION_PX, rawDy));
+    const x = (width - drawWidth) / 2 + dx;
+    const y = height - drawHeight - 2 + dy;
     context.drawImage(
       image,
       sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,

@@ -19,6 +19,26 @@ def test_unsaved_avatar_anchors_to_bottom_right_of_primary_work_area():
     assert y == 880 - native_avatar.AVATAR_SIZE
 
 
+def test_legacy_fallback_draw_accepts_every_rectangle_during_illustrated_startup():
+    class StrictCanvas:
+        def __init__(self):
+            self.rectangles = []
+
+        def delete(self, *_args):
+            return None
+
+        def create_rectangle(self, x0, y0, x1, y1, **kwargs):
+            self.rectangles.append((x0, y0, x1, y1, kwargs))
+
+    app = object.__new__(native_avatar._legacy.NativeAvatarApp)
+    app.canvas = StrictCanvas()
+    app.runtime_state = "idle"
+    app.frame = 0
+
+    native_avatar._legacy.NativeAvatarApp._draw(app)
+    assert app.canvas.rectangles
+
+
 def test_clamp_position_recovers_avatar_fully_inside_monitor():
     assert native_avatar._clamp_position(
         1900,

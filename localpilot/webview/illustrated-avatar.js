@@ -15,7 +15,7 @@
   "use strict";
 
   const MANIFEST_URL = "avatar/anim/animation-manifest.json";
-  const BODY_MOTION_RETENTION = 0.15;
+  const BODY_MOTION_RETENTION = 0.075;
   const MAX_STABILIZATION_PX = 6;
   const REQUIRED_STATES = [
     "idle", "listening", "thinking", "researching", "working", "speaking",

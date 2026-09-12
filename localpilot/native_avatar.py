@@ -33,9 +33,9 @@ _CHAT_START_GRACE_MS = _legacy._CHAT_START_GRACE_MS
 _STATE_COLORS = dict(_legacy._STATE_COLORS)
 _STATE_COLORS.setdefault("researching", "#5fa8ff")
 _STATE_COLORS.setdefault("learning", "#6fde8e")
-# Keep only a small amount of the sheet's baked-in whole-character drift. Limb,
-# eye and prop changes remain untouched because this only recentres each frame.
-_BODY_MOTION_RETENTION = 0.15
+# Keep only a trace of the sheet's baked-in whole-character drift. Limb, eye and
+# prop changes remain untouched because this only recentres each frame.
+_BODY_MOTION_RETENTION = 0.075
 _MAX_STABILIZATION_PX = 6.0
 # The inherited event drain validates against the legacy module global.
 _legacy._STATE_COLORS.update({

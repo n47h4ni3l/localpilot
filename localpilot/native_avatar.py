@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 from PIL import Image, ImageTk
@@ -32,6 +33,10 @@ _CHAT_START_GRACE_MS = _legacy._CHAT_START_GRACE_MS
 _STATE_COLORS = dict(_legacy._STATE_COLORS)
 _STATE_COLORS.setdefault("researching", "#5fa8ff")
 _STATE_COLORS.setdefault("learning", "#6fde8e")
+# Keep only a small amount of the sheet's baked-in whole-character drift. Limb,
+# eye and prop changes remain untouched because this only recentres each frame.
+_BODY_MOTION_RETENTION = 0.15
+_MAX_STABILIZATION_PX = 6.0
 # The inherited event drain validates against the legacy module global.
 _legacy._STATE_COLORS.update({
     "researching": _STATE_COLORS["researching"],
@@ -262,6 +267,37 @@ def _visible_alpha_bbox(cell: Image.Image) -> tuple[int, int, int, int] | None:
     return visible.getbbox()
 
 
+def _frame_visible_anchor(cell: Image.Image) -> tuple[float, float]:
+    """Return a simple visual anchor for damping baked-in frame translation."""
+
+    bbox = _visible_alpha_bbox(cell)
+    if bbox is None:
+        raise ValueError("empty animation frame")
+    left, _top, right, bottom = bbox
+    return (left + right) / 2.0, float(bottom)
+
+
+def _sheet_stabilization_offsets(
+    sheet: Image.Image,
+    asset: dict[str, Any],
+) -> list[tuple[float, float]]:
+    """Recentre frames toward their median anchor while retaining subtle drift."""
+
+    anchors: list[tuple[float, float]] = []
+    for index in range(int(asset["frames"])):
+        x0, y0, x1, y1 = _sheet_cell_box(sheet, asset, index)
+        cell = sheet.crop((x0, y0, x1, y1)).convert("RGBA")
+        anchors.append(_frame_visible_anchor(cell))
+
+    reference_x = float(median(anchor[0] for anchor in anchors))
+    reference_y = float(median(anchor[1] for anchor in anchors))
+    correction = 1.0 - _BODY_MOTION_RETENTION
+    return [
+        ((reference_x - anchor_x) * correction, (reference_y - anchor_y) * correction)
+        for anchor_x, anchor_y in anchors
+    ]
+
+
 def _sheet_registration_box(
     sheet: Image.Image,
     asset: dict[str, Any],
@@ -308,8 +344,9 @@ def _crop_sheet_frame(
     asset: dict[str, Any],
     frame_index: int,
     registration_box: tuple[int, int, int, int] | None = None,
+    stabilization_offset: tuple[float, float] = (0.0, 0.0),
 ) -> Image.Image:
-    """Crop and letterbox one registered sheet frame without distortion."""
+    """Crop, stabilise and letterbox one registered frame without distortion."""
 
     x0, y0, x1, y1 = _sheet_cell_box(sheet, asset, frame_index)
     cell = sheet.crop((x0, y0, x1, y1)).convert("RGBA")
@@ -331,15 +368,19 @@ def _crop_sheet_frame(
     cell = cell.resize((width, height), Image.Resampling.LANCZOS)
 
     output = Image.new("RGBA", (AVATAR_SIZE, AVATAR_SIZE), (0, 0, 0, 0))
-    x = (AVATAR_SIZE - width) // 2
+    raw_dx = stabilization_offset[0] * scale
+    raw_dy = stabilization_offset[1] * scale
+    dx = max(-_MAX_STABILIZATION_PX, min(_MAX_STABILIZATION_PX, raw_dx))
+    dy = max(-_MAX_STABILIZATION_PX, min(_MAX_STABILIZATION_PX, raw_dy))
+    x = round((AVATAR_SIZE - width) / 2 + dx)
     # Bottom alignment keeps desk/shoulder baselines visually stable across sheets.
-    y = AVATAR_SIZE - height - 2
+    y = round(AVATAR_SIZE - height - 2 + dy)
     output.alpha_composite(cell, (x, y))
     return output
 
 
 def _load_native_frames(payload: dict[str, Any], root: Any) -> dict[str, list[Any]]:
-    """Materialize each unique sheet into registered Tk-ready 128px frames."""
+    """Materialize each unique sheet into registered, stabilised Tk frames."""
 
     loaded: dict[str, list[Any]] = {}
     for name, asset in payload["assets"].items():
@@ -349,9 +390,16 @@ def _load_native_frames(payload: dict[str, Any], root: Any) -> dict[str, list[An
         with Image.open(path) as opened:
             sheet = opened.convert("RGBA")
             registration_box = _sheet_registration_box(sheet, asset)
+            stabilization_offsets = _sheet_stabilization_offsets(sheet, asset)
             frames = [
                 ImageTk.PhotoImage(
-                    _crop_sheet_frame(sheet, asset, index, registration_box),
+                    _crop_sheet_frame(
+                        sheet,
+                        asset,
+                        index,
+                        registration_box,
+                        stabilization_offsets[index],
+                    ),
                     master=root,
                 )
                 for index in range(int(asset["frames"]))

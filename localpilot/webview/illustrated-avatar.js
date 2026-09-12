@@ -4,9 +4,12 @@
  *
  * app.js owns runtime state and the original pixel canvas remains the fail-safe.
  * Each completed state uses its own independently drawn sprite sheet. Frames are
- * cropped from the generated sheet, alpha-trimmed, and fitted into the avatar
- * without stretching. Transition sheets are intentionally deferred; for now the
- * WebView crossfades between the outgoing and incoming live loops.
+ * cropped from the generated sheet, registered to one stable alpha envelope per
+ * sheet, and fitted into the avatar without stretching. This prevents changing
+ * hands/props from making the whole character appear to zoom or bob.
+ *
+ * Transition sheets are intentionally deferred; the WebView crossfades from a
+ * frozen outgoing frame into frame zero of the incoming live loop.
  */
 (function () {
   "use strict";
@@ -26,6 +29,11 @@
 
   function clamp01(value) {
     return Math.max(0, Math.min(1, value));
+  }
+
+  function smoothstep(value) {
+    const p = clamp01(value);
+    return p * p * (3 - 2 * p);
   }
 
   function normalizeState(state) {
@@ -79,13 +87,64 @@
         if (y > bottom) bottom = y;
       }
     }
-    if (right < left || bottom < top) return rect;
+    if (right < left || bottom < top) {
+      throw new Error("empty animation frame: " + frameIndex);
+    }
     return {
       x: rect.x + left,
       y: rect.y + top,
       width: right - left + 1,
       height: bottom - top + 1,
     };
+  }
+
+  function registeredFrameRects(image, asset) {
+    const cells = [];
+    const trims = [];
+    let minCellWidth = Infinity;
+    let minCellHeight = Infinity;
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+
+    for (let index = 0; index < Number(asset.frames); index += 1) {
+      const cell = approximateCellRect(image, asset, index);
+      const trim = alphaTrimRect(image, asset, index);
+      const relativeLeft = trim.x - cell.x;
+      const relativeTop = trim.y - cell.y;
+      const relativeRight = relativeLeft + trim.width;
+      const relativeBottom = relativeTop + trim.height;
+      cells.push(cell);
+      trims.push({
+        left: relativeLeft,
+        top: relativeTop,
+        right: relativeRight,
+        bottom: relativeBottom,
+      });
+      minCellWidth = Math.min(minCellWidth, cell.width);
+      minCellHeight = Math.min(minCellHeight, cell.height);
+      left = Math.min(left, relativeLeft);
+      top = Math.min(top, relativeTop);
+      right = Math.max(right, relativeRight);
+      bottom = Math.max(bottom, relativeBottom);
+    }
+
+    left = Math.max(0, Math.min(left, minCellWidth - 1));
+    top = Math.max(0, Math.min(top, minCellHeight - 1));
+    right = Math.max(left + 1, Math.min(right, minCellWidth));
+    bottom = Math.max(top + 1, Math.min(bottom, minCellHeight));
+
+    const width = right - left;
+    const height = bottom - top;
+    return cells.map(function (cell) {
+      return {
+        x: cell.x + left,
+        y: cell.y + top,
+        width: width,
+        height: height,
+      };
+    });
   }
 
   function drawFittedFrame(canvas, image, sourceRect) {
@@ -119,6 +178,7 @@
       this.enabled = false;
       this.state = "restarting";
       this.previousState = "restarting";
+      this.previousFrameIndex = 0;
       this.stateStart = performance.now();
       this.previousStateStart = this.stateStart;
       this.transitionStart = this.stateStart - this.transitionMs;
@@ -194,12 +254,14 @@
       this.enabled = true;
       this.state = normalizeState(state);
       this.previousState = this.state;
+      this.previousFrameIndex = 0;
       this.stateStart = now;
       this.previousStateStart = now;
       this.transitionStart = now - this.transitionMs;
       this.syncGeometry();
       const spec = this.spec(this.state);
-      this.setFrame(this.current, this.state, Number(spec.representative_frame));
+      const firstFrame = reducedMotion ? Number(spec.representative_frame) : 0;
+      this.setFrame(this.current, this.state, firstFrame);
       this.current.style.opacity = this.state === "offline" ? "0.72" : "1";
       this.previous.style.opacity = "0";
     }
@@ -207,11 +269,21 @@
     setState(next, now) {
       next = normalizeState(next);
       if (next === this.state) return;
+
+      const outgoingSpec = this.spec(this.state);
+      const outgoingAsset = this.asset(this.state);
+      this.previousFrameIndex = frameForElapsed(
+        outgoingSpec,
+        outgoingAsset.spec,
+        now - this.stateStart
+      );
       this.previousState = this.state;
       this.previousStateStart = this.stateStart;
       this.state = next;
-      this.stateStart = now;
       this.transitionStart = now;
+      // Hold the incoming pose on frame zero during the crossfade, then begin
+      // the new loop. This removes double-motion ghosting at state changes.
+      this.stateStart = now + this.transitionMs;
     }
 
     drawStateFrame(element, state, elapsedMs) {
@@ -233,8 +305,8 @@
 
       const transitionProgress = (now - this.transitionStart) / Math.max(1, this.transitionMs);
       if (transitionProgress < 1) {
-        const p = clamp01(transitionProgress);
-        this.drawStateFrame(this.previous, this.previousState, now - this.previousStateStart);
+        const p = smoothstep(transitionProgress);
+        this.setFrame(this.previous, this.previousState, this.previousFrameIndex);
         this.drawStateFrame(this.current, this.state, now - this.stateStart);
         this.previous.style.opacity = String(1 - p);
         this.current.style.opacity = String(p * (this.state === "offline" ? 0.72 : 1));
@@ -301,11 +373,11 @@
       if (image.naturalWidth < Number(spec.columns) * 32 || image.naturalHeight < Number(spec.rows) * 32) {
         throw new Error("invalid animation sheet dimensions: " + name);
       }
-      const frames = [];
-      for (let index = 0; index < Number(spec.frames); index += 1) {
-        frames.push(alphaTrimRect(image, spec, index));
-      }
-      assets[name] = { image: image, frames: frames, spec: spec };
+      assets[name] = {
+        image: image,
+        frames: registeredFrameRects(image, spec),
+        spec: spec,
+      };
     }
     return { manifest: manifest, assets: assets };
   }

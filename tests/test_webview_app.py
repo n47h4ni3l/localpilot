@@ -59,7 +59,7 @@ def test_expand_keeps_webview_at_expanded_size(tmp_path):
     ]
 
 
-def test_collapse_spawns_native_avatar_then_destroys_webview(tmp_path, monkeypatch):
+def test_collapse_spawns_native_avatar_then_destroys_webview_for_standalone_host(tmp_path, monkeypatch):
     window = FakeWindow()
     captured = {}
 
@@ -71,8 +71,23 @@ def test_collapse_spawns_native_avatar_then_destroys_webview(tmp_path, monkeypat
     bridge = webview_app.WindowBridge(window, tmp_path, None)
     assert bridge.collapse() == {"ok": True}
     assert window.destroyed is True
-    assert captured["x"] == window.x + window.width - webview_app.NATIVE_AVATAR_SIZE
+    assert captured["x"] == window.x + window.width + webview_app.EDGE_INSET
     assert captured["y"] == window.y + window.height - webview_app.NATIVE_AVATAR_SIZE
+
+
+def test_companion_collapse_never_spawns_duplicate_avatar(tmp_path, monkeypatch):
+    window = FakeWindow()
+    launches = []
+    monkeypatch.setattr(
+        webview_app,
+        "_launch_native_avatar",
+        lambda *args, **kwargs: launches.append((args, kwargs)) or True,
+    )
+    bridge = webview_app.WindowBridge(window, tmp_path, None, avatar_external=True)
+    assert bridge.avatar_external is True
+    assert bridge.collapse() == {"ok": True}
+    assert window.destroyed is True
+    assert launches == []
 
 
 def test_collapse_keeps_chat_open_if_native_avatar_cannot_start(tmp_path, monkeypatch):
@@ -132,7 +147,7 @@ def test_initial_position_degrades_gracefully_without_display_backend():
 def test_position_on_screen_preserves_negative_virtual_desktop_origin():
     screen = FakeScreen(x=-1920, y=160, width=1920, height=1080)
     x, y = webview_app._position_on_screen(screen, *webview_app.EXPANDED_SIZE)
-    assert x == -444
+    assert x == -652
     assert y == 576
     assert x < 0
 
@@ -140,7 +155,7 @@ def test_position_on_screen_preserves_negative_virtual_desktop_origin():
 def test_position_on_screen_includes_positive_nonzero_origin():
     screen = FakeScreen(x=2560, y=-200, width=1920, height=1080)
     x, y = webview_app._position_on_screen(screen, *webview_app.EXPANDED_SIZE)
-    assert x == 4036
+    assert x == 3828
     assert y == 216
 
 
@@ -158,7 +173,7 @@ def test_console_script_detaches_only_for_normal_windows_desktop_entrypoint():
     assert not webview_app._should_detach_gui("C:/venv/Scripts/python.exe", platform_name="nt")
 
 
-def test_normal_detached_launcher_starts_native_avatar(tmp_path, monkeypatch):
+def test_normal_detached_launcher_starts_persistent_avatar_companion(tmp_path, monkeypatch):
     pythonw = tmp_path / "pythonw.exe"
     pythonw.write_text("", encoding="utf-8")
     captured = {}
@@ -177,7 +192,7 @@ def test_normal_detached_launcher_starts_native_avatar(tmp_path, monkeypatch):
     assert captured["argv"] == [
         str(pythonw),
         "-m",
-        "localpilot.native_avatar",
+        webview_app.COMPANION_MODULE,
         "--root",
         str(root),
     ]
@@ -186,13 +201,16 @@ def test_normal_detached_launcher_starts_native_avatar(tmp_path, monkeypatch):
     assert captured["kwargs"]["stderr"] is subprocess.DEVNULL
 
 
-def test_build_parser_accepts_explicit_virtual_desktop_coordinates():
+def test_build_parser_accepts_companion_and_explicit_virtual_desktop_coordinates():
     parser = webview_app.build_parser()
     assert isinstance(parser, argparse.ArgumentParser)
-    args = parser.parse_args(["--root", "/tmp/example", "--x", "-700", "--y", "220"])
+    args = parser.parse_args([
+        "--root", "/tmp/example", "--x", "-700", "--y", "220", "--companion"
+    ])
     assert args.root == "/tmp/example"
     assert args.x == -700
     assert args.y == 220
+    assert args.companion is True
 
 
 def test_startup_shortcut_path_is_under_startup_folder():
@@ -201,7 +219,7 @@ def test_startup_shortcut_path_is_under_startup_folder():
     assert "Startup" in path.parts
 
 
-def test_startup_shortcut_starts_native_avatar_and_uses_environment_values(tmp_path, monkeypatch):
+def test_startup_shortcut_starts_persistent_companion_and_uses_environment_values(tmp_path, monkeypatch):
     captured = {}
 
     def fake_run(argv, **kwargs):
@@ -221,7 +239,7 @@ def test_startup_shortcut_starts_native_avatar_and_uses_environment_values(tmp_p
     assert environment["LOCALPILOT_ARGUMENTS"] == subprocess.list2cmdline(
         [
             "-m",
-            "localpilot.native_avatar",
+            webview_app.COMPANION_MODULE,
             "--root",
             str(root.resolve()),
             "--config",
@@ -250,6 +268,7 @@ def test_systemsense_glance_panel_uses_authenticated_summary_surface_only():
     index = webview_app.INDEX_HTML.read_text(encoding="utf-8")
     javascript = (webview_app.WEBVIEW_DIR / "app.js").read_text(encoding="utf-8")
     stylesheet = (webview_app.WEBVIEW_DIR / "app.css").read_text(encoding="utf-8")
+    comic = (webview_app.WEBVIEW_DIR / "comic-shell.css").read_text(encoding="utf-8")
 
     assert 'id="system-toggle"' in index
     assert 'aria-controls="system-panel"' in index
@@ -261,6 +280,20 @@ def test_systemsense_glance_panel_uses_authenticated_summary_surface_only():
     assert "collect_if_missing" not in javascript
     assert ".panel.is-system-open .system-panel" in stylesheet
     assert ".panel.is-system-open .composer-wrap" in stylesheet
+    assert ".panel.is-system-open .message-stream" in comic
+    assert "repeating-linear-gradient" in comic
+    assert "position: absolute" in comic
+
+
+def test_comic_shell_hides_webview_avatar_and_keeps_real_chat_controls():
+    index = webview_app.INDEX_HTML.read_text(encoding="utf-8")
+    comic = (webview_app.WEBVIEW_DIR / "comic-shell.css").read_text(encoding="utf-8")
+    assert 'href="comic-shell.css"' in index
+    assert ".panel-header > .avatar-canvas" in comic
+    assert "display: none !important" in comic
+    assert 'id="composer-input"' in index
+    assert 'id="history-toggle"' in index
+    assert 'id="settings-toggle"' in index
 
 
 def test_webview_can_create_and_select_a_new_conversation():
@@ -272,10 +305,11 @@ def test_webview_can_create_and_select_a_new_conversation():
     assert "await switchSession(created.session.id)" in javascript
 
 
-def test_webview_is_expanded_chat_only_not_compact_avatar():
+def test_webview_is_chat_surface_not_compact_avatar_owner():
     source = Path(webview_app.__file__).read_text(encoding="utf-8")
     assert "width, height = EXPANDED_SIZE" in source
-    assert '"localpilot.native_avatar"' in source
+    assert "COMPANION_MODULE" in source
+    assert "avatar_external=companion" in source
     assert "COMPACT_SIZE" not in source
 
 

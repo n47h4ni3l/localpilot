@@ -1,12 +1,9 @@
-"""WebView2-hosted expanded chat for the LocalPilot desktop companion.
+"""WebView2-hosted conversation surface for the LocalPilot desktop companion.
 
-The browser surface is intentionally used only for the full conversation UI.
-Compact mode is a separate native Windows/Tk avatar window because a real
-Windows smoke test showed that transparent EdgeChromium surfaces still painted
-an opaque rectangular backing area on the owner's desktop.
-
-Conversation data remains entirely on the authenticated loopback broker. This
-module owns only the expanded WebView window and the small OS-window bridge.
+The illustrated Astra avatar is a separate native transparent window. The
+normal desktop path keeps that avatar alive while this module hosts only the
+comic speech-bubble chat. SystemSense remains the same authenticated read-only
+surface and is styled as a separate notepad below the conversation.
 """
 
 from __future__ import annotations
@@ -30,10 +27,11 @@ from localpilot.process import hidden_process_creation_flags
 WEBVIEW_DIR = Path(__file__).resolve().parent / "webview"
 INDEX_HTML = WEBVIEW_DIR / "index.html"
 
-EXPANDED_SIZE = (420, 640)
-MIN_SIZE = (360, 480)
+EXPANDED_SIZE = (500, 640)
+MIN_SIZE = (420, 520)
 NATIVE_AVATAR_SIZE = 128
 EDGE_INSET = 24
+COMPANION_MODULE = "localpilot.native_avatar_companion"
 
 _ANCHOR_BOTTOM_RIGHT = FixPoint.SOUTH | FixPoint.EAST
 
@@ -99,8 +97,8 @@ def _launch_module_detached(
 
 
 def _launch_detached(root: Path, config_path: str | None) -> bool:
-    """Normal ``localpilot desktop`` starts the native avatar, not a WebView box."""
-    return _launch_module_detached("localpilot.native_avatar", root, config_path)
+    """Normal ``localpilot desktop`` starts the persistent Astra companion."""
+    return _launch_module_detached(COMPANION_MODULE, root, config_path)
 
 
 def _launch_native_avatar(
@@ -110,9 +108,7 @@ def _launch_native_avatar(
     x: int | None = None,
     y: int | None = None,
 ) -> bool:
-    return _launch_module_detached(
-        "localpilot.native_avatar", root, config_path, x=x, y=y
-    )
+    return _launch_module_detached(COMPANION_MODULE, root, config_path, x=x, y=y)
 
 
 def _startup_shortcut_path() -> Path:
@@ -123,15 +119,13 @@ def _startup_shortcut_path() -> Path:
 
 
 def _write_startup_shortcut(target: Path, root: Path, config_path: str | None) -> None:
-    """Create a .lnk that starts the native companion avatar at login."""
+    """Create a .lnk that starts the persistent illustrated companion at login."""
     exe = str(_desktop_python_executable())
-    argv = ["-m", "localpilot.native_avatar", "--root", str(root.resolve())]
+    argv = ["-m", COMPANION_MODULE, "--root", str(root.resolve())]
     if config_path:
         argv.extend(["--config", str(Path(config_path).resolve())])
     arguments = subprocess.list2cmdline(argv)
 
-    # Paths cross the PowerShell boundary only as environment values so quotes,
-    # apostrophes and metacharacters can never become script source.
     ps = (
         "$s = New-Object -ComObject WScript.Shell; "
         "$sc = $s.CreateShortcut([Environment]::GetEnvironmentVariable('LOCALPILOT_SHORTCUT_PATH')); "
@@ -162,37 +156,43 @@ def _write_startup_shortcut(target: Path, root: Path, config_path: str | None) -
 class WindowBridge:
     """Window-manager bridge only; conversation data remains on the broker."""
 
-    def __init__(self, window: webview.Window, root: Path, config_path: str | None) -> None:
+    def __init__(
+        self,
+        window: webview.Window,
+        root: Path,
+        config_path: str | None,
+        *,
+        avatar_external: bool = False,
+    ) -> None:
         self._window = window
         self._root = root
         self._config_path = config_path
         self._state = DesktopUIState(root / load_config(config_path).agent.data_dir)
-        self._avatar_spawned = False
+        self._avatar_spawned = avatar_external
+        self._avatar_external = bool(avatar_external)
         self._exit_requested = False
 
     @property
     def exit_requested(self) -> bool:
         return self._exit_requested
 
+    @property
+    def avatar_external(self) -> bool:
+        return self._avatar_external
+
     def expand(self) -> dict[str, Any]:
-        # The WebView process exists only while chat is expanded. Retain this
-        # method for the existing frontend bridge contract.
         w, h = EXPANDED_SIZE
         self._window.resize(w, h, fix_point=_ANCHOR_BOTTOM_RIGHT)
         return {"ok": True}
 
     def _avatar_position(self) -> tuple[int | None, int | None]:
-        # The avatar has a stable "home" position persisted before chat opens.
-        # Prefer that over deriving a new position from the chat window every
-        # time; the latter caused the companion to walk around the desktop on
-        # repeated avatar -> chat -> avatar transitions.
         values = self._state.read()
         saved_x = values.get("avatar_x")
         saved_y = values.get("avatar_y")
         if isinstance(saved_x, int) and isinstance(saved_y, int):
             return saved_x, saved_y
         try:
-            x = int(self._window.x + self._window.width - NATIVE_AVATAR_SIZE)
+            x = int(self._window.x + self._window.width + EDGE_INSET)
             y = int(self._window.y + self._window.height - NATIVE_AVATAR_SIZE)
             return x, y
         except Exception:
@@ -210,20 +210,19 @@ class WindowBridge:
         return False
 
     def collapse(self) -> dict[str, Any]:
-        if not self.ensure_avatar():
+        if not self._avatar_external and not self.ensure_avatar():
             return {"ok": False, "reason": "native-avatar-launch-failed"}
         self._window.destroy()
         return {"ok": True}
 
     def exit_companion(self) -> dict[str, Any]:
-        """Close the desktop UI without respawning the compact companion."""
+        """Close this chat surface; an external avatar remains untouched."""
         self._exit_requested = True
         self._window.destroy()
         return {"ok": True}
 
     def mark_native_close(self, *_args: Any) -> None:
-        """Alt+F4/native close means exit, while explicit collapse means avatar."""
-        if not self._avatar_spawned:
+        if self._avatar_external or not self._avatar_spawned:
             self._exit_requested = True
 
     def set_always_on_top(self, value: bool) -> dict[str, Any]:
@@ -298,7 +297,7 @@ def _screen_for_position(x: int, y: int) -> Any | None:
 
 def _position_on_screen(screen: Any, width: int, height: int) -> tuple[int, int]:
     return (
-        int(screen.x + screen.width - width - EDGE_INSET),
+        int(screen.x + screen.width - width - NATIVE_AVATAR_SIZE - EDGE_INSET),
         int(screen.y + screen.height - height - EDGE_INSET),
     )
 
@@ -318,21 +317,19 @@ def _initial_position(
 
 
 def _install_expanded_window_chrome(window: webview.Window) -> None:
-    """Install a drag affordance and visible close button without remote assets."""
+    """Install a drag affordance and close button without remote assets."""
     script = r"""
 (() => {
   const header = document.querySelector('.panel-header');
   if (!header) return;
   const title = document.querySelector('.header-text');
-  const avatar = document.getElementById('avatar-header');
   if (title) title.classList.add('pywebview-drag-region');
-  if (avatar) avatar.classList.add('pywebview-drag-region');
   if (document.getElementById('close-app-btn')) return;
   const button = document.createElement('button');
   button.className = 'icon-btn';
   button.id = 'close-app-btn';
   button.type = 'button';
-  button.setAttribute('aria-label', 'Close LocalPilot');
+  button.setAttribute('aria-label', 'Close chat bubble');
   button.textContent = '×';
   button.addEventListener('click', (event) => {
     event.preventDefault();
@@ -353,11 +350,10 @@ def main(
     *,
     x: int | None = None,
     y: int | None = None,
+    companion: bool = False,
 ) -> None:
     root = Path(root).resolve()
 
-    # The normal console command starts the real native floating body. Direct
-    # module execution remains a foreground full-chat diagnostic path.
     if _should_detach_gui(sys.argv[0]) and _launch_detached(root, config_path):
         return
 
@@ -383,16 +379,14 @@ def main(
         screen=screen,
         min_size=MIN_SIZE,
         frameless=True,
-        # Easy drag restores a broad native movement affordance immediately;
-        # the header also receives explicit drag-region classes on load.
         easy_drag=True,
         shadow=True,
         on_top=bool(ui_state.get("always_on_top", True)),
-        background_color="#0B121D",
+        background_color="#F8F2E8",
         transparent=False,
     )
 
-    bridge = WindowBridge(window, root, config_path)
+    bridge = WindowBridge(window, root, config_path, avatar_external=companion)
     window.expose(
         bridge.expand,
         bridge.collapse,
@@ -404,8 +398,6 @@ def main(
     )
 
     def on_loaded() -> None:
-        # The WebView is expanded-only. Reuse the existing frontend by
-        # selecting its expanded layout before handing it the broker payload.
         window.evaluate_js("document.getElementById('app').classList.add('is-expanded')")
         _install_expanded_window_chrome(window)
         payload = _bridge_payload(client, config_path)
@@ -415,15 +407,12 @@ def main(
     try:
         window.events.closing += bridge.mark_native_close
     except AttributeError:
-        # Older/non-native test backends may not expose the closing event.
         pass
 
     try:
         webview.start(gui="edgechromium" if os.name == "nt" else None, debug=False)
     finally:
-        # Explicit collapse already spawns the avatar. Alt+F4 or the injected
-        # close button is an actual exit and must not resurrect the companion.
-        if not bridge.exit_requested:
+        if not bridge.exit_requested and not bridge.avatar_external:
             bridge.ensure_avatar()
 
 
@@ -433,12 +422,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=None, help="Path to localpilot.toml")
     parser.add_argument("--x", type=int, default=None)
     parser.add_argument("--y", type=int, default=None)
+    parser.add_argument(
+        "--companion",
+        action="store_true",
+        help="Chat was launched by an already-running native avatar",
+    )
     return parser
 
 
 def cli_main() -> None:
     args = build_parser().parse_args()
-    main(args.root, args.config, x=args.x, y=args.y)
+    main(
+        args.root,
+        args.config,
+        x=args.x,
+        y=args.y,
+        companion=args.companion,
+    )
 
 
 if __name__ == "__main__":

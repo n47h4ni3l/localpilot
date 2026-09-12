@@ -1,0 +1,419 @@
+/* Astra companion shell
+   The native illustrated avatar remains outside this WebView. This stylesheet
+   turns the real chat and SystemSense surfaces into one coherent hand-drawn
+   comic composition without duplicating any conversation or telemetry UI. */
+
+:root {
+  --comic-paper: #f8f2e8;
+  --comic-paper-deep: #efe2cf;
+  --comic-ink: #28313f;
+  --comic-ink-soft: #4f5a6b;
+  --comic-accent: #9a7bbf;
+  --comic-accent-soft: #e7dcf0;
+  --comic-blue: #b9d9df;
+  --comic-user: #d9cae7;
+  --comic-note: #fff5c9;
+  --comic-note-rule: rgba(78, 125, 160, 0.18);
+  --comic-note-margin: rgba(201, 92, 98, 0.28);
+  --comic-shadow: rgba(43, 49, 61, 0.22);
+}
+
+html,
+body {
+  background: var(--comic-paper);
+  color: var(--comic-ink);
+  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", "Segoe UI", sans-serif;
+}
+
+body {
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 12px 14px 14px 12px;
+}
+
+.app {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+/* The native avatar is the only visible Astra. The old WebView canvases remain
+   non-presentational compatibility hooks for the existing state controller. */
+.dock,
+.panel-header > .avatar-canvas {
+  display: none !important;
+}
+
+.app:not(.is-expanded) .panel,
+.app.is-expanded .panel {
+  opacity: 1;
+  pointer-events: auto;
+  position: relative;
+}
+
+.panel {
+  width: calc(100% - 8px);
+  height: calc(100% - 8px);
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255,255,255,0.68), transparent 30%),
+    linear-gradient(180deg, var(--comic-paper) 0%, #f4eadc 100%);
+  color: var(--comic-ink);
+  border: 3px solid var(--comic-ink);
+  border-radius: 34px 28px 38px 30px / 28px 36px 30px 40px;
+  box-shadow:
+    5px 6px 0 rgba(40,49,63,0.15),
+    10px 12px 24px var(--comic-shadow);
+  overflow: visible;
+  transform: rotate(-0.18deg);
+  transition:
+    height 180ms ease,
+    transform 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.panel::before,
+.panel::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+}
+
+/* Speech-tail aimed toward Astra, who sits to the right of this window. */
+.panel::before {
+  right: -25px;
+  bottom: 34px;
+  width: 38px;
+  height: 38px;
+  background: var(--comic-paper-deep);
+  border-right: 3px solid var(--comic-ink);
+  border-bottom: 3px solid var(--comic-ink);
+  transform: rotate(-36deg) skew(-5deg, -5deg);
+  z-index: -1;
+}
+
+.panel::after {
+  inset: 7px 9px 9px 7px;
+  border: 1px solid rgba(40,49,63,0.2);
+  border-radius: 30px 34px 31px 35px / 33px 29px 37px 30px;
+  transform: rotate(0.28deg);
+}
+
+.panel-header {
+  min-height: 58px;
+  padding: 12px 16px 10px 18px;
+  gap: 8px;
+  color: var(--comic-ink);
+  background: transparent;
+  border-bottom: 2px dashed rgba(40,49,63,0.28);
+  border-radius: 30px 24px 0 0;
+  position: relative;
+  z-index: 2;
+}
+
+.header-text {
+  color: var(--comic-ink);
+}
+
+.header-title {
+  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.header-state {
+  margin-top: 1px;
+  color: var(--comic-ink-soft);
+  font-family: "Segoe Print", "Comic Sans MS", sans-serif;
+  font-size: 11px;
+  text-transform: none;
+}
+
+.icon-btn {
+  width: 31px;
+  height: 31px;
+  color: var(--comic-ink);
+  background: rgba(255,255,255,0.26);
+  border: 2px solid rgba(40,49,63,0.68);
+  border-radius: 48% 54% 44% 58%;
+  transform: rotate(0.7deg);
+}
+
+.icon-btn:nth-of-type(even) {
+  transform: rotate(-0.8deg);
+}
+
+.icon-btn:hover,
+.system-toggle.is-active {
+  color: var(--comic-ink);
+  background: var(--comic-accent-soft);
+  border-color: var(--comic-ink);
+}
+
+.message-stream {
+  padding: 20px 20px 16px;
+  gap: 18px;
+  color: var(--comic-ink);
+  scrollbar-color: rgba(40,49,63,0.28) transparent;
+}
+
+.turn-label {
+  color: var(--comic-ink-soft) !important;
+  font-family: "Segoe Print", "Comic Sans MS", sans-serif !important;
+  font-size: 10px !important;
+  letter-spacing: 0.02em;
+  text-transform: none !important;
+}
+
+.turn .bubble,
+.turn .bubble-plain {
+  color: var(--comic-ink);
+  font-family: "Segoe Print", "Comic Sans MS", "Segoe UI", sans-serif;
+  line-height: 1.47;
+}
+
+.turn--user .bubble {
+  background: var(--comic-user) !important;
+  border: 2px solid var(--comic-ink) !important;
+  border-radius: 18px 15px 20px 14px / 15px 20px 14px 19px !important;
+  box-shadow: 3px 3px 0 rgba(40,49,63,0.13);
+  transform: rotate(0.25deg);
+}
+
+.turn--assistant .bubble-plain {
+  padding: 6px 8px 7px 2px;
+  background: transparent !important;
+}
+
+.markdown-heading {
+  color: var(--comic-ink);
+  font-family: "Segoe Print", "Comic Sans MS", sans-serif;
+  font-weight: 700;
+}
+
+.markdown-bullet::first-letter {
+  color: var(--comic-accent);
+}
+
+.activity-strip {
+  margin: 0 14px 8px;
+  padding: 7px 11px;
+  color: var(--comic-ink-soft);
+  background: var(--comic-blue);
+  border: 2px solid rgba(40,49,63,0.62);
+  border-radius: 13px 17px 12px 16px;
+  transform: rotate(-0.25deg);
+}
+
+.composer-wrap {
+  padding: 8px 14px 14px;
+  background: transparent;
+  border-top: 0;
+}
+
+.composer {
+  background: rgba(255,255,255,0.45);
+  border: 2px solid var(--comic-ink);
+  border-radius: 18px 15px 19px 14px / 15px 19px 14px 18px;
+  box-shadow: inset 0 -2px 0 rgba(40,49,63,0.06);
+}
+
+.composer:focus-within {
+  border-color: var(--comic-accent);
+  box-shadow: 0 0 0 2px rgba(154,123,191,0.18);
+}
+
+#composer-input {
+  color: var(--comic-ink);
+  font-family: "Segoe Print", "Comic Sans MS", "Segoe UI", sans-serif;
+}
+
+#composer-input::placeholder {
+  color: rgba(79,90,107,0.68);
+}
+
+#send-btn {
+  color: var(--comic-ink);
+  background: var(--comic-accent-soft);
+  border: 2px solid var(--comic-ink);
+  border-radius: 50% 45% 52% 47%;
+  transform: rotate(-3deg);
+}
+
+.history-sheet,
+.settings-popover {
+  color: var(--comic-ink);
+  background: #fbf4e8;
+  border: 2px solid var(--comic-ink);
+  box-shadow: 5px 6px 0 rgba(40,49,63,0.14);
+}
+
+.history-sheet {
+  border-radius: 22px 18px 26px 19px;
+}
+
+.settings-popover {
+  border-radius: 18px 15px 20px 14px;
+}
+
+/* SystemSense no longer replaces chat. It opens as a separate ruled notepad
+   below the speech bubble while conversation remains visible and usable. */
+.panel.is-system-open {
+  height: calc(100% - 260px);
+  min-height: 360px;
+}
+
+.panel.is-system-open .message-stream {
+  display: flex;
+}
+
+.panel.is-system-open .composer-wrap {
+  display: block;
+}
+
+.panel.is-system-open .activity-strip:not(.is-visible) {
+  display: none;
+}
+
+.panel.is-system-open .activity-strip.is-visible {
+  display: flex;
+}
+
+.system-panel {
+  position: absolute;
+  left: 18px;
+  right: 6px;
+  top: calc(100% + 18px);
+  height: 224px;
+  min-height: 224px;
+  max-height: 224px;
+  padding: 18px 18px 12px 34px;
+  gap: 12px;
+  color: var(--comic-ink);
+  background:
+    linear-gradient(90deg, transparent 0 24px, var(--comic-note-margin) 24px 26px, transparent 26px),
+    repeating-linear-gradient(
+      to bottom,
+      var(--comic-note) 0,
+      var(--comic-note) 25px,
+      var(--comic-note-rule) 26px,
+      var(--comic-note) 27px
+    );
+  border: 2px solid var(--comic-ink);
+  border-radius: 7px 10px 8px 6px;
+  box-shadow:
+    4px 5px 0 rgba(40,49,63,0.13),
+    8px 10px 18px rgba(43,49,61,0.16);
+  transform: rotate(0.35deg);
+  overflow-y: auto;
+  z-index: 10;
+}
+
+.system-panel::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: 15px;
+  right: 15px;
+  height: 13px;
+  background:
+    radial-gradient(circle, var(--comic-ink) 0 2px, transparent 2.5px) 0 0 / 20px 13px repeat-x;
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+.system-panel__header {
+  padding-bottom: 3px;
+  border-bottom: 2px solid rgba(40,49,63,0.28);
+}
+
+.system-panel__header h2,
+.system-section h3,
+.system-eyebrow,
+.system-updated,
+.system-metric > span {
+  font-family: "Segoe Print", "Comic Sans MS", sans-serif;
+}
+
+.system-panel__header h2 {
+  color: var(--comic-ink);
+  font-size: 18px;
+  transform: rotate(-0.3deg);
+}
+
+.system-eyebrow {
+  color: var(--comic-ink-soft);
+  letter-spacing: 0.03em;
+  text-transform: none;
+}
+
+.system-loading {
+  color: var(--comic-ink-soft);
+}
+
+.system-content {
+  gap: 10px;
+}
+
+.system-hero,
+.system-metric,
+.system-section {
+  color: var(--comic-ink);
+  background: rgba(255,255,255,0.32);
+  border: 1.5px solid rgba(40,49,63,0.48);
+  border-radius: 9px 12px 8px 11px;
+}
+
+.system-hero p,
+.system-metric small,
+.system-updated,
+.system-inference-row span,
+.system-process-list,
+.system-signal-list {
+  color: var(--comic-ink-soft);
+}
+
+.system-metric-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.system-metric {
+  padding: 9px;
+}
+
+.system-metric strong {
+  color: var(--comic-ink);
+  font-size: 17px;
+}
+
+.system-section {
+  padding: 10px;
+}
+
+.system-panel__footer {
+  color: var(--comic-ink-soft);
+  border-top: 1px dashed rgba(40,49,63,0.38);
+}
+
+#system-refresh {
+  color: var(--comic-ink);
+  background: rgba(255,255,255,0.38);
+  border: 1.5px solid var(--comic-ink);
+  border-radius: 8px 10px 7px 9px;
+  font-family: "Segoe Print", "Comic Sans MS", sans-serif;
+}
+
+.system-health-dot {
+  border-color: var(--comic-paper);
+}
+
+@media (max-height: 700px) {
+  .panel.is-system-open {
+    height: calc(100% - 214px);
+  }
+  .system-panel {
+    height: 180px;
+    min-height: 180px;
+    max-height: 180px;
+  }
+}

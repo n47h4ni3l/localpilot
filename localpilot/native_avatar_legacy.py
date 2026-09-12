@@ -488,6 +488,7 @@ class NativeAvatarApp:
                     offset + mx * cell,
                     offset + my * cell,
                     offset + (mx + 1) * cell - 1,
+                    offset + (my + 1) * cell - 1,
                     fill=color,
                     outline="",
                 )

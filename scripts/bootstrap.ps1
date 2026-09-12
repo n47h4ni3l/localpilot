@@ -27,7 +27,29 @@ if (-not (Test-Path ".venv")) {
 
 $python = Join-Path $PWD ".venv\Scripts\python.exe"
 & $python -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to upgrade pip in LocalPilot's virtual environment."
+}
+
+Write-Host "Installing and synchronizing LocalPilot runtime dependencies..."
 & $python -m pip install -e ".[dev]"
+if ($LASTEXITCODE -ne 0) {
+    throw "LocalPilot dependency installation failed. The installation is incomplete."
+}
+
+# Treat declared dependencies as installation requirements, not optional
+# renderer fallbacks. This catches stale or partially-updated environments
+# before LocalPilot is started through windowless pythonw.exe.
+& $python -m pip check
+if ($LASTEXITCODE -ne 0) {
+    throw "LocalPilot dependency verification failed. Repair the virtual environment before starting LocalPilot."
+}
+
+$pillowVersion = & $python -c "from PIL import Image, ImageTk, __version__; print(__version__)"
+if ($LASTEXITCODE -ne 0) {
+    throw "Pillow could not be imported after installation. LocalPilot's illustrated avatar requires Pillow."
+}
+Write-Host "Pillow: $pillowVersion"
 
 if (-not (Test-Path "localpilot.toml")) {
     Copy-Item "config.example.toml" "localpilot.toml"
@@ -55,3 +77,5 @@ Write-Host "Run:"
 Write-Host ".\.venv\Scripts\Activate.ps1"
 Write-Host "localpilot doctor"
 Write-Host "localpilot"
+Write-Host ""
+Write-Host "After pulling a newer LocalPilot revision, rerun .\scripts\bootstrap.ps1 to synchronize any new dependencies."

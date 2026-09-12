@@ -20,13 +20,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-try:
-    from PIL import Image, ImageTk
-except ModuleNotFoundError:
-    # Keep the legacy pixel companion usable when a checkout is updated before
-    # its virtual environment is refreshed with the new Pillow dependency.
-    Image = None  # type: ignore[assignment]
-    ImageTk = None  # type: ignore[assignment]
+from PIL import Image, ImageTk
 
 from localpilot import native_avatar_legacy as _legacy
 
@@ -280,9 +274,6 @@ def _crop_sheet_frame(sheet: Image.Image, asset: dict[str, Any], frame_index: in
 
 def _load_native_frames(payload: dict[str, Any], root: Any) -> dict[str, list[Any]]:
     """Materialize each unique sheet into Tk-ready 128px frames."""
-
-    if Image is None or ImageTk is None:
-        raise RuntimeError("Pillow is unavailable; use the legacy pixel avatar fallback")
 
     loaded: dict[str, list[Any]] = {}
     for name, asset in payload["assets"].items():

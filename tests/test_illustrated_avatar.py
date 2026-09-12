@@ -105,7 +105,7 @@ def test_native_renderer_registers_and_stabilizes_each_loop_before_scaling_frame
     assert "_sheet_registration_box" in source
     assert "_sheet_stabilization_offsets" in source
     assert "_frame_visible_anchor" in source
-    assert "_BODY_MOTION_RETENTION = 0.15" in source
+    assert "_BODY_MOTION_RETENTION = 0.075" in source
     assert "_MAX_STABILIZATION_PX = 6.0" in source
     assert "_visible_alpha_bbox" in source
     assert "_crop_sheet_frame" in source
@@ -132,7 +132,7 @@ def test_registration_and_stabilization_dampen_baked_in_frame_translation():
     registration = native_avatar._sheet_registration_box(sheet, asset)
     stabilization = native_avatar._sheet_stabilization_offsets(sheet, asset)
     assert registration == (10, 10, 80, 90)
-    assert stabilization == [(8.5, 4.25), (-8.5, -4.25)]
+    assert stabilization == [(9.25, 4.625), (-9.25, -4.625)]
 
     first = native_avatar._crop_sheet_frame(sheet, asset, 0, registration, stabilization[0])
     second = native_avatar._crop_sheet_frame(sheet, asset, 1, registration, stabilization[1])
@@ -166,7 +166,7 @@ def test_webview_uses_registered_stabilized_sheets_and_polished_transitions():
     assert '<script src="illustrated-avatar.js"></script>' in index
     assert "document.documentElement.dataset.state" in script
     assert 'const MANIFEST_URL = "avatar/anim/animation-manifest.json"' in script
-    assert "const BODY_MOTION_RETENTION = 0.15" in script
+    assert "const BODY_MOTION_RETENTION = 0.075" in script
     assert "const MAX_STABILIZATION_PX = 6" in script
     assert "alphaTrimRect" in script
     assert "registeredFrameRects" in script

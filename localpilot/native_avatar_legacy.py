@@ -153,7 +153,11 @@ def _initial_avatar_position(
         return saved_x, saved_y
     if work_area is not None:
         _left, _top, right, bottom = work_area
-        return right - AVATAR_SIZE - EDGE_INSET, bottom - AVATAR_SIZE - EDGE_INSET
+        # Windows already excludes the taskbar from the work area. Placing the
+        # transparent avatar window flush to its bottom-right edge makes the
+        # illustrated companion naturally sit just above the clock/notification
+        # corner while keeping the full 128px interaction surface on-screen.
+        return right - AVATAR_SIZE, bottom - AVATAR_SIZE
     return EDGE_INSET, EDGE_INSET
 
 
@@ -484,7 +488,6 @@ class NativeAvatarApp:
                     offset + mx * cell,
                     offset + my * cell,
                     offset + (mx + 1) * cell - 1,
-                    offset + (my + 1) * cell - 1,
                     fill=color,
                     outline="",
                 )

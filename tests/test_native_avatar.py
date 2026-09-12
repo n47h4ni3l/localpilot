@@ -12,11 +12,11 @@ def test_saved_avatar_position_preserves_negative_virtual_coordinates():
     assert native_avatar._initial_avatar_position(state, (0, 0, 1920, 1080)) == (-640, 120)
 
 
-def test_unsaved_avatar_anchors_inside_primary_work_area():
+def test_unsaved_avatar_anchors_to_bottom_right_of_primary_work_area():
     state = {"avatar_x": None, "avatar_y": None, "always_on_top": True}
     x, y = native_avatar._initial_avatar_position(state, (100, -200, 2020, 880))
-    assert x == 2020 - native_avatar.AVATAR_SIZE - native_avatar.EDGE_INSET
-    assert y == 880 - native_avatar.AVATAR_SIZE - native_avatar.EDGE_INSET
+    assert x == 2020 - native_avatar.AVATAR_SIZE
+    assert y == 880 - native_avatar.AVATAR_SIZE
 
 
 def test_clamp_position_recovers_avatar_fully_inside_monitor():

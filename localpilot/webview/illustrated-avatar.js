@@ -1,14 +1,12 @@
 "use strict";
 
-/* LocalPilot illustrated avatar: real frame-sequence animation.
+/* LocalPilot illustrated avatar: per-state hand-drawn sprite sheets.
  *
  * app.js owns runtime state and the original pixel canvas remains the fail-safe.
- * This renderer uses one production PNG atlas plus a manifest. Every status has
- * enter frames, a genuine character-action loop, and exit frames. State changes
- * animate both the old and new sequences during a short crossfade.
- *
- * No whole-character CSS nudge/rotate/scale is used as a substitute for actual
- * writing, typing, talking, breathing, celebrating, reading, or sleeping frames.
+ * Each completed state uses its own independently drawn sprite sheet. Frames are
+ * cropped from the generated sheet, alpha-trimmed, and fitted into the avatar
+ * without stretching. Transition sheets are intentionally deferred; for now the
+ * WebView crossfades between the outgoing and incoming live loops.
  */
 (function () {
   "use strict";
@@ -34,33 +32,95 @@
     return REQUIRED_STATES.includes(state) ? state : "error";
   }
 
-  function frameForElapsed(spec, elapsedMs) {
-    if (reducedMotion) return Number(spec.representative_frame || spec.loop_start || 0);
-    const start = Number(spec.loop_start);
-    const end = Number(spec.loop_end);
-    const count = Math.max(1, end - start + 1);
-    const step = Math.floor(Math.max(0, elapsedMs) / Number(spec.frame_ms));
-    return start + (step % count);
+  function frameForElapsed(stateSpec, assetSpec, elapsedMs) {
+    if (reducedMotion) return Number(stateSpec.representative_frame || 0);
+    const count = Number(assetSpec.frames);
+    const step = Math.floor(Math.max(0, elapsedMs) / Number(stateSpec.frame_ms));
+    return step % Math.max(1, count);
   }
 
-  function transitionFrame(spec, startKey, endKey, progress) {
-    const start = Number(spec[startKey]);
-    const end = Number(spec[endKey]);
-    const count = Math.max(1, end - start + 1);
-    const index = Math.min(count - 1, Math.floor(clamp01(progress) * count));
-    return start + index;
+  function approximateCellRect(image, asset, frameIndex) {
+    const columns = Number(asset.columns);
+    const rows = Number(asset.rows);
+    const index = Number(frameIndex) % Number(asset.frames);
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    const x0 = Math.round(column * image.naturalWidth / columns);
+    const x1 = Math.round((column + 1) * image.naturalWidth / columns);
+    const y0 = Math.round(row * image.naturalHeight / rows);
+    const y1 = Math.round((row + 1) * image.naturalHeight / rows);
+    return { x: x0, y: y0, width: Math.max(1, x1 - x0), height: Math.max(1, y1 - y0) };
+  }
+
+  function alphaTrimRect(image, asset, frameIndex) {
+    const rect = approximateCellRect(image, asset, frameIndex);
+    const scratch = document.createElement("canvas");
+    scratch.width = rect.width;
+    scratch.height = rect.height;
+    const context = scratch.getContext("2d", { willReadFrequently: true });
+    context.clearRect(0, 0, rect.width, rect.height);
+    context.drawImage(
+      image,
+      rect.x, rect.y, rect.width, rect.height,
+      0, 0, rect.width, rect.height
+    );
+    const pixels = context.getImageData(0, 0, rect.width, rect.height).data;
+    let left = rect.width;
+    let top = rect.height;
+    let right = -1;
+    let bottom = -1;
+    for (let y = 0; y < rect.height; y += 1) {
+      for (let x = 0; x < rect.width; x += 1) {
+        const alpha = pixels[(y * rect.width + x) * 4 + 3];
+        if (alpha <= 2) continue;
+        if (x < left) left = x;
+        if (x > right) right = x;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+      }
+    }
+    if (right < left || bottom < top) return rect;
+    return {
+      x: rect.x + left,
+      y: rect.y + top,
+      width: right - left + 1,
+      height: bottom - top + 1,
+    };
+  }
+
+  function drawFittedFrame(canvas, image, sourceRect) {
+    const context = canvas.getContext("2d");
+    const width = canvas.width;
+    const height = canvas.height;
+    context.clearRect(0, 0, width, height);
+    const availableWidth = Math.max(1, width - 4);
+    const availableHeight = Math.max(1, height - 4);
+    const scale = Math.min(
+      availableWidth / sourceRect.width,
+      availableHeight / sourceRect.height
+    );
+    const drawWidth = Math.max(1, sourceRect.width * scale);
+    const drawHeight = Math.max(1, sourceRect.height * scale);
+    const x = (width - drawWidth) / 2;
+    const y = height - drawHeight - 2;
+    context.drawImage(
+      image,
+      sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
+      x, y, drawWidth, drawHeight
+    );
   }
 
   class IllustratedAvatarLayer {
-    constructor(canvas, manifest, atlasUrl) {
+    constructor(canvas, manifest, assets) {
       this.canvas = canvas;
       this.manifest = manifest;
-      this.atlasUrl = atlasUrl;
+      this.assets = assets;
       this.transitionMs = Number(manifest.transition_ms);
       this.enabled = false;
       this.state = "restarting";
       this.previousState = "restarting";
       this.stateStart = performance.now();
+      this.previousStateStart = this.stateStart;
       this.transitionStart = this.stateStart - this.transitionMs;
 
       this.root = document.createElement("span");
@@ -74,8 +134,8 @@
         zIndex: "2",
       });
 
-      this.previous = this.makeFrame("illustrated-avatar-frame illustrated-avatar-frame--previous");
-      this.current = this.makeFrame("illustrated-avatar-frame illustrated-avatar-frame--current");
+      this.previous = this.makeCanvas("illustrated-avatar-frame illustrated-avatar-frame--previous");
+      this.current = this.makeCanvas("illustrated-avatar-frame illustrated-avatar-frame--current");
       this.root.appendChild(this.previous);
       this.root.appendChild(this.current);
 
@@ -87,20 +147,20 @@
       this.syncGeometry();
     }
 
-    makeFrame(className) {
-      const frame = document.createElement("span");
+    makeCanvas(className) {
+      const frame = document.createElement("canvas");
       frame.className = className;
+      frame.width = 128;
+      frame.height = 128;
       Object.assign(frame.style, {
         position: "absolute",
         inset: "0",
+        width: "100%",
+        height: "100%",
         display: "block",
         pointerEvents: "none",
-        backgroundImage: 'url("' + this.atlasUrl + '")',
-        backgroundRepeat: "no-repeat",
-        backgroundOrigin: "border-box",
-        backgroundClip: "border-box",
         transform: "none",
-        willChange: "background-position, opacity",
+        willChange: "opacity",
       });
       return frame;
     }
@@ -109,26 +169,24 @@
       return this.manifest.states[normalizeState(state)];
     }
 
+    asset(state) {
+      const spec = this.spec(state);
+      return this.assets[spec.asset];
+    }
+
     syncGeometry() {
       const width = this.canvas.offsetWidth || this.canvas.width;
       const height = this.canvas.offsetHeight || this.canvas.height;
-      this.width = width;
-      this.height = height;
       this.root.style.left = this.canvas.offsetLeft + "px";
       this.root.style.top = this.canvas.offsetTop + "px";
       this.root.style.width = width + "px";
       this.root.style.height = height + "px";
-      const atlasWidth = width * Number(this.manifest.columns);
-      const atlasHeight = height * Number(this.manifest.rows);
-      [this.previous, this.current].forEach(function (frame) {
-        frame.style.backgroundSize = atlasWidth + "px " + atlasHeight + "px";
-      });
     }
 
     setFrame(element, state, frameIndex) {
-      const spec = this.spec(state);
-      element.style.backgroundPosition =
-        (-frameIndex * this.width) + "px " + (-Number(spec.row) * this.height) + "px";
+      const asset = this.asset(state);
+      const index = Number(frameIndex) % asset.frames.length;
+      drawFittedFrame(element, asset.image, asset.frames[index]);
     }
 
     enable(state, now) {
@@ -137,11 +195,12 @@
       this.state = normalizeState(state);
       this.previousState = this.state;
       this.stateStart = now;
+      this.previousStateStart = now;
       this.transitionStart = now - this.transitionMs;
       this.syncGeometry();
       const spec = this.spec(this.state);
       this.setFrame(this.current, this.state, Number(spec.representative_frame));
-      this.current.style.opacity = "1";
+      this.current.style.opacity = this.state === "offline" ? "0.72" : "1";
       this.previous.style.opacity = "0";
     }
 
@@ -149,9 +208,16 @@
       next = normalizeState(next);
       if (next === this.state) return;
       this.previousState = this.state;
+      this.previousStateStart = this.stateStart;
       this.state = next;
+      this.stateStart = now;
       this.transitionStart = now;
-      this.stateStart = now + this.transitionMs;
+    }
+
+    drawStateFrame(element, state, elapsedMs) {
+      const spec = this.spec(state);
+      const asset = this.asset(state);
+      this.setFrame(element, state, frameForElapsed(spec, asset.spec, elapsedMs));
     }
 
     draw(now) {
@@ -165,29 +231,18 @@
         return;
       }
 
-      const transitionProgress = (now - this.transitionStart) / this.transitionMs;
+      const transitionProgress = (now - this.transitionStart) / Math.max(1, this.transitionMs);
       if (transitionProgress < 1) {
         const p = clamp01(transitionProgress);
-        const oldSpec = this.spec(this.previousState);
-        const newSpec = this.spec(this.state);
-        this.setFrame(
-          this.previous,
-          this.previousState,
-          transitionFrame(oldSpec, "exit_start", "exit_end", p)
-        );
-        this.setFrame(
-          this.current,
-          this.state,
-          transitionFrame(newSpec, "enter_start", "enter_end", p)
-        );
+        this.drawStateFrame(this.previous, this.previousState, now - this.previousStateStart);
+        this.drawStateFrame(this.current, this.state, now - this.stateStart);
         this.previous.style.opacity = String(1 - p);
-        this.current.style.opacity = String(p);
+        this.current.style.opacity = String(p * (this.state === "offline" ? 0.72 : 1));
         return;
       }
 
       this.previous.style.opacity = "0";
-      const spec = this.spec(this.state);
-      this.setFrame(this.current, this.state, frameForElapsed(spec, now - this.stateStart));
+      this.drawStateFrame(this.current, this.state, now - this.stateStart);
       this.current.style.opacity = this.state === "offline" ? "0.72" : "1";
     }
   }
@@ -196,67 +251,68 @@
     return normalizeState(document.documentElement.dataset.state || "restarting");
   }
 
-  async function loadManifestAndAtlas() {
+  async function loadImage(url) {
+    return new Promise(function (resolve, reject) {
+      const image = new Image();
+      image.onload = function () { resolve(image); };
+      image.onerror = reject;
+      image.src = url;
+    });
+  }
+
+  async function loadManifestAndSheets() {
     const response = await fetch(MANIFEST_URL, { cache: "no-store" });
     if (!response.ok) throw new Error("animation manifest unavailable");
     const manifest = await response.json();
     if (
-      Number(manifest.version) !== 5 ||
+      Number(manifest.version) !== 6 ||
       Number(manifest.frame_size) !== 128 ||
-      Number(manifest.columns) < 1 ||
-      Number(manifest.rows) < REQUIRED_STATES.length ||
       !manifest.states ||
-      !manifest.atlas ||
-      typeof manifest.atlas.file !== "string" ||
-      !/^[A-Za-z0-9._-]+\.png$/.test(manifest.atlas.file)
+      !manifest.assets
     ) {
       throw new Error("invalid animation manifest");
     }
 
-    const seenRows = new Set();
     for (const state of REQUIRED_STATES) {
       const spec = manifest.states[state];
-      if (!spec || Number(spec.frames) < 8 || Number(spec.row) < 0) {
+      if (!spec || typeof spec.asset !== "string" || !manifest.assets[spec.asset]) {
         throw new Error("missing animation state: " + state);
       }
-      const row = Number(spec.row);
-      if (seenRows.has(row)) throw new Error("duplicate animation row");
-      seenRows.add(row);
+      const asset = manifest.assets[spec.asset];
       if (
-        !(Number(spec.enter_start) <= Number(spec.enter_end) &&
-          Number(spec.enter_end) < Number(spec.loop_start) &&
-          Number(spec.loop_start) <= Number(spec.loop_end) &&
-          Number(spec.loop_end) < Number(spec.exit_start) &&
-          Number(spec.exit_start) <= Number(spec.exit_end) &&
-          Number(spec.exit_end) < Number(spec.frames))
+        Number(asset.columns) < 1 ||
+        Number(asset.rows) < 1 ||
+        Number(asset.frames) !== Number(asset.columns) * Number(asset.rows) ||
+        Number(spec.frame_ms) < 50 ||
+        Number(spec.frame_ms) > 1000 ||
+        Number(spec.representative_frame) < 0 ||
+        Number(spec.representative_frame) >= Number(asset.frames)
       ) {
-        throw new Error("invalid animation ranges: " + state);
+        throw new Error("invalid animation state: " + state);
       }
     }
 
-    const atlasUrl = "avatar/anim/" + manifest.atlas.file;
-    await new Promise(function (resolve, reject) {
-      const image = new Image();
-      image.onload = function () {
-        if (
-          image.naturalWidth !== Number(manifest.frame_size) * Number(manifest.columns) ||
-          image.naturalHeight !== Number(manifest.frame_size) * Number(manifest.rows)
-        ) {
-          reject(new Error("invalid animation atlas dimensions"));
-          return;
-        }
-        resolve();
-      };
-      image.onerror = reject;
-      image.src = atlasUrl;
-    });
-    return { manifest: manifest, atlasUrl: atlasUrl };
+    const assets = {};
+    for (const [name, spec] of Object.entries(manifest.assets)) {
+      if (typeof spec.file !== "string" || !/^[A-Za-z0-9._-]+\.png$/.test(spec.file)) {
+        throw new Error("invalid animation asset path");
+      }
+      const image = await loadImage("avatar/anim/" + spec.file);
+      if (image.naturalWidth < Number(spec.columns) * 32 || image.naturalHeight < Number(spec.rows) * 32) {
+        throw new Error("invalid animation sheet dimensions: " + name);
+      }
+      const frames = [];
+      for (let index = 0; index < Number(spec.frames); index += 1) {
+        frames.push(alphaTrimRect(image, spec, index));
+      }
+      assets[name] = { image: image, frames: frames, spec: spec };
+    }
+    return { manifest: manifest, assets: assets };
   }
 
-  loadManifestAndAtlas().then(function (loaded) {
-    const manifest = loaded.manifest;
+  loadManifestAndSheets().then(function (loaded) {
     const layers = canvases.map(function (canvas) {
-      return new IllustratedAvatarLayer(canvas, manifest, loaded.atlasUrl);
+      return new IllustratedAvatarLayer(canvas, loaded.manifest, loaded.assets);
     });
 
     const observer = new MutationObserver(function (records) {

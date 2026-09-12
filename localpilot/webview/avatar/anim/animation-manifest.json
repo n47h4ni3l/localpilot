@@ -1,27 +1,33 @@
 {
-  "version": 5,
+  "version": 6,
   "frame_size": 128,
-  "columns": 24,
-  "rows": 13,
-  "transition_ms": 420,
-  "notes": "True-alpha RGBA living-character animation atlas. Real alternate drawings drive blink, writing, reading, typing, speaking, reactions and sleep; no passive line-boil and no whole-image squeeze/scale/rotate animation.",
-  "atlas": {
-    "file": "avatar-animation.png",
-    "sha256": "86611c1dee6e6c5b6d7914d16ebfc3ae9682b4b65d4e247f32ed5d55467a1d69"
+  "transition_ms": 220,
+  "notes": "Per-state hand-drawn animation sheets. Transition sheets are intentionally deferred; WebView uses a short crossfade and native mode switches directly between completed state loops. No whole-image scale/squash/rotate animation is used.",
+  "assets": {
+    "idle": {"file": "idle.png", "columns": 4, "rows": 2, "frames": 8, "bytes": 2322758},
+    "listening": {"file": "listening.png", "columns": 8, "rows": 1, "frames": 8, "bytes": 1547667},
+    "thinking": {"file": "thinking.png", "columns": 8, "rows": 1, "frames": 8, "bytes": 1512965},
+    "researching": {"file": "researching.png", "columns": 4, "rows": 2, "frames": 8, "bytes": 2109922},
+    "working": {"file": "working.png", "columns": 4, "rows": 3, "frames": 12, "bytes": 2135507},
+    "speaking": {"file": "speaking.png", "columns": 8, "rows": 1, "frames": 8, "bytes": 1643239},
+    "success": {"file": "success.png", "columns": 4, "rows": 2, "frames": 8, "bytes": 2060529},
+    "uncertain": {"file": "error.png", "columns": 4, "rows": 2, "frames": 8, "bytes": 1908681},
+    "sleeping": {"file": "sleeping.png", "columns": 8, "rows": 1, "frames": 8, "bytes": 1390758},
+    "offline": {"file": "offline.png", "columns": 4, "rows": 2, "frames": 8, "bytes": 2183959}
   },
   "states": {
-    "idle": {"row": 0, "frames": 20, "frame_ms": 220, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "listening": {"row": 1, "frames": 20, "frame_ms": 140, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "thinking": {"row": 2, "frames": 20, "frame_ms": 110, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "researching": {"row": 3, "frames": 20, "frame_ms": 150, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "working": {"row": 4, "frames": 20, "frame_ms": 100, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "speaking": {"row": 5, "frames": 20, "frame_ms": 115, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "success": {"row": 6, "frames": 20, "frame_ms": 130, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "uncertain": {"row": 7, "frames": 20, "frame_ms": 170, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "error": {"row": 8, "frames": 20, "frame_ms": 150, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "learning": {"row": 9, "frames": 20, "frame_ms": 160, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "restarting": {"row": 10, "frames": 20, "frame_ms": 95, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 15, "exit_start": 16, "exit_end": 19, "representative_frame": 4},
-    "sleeping": {"row": 11, "frames": 24, "frame_ms": 180, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 19, "exit_start": 20, "exit_end": 23, "representative_frame": 4},
-    "offline": {"row": 12, "frames": 24, "frame_ms": 240, "enter_start": 0, "enter_end": 3, "loop_start": 4, "loop_end": 19, "exit_start": 20, "exit_end": 23, "representative_frame": 4}
+    "idle": {"asset": "idle", "frame_ms": 420, "representative_frame": 0},
+    "listening": {"asset": "listening", "frame_ms": 190, "representative_frame": 0},
+    "thinking": {"asset": "thinking", "frame_ms": 190, "representative_frame": 2},
+    "researching": {"asset": "researching", "frame_ms": 210, "representative_frame": 1},
+    "working": {"asset": "working", "frame_ms": 150, "representative_frame": 0},
+    "speaking": {"asset": "speaking", "frame_ms": 155, "representative_frame": 0},
+    "success": {"asset": "success", "frame_ms": 165, "representative_frame": 2},
+    "uncertain": {"asset": "uncertain", "frame_ms": 240, "representative_frame": 0},
+    "error": {"asset": "uncertain", "frame_ms": 220, "representative_frame": 2},
+    "learning": {"asset": "thinking", "frame_ms": 200, "representative_frame": 3},
+    "restarting": {"asset": "working", "frame_ms": 180, "representative_frame": 0},
+    "sleeping": {"asset": "sleeping", "frame_ms": 480, "representative_frame": 0},
+    "offline": {"asset": "offline", "frame_ms": 340, "representative_frame": 0}
   }
 }

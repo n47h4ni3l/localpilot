@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
+
+from PIL import Image
 
 from localpilot import native_avatar
 
@@ -23,78 +24,81 @@ REQUIRED_STATES = {
     "offline",
 }
 
+EXPECTED_PRIMARY_ASSETS = {
+    "idle.png",
+    "listening.png",
+    "thinking.png",
+    "researching.png",
+    "working.png",
+    "speaking.png",
+    "success.png",
+    "error.png",
+    "sleeping.png",
+    "offline.png",
+}
 
-def test_full_animation_atlas_is_committed_verified_and_correct_size():
+
+def test_per_state_animation_sheets_are_committed_verified_and_substantive():
     manifest = json.loads(native_avatar._animation_manifest_path().read_text(encoding="utf-8"))
-    assert manifest["version"] == 5
+    assert manifest["version"] == 6
     assert manifest["frame_size"] == native_avatar.AVATAR_SIZE
-    assert manifest["columns"] == 24
-    assert manifest["rows"] == 13
-    assert manifest["atlas"]["file"] == "avatar-animation.png"
+    assert 0 <= manifest["transition_ms"] <= 1000
 
-    raw = native_avatar._read_animation_atlas_data(manifest)
-    assert raw is not None
-    assert raw.startswith(b"\x89PNG\r\n\x1a\n")
-    assert hashlib.sha256(raw).hexdigest() == manifest["atlas"]["sha256"]
-    assert native_avatar._png_dimensions(raw) == (
-        native_avatar.AVATAR_SIZE * manifest["columns"],
-        native_avatar.AVATAR_SIZE * manifest["rows"],
-    )
-    atlas_path = native_avatar._animation_atlas_path(manifest)
-    assert atlas_path is not None
-    assert atlas_path.name == "avatar-animation.png"
-    assert atlas_path.is_file()
-    # A production atlas must contain substantive artwork rather than a tiny placeholder.
-    assert len(raw) > 250_000
+    files = {asset["file"] for asset in manifest["assets"].values()}
+    assert files == EXPECTED_PRIMARY_ASSETS
+
+    for name, asset in manifest["assets"].items():
+        raw = native_avatar._read_sheet_asset_data(asset)
+        assert raw is not None, name
+        assert raw.startswith(b"\x89PNG\r\n\x1a\n")
+        assert len(raw) == asset["bytes"]
+        assert len(raw) > 1_000_000
+
+        path = native_avatar._sheet_asset_path(asset)
+        assert path is not None and path.is_file()
+        with Image.open(path) as image:
+            assert image.width >= asset["columns"] * 32
+            assert image.height >= asset["rows"] * 32
+            assert asset["frames"] == asset["columns"] * asset["rows"]
 
 
-def test_animation_manifest_covers_every_state_with_enter_loop_and_exit_frames():
+def test_animation_manifest_covers_every_runtime_state_with_completed_loops():
     manifest = native_avatar._load_animation_manifest()
     assert manifest is not None
     assert REQUIRED_STATES <= set(manifest["states"])
 
-    rows = set()
     for state in REQUIRED_STATES:
         spec = manifest["states"][state]
-        rows.add(spec["row"])
-        assert spec["frames"] >= 20
-        assert 50 <= spec["frame_ms"] <= 500
-        assert 0 <= spec["enter_start"] <= spec["enter_end"]
-        assert spec["enter_end"] < spec["loop_start"] <= spec["loop_end"]
-        assert spec["loop_end"] < spec["exit_start"] <= spec["exit_end"]
-        assert spec["exit_end"] < spec["frames"] <= manifest["columns"]
-        assert spec["loop_start"] <= spec["representative_frame"] <= spec["loop_end"]
+        asset = manifest["assets"][spec["asset"]]
+        assert asset["frames"] >= 8
+        assert 50 <= spec["frame_ms"] <= 1000
+        assert 0 <= spec["representative_frame"] < asset["frames"]
 
-    assert len(rows) == len(REQUIRED_STATES)
-    assert manifest["states"]["thinking"]["row"] == 2
-    assert manifest["states"]["researching"]["row"] == 3
-    assert manifest["states"]["working"]["row"] == 4
-    assert manifest["states"]["speaking"]["row"] == 5
-    assert manifest["states"]["success"]["row"] == 6
-    assert manifest["states"]["sleeping"]["frames"] == 24
-    assert manifest["states"]["offline"]["frames"] == 24
+    assert manifest["states"]["working"]["asset"] == "working"
+    assert manifest["assets"]["working"]["frames"] == 12
+    assert manifest["states"]["learning"]["asset"] == "thinking"
+    assert manifest["states"]["restarting"]["asset"] == "working"
+    assert manifest["states"]["uncertain"]["asset"] == "uncertain"
+    assert manifest["states"]["error"]["asset"] == "uncertain"
 
 
-def test_native_renderer_uses_real_frame_sequences_and_animated_state_transitions():
+def test_native_renderer_crops_real_sheet_frames_without_whole_character_transforms():
     source = Path(native_avatar.__file__).read_text(encoding="utf-8")
-    assert "_animation_phase = \"exit\"" in source
-    assert "_animation_phase = \"enter\"" in source
-    assert "_animation_phase = \"loop\"" in source
+    assert "_crop_sheet_frame" in source
+    assert "getchannel(\"A\").getbbox()" in source
+    assert "Image.Resampling.LANCZOS" in source
+    assert "alpha_composite" in source
+    assert "_animation_frames" in source
     assert "_frame_cursor" in source
-    assert "loop_start" in source
-    assert "loop_end" in source
-    assert "exit_start" in source
-    assert "enter_start" in source
     assert "create_image" in source
 
-    # Regression guard: the previous implementation faked animation by moving a
-    # static pose with state-specific x/y offsets and line-boil frame swapping.
+    # Regression guard: no state-specific whole-image squeeze/nudge animation.
     assert "_loop_offset" not in source
     assert "_LINE_BOIL_TICKS" not in source
     assert "line_frame" not in source
 
 
-def test_webview_uses_atlas_frames_not_whole_character_transform_motion():
+def test_webview_uses_per_state_sheets_and_alpha_trimmed_canvas_frames():
     webview_dir = Path(native_avatar.__file__).resolve().parent / "webview"
     index = (webview_dir / "index.html").read_text(encoding="utf-8")
     script = (webview_dir / "illustrated-avatar.js").read_text(encoding="utf-8")
@@ -103,13 +107,11 @@ def test_webview_uses_atlas_frames_not_whole_character_transform_motion():
     assert '<script src="illustrated-avatar.js"></script>' in index
     assert "document.documentElement.dataset.state" in script
     assert 'const MANIFEST_URL = "avatar/anim/animation-manifest.json"' in script
-    assert 'const atlasUrl = "avatar/anim/" + manifest.atlas.file' in script
-    assert "backgroundPosition" in script
-    assert "transitionFrame" in script
-    assert "frameForElapsed" in script
-    assert "this.previousState" in script
-    assert "exit_start" in script
-    assert "enter_start" in script
+    assert "alphaTrimRect" in script
+    assert "drawFittedFrame" in script
+    assert "manifest.assets" in script
+    assert 'loadImage("avatar/anim/" + spec.file)' in script
+    assert "getImageData" in script
     assert "prefers-reduced-motion" in script
     assert 'this.canvas.style.opacity = "0"' in script
     assert "pixel fallback" in script
@@ -119,20 +121,22 @@ def test_webview_uses_atlas_frames_not_whole_character_transform_motion():
     assert "motionTransform" not in script
     assert "translate(" not in script
     assert "rotate(" not in script
+    assert "scale(" not in script
     assert "LINE_BOIL_MS" not in script
 
 
-def test_missing_or_tampered_animation_atlas_keeps_pixel_fallback(tmp_path, monkeypatch):
+def test_missing_or_tampered_animation_sheet_keeps_pixel_fallback(tmp_path, monkeypatch):
     manifest = json.loads(native_avatar._animation_manifest_path().read_text(encoding="utf-8"))
+    asset = dict(manifest["assets"]["idle"])
 
-    missing = tmp_path / "avatar-animation.png"
-    monkeypatch.setattr(native_avatar, "_animation_atlas_path", lambda _payload: missing)
-    assert native_avatar._read_animation_atlas_data(manifest) is None
+    missing = tmp_path / "idle.png"
+    monkeypatch.setattr(native_avatar, "_sheet_asset_path", lambda _asset: missing)
+    assert native_avatar._read_sheet_asset_data(asset) is None
 
-    bad = tmp_path / "avatar-animation.png"
-    bad.write_bytes(b"not the approved animation atlas")
-    monkeypatch.setattr(native_avatar, "_animation_atlas_path", lambda _payload: bad)
-    assert native_avatar._read_animation_atlas_data(manifest) is None
+    bad = tmp_path / "idle.png"
+    bad.write_bytes(b"not the approved animation sheet")
+    monkeypatch.setattr(native_avatar, "_sheet_asset_path", lambda _asset: bad)
+    assert native_avatar._read_sheet_asset_data(asset) is None
 
 
 def test_researching_and_learning_are_valid_native_runtime_states():

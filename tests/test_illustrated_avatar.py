@@ -63,11 +63,19 @@ def test_per_state_animation_sheets_are_committed_verified_and_substantive():
 
             sheet = image.convert("RGBA")
             registration = native_avatar._sheet_registration_box(sheet, asset)
+            stabilization = native_avatar._sheet_stabilization_offsets(sheet, asset)
             left, top, right, bottom = registration
             assert right > left
             assert bottom > top
+            assert len(stabilization) == asset["frames"]
             for index in range(asset["frames"]):
-                frame = native_avatar._crop_sheet_frame(sheet, asset, index, registration)
+                frame = native_avatar._crop_sheet_frame(
+                    sheet,
+                    asset,
+                    index,
+                    registration,
+                    stabilization[index],
+                )
                 assert frame.size == (native_avatar.AVATAR_SIZE, native_avatar.AVATAR_SIZE)
                 assert frame.getchannel("A").getbbox() is not None
 
@@ -92,9 +100,13 @@ def test_animation_manifest_covers_every_runtime_state_with_completed_loops():
     assert manifest["states"]["error"]["asset"] == "uncertain"
 
 
-def test_native_renderer_registers_each_loop_before_scaling_frames():
+def test_native_renderer_registers_and_stabilizes_each_loop_before_scaling_frames():
     source = Path(native_avatar.__file__).read_text(encoding="utf-8")
     assert "_sheet_registration_box" in source
+    assert "_sheet_stabilization_offsets" in source
+    assert "_frame_visible_anchor" in source
+    assert "_BODY_MOTION_RETENTION = 0.15" in source
+    assert "_MAX_STABILIZATION_PX = 6.0" in source
     assert "_visible_alpha_bbox" in source
     assert "_crop_sheet_frame" in source
     assert "Image.Resampling.LANCZOS" in source
@@ -103,13 +115,13 @@ def test_native_renderer_registers_each_loop_before_scaling_frames():
     assert "_frame_cursor" in source
     assert "create_image" in source
 
-    # Regression guard: no state-specific whole-image squeeze/nudge animation.
+    # Regression guard: no state-specific squash/rotate animation is introduced.
     assert "_loop_offset" not in source
     assert "_LINE_BOIL_TICKS" not in source
     assert "line_frame" not in source
 
 
-def test_registration_box_is_stable_when_motion_changes_visible_bounds():
+def test_registration_and_stabilization_dampen_baked_in_frame_translation():
     sheet = Image.new("RGBA", (200, 100), (0, 0, 0, 0))
     # Frame 0: narrower pose lower in the cell.
     sheet.paste((255, 255, 255, 255), (10, 20, 50, 80))
@@ -118,10 +130,12 @@ def test_registration_box_is_stable_when_motion_changes_visible_bounds():
     asset = {"columns": 2, "rows": 1, "frames": 2}
 
     registration = native_avatar._sheet_registration_box(sheet, asset)
+    stabilization = native_avatar._sheet_stabilization_offsets(sheet, asset)
     assert registration == (10, 10, 80, 90)
+    assert stabilization == [(8.5, 4.25), (-8.5, -4.25)]
 
-    first = native_avatar._crop_sheet_frame(sheet, asset, 0, registration)
-    second = native_avatar._crop_sheet_frame(sheet, asset, 1, registration)
+    first = native_avatar._crop_sheet_frame(sheet, asset, 0, registration, stabilization[0])
+    second = native_avatar._crop_sheet_frame(sheet, asset, 1, registration, stabilization[1])
     assert first.size == second.size == (native_avatar.AVATAR_SIZE, native_avatar.AVATAR_SIZE)
 
 
@@ -143,7 +157,7 @@ def test_native_state_change_starts_on_frame_zero_instead_of_skipping_it():
     assert "if not state_changed:" in source
 
 
-def test_webview_uses_registered_per_state_sheets_and_polished_transitions():
+def test_webview_uses_registered_stabilized_sheets_and_polished_transitions():
     webview_dir = Path(native_avatar.__file__).resolve().parent / "webview"
     index = (webview_dir / "index.html").read_text(encoding="utf-8")
     script = (webview_dir / "illustrated-avatar.js").read_text(encoding="utf-8")
@@ -152,8 +166,12 @@ def test_webview_uses_registered_per_state_sheets_and_polished_transitions():
     assert '<script src="illustrated-avatar.js"></script>' in index
     assert "document.documentElement.dataset.state" in script
     assert 'const MANIFEST_URL = "avatar/anim/animation-manifest.json"' in script
+    assert "const BODY_MOTION_RETENTION = 0.15" in script
+    assert "const MAX_STABILIZATION_PX = 6" in script
     assert "alphaTrimRect" in script
     assert "registeredFrameRects" in script
+    assert "stabilizeX" in script
+    assert "stabilizeY" in script
     assert "drawFittedFrame" in script
     assert "smoothstep" in script
     assert "previousFrameIndex" in script
@@ -165,7 +183,7 @@ def test_webview_uses_registered_per_state_sheets_and_polished_transitions():
     assert 'this.canvas.style.opacity = "0"' in script
     assert "pixel fallback" in script
 
-    # No transform-driven fake writing/typing/breathing animation remains.
+    # No CSS transform-driven fake writing/typing/breathing animation remains.
     assert "function stateMotion" not in script
     assert "motionTransform" not in script
     assert "translate(" not in script

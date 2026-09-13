@@ -16,6 +16,7 @@ from __future__ import annotations
 import ctypes
 import os
 from collections.abc import Callable
+from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Any
 
@@ -85,6 +86,9 @@ def comic_host_geometry(client_width: int, client_height: int, scale: float = 1.
             _scale_value(notepad_bottom, scale),
         )
 
+    scaled_tail = tuple(
+        (_scale_value(x, scale), _scale_value(y, scale)) for x, y in tail_points
+    )
     return ComicHostGeometry(
         chat_rect=(
             _scale_value(chat_left, scale),
@@ -93,9 +97,7 @@ def comic_host_geometry(client_width: int, client_height: int, scale: float = 1.
             _scale_value(chat_bottom, scale),
         ),
         chat_radius=max(2, _scale_value(34.0, scale)),
-        tail_points=tuple(
-            (_scale_value(x, scale), _scale_value(y, scale)) for x, y in tail_points
-        ),
+        tail_points=(scaled_tail[0], scaled_tail[1], scaled_tail[2]),
         notepad_rect=notepad_rect,
         notepad_radius=max(2, _scale_value(10.0, scale)),
     )
@@ -123,6 +125,27 @@ def _apply_win32_region(native: Any, geometry: ComicHostGeometry) -> None:
     class POINT(ctypes.Structure):
         _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
+    # GDI object and HWND handles are pointer-sized on 64-bit Windows. Explicit
+    # ctypes signatures prevent the default c_int conversion from truncating
+    # valid handles on the machines LocalPilot actually runs on.
+    gdi32.CreateRoundRectRgn.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    gdi32.CreateRoundRectRgn.restype = wintypes.HANDLE
+    gdi32.CreatePolygonRgn.argtypes = [ctypes.POINTER(POINT), ctypes.c_int, ctypes.c_int]
+    gdi32.CreatePolygonRgn.restype = wintypes.HANDLE
+    gdi32.CombineRgn.argtypes = [wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE, ctypes.c_int]
+    gdi32.CombineRgn.restype = ctypes.c_int
+    gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+    gdi32.DeleteObject.restype = wintypes.BOOL
+    user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HANDLE, wintypes.BOOL]
+    user32.SetWindowRgn.restype = ctypes.c_int
+
     left, top, right, bottom = geometry.chat_rect
     chat = gdi32.CreateRoundRectRgn(
         left,
@@ -135,7 +158,7 @@ def _apply_win32_region(native: Any, geometry: ComicHostGeometry) -> None:
     if not chat:
         raise OSError("CreateRoundRectRgn failed for chat surface")
 
-    owned_regions: list[int] = []
+    owned_regions: list[Any] = []
     try:
         points = (POINT * 3)(*(POINT(x, y) for x, y in geometry.tail_points))
         tail = gdi32.CreatePolygonRgn(points, 3, ALTERNATE)
@@ -162,7 +185,7 @@ def _apply_win32_region(native: Any, geometry: ComicHostGeometry) -> None:
         # On success Windows owns `chat`; it must not be DeleteObject'd here.
         if not user32.SetWindowRgn(_native_handle(native), chat, True):
             raise OSError("SetWindowRgn failed")
-        chat = 0
+        chat = None
     finally:
         for region in owned_regions:
             if region:

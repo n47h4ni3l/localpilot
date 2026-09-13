@@ -16,6 +16,10 @@
   --comic-note-rule: rgba(78, 125, 160, 0.18);
   --comic-note-margin: rgba(201, 92, 98, 0.28);
   --comic-shadow: rgba(43, 49, 61, 0.22);
+  --comic-good: #2A6B46;
+  --comic-warning: #8A5119;
+  --comic-critical: #992E2E;
+  --comic-code: #7C5228;
   --chat-window-width: 500px;
   --chat-panel-width: 458px;
   --chat-right-inset: 34px;
@@ -248,6 +252,69 @@ body {
   color: var(--comic-ink);
   font-weight: 700;
 }
+
+/* Matches app.css's own selector shape (.reveal-text .markdown-heading etc.)
+   rather than just .markdown-heading — the old dark-theme rule is written
+   at that same specificity, so a lower-specificity override here would
+   lose to it regardless of stylesheet load order. Same reasoning for the
+   caret, failed-notice and state-dot fixes below. */
+.reveal-text .markdown-heading {
+  color: var(--comic-ink);
+}
+
+.reveal-text code {
+  color: var(--comic-code);
+}
+
+.caret {
+  background: var(--comic-accent);
+}
+
+.failed-notice {
+  color: var(--comic-ink-soft);
+}
+
+.failed-notice button {
+  color: var(--comic-critical);
+}
+
+.activity-chip {
+  color: var(--comic-ink-soft);
+  background: rgba(255,255,255,0.5);
+  border: 2px solid rgba(40,49,63,0.5);
+}
+
+.activity-chip:hover {
+  color: var(--comic-ink);
+}
+
+.system-health-dot.is-good,
+.system-hero__dot.is-good {
+  background: var(--comic-good);
+  box-shadow: none;
+}
+
+.system-health-dot.is-degraded,
+.system-hero__dot.is-degraded {
+  background: var(--comic-warning);
+  box-shadow: none;
+}
+
+.system-health-dot.is-critical,
+.system-hero__dot.is-critical {
+  background: var(--comic-critical);
+  box-shadow: none;
+}
+
+.system-health-dot.is-unknown,
+.system-hero__dot.is-unknown {
+  background: var(--comic-ink-soft);
+  box-shadow: none;
+}
+
+.system-signal-list li.is-good::before { background: var(--comic-good); }
+.system-signal-list li.is-warning::before { background: var(--comic-warning); }
+.system-signal-list li.is-critical::before { background: var(--comic-critical); }
 
 .markdown-bullet::first-letter {
   color: var(--comic-accent);

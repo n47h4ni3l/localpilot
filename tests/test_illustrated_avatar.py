@@ -157,13 +157,14 @@ def test_native_state_change_starts_on_frame_zero_instead_of_skipping_it():
     assert "if not state_changed:" in source
 
 
-def test_webview_uses_registered_stabilized_sheets_and_polished_transitions():
+def test_stabilized_webview_avatar_asset_remains_valid_but_is_not_loaded_as_duplicate():
     webview_dir = Path(native_avatar.__file__).resolve().parent / "webview"
     index = (webview_dir / "index.html").read_text(encoding="utf-8")
     script = (webview_dir / "illustrated-avatar.js").read_text(encoding="utf-8")
 
     assert '<script src="app.js"></script>' in index
-    assert '<script src="illustrated-avatar.js"></script>' in index
+    assert '<script src="illustrated-avatar.js"></script>' not in index
+    assert '<script src="companion-state-sync.js"></script>' in index
     assert "document.documentElement.dataset.state" in script
     assert 'const MANIFEST_URL = "avatar/anim/animation-manifest.json"' in script
     assert "const BODY_MOTION_RETENTION = 0.075" in script
@@ -183,7 +184,8 @@ def test_webview_uses_registered_stabilized_sheets_and_polished_transitions():
     assert 'this.canvas.style.opacity = "0"' in script
     assert "pixel fallback" in script
 
-    # No CSS transform-driven fake writing/typing/breathing animation remains.
+    # The dormant WebView asset stays regression-tested, but the native Astra is
+    # now the sole visible illustrated avatar and this script is not loaded.
     assert "function stateMotion" not in script
     assert "motionTransform" not in script
     assert "translate(" not in script

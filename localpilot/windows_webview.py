@@ -28,6 +28,19 @@ _SURFACE_BOTTOM_INSET = 10.0
 _SYSTEMSENSE_WIDTH = 360.0
 _SYSTEMSENSE_GAP = 22.0
 _SYSTEMSENSE_THRESHOLD = 700.0
+_SYSTEMSENSE_BINDING_REVEAL = 8.0
+
+# These mirror comic-shell.css' outer `.panel::before` triangle.  Keeping the
+# native region on the same box-model geometry matters: the previous region
+# treated `bottom: 45px` as the triangle centre, while CSS applies it to the
+# *bottom of the border box*.  That shifted the native clip down far enough to
+# remove the visible speech tail even though the rest of the bubble was fine.
+_TAIL_RIGHT_OFFSET = 31.0
+_TAIL_BORDER_LEFT = 33.0
+_TAIL_BORDER_TOP = 18.0
+_TAIL_BORDER_BOTTOM = 13.0
+_TAIL_BOTTOM_OFFSET = 45.0
+_TAIL_CLIP_BLEED = 2.0
 
 # Keep event handlers alive for the lifetime of the process.  pythonnet event
 # subscriptions can otherwise lose a Python callback after garbage collection.
@@ -63,20 +76,30 @@ def comic_host_geometry(client_width: int, client_height: int, scale: float = 1.
     chat_right = min(logical_width, chat_left + _CHAT_PANEL_WIDTH)
     chat_bottom = max(chat_top + 1.0, logical_height - _SURFACE_BOTTOM_INSET)
 
-    # Matches comic-shell.css' outlined tail closely enough that the native
-    # region clips away the rectangular host without clipping the visible ink.
-    tail_center_y = max(chat_top + 24.0, chat_bottom - 45.0)
-    tail_tip_x = min(logical_width, chat_right + 33.0)
+    # Match the CSS triangle's border box rather than approximating it around
+    # `bottom: 45px`. For a zero-sized pseudo element with a 18px top border and
+    # 13px bottom border, the triangle tip/content point sits 58px above the
+    # panel bottom and the base spans 76px..45px above it. A tiny bleed absorbs
+    # the -4deg hand-drawn rotation without exposing a rectangular host fringe.
+    tail_tip_x = min(logical_width - 1.0, chat_right + _TAIL_RIGHT_OFFSET)
+    tail_base_x = chat_right + _TAIL_RIGHT_OFFSET - _TAIL_BORDER_LEFT
+    tail_base_bottom_y = chat_bottom - _TAIL_BOTTOM_OFFSET
+    tail_tip_y = tail_base_bottom_y - _TAIL_BORDER_BOTTOM
+    tail_base_top_y = tail_tip_y - _TAIL_BORDER_TOP
     tail_points = (
-        (chat_right - 2.0, tail_center_y - 19.0),
-        (tail_tip_x, tail_center_y),
-        (chat_right - 2.0, tail_center_y + 15.0),
+        (tail_base_x, tail_base_top_y - _TAIL_CLIP_BLEED),
+        (tail_tip_x, tail_tip_y - _TAIL_CLIP_BLEED),
+        (tail_base_x, tail_base_bottom_y + _TAIL_CLIP_BLEED),
     )
 
     notepad_rect: tuple[int, int, int, int] | None = None
     if logical_width >= _SYSTEMSENSE_THRESHOLD:
         notepad_right = chat_left - _SYSTEMSENSE_GAP
-        notepad_left = max(0.0, notepad_right - _SYSTEMSENSE_WIDTH)
+        notepad_paper_left = max(0.0, notepad_right - _SYSTEMSENSE_WIDTH)
+        # comic-shell.css places the binding-hole strip partly outside the
+        # notepad's paper edge. Include that strip in the native region so the
+        # left-edge holes remain visible instead of being clipped to tiny dashes.
+        notepad_left = max(0.0, notepad_paper_left - _SYSTEMSENSE_BINDING_REVEAL)
         notepad_top = chat_top + 8.0
         notepad_bottom = max(notepad_top + 1.0, chat_bottom - 8.0)
         notepad_rect = (

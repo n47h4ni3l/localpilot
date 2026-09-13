@@ -1,7 +1,7 @@
 /* Astra companion shell
    The native illustrated avatar remains outside this WebView. This stylesheet
-   turns the real chat and SystemSense surfaces into one coherent hand-drawn
-   comic composition without duplicating conversation or telemetry data. */
+   turns the real broker-backed chat and SystemSense surfaces into one coherent
+   hand-drawn composition without duplicating either surface. */
 
 :root {
   --comic-paper: #f8f2e8;
@@ -16,21 +16,31 @@
   --comic-note-rule: rgba(78, 125, 160, 0.18);
   --comic-note-margin: rgba(201, 92, 98, 0.28);
   --comic-shadow: rgba(43, 49, 61, 0.22);
+  --chat-window-width: 500px;
+  --chat-panel-width: 458px;
+  --chat-right-inset: 34px;
+  --surface-top-inset: 8px;
+  --surface-bottom-inset: 10px;
+  --systemsense-width: 360px;
+  --systemsense-gap: 22px;
+  --comic-font: "Segoe Print", "Bradley Hand", "Comic Sans MS", "Segoe UI", sans-serif;
 }
 
 html,
 body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
   background: transparent !important;
   color: var(--comic-ink);
-  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", "Segoe UI", sans-serif;
+  font-family: var(--comic-font);
+  overflow: hidden;
 }
 
 body {
   align-items: flex-start;
   justify-content: flex-start;
-  box-sizing: border-box;
-  padding: 8px 34px 10px 8px;
-  overflow: hidden;
 }
 
 .app {
@@ -41,7 +51,7 @@ body {
 }
 
 /* The native avatar is the only visible Astra. The retained 1px canvases are
-   non-presentational state sinks for the existing chat state controller. */
+   non-presentational state sinks for legacy app.js wiring and can never paint. */
 .dock,
 .panel-header > .avatar-canvas,
 .avatar-canvas[hidden],
@@ -56,12 +66,19 @@ body {
 .app.is-expanded .panel {
   opacity: 1;
   pointer-events: auto;
-  position: relative;
+  position: absolute;
 }
 
-.panel {
-  width: 100%;
-  height: 100%;
+/* Keep the chat bubble the same size when SystemSense opens. The host window
+   grows only to the left, while this panel remains anchored beside Astra. */
+.panel,
+.panel.is-system-open {
+  top: var(--surface-top-inset);
+  bottom: var(--surface-bottom-inset);
+  right: var(--chat-right-inset);
+  width: var(--chat-panel-width);
+  height: auto;
+  min-height: 0;
   box-sizing: border-box;
   background:
     radial-gradient(circle at 18% 12%, rgba(255,255,255,0.68), transparent 30%),
@@ -74,10 +91,6 @@ body {
     10px 12px 24px var(--comic-shadow);
   overflow: visible;
   transform: rotate(-0.18deg);
-  transition:
-    height 180ms ease,
-    transform 180ms ease,
-    box-shadow 180ms ease;
 }
 
 .panel::before,
@@ -89,9 +102,8 @@ body {
   pointer-events: none;
 }
 
-/* Two nested triangles form a real outlined speech tail aimed at Astra. The
-   host window reserves transparent space to the right, so the tail is never
-   clipped or hidden behind an opaque WebView background. */
+/* Proper outlined comic tail. The transparent host reserves 34px on the right,
+   so this points cleanly toward Astra rather than being clipped by WebView2. */
 .panel::before {
   right: -31px;
   bottom: 45px;
@@ -100,7 +112,7 @@ body {
   border-left: 33px solid var(--comic-ink);
   transform: rotate(-4deg);
   transform-origin: left center;
-  z-index: 5;
+  z-index: 20;
 }
 
 .panel::after {
@@ -111,7 +123,42 @@ body {
   border-left: 28px solid #f4eadc;
   transform: rotate(-4deg);
   transform-origin: left center;
-  z-index: 6;
+  z-index: 21;
+}
+
+/* One typography system for every visible control/content type. Browser-default
+   button, form, markdown and telemetry fonts must not leak into the artwork. */
+.panel,
+.panel button,
+.panel input,
+.panel textarea,
+.panel select,
+.panel option,
+.panel code,
+.panel pre,
+.panel strong,
+.panel small,
+.panel h1,
+.panel h2,
+.panel h3,
+.panel h4,
+.panel p,
+.panel span,
+.panel li,
+.panel div {
+  font-family: var(--comic-font);
+}
+
+.panel button,
+.panel input,
+.panel textarea,
+.panel select {
+  font: inherit;
+}
+
+.panel code,
+.panel pre {
+  font-family: var(--comic-font) !important;
 }
 
 .panel-header {
@@ -131,7 +178,6 @@ body {
 }
 
 .header-title {
-  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive;
   font-size: 16px;
   font-weight: 700;
   letter-spacing: 0.01em;
@@ -140,7 +186,6 @@ body {
 .header-state {
   margin-top: 1px;
   color: var(--comic-ink-soft);
-  font-family: "Segoe Print", "Comic Sans MS", sans-serif;
   font-size: 11px;
   text-transform: none;
 }
@@ -175,7 +220,6 @@ body {
 
 .turn-label {
   color: var(--comic-ink-soft) !important;
-  font-family: "Segoe Print", "Comic Sans MS", sans-serif !important;
   font-size: 10px !important;
   letter-spacing: 0.02em;
   text-transform: none !important;
@@ -184,7 +228,6 @@ body {
 .turn .bubble,
 .turn .bubble-plain {
   color: var(--comic-ink);
-  font-family: "Segoe Print", "Comic Sans MS", "Segoe UI", sans-serif;
   line-height: 1.47;
 }
 
@@ -203,7 +246,6 @@ body {
 
 .markdown-heading {
   color: var(--comic-ink);
-  font-family: "Segoe Print", "Comic Sans MS", sans-serif;
   font-weight: 700;
 }
 
@@ -219,6 +261,17 @@ body {
   border: 2px solid rgba(40,49,63,0.62);
   border-radius: 13px 17px 12px 16px;
   transform: rotate(-0.25deg);
+}
+
+.activity-chip,
+.failed-notice,
+.session-row__title,
+.session-row__time,
+.history-sheet__header,
+.status-row,
+.toggle-row,
+.settings-popover .action {
+  font-family: var(--comic-font) !important;
 }
 
 .composer-wrap {
@@ -241,7 +294,6 @@ body {
 
 #composer-input {
   color: var(--comic-ink);
-  font-family: "Segoe Print", "Comic Sans MS", "Segoe UI", sans-serif;
 }
 
 #composer-input::placeholder {
@@ -272,13 +324,8 @@ body {
   border-radius: 18px 15px 20px 14px;
 }
 
-/* SystemSense still uses its original integrated placement in this stage; the
-   next layout stage moves the same real panel to the left of the bubble. */
-.panel.is-system-open {
-  height: calc(100% - 260px);
-  min-height: 360px;
-}
-
+/* Keep chat usable while the notepad is open; app.css' old replacement-panel
+   behavior is explicitly neutralised here. */
 .panel.is-system-open .message-stream {
   display: flex;
 }
@@ -295,19 +342,28 @@ body {
   display: flex;
 }
 
+.panel.is-system-open .system-panel {
+  display: flex;
+}
+
+/* Side-bound notepad. The host grows left by exactly width + gap, so the chat
+   never moves relative to Astra and the notepad occupies the new transparent
+   space to the left of the speech bubble. */
 .system-panel {
   position: absolute;
-  left: 18px;
-  right: 6px;
-  top: calc(100% + 18px);
-  height: 224px;
-  min-height: 224px;
-  max-height: 224px;
-  padding: 18px 18px 12px 34px;
+  left: auto;
+  right: calc(100% + var(--systemsense-gap));
+  top: 8px;
+  width: var(--systemsense-width);
+  height: calc(100% - 16px);
+  min-height: 0;
+  max-height: none;
+  box-sizing: border-box;
+  padding: 18px 18px 12px 40px;
   gap: 12px;
   color: var(--comic-ink);
   background:
-    linear-gradient(90deg, transparent 0 24px, var(--comic-note-margin) 24px 26px, transparent 26px),
+    linear-gradient(90deg, transparent 0 27px, var(--comic-note-margin) 27px 29px, transparent 29px),
     repeating-linear-gradient(
       to bottom,
       var(--comic-note) 0,
@@ -321,34 +377,30 @@ body {
     4px 5px 0 rgba(40,49,63,0.13),
     8px 10px 18px rgba(43,49,61,0.16);
   transform: rotate(0.35deg);
-  overflow-y: auto;
+  overflow: visible;
   z-index: 10;
 }
 
+/* Punched binding holes now run vertically down the left edge. */
 .system-panel::before {
   content: "";
   position: absolute;
-  top: -8px;
-  left: 15px;
-  right: 15px;
-  height: 13px;
+  left: -10px;
+  top: 18px;
+  bottom: 18px;
+  width: 18px;
+  height: auto;
   background:
-    radial-gradient(circle, var(--comic-ink) 0 2px, transparent 2.5px) 0 0 / 20px 13px repeat-x;
-  opacity: 0.75;
+    radial-gradient(circle, var(--comic-ink) 0 2.2px, transparent 2.8px)
+    center top / 16px 22px repeat-y;
+  opacity: 0.78;
   pointer-events: none;
 }
 
 .system-panel__header {
   padding-bottom: 3px;
   border-bottom: 2px solid rgba(40,49,63,0.28);
-}
-
-.system-panel__header h2,
-.system-section h3,
-.system-eyebrow,
-.system-updated,
-.system-metric > span {
-  font-family: "Segoe Print", "Comic Sans MS", sans-serif;
+  flex: 0 0 auto;
 }
 
 .system-panel__header h2 {
@@ -369,6 +421,9 @@ body {
 
 .system-content {
   gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-color: rgba(40,49,63,0.28) transparent;
 }
 
 .system-hero,
@@ -390,7 +445,7 @@ body {
 }
 
 .system-metric-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .system-metric {
@@ -409,6 +464,7 @@ body {
 .system-panel__footer {
   color: var(--comic-ink-soft);
   border-top: 1px dashed rgba(40,49,63,0.38);
+  flex: 0 0 auto;
 }
 
 #system-refresh {
@@ -416,7 +472,6 @@ body {
   background: rgba(255,255,255,0.38);
   border: 1.5px solid var(--comic-ink);
   border-radius: 8px 10px 7px 9px;
-  font-family: "Segoe Print", "Comic Sans MS", sans-serif;
 }
 
 .system-health-dot {
@@ -424,12 +479,8 @@ body {
 }
 
 @media (max-height: 700px) {
-  .panel.is-system-open {
-    height: calc(100% - 214px);
-  }
   .system-panel {
-    height: 180px;
-    min-height: 180px;
-    max-height: 180px;
+    top: 5px;
+    height: calc(100% - 10px);
   }
 }

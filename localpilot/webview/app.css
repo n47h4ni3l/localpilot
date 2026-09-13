@@ -16,8 +16,10 @@
     --listening-core: #7EEAD1; --listening-glow: rgba(126,234,209,0.4);
     --thinking-core: #F0C24E;  --thinking-glow: rgba(240,194,78,0.35);
     --working-core: #5FA8FF;   --working-glow: rgba(95,168,255,0.35);
+    --researching-core: #5FA8FF; --researching-glow: rgba(95,168,255,0.35);
     --speaking-core: #B98CFF;  --speaking-glow: rgba(185,140,255,0.35);
     --success-core: #6FDE8E;   --success-glow: rgba(111,222,142,0.4);
+    --learning-core: #6FDE8E;  --learning-glow: rgba(111,222,142,0.4);
     --uncertain-core: #F0A24E; --uncertain-glow: rgba(240,162,78,0.35);
     --error-core: #FF6B6B;     --error-glow: rgba(255,107,107,0.4);
     --restarting-core: #8592A8;--restarting-glow: rgba(133,146,168,0.3);
@@ -63,9 +65,11 @@
   :root[data-state="idle"]       { --accent-core: var(--idle-core);       --accent-glow: var(--idle-glow); }
   :root[data-state="listening"]  { --accent-core: var(--listening-core);  --accent-glow: var(--listening-glow); }
   :root[data-state="thinking"]   { --accent-core: var(--thinking-core);   --accent-glow: var(--thinking-glow); }
+  :root[data-state="researching"]{ --accent-core: var(--researching-core);--accent-glow: var(--researching-glow); }
   :root[data-state="working"]    { --accent-core: var(--working-core);    --accent-glow: var(--working-glow); }
   :root[data-state="speaking"]   { --accent-core: var(--speaking-core);   --accent-glow: var(--speaking-glow); }
   :root[data-state="success"]    { --accent-core: var(--success-core);    --accent-glow: var(--success-glow); }
+  :root[data-state="learning"]   { --accent-core: var(--learning-core);   --accent-glow: var(--learning-glow); }
   :root[data-state="uncertain"]  { --accent-core: var(--uncertain-core);  --accent-glow: var(--uncertain-glow); }
   :root[data-state="error"]      { --accent-core: var(--error-core);      --accent-glow: var(--error-glow); }
   :root[data-state="restarting"] { --accent-core: var(--restarting-core); --accent-glow: var(--restarting-glow); }

@@ -1,2 +1,7 @@
 *.pdf binary
 pyproject.toml text eol=lf
+training/datasets/external_corpus_v1.jsonl text eol=lf
+training/sources/external_corpus_v1_sources.jsonl text eol=lf
+training/manifests/external_corpus_v1_manifest.json text eol=lf
+training/manifests/external_corpus_v1_acquisition_lock.json text eol=lf
+training/requirements-external-corpus-v1.txt text eol=lf

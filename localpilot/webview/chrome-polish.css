@@ -1,7 +1,7 @@
 /* Expanded-chat chrome refinements after the native-avatar handoff.
-   The WebView host owns the outer window dimensions; the panel must fill the
-   actual CSS viewport rather than assuming the nominal 420x640 host size maps
-   one-for-one through Windows DPI scaling. */
+   Outer bubble geometry is owned exclusively by comic-shell.css. This file
+   keeps only viewport, header and composer polish so the older full-panel
+   layout cannot clip the comic surface. */
 
 html,
 body,
@@ -23,23 +23,11 @@ body {
   overflow: hidden;
 }
 
-.app.is-expanded .panel {
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  max-width: none;
-  max-height: none;
-  /* radius + shadow intentionally omitted: .panel is never visible without
-     .app.is-expanded, so re-declaring them here only forked the two values
-     from app.css's --radius-lg / --shadow-panel. Edit those tokens instead. */
-}
-
 .panel-header {
   position: relative;
   min-height: 64px;
   gap: 12px;
-  padding: 12px 42px 12px 16px;
+  padding: 12px 16px;
 }
 
 .panel-header .avatar-canvas {
@@ -50,42 +38,55 @@ body {
   min-width: 0;
 }
 
-.panel-header .icon-btn:not(#close-app-btn) {
+.panel-header .icon-btn {
   width: 32px;
   height: 32px;
   flex: 0 0 32px;
 }
 
-/* Exit remains available, but no longer participates in the toolbar's flex
-   layout. This restores the clean history/settings/collapse rhythm from the
-   original companion design. */
+/* The real collapse button already closes the chat bubble while leaving Astra
+   alive. Keep the older injected X out of the comic toolbar so there is only
+   one close control visible to the user. */
 #close-app-btn {
-  position: absolute;
-  top: 7px;
-  right: 7px;
-  width: 22px;
-  height: 22px;
-  min-width: 22px;
-  padding: 0;
-  margin: 0;
-  border-radius: var(--radius-sm);
-  font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
-  font-size: 16px;
-  font-weight: 300;
-  line-height: 1;
-  color: var(--text-tertiary);
-  opacity: 0.45;
-  transition: opacity var(--duration-fast) ease, color var(--duration-fast) ease, background var(--duration-fast) ease;
+  display: none !important;
 }
 
-.panel-header:hover #close-app-btn {
-  opacity: 0.72;
+/* comic-shell.css deliberately lets the panel overflow so its speech tail can
+   exist outside the rounded body. The legacy history sheet used a translated
+   off-canvas hiding trick that therefore leaked back into view as the narrow
+   cream strip and session dots seen beside the bubble. Hide it semantically
+   while closed, then restore it only when the user actually opens history. */
+.app.is-expanded .history-sheet:not(.is-open) {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
-#close-app-btn:hover {
+.app.is-expanded .history-sheet.is-open {
+  visibility: visible;
   opacity: 1;
-  color: var(--error-core);
-  background: rgba(255, 107, 107, 0.09);
+  pointer-events: auto;
+}
+
+/* Rotated comic bubbles can otherwise make the vertical message scroller gain
+   a second horizontal scrollbar. Long code remains horizontally scrollable in
+   its own <pre>; the conversation surface itself never should be. */
+.app.is-expanded .message-stream {
+  overflow-x: hidden;
+}
+
+.app.is-expanded .turn,
+.app.is-expanded .bubble,
+.app.is-expanded .bubble-plain,
+.app.is-expanded .reveal-text {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.app.is-expanded .reveal-text pre {
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .composer-wrap {

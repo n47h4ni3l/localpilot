@@ -1,8 +1,8 @@
 """Tests for the expanded WebView chat host.
 
 The actual Windows GUI backend remains a manual smoke-test boundary. These
-checks exercise the window handoff, placement, startup registration, and local
-frontend security without requiring a display server.
+checks exercise the window handoff, placement, startup registration, companion
+state bridge, comic layout, and local frontend security without a display.
 """
 
 from __future__ import annotations
@@ -57,6 +57,57 @@ def test_expand_keeps_webview_at_expanded_size(tmp_path):
     assert window.resized == [
         (*webview_app.EXPANDED_SIZE, webview_app._ANCHOR_BOTTOM_RIGHT)
     ]
+
+
+def test_systemsense_expands_host_left_without_resizing_chat_surface(tmp_path):
+    window = FakeWindow()
+    bridge = webview_app.WindowBridge(window, tmp_path, None, avatar_external=True)
+
+    assert webview_app.SYSTEMSENSE_SIZE == (
+        webview_app.EXPANDED_SIZE[0]
+        + webview_app.SYSTEMSENSE_WIDTH
+        + webview_app.SYSTEMSENSE_GAP,
+        webview_app.EXPANDED_SIZE[1],
+    )
+    assert bridge.set_systemsense_open(True) == {"ok": True, "open": True}
+    assert window.resized[-1] == (
+        *webview_app.SYSTEMSENSE_SIZE,
+        webview_app._ANCHOR_BOTTOM_RIGHT,
+    )
+    assert bridge.expand() == {"ok": True}
+    assert window.resized[-1] == (
+        *webview_app.SYSTEMSENSE_SIZE,
+        webview_app._ANCHOR_BOTTOM_RIGHT,
+    )
+    assert bridge.set_systemsense_open(False) == {"ok": True, "open": False}
+    assert window.resized[-1] == (
+        *webview_app.EXPANDED_SIZE,
+        webview_app._ANCHOR_BOTTOM_RIGHT,
+    )
+
+
+def test_companion_state_bridge_accepts_only_real_known_states(tmp_path):
+    window = FakeWindow()
+    bridge = webview_app.WindowBridge(window, tmp_path, None, avatar_external=True)
+
+    assert bridge.set_companion_state("speaking") == {"ok": True, "state": "speaking"}
+    assert bridge._state.read()["companion_state"] == "speaking"
+    assert bridge.set_companion_state("not-a-real-state") == {
+        "ok": False,
+        "reason": "invalid-state",
+    }
+    assert bridge._state.read()["companion_state"] == "speaking"
+    assert bridge.clear_companion_state() == {"ok": True}
+    assert bridge._state.read()["companion_state"] is None
+
+
+def test_standalone_webview_cannot_impersonate_external_avatar_state(tmp_path):
+    window = FakeWindow()
+    bridge = webview_app.WindowBridge(window, tmp_path, None, avatar_external=False)
+    assert bridge.set_companion_state("working") == {
+        "ok": False,
+        "reason": "no-external-avatar",
+    }
 
 
 def test_collapse_spawns_native_avatar_then_destroys_webview_for_standalone_host(tmp_path, monkeypatch):
@@ -269,6 +320,7 @@ def test_systemsense_glance_panel_uses_authenticated_summary_surface_only():
     javascript = (webview_app.WEBVIEW_DIR / "app.js").read_text(encoding="utf-8")
     stylesheet = (webview_app.WEBVIEW_DIR / "app.css").read_text(encoding="utf-8")
     comic = (webview_app.WEBVIEW_DIR / "comic-shell.css").read_text(encoding="utf-8")
+    sync = (webview_app.WEBVIEW_DIR / "companion-state-sync.js").read_text(encoding="utf-8")
 
     assert 'id="system-toggle"' in index
     assert 'aria-controls="system-panel"' in index
@@ -282,18 +334,52 @@ def test_systemsense_glance_panel_uses_authenticated_summary_surface_only():
     assert ".panel.is-system-open .composer-wrap" in stylesheet
     assert ".panel.is-system-open .message-stream" in comic
     assert "repeating-linear-gradient" in comic
-    assert "position: absolute" in comic
+    assert "right: calc(100% + var(--systemsense-gap))" in comic
+    assert "repeat-y" in comic
+    assert "repeat-x" not in comic
+    assert "set_systemsense_open" in sync
 
 
-def test_comic_shell_hides_webview_avatar_and_keeps_real_chat_controls():
+def test_comic_shell_has_real_tail_no_outer_rectangular_host_and_consistent_font():
     index = webview_app.INDEX_HTML.read_text(encoding="utf-8")
     comic = (webview_app.WEBVIEW_DIR / "comic-shell.css").read_text(encoding="utf-8")
+    source = Path(webview_app.__file__).read_text(encoding="utf-8")
+
     assert 'href="comic-shell.css"' in index
-    assert ".panel-header > .avatar-canvas" in comic
+    assert "background: transparent !important" in comic
+    assert "border-left: 33px solid var(--comic-ink)" in comic
+    assert "border-left: 28px solid #f4eadc" in comic
+    assert 'transparent=True' in source
+    assert 'shadow=False' in source
+    assert "--comic-font:" in comic
+    assert ".panel button," in comic
+    assert ".panel code," in comic
+    assert ".panel textarea," in comic
+
+
+def test_webview_has_no_visible_or_illustrated_duplicate_avatar():
+    index = webview_app.INDEX_HTML.read_text(encoding="utf-8")
+    comic = (webview_app.WEBVIEW_DIR / "comic-shell.css").read_text(encoding="utf-8")
+
+    assert 'src="illustrated-avatar.js"' not in index
+    assert 'src="companion-state-sync.js"' in index
+    assert 'id="avatar-header" width="1" height="1" aria-hidden="true" hidden' in index
+    assert 'id="avatar-dock" width="1" height="1" aria-hidden="true" hidden' in index
+    assert ".avatar-canvas[hidden]" in comic
+    assert ".illustrated-avatar-layer" in comic
     assert "display: none !important" in comic
     assert 'id="composer-input"' in index
     assert 'id="history-toggle"' in index
     assert 'id="settings-toggle"' in index
+
+
+def test_companion_state_sync_tracks_the_same_dataset_state_as_real_chat():
+    sync = (webview_app.WEBVIEW_DIR / "companion-state-sync.js").read_text(encoding="utf-8")
+    javascript = (webview_app.WEBVIEW_DIR / "app.js").read_text(encoding="utf-8")
+    assert "document.documentElement.dataset.state = next" in javascript
+    assert "document.documentElement.dataset.state" in sync
+    assert "set_companion_state" in sync
+    assert "MutationObserver" in sync
 
 
 def test_webview_can_create_and_select_a_new_conversation():

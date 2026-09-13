@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import queue
 import subprocess
+import threading
 
 from localpilot import native_avatar_companion, webview_app
 
@@ -69,3 +71,59 @@ def test_persistent_avatar_class_overrides_old_handoff_close():
     source = native_avatar_companion.NativeAvatarCompanion.open_chat.__code__.co_names
     assert "_launch_chat" in source
     assert "close" not in source
+
+
+def test_live_chat_presentation_state_drives_the_one_visible_native_avatar():
+    class FakeProcess:
+        def poll(self):
+            return None
+
+    class FakeStateStore:
+        def read(self):
+            return {"companion_state": "speaking"}
+
+    app = native_avatar_companion.NativeAvatarCompanion.__new__(
+        native_avatar_companion.NativeAvatarCompanion
+    )
+    app._events = queue.Queue()
+    app._events.put("working")
+    app._broker_runtime_state = "idle"
+    app._chat_process = FakeProcess()
+    app.state_store = FakeStateStore()
+    app.runtime_state = "idle"
+    app._stop = threading.Event()
+    app._stop.set()
+    app._draw = lambda: None
+
+    app._drain_events()
+
+    assert app._broker_runtime_state == "working"
+    assert app.runtime_state == "speaking"
+
+
+def test_native_avatar_falls_back_to_broker_state_when_chat_is_closed():
+    class FakeProcess:
+        def poll(self):
+            return 0
+
+    class FakeStateStore:
+        def read(self):
+            return {"companion_state": "speaking"}
+
+    app = native_avatar_companion.NativeAvatarCompanion.__new__(
+        native_avatar_companion.NativeAvatarCompanion
+    )
+    app._events = queue.Queue()
+    app._events.put("thinking")
+    app._broker_runtime_state = "idle"
+    app._chat_process = FakeProcess()
+    app.state_store = FakeStateStore()
+    app.runtime_state = "idle"
+    app._stop = threading.Event()
+    app._stop.set()
+    app._draw = lambda: None
+
+    app._drain_events()
+
+    assert app._broker_runtime_state == "thinking"
+    assert app.runtime_state == "thinking"

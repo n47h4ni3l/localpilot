@@ -11,16 +11,16 @@
 <body>
 <div class="app" id="app">
 
-    <!-- Compact companion dock — retained as the frontend state controller's compatibility surface. -->
+    <!-- Hidden legacy state sinks only; the native Astra is the sole visible avatar. -->
     <div class="dock" id="dock" tabindex="0" role="button" aria-label="Open LocalPilot chat">
       <div class="drag-handle pywebview-drag-region" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span></div>
-      <canvas class="avatar-canvas" id="avatar-dock" width="112" height="112" aria-hidden="true"></canvas>
+      <canvas class="avatar-canvas" id="avatar-dock" width="1" height="1" aria-hidden="true" hidden></canvas>
       <div class="preview-line" id="preview-line"></div>
     </div>
 
     <div class="panel" id="panel">
       <header class="panel-header">
-        <canvas class="avatar-canvas" id="avatar-header" width="40" height="40" aria-hidden="true"></canvas>
+        <canvas class="avatar-canvas" id="avatar-header" width="1" height="1" aria-hidden="true" hidden></canvas>
         <div class="header-text">
           <div class="header-title">LocalPilot</div>
           <div class="header-state" id="state-label">Idle</div>
@@ -146,6 +146,6 @@
     <div aria-live="polite" class="sr-only" id="live-region"></div>
   </div>
 <script src="app.js"></script>
-<script src="illustrated-avatar.js"></script>
+<script src="companion-state-sync.js"></script>
 </body>
 </html>

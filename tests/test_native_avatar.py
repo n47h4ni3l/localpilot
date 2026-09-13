@@ -131,6 +131,7 @@ def test_desktop_ui_state_round_trips_avatar_position_and_on_top(tmp_path):
         "avatar_x": -900,
         "avatar_y": 50,
         "always_on_top": False,
+        "companion_state": None,
     }
 
 

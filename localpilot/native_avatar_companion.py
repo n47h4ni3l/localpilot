@@ -4,11 +4,12 @@ from __future__ import annotations
 
 This module keeps the real native Astra avatar alive while the WebView chat is
 open. It deliberately subclasses the production illustrated avatar so there is
-one avatar renderer, one animation state machine, and one persisted desktop
-position. The WebView is only the conversation surface.
+one visible avatar renderer, one animation state machine, and one persisted
+desktop position. The WebView is only the conversation surface.
 """
 
 import os
+import queue
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -100,17 +101,52 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self._chat_process: subprocess.Popen[Any] | None = None
+        self._broker_runtime_state = "restarting"
         super().__init__(*args, **kwargs)
+
+    def _chat_is_alive(self) -> bool:
+        process = self._chat_process
+        return process is not None and process.poll() is None
+
+    def _drain_events(self) -> None:
+        """Merge broker state with the chat's client-local presentation state.
+
+        The broker remains authoritative for runtime/tool/error transitions.
+        While chat is open, its frontend can additionally enter real UI states
+        that the broker does not emit (notably ``listening`` while the composer
+        is focused and ``speaking`` while response text is being revealed).
+        The chat publishes those states through DesktopUIState so the one
+        visible native Astra always matches what the conversation surface says.
+        """
+
+        try:
+            while True:
+                state = self._events.get_nowait()
+                if state in _avatar._STATE_COLORS:
+                    self._broker_runtime_state = state
+        except queue.Empty:
+            pass
+
+        display_state = self._broker_runtime_state
+        if self._chat_is_alive():
+            shared_state = self.state_store.read().get("companion_state")
+            if isinstance(shared_state, str) and shared_state in _avatar._STATE_COLORS:
+                display_state = shared_state
+
+        self.runtime_state = display_state
+        self._draw()
+        if not self._stop.is_set():
+            self.root.after(80, self._drain_events)
 
     def open_chat(self) -> None:
         if self._stop.is_set():
             return
-        if self._chat_process is not None and self._chat_process.poll() is None:
+        if self._chat_is_alive():
             return
 
         self.x, self.y = _avatar._recover_avatar_position(self.x, self.y)
         _avatar._set_window_position(self.root, self.x, self.y)
-        self.state_store.update(avatar_x=self.x, avatar_y=self.y)
+        self.state_store.update(avatar_x=self.x, avatar_y=self.y, companion_state=None)
         chat_x, chat_y = _chat_position_from_avatar(self.x, self.y)
         process = _launch_chat(
             self.project_root,
@@ -120,6 +156,7 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
         )
         if process is None:
             self.runtime_state = "error"
+            self._broker_runtime_state = "error"
             self._draw()
             return
 
@@ -136,6 +173,9 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
             return
         self._chat_process = None
         self._opening_chat = False
+        self.state_store.update(companion_state=None)
+        self.runtime_state = self._broker_runtime_state
+        self._draw()
 
     def close(self) -> None:
         process = self._chat_process
@@ -145,6 +185,7 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
             except OSError:
                 pass
         self._chat_process = None
+        self.state_store.update(companion_state=None)
         super().close()
 
 

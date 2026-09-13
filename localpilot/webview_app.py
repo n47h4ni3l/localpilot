@@ -23,6 +23,7 @@ from localpilot.config import load_config
 from localpilot.desktop import BrokerClient, ensure_broker
 from localpilot.desktop_state import DesktopUIState
 from localpilot.process import hidden_process_creation_flags
+from localpilot.windows_webview import make_host_background_transparent
 
 WEBVIEW_DIR = Path(__file__).resolve().parent / "webview"
 INDEX_HTML = WEBVIEW_DIR / "index.html"
@@ -369,28 +370,11 @@ def _initial_position(
 
 
 def _install_expanded_window_chrome(window: webview.Window) -> None:
-    """Install a drag affordance and close button without remote assets."""
+    """Install only the drag affordance; the real toolbar owns close/collapse."""
     script = r"""
 (() => {
-  const header = document.querySelector('.panel-header');
-  if (!header) return;
   const title = document.querySelector('.header-text');
   if (title) title.classList.add('pywebview-drag-region');
-  if (document.getElementById('close-app-btn')) return;
-  const button = document.createElement('button');
-  button.className = 'icon-btn';
-  button.id = 'close-app-btn';
-  button.type = 'button';
-  button.setAttribute('aria-label', 'Close chat bubble');
-  button.textContent = '×';
-  button.addEventListener('click', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.exit_companion) {
-      window.pywebview.api.exit_companion();
-    }
-  });
-  header.appendChild(button);
 })();
 """
     window.evaluate_js(script)
@@ -452,12 +436,20 @@ def main(
         bridge.open_config_file,
     )
 
+    def on_shown() -> None:
+        make_host_background_transparent(window)
+
     def on_loaded() -> None:
+        # Retry after WebView2 has finished loading as well.  This covers the
+        # small timing window where the native Form exists but the transparent
+        # Chromium child has not finished attaching to it yet.
+        make_host_background_transparent(window)
         window.evaluate_js("document.getElementById('app').classList.add('is-expanded')")
         _install_expanded_window_chrome(window)
         payload = _bridge_payload(client, config_path)
         window.evaluate_js(f"window.__initLocalPilot({json.dumps(payload)})")
 
+    window.events.shown += on_shown
     window.events.loaded += on_loaded
     try:
         window.events.closing += bridge.mark_native_close

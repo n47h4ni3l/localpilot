@@ -90,13 +90,13 @@ def test_native_close_marks_real_exit_until_avatar_was_already_spawned(tmp_path)
     assert second.exit_requested is False
 
 
-def test_expanded_window_chrome_installs_drag_regions_and_close_control():
+def test_expanded_window_chrome_installs_drag_region_without_duplicate_close_control():
     window = FakeWindow()
     webview_app._install_expanded_window_chrome(window)
     script = window.scripts[-1]
     assert "pywebview-drag-region" in script
-    assert "close-app-btn" in script
-    assert "exit_companion" in script
+    assert "close-app-btn" not in script
+    assert "exit_companion" not in script
 
 
 def test_non_windows_tk_position_fallback_preserves_signed_coordinates(monkeypatch):

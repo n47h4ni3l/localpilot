@@ -44,6 +44,13 @@ body {
   flex: 0 0 32px;
 }
 
+/* The real collapse button already closes the chat bubble while leaving Astra
+   alive. Keep the older injected X out of the comic toolbar so there is only
+   one close control visible to the user. */
+#close-app-btn {
+  display: none !important;
+}
+
 /* comic-shell.css deliberately lets the panel overflow so its speech tail can
    exist outside the rounded body. The legacy history sheet used a translated
    off-canvas hiding trick that therefore leaked back into view as the narrow

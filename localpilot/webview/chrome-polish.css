@@ -44,6 +44,44 @@ body {
   flex: 0 0 32px;
 }
 
+/* comic-shell.css deliberately lets the panel overflow so its speech tail can
+   exist outside the rounded body. The legacy history sheet used a translated
+   off-canvas hiding trick that therefore leaked back into view as the narrow
+   cream strip and session dots seen beside the bubble. Hide it semantically
+   while closed, then restore it only when the user actually opens history. */
+.app.is-expanded .history-sheet:not(.is-open) {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.app.is-expanded .history-sheet.is-open {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Rotated comic bubbles can otherwise make the vertical message scroller gain
+   a second horizontal scrollbar. Long code remains horizontally scrollable in
+   its own <pre>; the conversation surface itself never should be. */
+.app.is-expanded .message-stream {
+  overflow-x: hidden;
+}
+
+.app.is-expanded .turn,
+.app.is-expanded .bubble,
+.app.is-expanded .bubble-plain,
+.app.is-expanded .reveal-text {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.app.is-expanded .reveal-text pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 .composer-wrap {
   padding: 15px 16px 16px;
 }

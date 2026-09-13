@@ -3,7 +3,7 @@
 The illustrated Astra avatar is a separate native transparent window. The
 normal desktop path keeps that avatar alive while this module hosts only the
 comic speech-bubble chat. SystemSense remains the same authenticated read-only
-surface and is styled as a separate notepad beside the conversation.
+surface and is presented as a separate notepad to the left of the conversation.
 """
 
 from __future__ import annotations
@@ -29,6 +29,9 @@ INDEX_HTML = WEBVIEW_DIR / "index.html"
 
 EXPANDED_SIZE = (500, 640)
 MIN_SIZE = (420, 520)
+SYSTEMSENSE_WIDTH = 360
+SYSTEMSENSE_GAP = 22
+SYSTEMSENSE_SIZE = (EXPANDED_SIZE[0] + SYSTEMSENSE_WIDTH + SYSTEMSENSE_GAP, EXPANDED_SIZE[1])
 NATIVE_AVATAR_SIZE = 128
 EDGE_INSET = 24
 COMPANION_MODULE = "localpilot.native_avatar_companion"
@@ -189,6 +192,7 @@ class WindowBridge:
         self._avatar_spawned = avatar_external
         self._avatar_external = bool(avatar_external)
         self._exit_requested = False
+        self._systemsense_open = False
 
     @property
     def exit_requested(self) -> bool:
@@ -198,10 +202,23 @@ class WindowBridge:
     def avatar_external(self) -> bool:
         return self._avatar_external
 
+    def _surface_size(self) -> tuple[int, int]:
+        return SYSTEMSENSE_SIZE if self._systemsense_open else EXPANDED_SIZE
+
     def expand(self) -> dict[str, Any]:
-        w, h = EXPANDED_SIZE
+        w, h = self._surface_size()
         self._window.resize(w, h, fix_point=_ANCHOR_BOTTOM_RIGHT)
         return {"ok": True}
+
+    def set_systemsense_open(self, value: bool) -> dict[str, Any]:
+        """Reserve transparent space to the left for the real SystemSense panel."""
+        enabled = bool(value)
+        if enabled == self._systemsense_open:
+            return {"ok": True, "open": enabled}
+        self._systemsense_open = enabled
+        w, h = self._surface_size()
+        self._window.resize(w, h, fix_point=_ANCHOR_BOTTOM_RIGHT)
+        return {"ok": True, "open": enabled}
 
     def _avatar_position(self) -> tuple[int | None, int | None]:
         values = self._state.read()
@@ -415,10 +432,10 @@ def main(
         min_size=MIN_SIZE,
         frameless=True,
         easy_drag=True,
-        shadow=True,
+        shadow=False,
         on_top=bool(ui_state.get("always_on_top", True)),
         background_color="#F8F2E8",
-        transparent=False,
+        transparent=True,
     )
 
     bridge = WindowBridge(window, root, config_path, avatar_external=companion)
@@ -426,6 +443,7 @@ def main(
         bridge.expand,
         bridge.collapse,
         bridge.exit_companion,
+        bridge.set_systemsense_open,
         bridge.set_companion_state,
         bridge.clear_companion_state,
         bridge.set_always_on_top,

@@ -20,6 +20,11 @@ class DesktopUIState:
             "avatar_x": None,
             "avatar_y": None,
             "always_on_top": True,
+            # While the chat surface is open it can publish client-local UI
+            # states such as listening/speaking. The native Astra process is
+            # the only visible avatar and reads this value as an override on
+            # top of the broker event stream.
+            "companion_state": None,
         }
 
     def read(self) -> dict[str, Any]:
@@ -38,6 +43,8 @@ class DesktopUIState:
         if not isinstance(values["avatar_y"], int):
             values["avatar_y"] = None
         values["always_on_top"] = bool(values["always_on_top"])
+        if not isinstance(values["companion_state"], str):
+            values["companion_state"] = None
         return values
 
     def update(self, **changes: Any) -> dict[str, Any]:

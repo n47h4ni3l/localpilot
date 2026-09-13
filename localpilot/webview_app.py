@@ -3,7 +3,7 @@
 The illustrated Astra avatar is a separate native transparent window. The
 normal desktop path keeps that avatar alive while this module hosts only the
 comic speech-bubble chat. SystemSense remains the same authenticated read-only
-surface and is styled as a separate notepad below the conversation.
+surface and is styled as a separate notepad beside the conversation.
 """
 
 from __future__ import annotations
@@ -32,6 +32,24 @@ MIN_SIZE = (420, 520)
 NATIVE_AVATAR_SIZE = 128
 EDGE_INSET = 24
 COMPANION_MODULE = "localpilot.native_avatar_companion"
+
+_COMPANION_STATES = frozenset(
+    {
+        "idle",
+        "listening",
+        "thinking",
+        "researching",
+        "working",
+        "speaking",
+        "success",
+        "uncertain",
+        "error",
+        "learning",
+        "restarting",
+        "sleeping",
+        "offline",
+    }
+)
 
 _ANCHOR_BOTTOM_RIGHT = FixPoint.SOUTH | FixPoint.EAST
 
@@ -209,19 +227,36 @@ class WindowBridge:
             return True
         return False
 
+    def set_companion_state(self, state: str) -> dict[str, Any]:
+        """Publish the real chat UI state to the already-running native Astra."""
+        normalized = str(state or "").strip().lower()
+        if not self._avatar_external:
+            return {"ok": False, "reason": "no-external-avatar"}
+        if normalized not in _COMPANION_STATES:
+            return {"ok": False, "reason": "invalid-state"}
+        self._state.update(companion_state=normalized)
+        return {"ok": True, "state": normalized}
+
+    def clear_companion_state(self) -> dict[str, Any]:
+        self._state.update(companion_state=None)
+        return {"ok": True}
+
     def collapse(self) -> dict[str, Any]:
         if not self._avatar_external and not self.ensure_avatar():
             return {"ok": False, "reason": "native-avatar-launch-failed"}
+        self.clear_companion_state()
         self._window.destroy()
         return {"ok": True}
 
     def exit_companion(self) -> dict[str, Any]:
         """Close this chat surface; an external avatar remains untouched."""
         self._exit_requested = True
+        self.clear_companion_state()
         self._window.destroy()
         return {"ok": True}
 
     def mark_native_close(self, *_args: Any) -> None:
+        self.clear_companion_state()
         if self._avatar_external or not self._avatar_spawned:
             self._exit_requested = True
 
@@ -391,6 +426,8 @@ def main(
         bridge.expand,
         bridge.collapse,
         bridge.exit_companion,
+        bridge.set_companion_state,
+        bridge.clear_companion_state,
         bridge.set_always_on_top,
         bridge.get_start_with_windows,
         bridge.set_start_with_windows,
@@ -412,6 +449,7 @@ def main(
     try:
         webview.start(gui="edgechromium" if os.name == "nt" else None, debug=False)
     finally:
+        bridge.clear_companion_state()
         if not bridge.exit_requested and not bridge.avatar_external:
             bridge.ensure_avatar()
 

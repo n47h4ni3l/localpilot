@@ -1,7 +1,7 @@
 /* Astra companion shell
    The native illustrated avatar remains outside this WebView. This stylesheet
    turns the real chat and SystemSense surfaces into one coherent hand-drawn
-   comic composition without duplicating any conversation or telemetry UI. */
+   comic composition without duplicating conversation or telemetry data. */
 
 :root {
   --comic-paper: #f8f2e8;
@@ -20,7 +20,7 @@
 
 html,
 body {
-  background: var(--comic-paper);
+  background: transparent !important;
   color: var(--comic-ink);
   font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", "Segoe UI", sans-serif;
 }
@@ -28,20 +28,28 @@ body {
 body {
   align-items: flex-start;
   justify-content: flex-start;
-  padding: 12px 14px 14px 12px;
+  box-sizing: border-box;
+  padding: 8px 34px 10px 8px;
+  overflow: hidden;
 }
 
 .app {
   width: 100%;
   height: 100%;
   position: relative;
+  background: transparent;
 }
 
-/* The native avatar is the only visible Astra. The old WebView canvases remain
-   non-presentational compatibility hooks for the existing state controller. */
+/* The native avatar is the only visible Astra. The retained 1px canvases are
+   non-presentational state sinks for the existing chat state controller. */
 .dock,
-.panel-header > .avatar-canvas {
+.panel-header > .avatar-canvas,
+.avatar-canvas[hidden],
+.illustrated-avatar-layer {
   display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 .app:not(.is-expanded) .panel,
@@ -52,8 +60,9 @@ body {
 }
 
 .panel {
-  width: calc(100% - 8px);
-  height: calc(100% - 8px);
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
   background:
     radial-gradient(circle at 18% 12%, rgba(255,255,255,0.68), transparent 30%),
     linear-gradient(180deg, var(--comic-paper) 0%, #f4eadc 100%);
@@ -75,27 +84,34 @@ body {
 .panel::after {
   content: "";
   position: absolute;
+  width: 0;
+  height: 0;
   pointer-events: none;
 }
 
-/* Speech-tail aimed toward Astra, who sits to the right of this window. */
+/* Two nested triangles form a real outlined speech tail aimed at Astra. The
+   host window reserves transparent space to the right, so the tail is never
+   clipped or hidden behind an opaque WebView background. */
 .panel::before {
-  right: -25px;
-  bottom: 34px;
-  width: 38px;
-  height: 38px;
-  background: var(--comic-paper-deep);
-  border-right: 3px solid var(--comic-ink);
-  border-bottom: 3px solid var(--comic-ink);
-  transform: rotate(-36deg) skew(-5deg, -5deg);
-  z-index: -1;
+  right: -31px;
+  bottom: 45px;
+  border-top: 18px solid transparent;
+  border-bottom: 13px solid transparent;
+  border-left: 33px solid var(--comic-ink);
+  transform: rotate(-4deg);
+  transform-origin: left center;
+  z-index: 5;
 }
 
 .panel::after {
-  inset: 7px 9px 9px 7px;
-  border: 1px solid rgba(40,49,63,0.2);
-  border-radius: 30px 34px 31px 35px / 33px 29px 37px 30px;
-  transform: rotate(0.28deg);
+  right: -25px;
+  bottom: 49px;
+  border-top: 14px solid transparent;
+  border-bottom: 10px solid transparent;
+  border-left: 28px solid #f4eadc;
+  transform: rotate(-4deg);
+  transform-origin: left center;
+  z-index: 6;
 }
 
 .panel-header {
@@ -256,8 +272,8 @@ body {
   border-radius: 18px 15px 20px 14px;
 }
 
-/* SystemSense no longer replaces chat. It opens as a separate ruled notepad
-   below the speech bubble while conversation remains visible and usable. */
+/* SystemSense still uses its original integrated placement in this stage; the
+   next layout stage moves the same real panel to the left of the bubble. */
 .panel.is-system-open {
   height: calc(100% - 260px);
   min-height: 360px;

@@ -72,16 +72,20 @@ def test_closed_chat_geometry_matches_comic_shell_and_tail():
     geometry = comic_host_geometry(500, 640)
 
     assert geometry.chat_rect == (8, 8, 466, 630)
-    assert geometry.tail_points == ((464, 566), (499, 585), (464, 600))
+    # Matches comic-shell.css' actual border-box triangle: bottom:45px with
+    # 18px/13px vertical borders, plus a 2px clip bleed for the hand rotation.
+    assert geometry.tail_points == ((464, 552), (497, 570), (464, 587))
     assert geometry.notepad_rect is None
 
 
-def test_systemsense_geometry_is_disjoint_to_left_of_chat():
+def test_systemsense_geometry_keeps_binding_strip_and_gap():
     geometry = comic_host_geometry(882, 640)
 
     assert geometry.chat_rect == (390, 8, 848, 630)
-    assert geometry.notepad_rect == (8, 16, 368, 622)
-    assert geometry.tail_points[1] == (881, 585)
+    # The paper starts at x=8; the native region extends to x=0 so the left-edge
+    # binding holes are not clipped away by the shaped host.
+    assert geometry.notepad_rect == (0, 16, 368, 622)
+    assert geometry.tail_points[1] == (879, 570)
     # The 22px visual gap must remain outside the native window region.
     assert geometry.notepad_rect[2] + 22 == geometry.chat_rect[0]
 
@@ -90,7 +94,7 @@ def test_geometry_scales_to_windows_dpi():
     geometry = comic_host_geometry(750, 960, scale=1.5)
 
     assert geometry.chat_rect == (12, 12, 699, 945)
-    assert geometry.tail_points[1] == (748, 878)
+    assert geometry.tail_points[1] == (746, 855)
     assert geometry.notepad_rect is None
 
 
@@ -162,7 +166,7 @@ def test_resize_hook_rebuilds_region_when_systemsense_opens():
     native.ClientSize = FakeSize(882, 640)
     native.Resize.emit()
 
-    assert applied[-1].notepad_rect == (8, 16, 368, 622)
+    assert applied[-1].notepad_rect == (0, 16, 368, 622)
     assert applied[-1].chat_rect == (390, 8, 848, 630)
 
 

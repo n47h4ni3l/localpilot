@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import struct
 import sys
@@ -29,6 +30,36 @@ def record(identifier: str, prompt: str, split: str) -> dict:
     return row
 
 
+def native_trace(identifier: str = "native-trace", split: str = "train") -> dict:
+    row = record(identifier, "Look up the build, then summarize it.", split)
+    row["metadata"] = {
+        "native_tools": [{
+            "name": "lookup_build",
+            "description": "Read a build result.",
+            "parameters": {
+                "type": "object",
+                "properties": {"build_id": {"type": "string"}},
+                "required": ["build_id"],
+            },
+        }],
+        "native_messages": [
+            {"role": "user", "content": "Look up build 42, then summarize it."},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call-42",
+                    "type": "function",
+                    "function": {"name": "lookup_build", "arguments": '{"build_id":"42"}'},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call-42", "content": '{"status":"green"}'},
+            {"role": "assistant", "content": "Build 42 is green."},
+        ],
+    }
+    return row
+
+
 class TrainAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -40,6 +71,13 @@ class TrainAdapterTests(unittest.TestCase):
         self.dataset = self.root / self.config["data"]["corpus_path"]
         self.rows = [record("example-train", "Diagnose the parsing fault.", "train"), record("example-validation", "Validate the independent correction.", "validation")]
         write_jsonl(self.dataset, self.rows)
+        self.corpus_manifest_path = self.root / self.config["data"]["corpus_manifest"]
+        write_json(self.corpus_manifest_path, {
+            "artifact_type": "external_corpus_manifest", "records": 2,
+            "split_counts": {"train": 1, "validation": 1},
+            "training_example_counts": {"train": 1, "validation": 1, "total": 2},
+            "corpus_sha256": hashlib.sha256(self.dataset.read_bytes()).hexdigest(),
+        })
         self.eval_root = self.root / "fixture-evals"
         write_jsonl(self.eval_root / "test.jsonl", [record("eval-private", "Explain the secret canary policy.", "held_out_eval")])
         self.manifest = build_manifest(self.eval_root)
@@ -53,7 +91,9 @@ class TrainAdapterTests(unittest.TestCase):
         header = json.dumps({"weight": {"dtype": "U8", "shape": [4], "data_offsets": [0, 4]}}).encode()
         (self.snapshot / "model.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + b"1234")
         loaded_config = types.SimpleNamespace(model_type="gpt_oss", quantization_config={"quant_method": "bitsandbytes", "bnb_4bit_quant_type": "nf4", "bnb_4bit_use_double_quant": True})
-        tokenizer = types.SimpleNamespace(apply_chat_template=lambda *args, **kwargs: list(range(20)))
+        tokenizer = types.SimpleNamespace(
+            apply_chat_template=lambda messages, **kwargs: list(range(len(messages) * 10))
+        )
         self.tokenizer_loader = mock.Mock(return_value=tokenizer)
         self.snapshot_loader = mock.Mock(return_value=str(self.snapshot))
         self.lora_loader = mock.Mock()
@@ -79,6 +119,106 @@ class TrainAdapterTests(unittest.TestCase):
     def dry_run(self, **kwargs) -> dict:
         return runner.dry_run(self.config_path, importer=self.importer, **kwargs)
 
+    def test_tracked_config_targets_external_corpus_and_epoch_cadence(self) -> None:
+        self.assertEqual(self.config["data"]["corpus_path"], "training/datasets/external_corpus_v1.jsonl")
+        self.assertEqual(self.config["data"]["corpus_manifest"], "training/manifests/external_corpus_v1_manifest.json")
+        manifest_path = Path(__file__).resolve().parents[1] / "manifests/external_corpus_v1_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        train_examples = manifest["training_example_counts"]["train"]
+        steps_per_epoch = (
+            train_examples + self.config["training"]["effective_batch_size"] - 1
+        ) // self.config["training"]["effective_batch_size"]
+        self.assertEqual(self.config["training"]["estimated_optimizer_steps"], steps_per_epoch * self.config["training"]["epochs"])
+        self.assertEqual(self.config["training"]["validation_steps"], steps_per_epoch)
+        self.assertEqual(self.config["training"]["checkpoint_steps"], steps_per_epoch)
+
+    def test_native_trace_expands_every_assistant_turn_and_preserves_tools(self) -> None:
+        row = native_trace()
+        original = copy.deepcopy(row)
+        examples = runner.expand_training_examples([row])
+        self.assertEqual(row, original)
+        self.assertEqual(len(examples), 2)
+        first, second = examples
+        self.assertEqual(first["source_record_id"], "native-trace")
+        self.assertEqual([first["assistant_turn"], second["assistant_turn"]], [0, 1])
+        self.assertEqual(first["completion"][0]["content"], "")
+        self.assertEqual(
+            first["completion"][0]["tool_calls"][0]["function"]["arguments"],
+            {"build_id": "42"},
+        )
+        self.assertEqual(second["prompt"][-1]["role"], "tool")
+        self.assertEqual(second["completion"], [{"role": "assistant", "content": "Build 42 is green."}])
+        for example in examples:
+            self.assertEqual(example["tools"][0]["type"], "function")
+            self.assertEqual(example["tools"][0]["function"]["name"], "lookup_build")
+
+    def test_xlam_parallel_calls_become_independent_native_targets(self) -> None:
+        row = record("xlam-example", "Book both legs.", "train")
+        row["metadata"] = {
+            "native_tools": [
+                {"name": "book_flight", "description": "Book one leg", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}},
+            ],
+            "native_call_targets": [
+                {"role": "assistant", "content": None, "tool_calls": [{"function": {"name": "book_flight", "arguments": {"city": "SYD"}}}]},
+                {"function": {"name": "book_flight", "arguments": '{"city":"ADL"}'}},
+            ],
+        }
+        examples = runner.expand_training_examples([row])
+        self.assertEqual(len(examples), 2)
+        self.assertEqual(examples[0]["prompt"], examples[1]["prompt"])
+        self.assertEqual(examples[0]["prompt"], [{"role": "user", "content": "Book both legs."}])
+        self.assertNotIn("A verified response.", json.dumps(examples))
+        self.assertEqual(
+            [item["completion"][0]["tool_calls"][0]["function"]["arguments"]["city"] for item in examples],
+            ["SYD", "ADL"],
+        )
+
+    def test_native_expansion_rejects_unsupported_or_unrenderable_calls(self) -> None:
+        for mutation, expected in (
+            (lambda row: row["metadata"]["native_messages"][1]["tool_calls"].append(row["metadata"]["native_messages"][1]["tool_calls"][0]), "exactly one"),
+            (lambda row: row["metadata"].update(native_tools=[]), "absent"),
+            (lambda row: row["metadata"]["native_messages"][2].update(tool_call_id="wrong"), "does not match"),
+            (lambda row: row["metadata"]["native_messages"][2].pop("tool_call_id"), "does not match"),
+            (lambda row: row["metadata"]["native_messages"][2].update(name="wrong_tool"), "name does not match"),
+            (lambda row: row["metadata"]["native_messages"][1].update(thinking="hidden"), "unsupported"),
+        ):
+            with self.subTest(expected=expected):
+                row = native_trace()
+                mutation(row)
+                with self.assertRaisesRegex(RuntimeError, expected):
+                    runner.expand_training_examples([row])
+
+    def test_token_preflight_passes_tools_and_proves_prefix_and_completion(self) -> None:
+        examples = runner.expand_training_examples([native_trace()])
+        calls: list[tuple[list[dict], dict]] = []
+
+        def render(messages: list[dict], **kwargs) -> list[int]:
+            calls.append((messages, kwargs))
+            base = [10, 11, 12]
+            return base if kwargs["add_generation_prompt"] else base + [13, 14]
+
+        counts = runner.validate_tokenized_examples(types.SimpleNamespace(apply_chat_template=render), examples, 32)
+        self.assertEqual(counts, {
+            "total": 10, "maximum": 5, "minimum_completion": 2,
+            "training_examples": 2, "source_records": 1,
+        })
+        self.assertEqual(len(calls), 4)
+        self.assertEqual([call[1]["add_generation_prompt"] for call in calls], [True, False, True, False])
+        self.assertTrue(all(call[1]["truncation"] is False for call in calls))
+        self.assertTrue(all(call[1]["tools"][0]["function"]["name"] == "lookup_build" for call in calls))
+
+    def test_token_preflight_refuses_prefix_drift_empty_target_and_overlength(self) -> None:
+        example = runner.expand_training_examples([record("basic-example", "Do it.", "train")])
+        renderers = (
+            (lambda messages, **kwargs: [1, 2] if kwargs["add_generation_prompt"] else [9, 3], "prefix"),
+            (lambda messages, **kwargs: [1, 2], "empty"),
+            (lambda messages, **kwargs: [1, 2] if kwargs["add_generation_prompt"] else [1, 2, 3, 4], "exceeds"),
+        )
+        for renderer, expected in renderers:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(RuntimeError, expected):
+                    runner.validate_tokenized_examples(types.SimpleNamespace(apply_chat_template=renderer), example, 3)
+
     def test_mocked_target_passes_without_training_or_implicit_download(self) -> None:
         report_path = self.root / "training/reports/custom.json"
         result = self.dry_run(report_path=report_path)
@@ -91,6 +231,8 @@ class TrainAdapterTests(unittest.TestCase):
         self.assertTrue(self.tokenizer_loader.call_args.kwargs["local_files_only"])
         self.lora_loader.assert_called_once()
         self.assertEqual(result["model_evidence"]["token_counts"]["total"], 40)
+        self.assertEqual(result["model_evidence"]["token_counts"]["training_examples"], 2)
+        self.assertEqual(result["model_evidence"]["token_counts"]["minimum_completion"], 10)
 
     def test_missing_or_truncated_weights_fail_even_with_tokenizer(self) -> None:
         (self.snapshot / "model.safetensors").write_bytes(b"truncated")
@@ -132,8 +274,30 @@ class TrainAdapterTests(unittest.TestCase):
         write_jsonl(self.dataset, self.rows[:1])
         self.assertFalse(self.dry_run()["passed"])
 
+    def test_manifest_freezes_expanded_training_example_counts(self) -> None:
+        self.rows[0] = native_trace("example-train", "train")
+        write_jsonl(self.dataset, self.rows)
+        manifest = json.loads(self.corpus_manifest_path.read_text(encoding="utf-8"))
+        manifest["corpus_sha256"] = hashlib.sha256(self.dataset.read_bytes()).hexdigest()
+        write_json(self.corpus_manifest_path, manifest)
+        result = self.dry_run()
+        self.assertFalse(next(item for item in result["checks"] if item["name"] == "dataset_schema_and_splits")["passed"])
+        self.importer.assert_not_called()
+
+    def test_manifest_cannot_omit_expanded_training_example_counts(self) -> None:
+        manifest = json.loads(self.corpus_manifest_path.read_text(encoding="utf-8"))
+        del manifest["training_example_counts"]
+        write_json(self.corpus_manifest_path, manifest)
+        result = self.dry_run()
+        check = next(item for item in result["checks"] if item["name"] == "dataset_schema_and_splits")
+        self.assertFalse(check["passed"])
+        self.assertIn("Expanded training-example counts", str(check["detail"]))
+        self.importer.assert_not_called()
+
     def test_long_tokenized_example_is_refused_instead_of_truncated(self) -> None:
-        self.tokenizer_loader.return_value.apply_chat_template = lambda *args, **kwargs: list(range(1025))
+        self.tokenizer_loader.return_value.apply_chat_template = lambda *args, **kwargs: list(
+            range(1024 if kwargs["add_generation_prompt"] else 1025)
+        )
         self.assertFalse(self.dry_run()["passed"])
 
     def test_changed_backend_version_or_insufficient_ram_blocks(self) -> None:
@@ -186,6 +350,44 @@ class TrainAdapterTests(unittest.TestCase):
         self.assertFalse(runner._safe_output(target)[0])
         with self.assertRaises(RuntimeError):
             runner.main(["--config", str(self.config_path), "--dry-run", "--report", str(self.dataset)])
+
+    def test_execute_training_uses_expanded_native_examples(self) -> None:
+        rows = [native_trace("trace-train", "train"), record("plain-validation", "Check it.", "validation")]
+        saved_model = types.SimpleNamespace(save_pretrained=mock.Mock())
+        rendered_tools: list[list[dict]] = []
+
+        def render(messages: list[dict], **kwargs) -> list[int]:
+            rendered_tools.append(kwargs["tools"])
+            return list(range(5 if kwargs["add_generation_prompt"] else 8))
+
+        saved_tokenizer = types.SimpleNamespace(save_pretrained=mock.Mock(), apply_chat_template=render)
+        fast_language_model = types.SimpleNamespace(
+            from_pretrained=mock.Mock(return_value=(saved_model, saved_tokenizer)),
+            get_peft_model=mock.Mock(return_value=saved_model),
+        )
+        dataset_from_list = mock.Mock(side_effect=lambda values: values)
+        trainer = types.SimpleNamespace(train=mock.Mock())
+        trainer_factory = mock.Mock(return_value=trainer)
+        modules = {
+            "unsloth": types.SimpleNamespace(FastLanguageModel=fast_language_model),
+            "torch": types.SimpleNamespace(bfloat16=object()),
+            "datasets": types.SimpleNamespace(Dataset=types.SimpleNamespace(from_list=dataset_from_list)),
+            "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=trainer_factory),
+        }
+        with mock.patch.dict(sys.modules, modules), mock.patch.object(runner, "load_jsonl", return_value=rows):
+            runner.execute_training(self.config, str(self.snapshot))
+
+        train_dataset = trainer_factory.call_args.kwargs["train_dataset"]
+        validation_dataset = trainer_factory.call_args.kwargs["eval_dataset"]
+        self.assertEqual(len(train_dataset), 2)
+        self.assertEqual(len(validation_dataset), 1)
+        self.assertTrue(all(item["completion_mask"] == [0] * 5 + [1] * 3 for item in train_dataset))
+        self.assertTrue(all(item["input_ids"] == list(range(8)) for item in train_dataset))
+        self.assertEqual([tools[0]["function"]["name"] for tools in rendered_tools[:4]], ["lookup_build"] * 4)
+        self.assertEqual(rendered_tools[-2:], [[], []])
+        trainer.train.assert_called_once_with()
+        saved_model.save_pretrained.assert_called_once()
+        saved_tokenizer.save_pretrained.assert_called_once()
 
     def test_real_training_never_called_when_config_is_proposed(self) -> None:
         report_path = self.root / "training/reports/saved.json"

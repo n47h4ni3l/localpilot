@@ -126,21 +126,9 @@ class SelfDeveloper(_BaseSelfDeveloper):
             status="preserved",
             prior_cycle_id=result.prior_cycle_id,
             retry_cycle_id=result.retry_cycle_id,
-            prior_branch=result.prior_branch,
             branch=result.branch,
-            task_id=result.task_id,
-            reason=result.reason,
-            failure_attribution="framework_policy",
-            candidate_idea_at_fault=False,
-            checkpoint_cleared=False,
-            resume_mode=result.resume_mode,
-            counters_reset=["local_repair_attempts", "write_integrity_failure"],
-            history_preserved=True,
-            prior_pushed=False,
-            prior_pull_request_url=None,
-            prior_pull_request_state="previously_verified",
-            fresh_retry_branch=False,
-            promotion_performed=False,
+            milestone=rebound.milestone,
+            git_state_digest=rebound.git_state_digest,
         )
         return result
 

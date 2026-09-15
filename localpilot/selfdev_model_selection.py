@@ -270,11 +270,6 @@ def _run_inference_guard(stream_guard: Callable[[], None] | None) -> bool:
     try:
         stream_guard()
     except CyclePaused as exc:
-        # The caller's ordinary background gate uses the conservative admission
-        # ceiling (82% by default). Once inference has already been admitted,
-        # that same ceiling would immediately cancel the model it just loaded.
-        # Suppress only a memory-only admission pause; every other pause reason
-        # (foreground activity, idle policy, budget, etc.) still propagates.
         parts = [part.strip().casefold() for part in str(exc).split(";") if part.strip()]
         if not parts or not all(part.startswith("memory ") for part in parts):
             raise
@@ -283,8 +278,6 @@ def _run_inference_guard(stream_guard: Callable[[], None] | None) -> bool:
             memory_percent = float(vm.percent)
             available_gib = float(vm.available) / _GIB
         except Exception:
-            # If the emergency measurement itself is unavailable, fail closed
-            # with the original resource decision.
             raise
         if (
             memory_percent < _INFERENCE_EMERGENCY_MEMORY_PERCENT
@@ -309,20 +302,11 @@ def _unload_ollama_model(model_name: str) -> None:
 
         generate(model=model_name, keep_alive=0)
     except Exception:
-        # Failure to unload is not hidden from the resource governor: the next
-        # stage-boundary check will still see the resident memory and pause.
         pass
 
 
 def _prepare_grounding_finalization(call_kwargs: dict[str, Any]) -> None:
-    """Use the last grounding turn for synthesis instead of another tool call.
-
-    The grounding stage is intentionally capped at four tool rounds. When the
-    first three rounds were spent inspecting files, the fourth model turn must
-    synthesize the strict JSON manifest from evidence already in context;
-    otherwise the caller reaches its round limit with only a sentinel string and
-    the fail-closed grounding parser can never receive a plan.
-    """
+    """Use the last grounding turn for structured synthesis instead of another tool call."""
     tools = call_kwargs.get("tools")
     messages = call_kwargs.get("messages")
     if not tools or not isinstance(messages, list):
@@ -368,6 +352,10 @@ def _prepare_grounding_finalization(call_kwargs: dict[str, Any]) -> None:
     )
     call_kwargs["messages"] = final_messages
     call_kwargs.pop("tools", None)
+    call_kwargs["format"] = "json"
+    options = dict(call_kwargs.get("options") or {})
+    options["temperature"] = 0.0
+    call_kwargs["options"] = options
 
 
 def developer_chat(

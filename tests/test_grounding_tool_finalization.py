@@ -44,11 +44,17 @@ def _grounding_messages(tool_turns: int) -> list[dict]:
 
 def test_grounding_fourth_turn_is_reserved_for_json_synthesis():
     original = _grounding_messages(3)
-    kwargs = {"messages": original, "tools": ["read_project_file"]}
+    kwargs = {
+        "messages": original,
+        "tools": ["read_project_file"],
+        "options": {"temperature": 0.4},
+    }
 
     _prepare_grounding_finalization(kwargs)
 
     assert "tools" not in kwargs
+    assert kwargs["format"] == "json"
+    assert kwargs["options"]["temperature"] == 0.0
     assert kwargs["messages"] is not original
     assert len(original) + 1 == len(kwargs["messages"])
     final = kwargs["messages"][-1]
@@ -63,6 +69,7 @@ def test_grounding_keeps_tools_during_first_three_inspection_turns():
     _prepare_grounding_finalization(kwargs)
 
     assert kwargs["tools"] == ["read_project_file"]
+    assert "format" not in kwargs
 
 
 def test_non_grounding_tool_loops_are_unchanged():
@@ -87,3 +94,4 @@ def test_non_grounding_tool_loops_are_unchanged():
     )
 
     assert captured["tools"] == ["read_project_file"]
+    assert "format" not in captured

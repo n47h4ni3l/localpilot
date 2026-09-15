@@ -72,6 +72,27 @@ def test_grounding_keeps_tools_during_first_three_inspection_turns():
     assert "format" not in kwargs
 
 
+def test_static_repair_fallback_forces_json_without_tool_mutation():
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Return one strict JSON object with summary, reusable_lesson, and a non-empty changes list. "
+                "Each change requires path, complete replacement content, and reason."
+            ),
+        },
+        {"role": "user", "content": "Produce the concrete static-repair plan now."},
+    ]
+    kwargs = {"messages": messages, "options": {"temperature": 0.7}}
+
+    _prepare_grounding_finalization(kwargs)
+
+    assert kwargs["messages"] is messages
+    assert kwargs["format"] == "json"
+    assert kwargs["options"]["temperature"] == 0.0
+    assert "tools" not in kwargs
+
+
 def test_non_grounding_tool_loops_are_unchanged():
     messages = [
         {"role": "system", "content": "You are a research-stage developer."},

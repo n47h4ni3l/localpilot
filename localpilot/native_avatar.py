@@ -241,6 +241,22 @@ def _normalized_state(state: str) -> str:
     return state if state in _REQUIRED_ANIMATION_STATES else "error"
 
 
+def _asset_body_motion_retention(asset: dict[str, Any]) -> float:
+    try:
+        value = float(asset.get("body_motion_retention", _BODY_MOTION_RETENTION))
+    except (TypeError, ValueError):
+        return _BODY_MOTION_RETENTION
+    return max(0.0, min(1.0, value))
+
+
+def _asset_max_stabilization_px(asset: dict[str, Any]) -> float:
+    try:
+        value = float(asset.get("max_stabilization_px", _MAX_STABILIZATION_PX))
+    except (TypeError, ValueError):
+        return _MAX_STABILIZATION_PX
+    return max(0.0, min(32.0, value))
+
+
 def _sheet_cell_box(
     sheet: Image.Image,
     asset: dict[str, Any],
@@ -291,7 +307,7 @@ def _sheet_stabilization_offsets(
 
     reference_x = float(median(anchor[0] for anchor in anchors))
     reference_y = float(median(anchor[1] for anchor in anchors))
-    correction = 1.0 - _BODY_MOTION_RETENTION
+    correction = 1.0 - _asset_body_motion_retention(asset)
     return [
         ((reference_x - anchor_x) * correction, (reference_y - anchor_y) * correction)
         for anchor_x, anchor_y in anchors
@@ -370,8 +386,9 @@ def _crop_sheet_frame(
     output = Image.new("RGBA", (AVATAR_SIZE, AVATAR_SIZE), (0, 0, 0, 0))
     raw_dx = stabilization_offset[0] * scale
     raw_dy = stabilization_offset[1] * scale
-    dx = max(-_MAX_STABILIZATION_PX, min(_MAX_STABILIZATION_PX, raw_dx))
-    dy = max(-_MAX_STABILIZATION_PX, min(_MAX_STABILIZATION_PX, raw_dy))
+    max_stabilization_px = _asset_max_stabilization_px(asset)
+    dx = max(-max_stabilization_px, min(max_stabilization_px, raw_dx))
+    dy = max(-max_stabilization_px, min(max_stabilization_px, raw_dy))
     x = round((AVATAR_SIZE - width) / 2 + dx)
     # Bottom alignment keeps desk/shoulder baselines visually stable across sheets.
     y = round(AVATAR_SIZE - height - 2 + dy)

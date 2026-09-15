@@ -217,6 +217,157 @@ def test_first_user_message_titles_new_conversation_locally(tmp_path):
     assert store.session(session["id"])["title"] == titled
 
 
+def test_manual_rename_persists_even_for_default_title_and_old_databases(tmp_path):
+    path = tmp_path / "chat.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE chat_sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, "
+                           "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        connection.execute("INSERT INTO chat_sessions VALUES ('old', 'Original', 'before', 'before')")
+    store = ChatStore(path)
+    renamed = store.rename_session("old", "  New conversation  ")
+    assert renamed["title"] == "New conversation"
+    assert renamed["updated_at"] == "before"  # Renaming does not reorder history.
+    store.add_message("old", "user", "Do not replace my chosen title")
+    assert ChatStore(path).session("old")["title"] == "New conversation"
+
+
+@pytest.mark.parametrize("title", ["", "  ", "x" * 121, None, 123])
+def test_rename_rejects_invalid_titles_without_changing_history(tmp_path, title):
+    store = ChatStore(tmp_path / "chat.sqlite3")
+    session = store.create_session("Keep this")
+    with pytest.raises(ValueError):
+        store.rename_session(session["id"], title)
+    assert store.session(session["id"])["title"] == "Keep this"
+
+
+def test_delete_removes_only_selected_transcript_and_prevents_late_replay(tmp_path):
+    app = _broker(tmp_path)
+    removed = app.store.create_session("Remove")
+    kept = app.store.create_session("Keep")
+    for session in (removed, kept):
+        message = app.store.add_message(session["id"], "user", session["title"])
+        app._event("message.created", {"message": message}, session_id=session["id"])
+    kept = app.store.session(kept["id"])
+    app.rename_session(removed["id"], "Temporary name")
+    app.delete_session(removed["id"])
+    app._on_runtime_message({"kind": "event", "request_id": "late", "session_id": removed["id"],
+                             "type": "assistant.delta", "payload": {"delta": "must not return"}})
+    reopened = ChatStore(app.store.path)
+    assert reopened.sessions() == [kept]
+    assert reopened.messages(removed["id"]) == []
+    assert reopened.messages(kept["id"])[0]["content"] == "Keep"
+    events = reopened.events_after(0)
+    assert not any(event["session_id"] == removed["id"] for event in events)
+    assert events[-1]["type"] == "session.deleted"
+    with pytest.raises(KeyError):
+        app.delete_session(removed["id"])
+    with pytest.raises(KeyError):
+        app.rename_session(removed["id"], "Missing")
+
+
+def test_broker_session_mutations_are_authenticated_validated_and_block_active_deletion(tmp_path):
+    app = _broker(tmp_path)
+    session = app.store.create_session()
+    server = BrokerHTTPServer(("127.0.0.1", 0), app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    path = "/v1/sessions/" + session["id"]
+
+    def request(method, body=None, *, authorized=True, headers=None, route=path):
+        values = {"Content-Type": "application/json", **(headers or {})}
+        if authorized:
+            values["Authorization"] = f"Bearer {app.token}"
+        connection.request(method, route, json.dumps(body) if body is not None else None, values)
+        response = connection.getresponse()
+        raw = response.read()
+        return response.status, json.loads(raw) if raw else None
+
+    try:
+        for method in ("PATCH", "DELETE"):
+            assert request(method, {"title": "Blocked"}, authorized=False)[0] == 401
+            assert request("OPTIONS", headers={"Origin": "http://127.0.0.1:43123",
+                                              "Access-Control-Request-Method": method})[0] == 204
+            assert request("OPTIONS", headers={"Origin": "https://example.com",
+                                              "Access-Control-Request-Method": method})[0] == 403
+        assert request("PATCH", {"title": "New name 🤖"})[1]["session"]["title"] == "New name 🤖"
+        for body in ({}, {"title": " "}, [], {"title": "x" * 121}):
+            assert request("PATCH", body)[0] == 400
+        assert request("PATCH", {"title": "Missing"}, route="/v1/sessions/missing")[0] == 404
+        result = app.submit(session["id"], "An active test request")
+        assert request("DELETE")[0] == 409
+        assert app.store.session(session["id"])["title"] == "New name 🤖"
+        app._on_runtime_message({"kind": "result", "request_id": result["request_id"],
+                                 "session_id": session["id"], "answer": "Finished"})
+        assert request("DELETE")[0] == 200
+        assert request("GET", route=path + "/messages")[0] == 404
+        assert request("DELETE")[0] == 404
+        assert app.store.sessions() == []
+    finally:
+        connection.close()
+        for pending in app._pending.values():
+            pending["timer"].cancel()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("kind", ["result", "error", "send_failure"])
+def test_delete_serializes_with_final_message_writes(tmp_path, monkeypatch, kind):
+    app = _broker(tmp_path)
+    session = app.store.create_session()
+    request = app.submit(session["id"], "Test") if kind != "send_failure" else None
+    written, release, deleting, deleted = (threading.Event() for _ in range(4))
+    update = app.store.update_message
+    errors = []
+
+    def slow_update(*args, **kwargs):
+        result = update(*args, **kwargs)
+        written.set()
+        assert release.wait(5)
+        return result
+
+    monkeypatch.setattr(app.store, "update_message", slow_update)
+
+    def finish():
+        try:
+            if kind == "send_failure":
+                app.runtime.send = lambda message: (_ for _ in ()).throw(RuntimeError("Unavailable"))
+                with pytest.raises(RuntimeError, match="Unavailable"):
+                    app.submit(session["id"], "Test")
+            else:
+                app._on_runtime_message({"kind": kind, "request_id": request["request_id"],
+                                         "session_id": session["id"], "answer": "Done"})
+        except BaseException as error:
+            errors.append(error)
+
+    def remove():
+        deleting.set()
+        try:
+            app.delete_session(session["id"])
+            deleted.set()
+        except BaseException as error:
+            errors.append(error)
+
+    writer = threading.Thread(target=finish)
+    remover = threading.Thread(target=remove)
+    writer.start()
+    try:
+        assert written.wait(5)
+        remover.start()
+        assert deleting.wait(5)
+        assert not deleted.wait(0.05)
+    finally:
+        release.set()
+        writer.join(timeout=5)
+        if remover.ident is not None:
+            remover.join(timeout=5)
+    assert not errors
+    assert deleted.is_set()
+    assert app.store.sessions() == []
+    assert [event["type"] for event in app.store.events_after(0)] == ["session.deleted"]
+
+
 def test_tk_markdown_renderer_removes_raw_markers_without_executing_html():
     rendered = _markdown_segments(
         "## Status\n- **Stable** runtime\n- **What I have *not* learned**\n"

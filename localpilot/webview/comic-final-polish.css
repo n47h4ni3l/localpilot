@@ -64,8 +64,8 @@ body,
 
 .settings-popover {
   width: 232px;
-  top: 58px;
-  right: 54px;
+  top: calc(var(--toolbar-height, 58px) + 8px);
+  right: 14px;
 }
 
 .settings-popover h4 {

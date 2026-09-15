@@ -12,7 +12,8 @@ def test_comic_shell_owns_expanded_panel_geometry_inside_webview_viewport():
     # still fills the viewport, but the bubble itself now keeps explicit comic
     # geometry with room for its tail.
     assert ".app.is-expanded .panel {\n  width: 100%;" not in chrome
-    assert "--chat-panel-width: 458px;" in comic
+    geometry = (webview_app.WEBVIEW_DIR / "comic-geometry.css").read_text(encoding="utf-8")
+    assert "--chat-panel-width: 458px;" in geometry
     assert "width: var(--chat-panel-width);" in comic
     assert "right: var(--chat-right-inset);" in comic
     assert "top: var(--surface-top-inset);" in comic

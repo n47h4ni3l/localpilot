@@ -23,6 +23,11 @@ from localpilot.config import load_config
 from localpilot.comic_geometry import pixel
 from localpilot.desktop import BrokerClient, ensure_broker
 from localpilot.desktop_state import DesktopUIState
+from localpilot.desktop_update_status import (
+    check_for_updates as check_desktop_updates,
+    current_update_status,
+    set_automatic_updates as set_desktop_automatic_updates,
+)
 from localpilot.process import hidden_process_creation_flags
 from localpilot.windows_webview import make_host_background_transparent
 
@@ -190,7 +195,8 @@ class WindowBridge:
         self._window = window
         self._root = root
         self._config_path = config_path
-        self._state = DesktopUIState(root / load_config(config_path).agent.data_dir)
+        self._config = load_config(config_path)
+        self._state = DesktopUIState(root / self._config.agent.data_dir)
         self._avatar_spawned = avatar_external
         self._avatar_external = bool(avatar_external)
         self._exit_requested = False
@@ -323,6 +329,20 @@ class WindowBridge:
             return {"ok": True, "enabled": value}
         except (OSError, subprocess.SubprocessError) as exc:
             return {"ok": False, "reason": str(exc)}
+
+    def get_update_settings(self) -> dict[str, Any]:
+        return current_update_status(self._root, self._state).as_dict()
+
+    def set_automatic_updates(self, value: bool) -> dict[str, Any]:
+        return set_desktop_automatic_updates(self._root, self._state, bool(value)).as_dict()
+
+    def check_for_updates(self) -> dict[str, Any]:
+        return check_desktop_updates(
+            self._root,
+            self._state,
+            remote=self._config.github.remote,
+            main_branch=self._config.github.main_branch,
+        ).as_dict()
 
     def open_config_file(self) -> dict[str, Any]:
         if not self._config_path:
@@ -459,6 +479,9 @@ def main(
         bridge.set_always_on_top,
         bridge.get_start_with_windows,
         bridge.set_start_with_windows,
+        bridge.get_update_settings,
+        bridge.set_automatic_updates,
+        bridge.check_for_updates,
         bridge.open_config_file,
     )
 

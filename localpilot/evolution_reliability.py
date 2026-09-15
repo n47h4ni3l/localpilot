@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 from localpilot.evolution_orchestrator import (
@@ -55,49 +54,19 @@ class SelfDeveloper(_BaseSelfDeveloper):
             lease.release()
 
     def retry_candidate(self, identifier: str, *, reason: str):
-        """Preserve a valid same-worktree checkpoint across human policy retry."""
+        """Preserve a proven same-branch checkpoint across an authorized retry."""
         try:
             checkpoint = self.checkpoints.load()
         except Exception:
             checkpoint = None
 
         result = super().retry_candidate(identifier, reason=reason)
-        if checkpoint is None:
-            return result
-        if result.branch != result.prior_branch:
-            return result
-        if result.resume_mode != "resume_existing_worktree":
-            return result
-        if checkpoint.branch != result.branch:
-            return result
-        if checkpoint.cycle_id not in {
-            result.prior_cycle_id,
-            result.retry_cycle_id,
-        }:
-            return result
-
-        try:
-            registered = self.github.worktree_for_branch(result.branch)
-            checkpoint_workspace = Path(checkpoint.workspace).resolve()
-            if registered is None or registered.resolve() != checkpoint_workspace:
-                self.audit.write(
-                    "candidate_policy_retry_checkpoint_rebind",
-                    status="skipped",
-                    prior_cycle_id=result.prior_cycle_id,
-                    retry_cycle_id=result.retry_cycle_id,
-                    branch=result.branch,
-                    reason="registered worktree does not match checkpoint workspace",
-                )
-                return result
-        except (OSError, RuntimeError, ValueError) as exc:
-            self.audit.write(
-                "candidate_policy_retry_checkpoint_rebind",
-                status="skipped",
-                prior_cycle_id=result.prior_cycle_id,
-                retry_cycle_id=result.retry_cycle_id,
-                branch=result.branch,
-                error=f"{type(exc).__name__}: {exc}"[:1000],
-            )
+        if (
+            checkpoint is None
+            or result.branch != result.prior_branch
+            or checkpoint.branch != result.branch
+            or checkpoint.cycle_id != result.prior_cycle_id
+        ):
             return result
 
         rebound = checkpoint.rebind_cycle(result.retry_cycle_id)
@@ -181,7 +150,7 @@ class SelfDeveloper(_BaseSelfDeveloper):
         workspace_value = kwargs.get("workspace") or result.workspace
         if not branch or workspace_value is None:
             return result
-        workspace = Path(workspace_value).resolve()
+        workspace = workspace_value.resolve()
         try:
             registered = self.github.worktree_for_branch(branch)
             if registered is None or registered.resolve() != workspace:

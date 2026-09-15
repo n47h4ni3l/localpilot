@@ -1,23 +1,28 @@
 """Ollama model selection and chat helpers for the self-development pipeline.
 
-Extracted verbatim (no logic changes) from selfdev.py: choosing which
-developer model to use under a memory ceiling (select_developer_model,
-select_resource_aware_developer_model, DeveloperModelSelection), reading
-Ollama's own state (available/installed/running_ollama_models,
-ollama_keep_alive_seconds), and driving a chat call with optional
-thinking and preemptible streaming (developer_chat, StreamedChatResponse,
-plus the three small response-parsing statics _content/_calls/_call_parts
-carried over from SelfDeveloper as shims).
+This module owns developer-model selection plus the inference-time streaming
+safety boundary. Background admission remains conservative before a model is
+started; once an admitted inference is running, expected model residency may
+cross that background threshold until a separate emergency memory boundary is
+reached. Foreground-user preemption remains immediate.
 
 Note preserved as-is, not fixed here: installed_ollama_models is typed to
 return dict[str, int | None] but returns a bare set() on its except path.
-Flagging it rather than changing it -- this pass moves code, it doesn't
-change behaviour, even to fix something that looks like a real bug."""
+"""
 
 import asyncio
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
+
+import psutil
+
+from localpilot.selfdev_results import CyclePaused
+
+
+_INFERENCE_EMERGENCY_MEMORY_PERCENT = 94.0
+_INFERENCE_MIN_AVAILABLE_GIB = 2.0
+_GIB = 1024**3
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +199,42 @@ def select_resource_aware_developer_model(
     )
 
 
+def _run_inference_guard(stream_guard: Callable[[], None] | None) -> None:
+    """Preserve owner preemption while separating admission from emergency RAM limits."""
+    if stream_guard is None:
+        return
+    try:
+        stream_guard()
+    except CyclePaused as exc:
+        # The caller's ordinary background gate uses the conservative admission
+        # ceiling (82% by default). Once inference has already been admitted,
+        # that same ceiling would immediately cancel the model it just loaded.
+        # Suppress only a memory-only admission pause; every other pause reason
+        # (foreground activity, idle policy, budget, etc.) still propagates.
+        parts = [part.strip().casefold() for part in str(exc).split(";") if part.strip()]
+        if not parts or not all(part.startswith("memory ") for part in parts):
+            raise
+        try:
+            vm = psutil.virtual_memory()
+            memory_percent = float(vm.percent)
+            available_gib = float(vm.available) / _GIB
+        except Exception:
+            # If the emergency measurement itself is unavailable, fail closed
+            # with the original resource decision.
+            raise
+        if (
+            memory_percent < _INFERENCE_EMERGENCY_MEMORY_PERCENT
+            and available_gib >= _INFERENCE_MIN_AVAILABLE_GIB
+        ):
+            return
+        raise CyclePaused(
+            f"memory emergency during inference: {memory_percent:.1f}% used, "
+            f"{available_gib:.2f} GiB available; hard stop at "
+            f"{_INFERENCE_EMERGENCY_MEMORY_PERCENT:.1f}% or below "
+            f"{_INFERENCE_MIN_AVAILABLE_GIB:.1f} GiB available"
+        ) from exc
+
+
 def developer_chat(
     chat: Callable[..., Any],
     *,
@@ -245,8 +286,7 @@ def developer_chat(
         thinking: list[str] = []
         tool_calls: list[Any] = []
         try:
-            if stream_guard is not None:
-                stream_guard()
+            _run_inference_guard(stream_guard)
             response_stream = await client.chat(**call_kwargs)
             pending_chunk = asyncio.create_task(anext(response_stream))
             while True:
@@ -255,15 +295,13 @@ def developer_chat(
                     timeout=max(0.01, float(guard_poll_seconds)),
                 )
                 if not done:
-                    if stream_guard is not None:
-                        stream_guard()
+                    _run_inference_guard(stream_guard)
                     continue
                 try:
                     chunk = pending_chunk.result()
                 except StopAsyncIteration:
                     break
-                if stream_guard is not None:
-                    stream_guard()
+                _run_inference_guard(stream_guard)
                 add_chunk(chunk, content, thinking, tool_calls)
                 pending_chunk = asyncio.create_task(anext(response_stream))
         except BaseException:
@@ -302,7 +340,7 @@ def developer_chat(
         tool_calls: list[Any] = []
         try:
             for chunk in response_stream:
-                stream_guard()
+                _run_inference_guard(stream_guard)
                 add_chunk(chunk, content, thinking, tool_calls)
         finally:
             close = getattr(response_stream, "close", None)

@@ -3,13 +3,20 @@ from __future__ import annotations
 import json
 
 from localpilot.systemsense import SystemSense
+from localpilot.systemsense_backend import BackendTelemetryCollector
 
 
 class SystemSenseReader:
     """Bounded summary-first access to passive environmental telemetry."""
 
-    def __init__(self, systemsense: SystemSense) -> None:
+    def __init__(
+        self,
+        systemsense: SystemSense,
+        *,
+        backend: BackendTelemetryCollector | None = None,
+    ) -> None:
         self.systemsense = systemsense
+        self.backend = backend or BackendTelemetryCollector()
 
     @staticmethod
     def _render(payload: object) -> str:
@@ -46,7 +53,14 @@ class SystemSenseReader:
         return self._render(self.systemsense.correlations(limit=limit))
 
     def inspect_raw_system_sense(
-        self, category: str = "dynamic", limit: int = 100
+        self,
+        category: str = "dynamic",
+        limit: int = 100,
+        backend_section: str = "overview",
     ) -> str:
-        """Drill into bounded raw dynamic, sensor or inventory telemetry."""
+        """Drill into raw passive data or bounded high-detail backend telemetry."""
+        if str(category).strip().casefold() == "backend":
+            return self._render(
+                self.backend.collect(section=backend_section, limit=limit)
+            )
         return self._render(self.systemsense.raw(category=category, limit=limit))

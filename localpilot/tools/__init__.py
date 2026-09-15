@@ -213,7 +213,7 @@ def registry(
                     ),
                     ToolSpec(
                         "inspect_raw_system_sense",
-                        "Drill into bounded raw dynamic, LibreHardwareMonitor-style sensor, or Windows inventory telemetry when the compact state is insufficient.",
+                        "Drill into bounded raw passive telemetry, or set category=backend and choose backend_section=overview, memory, processes, compute, storage, network, or sensors for deeper OS/hardware diagnostics with source provenance. Use this only when the compact summary is insufficient.",
                         RiskLevel.READ_ONLY,
                         reader.inspect_raw_system_sense,
                     ),

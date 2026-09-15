@@ -45,6 +45,18 @@
     return (sorted[middle - 1] + sorted[middle]) / 2;
   }
 
+  function bodyMotionRetention(asset) {
+    const configured = Number(asset.body_motion_retention);
+    return Number.isFinite(configured) ? clamp01(configured) : BODY_MOTION_RETENTION;
+  }
+
+  function maxStabilizationPx(asset) {
+    const configured = Number(asset.max_stabilization_px);
+    return Number.isFinite(configured)
+      ? Math.max(0, Math.min(32, configured))
+      : MAX_STABILIZATION_PX;
+  }
+
   function normalizeState(state) {
     return REQUIRED_STATES.includes(state) ? state : "error";
   }
@@ -150,7 +162,8 @@
     const height = bottom - top;
     const referenceX = median(trims.map(function (trim) { return trim.anchorX; }));
     const referenceY = median(trims.map(function (trim) { return trim.anchorY; }));
-    const correction = 1 - BODY_MOTION_RETENTION;
+    const correction = 1 - bodyMotionRetention(asset);
+    const stabilizationLimit = maxStabilizationPx(asset);
 
     return cells.map(function (cell, index) {
       const trim = trims[index];
@@ -161,6 +174,7 @@
         height: height,
         stabilizeX: (referenceX - trim.anchorX) * correction,
         stabilizeY: (referenceY - trim.anchorY) * correction,
+        stabilizationLimit: stabilizationLimit,
       };
     });
   }
@@ -180,8 +194,9 @@
     const drawHeight = Math.max(1, sourceRect.height * scale);
     const rawDx = Number(sourceRect.stabilizeX || 0) * scale;
     const rawDy = Number(sourceRect.stabilizeY || 0) * scale;
-    const dx = Math.max(-MAX_STABILIZATION_PX, Math.min(MAX_STABILIZATION_PX, rawDx));
-    const dy = Math.max(-MAX_STABILIZATION_PX, Math.min(MAX_STABILIZATION_PX, rawDy));
+    const maxStabilization = Number(sourceRect.stabilizationLimit || MAX_STABILIZATION_PX);
+    const dx = Math.max(-maxStabilization, Math.min(maxStabilization, rawDx));
+    const dy = Math.max(-maxStabilization, Math.min(maxStabilization, rawDy));
     const x = (width - drawWidth) / 2 + dx;
     const y = height - drawHeight - 2 + dy;
     context.drawImage(

@@ -258,10 +258,15 @@ def select_resource_aware_developer_model(
     )
 
 
-def _run_inference_guard(stream_guard: Callable[[], None] | None) -> None:
-    """Preserve owner preemption while separating admission from emergency RAM limits."""
+def _run_inference_guard(stream_guard: Callable[[], None] | None) -> bool:
+    """Run the active-inference guard and report suppressed admission pressure.
+
+    ``True`` means the ordinary background memory ceiling was exceeded only
+    because an already-admitted model is resident, while the separate
+    inference emergency boundary still has safe headroom.
+    """
     if stream_guard is None:
-        return
+        return False
     try:
         stream_guard()
     except CyclePaused as exc:
@@ -285,13 +290,28 @@ def _run_inference_guard(stream_guard: Callable[[], None] | None) -> None:
             memory_percent < _INFERENCE_EMERGENCY_MEMORY_PERCENT
             and available_gib >= _INFERENCE_MIN_AVAILABLE_GIB
         ):
-            return
+            return True
         raise CyclePaused(
             f"memory emergency during inference: {memory_percent:.1f}% used, "
             f"{available_gib:.2f} GiB available; hard stop at "
             f"{_INFERENCE_EMERGENCY_MEMORY_PERCENT:.1f}% or below "
             f"{_INFERENCE_MIN_AVAILABLE_GIB:.1f} GiB available"
         ) from exc
+    return False
+
+
+def _unload_ollama_model(model_name: str) -> None:
+    """Best-effort unload for a model LocalPilot itself just made resident."""
+    if not model_name:
+        return
+    try:
+        from ollama import generate
+
+        generate(model=model_name, keep_alive=0)
+    except Exception:
+        # Failure to unload is not hidden from the resource governor: the next
+        # stage-boundary check will still see the resident memory and pause.
+        pass
 
 
 def _prepare_grounding_finalization(call_kwargs: dict[str, Any]) -> None:
@@ -363,6 +383,27 @@ def developer_chat(
 ) -> Any:
     """Use thinking when supported and permit prompt cancellation while streaming."""
 
+    model_name = str(kwargs.get("model") or "")
+    manage_residency = (
+        stream_guard is not None
+        and bool(model_name)
+        and keep_alive is not None
+        and ollama_keep_alive_seconds(keep_alive) > 0
+    )
+    model_was_resident = (
+        model_name in running_ollama_models()
+        if manage_residency
+        else False
+    )
+
+    def release_new_model_if_needed(*, pressure_seen: bool, failed: bool) -> None:
+        if (
+            manage_residency
+            and not model_was_resident
+            and (pressure_seen or failed)
+        ):
+            _unload_ollama_model(model_name)
+
     def add_chunk(
         chunk: Any,
         content: list[str],
@@ -400,9 +441,13 @@ def developer_chat(
         content: list[str] = []
         thinking: list[str] = []
         tool_calls: list[Any] = []
+        memory_pressure_seen = False
+        model_started = False
+        failed = False
         try:
-            _run_inference_guard(stream_guard)
+            memory_pressure_seen |= _run_inference_guard(stream_guard)
             response_stream = await client.chat(**call_kwargs)
+            model_started = True
             pending_chunk = asyncio.create_task(anext(response_stream))
             while True:
                 done, _ = await asyncio.wait(
@@ -410,16 +455,17 @@ def developer_chat(
                     timeout=max(0.01, float(guard_poll_seconds)),
                 )
                 if not done:
-                    _run_inference_guard(stream_guard)
+                    memory_pressure_seen |= _run_inference_guard(stream_guard)
                     continue
                 try:
                     chunk = pending_chunk.result()
                 except StopAsyncIteration:
                     break
-                _run_inference_guard(stream_guard)
+                memory_pressure_seen |= _run_inference_guard(stream_guard)
                 add_chunk(chunk, content, thinking, tool_calls)
                 pending_chunk = asyncio.create_task(anext(response_stream))
         except BaseException:
+            failed = model_started
             if pending_chunk is not None and not pending_chunk.done():
                 pending_chunk.cancel()
                 try:
@@ -431,6 +477,10 @@ def developer_chat(
             raise
         finally:
             await client.close()
+            release_new_model_if_needed(
+                pressure_seen=memory_pressure_seen,
+                failed=failed,
+            )
         return merged_response(content, thinking, tool_calls)
 
     def invoke(*, think: bool | str | None) -> Any:
@@ -454,14 +504,23 @@ def developer_chat(
         content: list[str] = []
         thinking: list[str] = []
         tool_calls: list[Any] = []
+        memory_pressure_seen = False
+        failed = False
         try:
             for chunk in response_stream:
-                _run_inference_guard(stream_guard)
+                memory_pressure_seen |= _run_inference_guard(stream_guard)
                 add_chunk(chunk, content, thinking, tool_calls)
+        except BaseException:
+            failed = True
+            raise
         finally:
             close = getattr(response_stream, "close", None)
             if callable(close):
                 close()
+            release_new_model_if_needed(
+                pressure_seen=memory_pressure_seen,
+                failed=failed,
+            )
         return merged_response(content, thinking, tool_calls)
 
     if request_think:

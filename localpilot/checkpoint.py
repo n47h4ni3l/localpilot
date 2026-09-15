@@ -4,15 +4,20 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 
 CHECKPOINT_VERSION = 2
+CHECKPOINT_MAX_BYTES = 512_000
+# Only redact secret-looking labels when they are actually assigning a value.
+# Ordinary engineering prose such as "token budget" or "context tokens" must
+# remain stable across checkpoint save/resume.
 _SENSITIVE = re.compile(
-    r"(?i)(password|passwd|token|secret|api[_-]?key|credential|authorization|bearer)"
+    r"(?i)\b(password|passwd|secret|api[_-]?key|credential|authorization|bearer|"
+    r"access[_-]?token|auth[_-]?token|refresh[_-]?token)\b\s*[:=]"
 )
 _TOKEN_SHAPES = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})")
 _OPAQUE_VALUES = re.compile(
@@ -44,11 +49,30 @@ def _safe_items(values: Iterable[Any], *, count: int = 50, limit: int = 1000) ->
 
 
 def task_fingerprint(task: dict[str, Any]) -> str:
-    """Fingerprint the reviewable task contract without storing source content."""
+    """Fingerprint the complete reviewable evolution contract.
+
+    A checkpoint is safe to resume only while the objective, evidence contract,
+    hypothesis, and measurement plan are unchanged. Repository state is checked
+    separately by the candidate snapshot digest.
+    """
     contract = {
         "id": str(task.get("id") or ""),
         "title": str(task.get("title") or ""),
         "acceptance": list(task.get("acceptance") or []),
+        "evolution_class": str(task.get("evolution_class") or ""),
+        "capability_target": str(task.get("capability_target") or ""),
+        "mission_alignment": str(task.get("mission_alignment") or ""),
+        "current_frontier": str(task.get("current_frontier") or ""),
+        "why_high_leverage": str(task.get("why_high_leverage") or ""),
+        "capability_unlocked": str(task.get("capability_unlocked") or ""),
+        "next_frontier": str(task.get("next_frontier") or ""),
+        "question": str(task.get("question") or ""),
+        "observed_limitation": str(task.get("observed_limitation") or ""),
+        "evidence": list(task.get("evidence") or []),
+        "alternatives": list(task.get("alternatives") or []),
+        "hypothesis": str(task.get("hypothesis") or ""),
+        "evaluation": task.get("evaluation") or {},
+        "expected_complexity": str(task.get("expected_complexity") or ""),
     }
     encoded = json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -129,8 +153,8 @@ class EvolutionCheckpoint:
                 3000,
             ),
             milestone=_safe_text(milestone, 100),
-            files_inspected=_safe_items(files_inspected, count=100, limit=500),
-            files_changed=_safe_items(files_changed, count=100, limit=500),
+            files_inspected=_safe_items(files_inspected, count=500, limit=500),
+            files_changed=_safe_items(files_changed, count=500, limit=500),
             research_findings=_safe_items(research_findings, count=20, limit=2000),
             decisions=_safe_items(decisions, count=20, limit=1000),
             git_head=str(git_head or "")[:100],
@@ -144,6 +168,14 @@ class EvolutionCheckpoint:
             next_action=_safe_text(next_action, 1000),
             reusable_lessons=_safe_items(reusable_lessons, count=20, limit=1000),
         )
+
+    def rebind_cycle(self, cycle_id: int) -> "EvolutionCheckpoint":
+        """Retarget an otherwise unchanged checkpoint to a linked retry cycle.
+
+        The caller must still perform the normal live Git snapshot validation
+        before resuming; this method only updates durable cycle identity.
+        """
+        return replace(self, cycle_id=int(cycle_id), updated_at=_now())
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "EvolutionCheckpoint":
@@ -215,6 +247,10 @@ class CheckpointStore:
 
     def save(self, checkpoint: EvolutionCheckpoint) -> None:
         payload = json.dumps(asdict(checkpoint), ensure_ascii=False, indent=2) + "\n"
+        if len(payload.encode("utf-8")) > CHECKPOINT_MAX_BYTES:
+            raise ValueError(
+                f"Checkpoint exceeds the {CHECKPOINT_MAX_BYTES // 1000} KB durability limit."
+            )
         temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
         temporary.write_text(payload, encoding="utf-8")
         temporary.replace(self.path)
@@ -222,8 +258,10 @@ class CheckpointStore:
     def load(self) -> EvolutionCheckpoint | None:
         if not self.path.exists():
             return None
-        if self.path.stat().st_size > 128_000:
-            raise ValueError("Checkpoint exceeds the 128 KB durability limit.")
+        if self.path.stat().st_size > CHECKPOINT_MAX_BYTES:
+            raise ValueError(
+                f"Checkpoint exceeds the {CHECKPOINT_MAX_BYTES // 1000} KB durability limit."
+            )
         value = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
             raise ValueError("Checkpoint root must be a JSON object.")

@@ -23,6 +23,8 @@ from localpilot.selfdev_results import CyclePaused
 _INFERENCE_EMERGENCY_MEMORY_PERCENT = 94.0
 _INFERENCE_MIN_AVAILABLE_GIB = 2.0
 _GIB = 1024**3
+_GROUNDING_PLANNER_MARKER = "pre-implementation repository-grounding planner"
+_GROUNDING_FINALIZATION_AFTER_TOOL_TURNS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +294,62 @@ def _run_inference_guard(stream_guard: Callable[[], None] | None) -> None:
         ) from exc
 
 
+def _prepare_grounding_finalization(call_kwargs: dict[str, Any]) -> None:
+    """Use the last grounding turn for synthesis instead of another tool call.
+
+    The grounding stage is intentionally capped at four tool rounds. When the
+    first three rounds were spent inspecting files, the fourth model turn must
+    synthesize the strict JSON manifest from evidence already in context;
+    otherwise the caller reaches its round limit with only a sentinel string and
+    the fail-closed grounding parser can never receive a plan.
+    """
+    tools = call_kwargs.get("tools")
+    messages = call_kwargs.get("messages")
+    if not tools or not isinstance(messages, list):
+        return
+
+    system_text = ""
+    for message in messages:
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        if role == "system":
+            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", "")
+            system_text = str(content or "").casefold()
+            break
+    if _GROUNDING_PLANNER_MARKER not in system_text:
+        return
+
+    tool_turns = 0
+    for message in messages:
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        if role != "assistant":
+            continue
+        calls = (
+            message.get("tool_calls")
+            if isinstance(message, dict)
+            else getattr(message, "tool_calls", None)
+        )
+        if calls:
+            tool_turns += 1
+    if tool_turns < _GROUNDING_FINALIZATION_AFTER_TOOL_TURNS:
+        return
+
+    final_messages = list(messages)
+    final_messages.append(
+        {
+            "role": "user",
+            "content": (
+                "Repository inspection budget is exhausted. Do not call any more tools. "
+                "Using only the repository evidence already present in this conversation, "
+                "return the required single strict JSON object now. Use empty lists for "
+                "unsupported claim classes. Do not invent evidence, prose, markdown, or "
+                "hidden reasoning."
+            ),
+        }
+    )
+    call_kwargs["messages"] = final_messages
+    call_kwargs.pop("tools", None)
+
+
 def developer_chat(
     chat: Callable[..., Any],
     *,
@@ -377,6 +435,7 @@ def developer_chat(
 
     def invoke(*, think: bool | str | None) -> Any:
         call_kwargs = dict(kwargs)
+        _prepare_grounding_finalization(call_kwargs)
         if context_tokens is not None:
             options = dict(call_kwargs.get("options") or {})
             options["num_ctx"] = int(context_tokens)

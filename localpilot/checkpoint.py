@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from localpilot.evolution import normalize_evolution_task
+
 
 CHECKPOINT_VERSION = 2
 CHECKPOINT_MAX_BYTES = 512_000
@@ -49,30 +51,31 @@ def _safe_items(values: Iterable[Any], *, count: int = 50, limit: int = 1000) ->
 
 
 def task_fingerprint(task: dict[str, Any]) -> str:
-    """Fingerprint the complete reviewable evolution contract.
+    """Fingerprint the complete normalized, reviewable evolution contract.
 
     A checkpoint is safe to resume only while the objective, evidence contract,
     hypothesis, and measurement plan are unchanged. Repository state is checked
     separately by the candidate snapshot digest.
     """
+    normalized = normalize_evolution_task(task)
     contract = {
-        "id": str(task.get("id") or ""),
-        "title": str(task.get("title") or ""),
-        "acceptance": list(task.get("acceptance") or []),
-        "evolution_class": str(task.get("evolution_class") or ""),
-        "capability_target": str(task.get("capability_target") or ""),
-        "mission_alignment": str(task.get("mission_alignment") or ""),
-        "current_frontier": str(task.get("current_frontier") or ""),
-        "why_high_leverage": str(task.get("why_high_leverage") or ""),
-        "capability_unlocked": str(task.get("capability_unlocked") or ""),
-        "next_frontier": str(task.get("next_frontier") or ""),
-        "question": str(task.get("question") or ""),
-        "observed_limitation": str(task.get("observed_limitation") or ""),
-        "evidence": list(task.get("evidence") or []),
-        "alternatives": list(task.get("alternatives") or []),
-        "hypothesis": str(task.get("hypothesis") or ""),
-        "evaluation": task.get("evaluation") or {},
-        "expected_complexity": str(task.get("expected_complexity") or ""),
+        "id": str(normalized.get("id") or ""),
+        "title": str(normalized.get("title") or ""),
+        "acceptance": list(normalized.get("acceptance") or []),
+        "evolution_class": str(normalized.get("evolution_class") or ""),
+        "capability_target": str(normalized.get("capability_target") or ""),
+        "mission_alignment": str(normalized.get("mission_alignment") or ""),
+        "current_frontier": str(normalized.get("current_frontier") or ""),
+        "why_high_leverage": str(normalized.get("why_high_leverage") or ""),
+        "capability_unlocked": str(normalized.get("capability_unlocked") or ""),
+        "next_frontier": str(normalized.get("next_frontier") or ""),
+        "question": str(normalized.get("question") or ""),
+        "observed_limitation": str(normalized.get("observed_limitation") or ""),
+        "evidence": list(normalized.get("evidence") or []),
+        "alternatives": list(normalized.get("alternatives") or []),
+        "hypothesis": str(normalized.get("hypothesis") or ""),
+        "evaluation": normalized.get("evaluation") or {},
+        "expected_complexity": str(normalized.get("expected_complexity") or ""),
     }
     encoded = json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -135,21 +138,22 @@ class EvolutionCheckpoint:
         next_action: str = "Validate the candidate state and continue the current milestone.",
         reusable_lessons: Iterable[str] = (),
     ) -> "EvolutionCheckpoint":
+        normalized = normalize_evolution_task(task)
         return cls(
             version=CHECKPOINT_VERSION,
             updated_at=_now(),
             cycle_id=int(cycle_id),
-            task_id=_safe_text(task.get("id"), 200),
+            task_id=_safe_text(normalized.get("id"), 200),
             branch=_safe_text(branch, 300),
             workspace=str(Path(workspace).resolve()),
-            objective=_safe_text(task.get("title"), 1000),
-            acceptance_criteria=_safe_items(task.get("acceptance") or (), count=30, limit=1000),
-            task_fingerprint=task_fingerprint(task),
-            evolution_class=_safe_text(task.get("evolution_class") or "repair", 80),
-            capability_target=_safe_text(task.get("capability_target") or task.get("title"), 1000),
-            hypothesis=_safe_text(task.get("hypothesis"), 2000),
+            objective=_safe_text(normalized.get("title"), 1000),
+            acceptance_criteria=_safe_items(normalized.get("acceptance") or (), count=30, limit=1000),
+            task_fingerprint=task_fingerprint(normalized),
+            evolution_class=_safe_text(normalized.get("evolution_class") or "repair", 80),
+            capability_target=_safe_text(normalized.get("capability_target") or normalized.get("title"), 1000),
+            hypothesis=_safe_text(normalized.get("hypothesis"), 2000),
             evaluation_plan=_safe_text(
-                json.dumps(task.get("evaluation") or {}, ensure_ascii=False, sort_keys=True),
+                json.dumps(normalized.get("evaluation") or {}, ensure_ascii=False, sort_keys=True),
                 3000,
             ),
             milestone=_safe_text(milestone, 100),

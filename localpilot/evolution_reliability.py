@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import replace
 from typing import Any
@@ -179,16 +180,73 @@ class SelfDeveloper(_BaseSelfDeveloper):
         )
 
     def _repair_static_failures(self, *args: Any, **kwargs: Any):
-        """Retain structured-repair framework failures outside mutable summary text."""
+        """Preserve repair evidence and the capability-evaluation handoff."""
         result = super()._repair_static_failures(*args, **kwargs)
+        original_final_text = result.final_text
+
+        # A successful static repair returns a small summary/lesson object. In a
+        # resumed candidate that used to replace the pre-existing pending-CI
+        # evaluation handoff, making the capability evidence gate report the
+        # candidate as unmeasured even though the configured measurement plan was
+        # still valid. Restore only the conservative pending-CI contract; never
+        # overwrite an explicit measured/regressed/inconclusive result.
+        task = kwargs.get("task")
+        if result.passed and isinstance(task, dict):
+            try:
+                report = self._evaluation_report(result.final_text, task)
+            except Exception:
+                report = {}
+            if report.get("result") == "unmeasured":
+                evaluation = task.get("evaluation")
+                if isinstance(evaluation, dict):
+                    measurement_artifact = str(
+                        evaluation.get("measurement_method") or ""
+                    ).strip()
+                    if measurement_artifact:
+                        summary, lesson = self._outcome(
+                            result.final_text,
+                            "Preserve the capability evaluation contract across bounded repair.",
+                        )
+                        result = replace(
+                            result,
+                            final_text=json.dumps(
+                                {
+                                    "summary": summary,
+                                    "reusable_lesson": lesson,
+                                    "evaluation_evidence": {
+                                        "metric": str(evaluation.get("metric") or ""),
+                                        "baseline_evidence": str(
+                                            evaluation.get("baseline") or ""
+                                        ),
+                                        "candidate_evidence": (
+                                            "Static repair completed and static checks passed; "
+                                            "capability measurement remains pending the configured "
+                                            "GitHub CI evaluation artifact."
+                                        ),
+                                        "result": "pending_ci",
+                                        "measurement_artifact": measurement_artifact,
+                                    },
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                        self.audit.write(
+                            "selfdev_repair_evaluation_handoff",
+                            cycle_id=int(kwargs.get("cycle_id") or 0),
+                            branch=str(kwargs.get("branch") or ""),
+                            status="preserved",
+                            result="pending_ci",
+                            measurement_artifact=measurement_artifact[:1000],
+                        )
+
         marker = "Structured static repair failed:"
-        if marker not in result.final_text:
+        if marker not in original_final_text:
             return result
 
         cycle_id = kwargs.get("cycle_id")
         if cycle_id is None:
             return result
-        detail = result.final_text[result.final_text.rfind(marker) :].strip()[:3000]
+        detail = original_final_text[original_final_text.rfind(marker) :].strip()[:3000]
         evidence = (
             "Framework policy/orchestration failure: the structured static-repair "
             f"contract failed before a valid repair could be applied. {detail}"

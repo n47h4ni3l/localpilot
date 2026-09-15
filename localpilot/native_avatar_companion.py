@@ -12,13 +12,16 @@ import ctypes
 import os
 import queue
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
 from localpilot import native_avatar as _avatar
+from localpilot.desktop_auto_update import launch_update_if_ready
 from localpilot.webview_app import EXPANDED_SIZE, _desktop_python_executable
 
 CHAT_GAP = 12
+AUTO_UPDATE_POLL_MS = 15_000
 
 
 def _chat_position_from_avatar(
@@ -108,11 +111,48 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self._chat_process: subprocess.Popen[Any] | None = None
         self._broker_runtime_state = "restarting"
+        self._update_thread: threading.Thread | None = None
+        self._update_handoff_started = False
         super().__init__(*args, **kwargs)
+        self.root.after(2_500, self._poll_auto_update)
 
     def _chat_is_alive(self) -> bool:
         process = self._chat_process
         return process is not None and process.poll() is None
+
+    def _poll_auto_update(self) -> None:
+        if self._stop.is_set() or self._update_handoff_started:
+            return
+        thread = self._update_thread
+        if thread is None or not thread.is_alive():
+            def worker() -> None:
+                try:
+                    launched = bool(self.config.github.enabled) and launch_update_if_ready(
+                        self.project_root,
+                        self.state_store,
+                        config_path=self.config_path,
+                        remote=self.config.github.remote,
+                        main_branch=self.config.github.main_branch,
+                        parent_pid=os.getpid(),
+                    )
+                except Exception as exc:
+                    launched = False
+                    self.state_store.update(
+                        update_check_error=(
+                            f"Automatic update check failed: {type(exc).__name__}: {exc}"
+                        )[:1000]
+                    )
+                if launched:
+                    self._update_handoff_started = True
+
+            self._update_thread = threading.Thread(
+                target=worker,
+                name="LocalPilotDesktopAutoUpdate",
+                daemon=True,
+            )
+            self._update_thread.start()
+        if not self._stop.is_set():
+            self.root.after(AUTO_UPDATE_POLL_MS, self._poll_auto_update)
 
     def _drain_events(self) -> None:
         """Merge broker state with the chat's client-local presentation state.
@@ -132,6 +172,12 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
                     self._broker_runtime_state = state
         except queue.Empty:
             pass
+
+        if getattr(self, "_update_handoff_started", False):
+            self.runtime_state = "restarting"
+            self._draw()
+            self.close()
+            return
 
         display_state = self._broker_runtime_state
         if self._chat_is_alive():

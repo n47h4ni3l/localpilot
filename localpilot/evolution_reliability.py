@@ -54,19 +54,16 @@ class SelfDeveloper(_BaseSelfDeveloper):
             lease.release()
 
     def retry_candidate(self, identifier: str, *, reason: str):
-        """Preserve a proven same-branch checkpoint across an authorized retry."""
+        """Preserve a valid checkpoint whenever retry resumes the same worktree."""
         try:
             checkpoint = self.checkpoints.load()
         except Exception:
             checkpoint = None
 
         result = super().retry_candidate(identifier, reason=reason)
-        if (
-            checkpoint is None
-            or result.branch != result.prior_branch
-            or checkpoint.branch != result.branch
-            or checkpoint.cycle_id != result.prior_cycle_id
-        ):
+        if checkpoint is None or result.resume_mode != "resume_existing_worktree":
+            return result
+        if checkpoint.branch != result.branch:
             return result
 
         rebound = checkpoint.rebind_cycle(result.retry_cycle_id)
@@ -92,6 +89,11 @@ class SelfDeveloper(_BaseSelfDeveloper):
                 )
         try:
             self.checkpoints.save(rebound)
+            verified = self.checkpoints.load()
+            if verified is None or verified.cycle_id != result.retry_cycle_id:
+                raise RuntimeError(
+                    "checkpoint rebind did not persist the authorized retry cycle identity"
+                )
         except Exception as exc:
             self.audit.write(
                 "candidate_policy_retry_checkpoint_rebind",
@@ -101,16 +103,19 @@ class SelfDeveloper(_BaseSelfDeveloper):
                 branch=result.branch,
                 error=f"{type(exc).__name__}: {exc}"[:1000],
             )
-        else:
-            self.audit.write(
-                "candidate_policy_retry_checkpoint_rebind",
-                status="preserved",
-                prior_cycle_id=result.prior_cycle_id,
-                retry_cycle_id=result.retry_cycle_id,
-                branch=result.branch,
-                milestone=rebound.milestone,
-                git_state_digest=rebound.git_state_digest,
-            )
+            raise CandidateRetryError(
+                "Retry was authorized, but its same-worktree checkpoint could not be "
+                f"preserved safely: {type(exc).__name__}: {exc}"
+            ) from exc
+        self.audit.write(
+            "candidate_policy_retry_checkpoint_rebind",
+            status="preserved",
+            prior_cycle_id=result.prior_cycle_id,
+            retry_cycle_id=result.retry_cycle_id,
+            branch=result.branch,
+            milestone=rebound.milestone,
+            git_state_digest=rebound.git_state_digest,
+        )
         return result
 
     def _repair_static_failures(self, *args: Any, **kwargs: Any):

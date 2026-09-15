@@ -1,0 +1,114 @@
+{
+  "format_version": 1,
+  "generated_at": "2026-09-09",
+  "source": "Hugging Face immutable repository trees at the pinned revisions",
+  "datasets": {
+    "nemotron_swe_v2": {
+      "repo_id": "nvidia/Nemotron-SFT-SWE-v2",
+      "revision": "bd151f3f2d89c4804dda0083d912bd9f6a0a9fb7",
+      "local_directory": "Nemotron-SFT-SWE-v2",
+      "files": [
+        {"remote_path": "README.md", "local_path": "README.md", "size": 4594, "git_oid": "8ab71473e87b2078030642f706f9970c7a5ed384"},
+        {"remote_path": "data/agentless.jsonl", "local_path": "data/agentless.jsonl", "size": 6733030079, "sha256": "38fac9845361fa754c7a79af90032f2d2bc4b5d3f1236411ab1c2a5750a12fe0"},
+        {"remote_path": "data/swe.jsonl", "local_path": "data/swe.jsonl", "size": 11350621642, "sha256": "e887bd7ff4bd11a187d45af2e46db4847bd982771a6493dbe07d83d915c35bde"}
+      ]
+    },
+    "open_code_instruct": {
+      "repo_id": "nvidia/OpenCodeInstruct",
+      "revision": "8f3ba5bafe4d6e8db46082cf7ae6741bc370604d",
+      "local_directory": "OpenCodeInstruct",
+      "files": [
+        {"remote_path": "README.md", "local_path": "README.md", "size": 4377, "git_oid": "8226aea38e6986a3a243ea161739ed3ad45ac600"},
+        {"remote_path": "data/train-00000-of-00050.parquet", "local_path": "data/train-00000-of-00050.parquet", "size": 133476478, "sha256": "342757e0c6b706c8f68cf0a867ead5c417d0273726453dbcfc934f5c3c6ca891"},
+        {"remote_path": "data/train-00001-of-00050.parquet", "local_path": "data/train-00001-of-00050.parquet", "size": 117050851, "sha256": "2e822b1c8503683ab58aafe9eccbc546925f87bec45ced9b6040a43275e1d1d0"},
+        {"remote_path": "data/train-00002-of-00050.parquet", "local_path": "data/train-00002-of-00050.parquet", "size": 115849397, "sha256": "3fe342d7fb8616f4619a1f9183b71b42d9da3f5e68b9d1ca6d3afd6dbaee5037"},
+        {"remote_path": "data/train-00003-of-00050.parquet", "local_path": "data/train-00003-of-00050.parquet", "size": 118088378, "sha256": "19aed4cc15ea04b3e9d842cb5bed9222fd4b0b84d59a206d4768642a27a82046"},
+        {"remote_path": "data/train-00004-of-00050.parquet", "local_path": "data/train-00004-of-00050.parquet", "size": 118220482, "sha256": "f25821f82620fa5687d914e20c5ced9639618597f8312b2839ab9fabc1ff6916"},
+        {"remote_path": "data/train-00005-of-00050.parquet", "local_path": "data/train-00005-of-00050.parquet", "size": 117103252, "sha256": "c60c3fd7160709a0ac6a3e23ff9d1fe8ff3d8810b1fea12d61741ca6710bd3bd"},
+        {"remote_path": "data/train-00006-of-00050.parquet", "local_path": "data/train-00006-of-00050.parquet", "size": 120968358, "sha256": "0d75dcebe8848f719c1feee7ec73752359a2e22a97596f86928462ea4cf75210"},
+        {"remote_path": "data/train-00007-of-00050.parquet", "local_path": "data/train-00007-of-00050.parquet", "size": 113867035, "sha256": "2839de0d6c4d1691710dbc63f43cd816e7c02a943f8e2c07087bbf5fa26172ce"},
+        {"remote_path": "data/train-00008-of-00050.parquet", "local_path": "data/train-00008-of-00050.parquet", "size": 121029590, "sha256": "068b8d894e8a4c4ac98c50eb47677fa457a316481ca9e9fb35957c8a065cd0e3"},
+        {"remote_path": "data/train-00009-of-00050.parquet", "local_path": "data/train-00009-of-00050.parquet", "size": 127106336, "sha256": "c68c0fd487bdbfffef143ce898cc4af4f1dcae411099917d61484e7e47d331b7"},
+        {"remote_path": "data/train-00010-of-00050.parquet", "local_path": "data/train-00010-of-00050.parquet", "size": 132511783, "sha256": "c887eb84ebc90ff8b16db7f896d5b3386e4f315fea1ee7c97feece19da288ac7"},
+        {"remote_path": "data/train-00011-of-00050.parquet", "local_path": "data/train-00011-of-00050.parquet", "size": 154017621, "sha256": "266733a7eca8c245defc555b21345de524c5a294c557f50919c4e2f0183167d1"},
+        {"remote_path": "data/train-00012-of-00050.parquet", "local_path": "data/train-00012-of-00050.parquet", "size": 141178042, "sha256": "652d565412829057df94cfefe419a009b2b9fff468e7aeafcfadc31573d4985a"},
+        {"remote_path": "data/train-00013-of-00050.parquet", "local_path": "data/train-00013-of-00050.parquet", "size": 147068255, "sha256": "2dc8c89d6577b336fb0393436bd0b7706d2a7c1c1ab3a96358d36fa2c7afc83c"},
+        {"remote_path": "data/train-00014-of-00050.parquet", "local_path": "data/train-00014-of-00050.parquet", "size": 154560043, "sha256": "a2500ad51a54d0e62a96655a7dd468ff52f288ea3a02c7b380ded207d868a776"},
+        {"remote_path": "data/train-00015-of-00050.parquet", "local_path": "data/train-00015-of-00050.parquet", "size": 149728149, "sha256": "7c610eec02f39206a87aa9a897f0b9b5764816d57b9c0a0cba3ab970127162c2"},
+        {"remote_path": "data/train-00016-of-00050.parquet", "local_path": "data/train-00016-of-00050.parquet", "size": 139989167, "sha256": "74b6ec1be10956f97fd19e9066d6740557f85176e023d8578e4b67a25b36d96a"},
+        {"remote_path": "data/train-00017-of-00050.parquet", "local_path": "data/train-00017-of-00050.parquet", "size": 154488894, "sha256": "7bf03f8606c18a93ca5e07b6af252e30de46b5609b2aa60133d8fe78c4c30154"},
+        {"remote_path": "data/train-00018-of-00050.parquet", "local_path": "data/train-00018-of-00050.parquet", "size": 131210694, "sha256": "4fb17d9a99408916ab6acd1d8ad63d7d1c918e4881c715bb6e16f1e1c95d6d04"},
+        {"remote_path": "data/train-00019-of-00050.parquet", "local_path": "data/train-00019-of-00050.parquet", "size": 138179442, "sha256": "a524fd4e65679b2f63c72cf34d34d0b9fde602cb91e47f30aa4cce20440d2120"},
+        {"remote_path": "data/train-00020-of-00050.parquet", "local_path": "data/train-00020-of-00050.parquet", "size": 153999706, "sha256": "c00b39b733ea7ae0141b7402b5e4c78645ceb72fe5479a5e669df20e0d74f992"},
+        {"remote_path": "data/train-00021-of-00050.parquet", "local_path": "data/train-00021-of-00050.parquet", "size": 149873743, "sha256": "87834c5f7e71d161a2c8478add66ee72682791d5741a21bdf67031244f823d5f"},
+        {"remote_path": "data/train-00022-of-00050.parquet", "local_path": "data/train-00022-of-00050.parquet", "size": 145842408, "sha256": "b455bbb48193d0d05c59d1389c32e1d944ac454624f6716111968f1690c0886e"},
+        {"remote_path": "data/train-00023-of-00050.parquet", "local_path": "data/train-00023-of-00050.parquet", "size": 154577297, "sha256": "5ce7d1297f3e970b94209e2c7c997336cb39a6599fc14c7dda4d38f2fc14aa50"},
+        {"remote_path": "data/train-00024-of-00050.parquet", "local_path": "data/train-00024-of-00050.parquet", "size": 150058021, "sha256": "5a7d6cee09d56a30fdb6629d6e2ef4ad5f24d2e19c07c8ecb4d8e9e1df106c0a"},
+        {"remote_path": "data/train-00025-of-00050.parquet", "local_path": "data/train-00025-of-00050.parquet", "size": 145021888, "sha256": "e24337755630b41911f8303882c52aa46dfec3a499616110d38e5b34825d7a37"},
+        {"remote_path": "data/train-00026-of-00050.parquet", "local_path": "data/train-00026-of-00050.parquet", "size": 149860137, "sha256": "d4be4c94965f09ede41a91154240bf495a0508247bbc57b9186a072858de3e1b"},
+        {"remote_path": "data/train-00027-of-00050.parquet", "local_path": "data/train-00027-of-00050.parquet", "size": 145240836, "sha256": "7f8987c9f00ff21c87bf50503c82152f2fd17684f7a42fd83632373ae395c691"},
+        {"remote_path": "data/train-00028-of-00050.parquet", "local_path": "data/train-00028-of-00050.parquet", "size": 153829646, "sha256": "a454c4dbaaada41a018398c3b831bf5395b4e29a20f6c966cce4134258eb310c"},
+        {"remote_path": "data/train-00029-of-00050.parquet", "local_path": "data/train-00029-of-00050.parquet", "size": 146291069, "sha256": "e50ae799468e3b41cb180155f70ce21ad6fcbdd6081c67cd1f97cc1aaf2bfa1a"},
+        {"remote_path": "data/train-00030-of-00050.parquet", "local_path": "data/train-00030-of-00050.parquet", "size": 144841412, "sha256": "1905b83021f20f14acd93a294a363c79e2e8ba67fd619401cafebfb30c03019d"},
+        {"remote_path": "data/train-00031-of-00050.parquet", "local_path": "data/train-00031-of-00050.parquet", "size": 151902635, "sha256": "af0e8dbea0889b57651e9f7ac15e74ceee39cb8c33cbcaacfd443443ba26993c"},
+        {"remote_path": "data/train-00032-of-00050.parquet", "local_path": "data/train-00032-of-00050.parquet", "size": 148967375, "sha256": "7d6119262412a27bd035f2ae1d51d9fec1e8e761ebf08b7f2bc7739bb8f15770"},
+        {"remote_path": "data/train-00033-of-00050.parquet", "local_path": "data/train-00033-of-00050.parquet", "size": 139833160, "sha256": "98a8b473a6dc7db7cb9c4d741c1789504b9935885876f30ada09729d562b6409"},
+        {"remote_path": "data/train-00034-of-00050.parquet", "local_path": "data/train-00034-of-00050.parquet", "size": 146366734, "sha256": "e5c14f8ba1667e4ac1e84bd4f44ac89a34a5cbd74e64bfa34824925cba7d40aa"},
+        {"remote_path": "data/train-00035-of-00050.parquet", "local_path": "data/train-00035-of-00050.parquet", "size": 141915562, "sha256": "14a94932c6a0a7560cbe1e4907e0185292f9aef290869c1fad4785ce38531178"},
+        {"remote_path": "data/train-00036-of-00050.parquet", "local_path": "data/train-00036-of-00050.parquet", "size": 131648445, "sha256": "64aa8064fc1edaa22f3af1e8e7673675077593d81aa5604672e0c370bdc41d1d"},
+        {"remote_path": "data/train-00037-of-00050.parquet", "local_path": "data/train-00037-of-00050.parquet", "size": 135082977, "sha256": "730911f03f629bc86192408ae0f2be2a772c0d81b63a4295b77ae52038358f0b"},
+        {"remote_path": "data/train-00038-of-00050.parquet", "local_path": "data/train-00038-of-00050.parquet", "size": 127552271, "sha256": "efbcaa6c2c8384931152302434fa23eca74fd43f048669c9ace6bc05ef11e076"},
+        {"remote_path": "data/train-00039-of-00050.parquet", "local_path": "data/train-00039-of-00050.parquet", "size": 150642060, "sha256": "8eabd81ca844e583ab9bfbff14abac78457b03d873cc595f19883bf0c1ddf22e"},
+        {"remote_path": "data/train-00040-of-00050.parquet", "local_path": "data/train-00040-of-00050.parquet", "size": 138595850, "sha256": "e8b0d00ad0f20494c9d390face2e5dad7e34412479e501ef770ceb0a4e3c07e4"},
+        {"remote_path": "data/train-00041-of-00050.parquet", "local_path": "data/train-00041-of-00050.parquet", "size": 127448792, "sha256": "3fd29aca423b326062ba0408c5aeb6f9698ed63876a707dc4ecc85ce789b0a6b"},
+        {"remote_path": "data/train-00042-of-00050.parquet", "local_path": "data/train-00042-of-00050.parquet", "size": 131590828, "sha256": "ddd46d5c10495eb1ef526e9a41cb8ac0aead98962ee49cde82a3d7d32fa8c91d"},
+        {"remote_path": "data/train-00043-of-00050.parquet", "local_path": "data/train-00043-of-00050.parquet", "size": 127362865, "sha256": "5070283c602d44e73a1fc79df6030d6476f3e403cba2b1159d32f6d89943cd79"},
+        {"remote_path": "data/train-00044-of-00050.parquet", "local_path": "data/train-00044-of-00050.parquet", "size": 127388210, "sha256": "2dc859fce71fe1387dee5c6d3c0b5ed32ac33fde4434dafa0cb59b859ade26ae"},
+        {"remote_path": "data/train-00045-of-00050.parquet", "local_path": "data/train-00045-of-00050.parquet", "size": 127527968, "sha256": "cd4f543fcfeb59bfa9e8c8e36c56923741c995ad14f0995c4f70e9e8c3fc2e01"},
+        {"remote_path": "data/train-00046-of-00050.parquet", "local_path": "data/train-00046-of-00050.parquet", "size": 131222516, "sha256": "16d45b54b84d11bd4061ab7f370927924813f8636077c6c6fe51f65c5081745b"},
+        {"remote_path": "data/train-00047-of-00050.parquet", "local_path": "data/train-00047-of-00050.parquet", "size": 127413481, "sha256": "ad78ddbba73c0baa3d741bb4873d88bcb5436469f000220b035993407fed1de2"},
+        {"remote_path": "data/train-00048-of-00050.parquet", "local_path": "data/train-00048-of-00050.parquet", "size": 124941534, "sha256": "7bf00bcdd1ab112a696548a22822b6c69bbff73c19b283dc25a982c1430ecca1"},
+        {"remote_path": "data/train-00049-of-00050.parquet", "local_path": "data/train-00049-of-00050.parquet", "size": 138581429, "sha256": "d425ca224e5bff98455c9539b06e9162ae51b5656cc78a64889caa43c95560d9"}
+      ]
+    },
+    "nemotron_agentic_v2": {
+      "repo_id": "nvidia/Nemotron-SFT-Agentic-v2",
+      "revision": "7c804833427f633ccd53b582dbf02525fd680f78",
+      "local_directory": "Nemotron-SFT-Agentic-v2",
+      "files": [
+        {"remote_path": "README.md", "local_path": "README.md", "size": 4916, "git_oid": "6b6d634696109320f8d6ad49c7f8c812d733b527"},
+        {"remote_path": "data/search.jsonl", "local_path": "data/search.jsonl", "size": 597823415, "sha256": "28b81077f82ecb1060d4433c102eaf08358b7ad39213dd96411a9506ebebd287"},
+        {"remote_path": "data/tool_calling.jsonl", "local_path": "data/tool_calling.jsonl", "size": 14941561688, "sha256": "1a7a7d494a792d3ded4563107682fd68c358f501907698289d19f94ad6d1d3f9"}
+      ]
+    },
+    "xlam_60k": {
+      "repo_id": "Salesforce/xlam-function-calling-60k",
+      "revision": "26d14ebfe18b1f7b524bd39b404b50af5dc97866",
+      "local_directory": "xlam-function-calling-60k",
+      "files": [
+        {"remote_path": "README.md", "local_path": "README.md", "size": 10702, "git_oid": "5056bc036ecf9c5d01a07a5ea72f6675e7a37ce8"},
+        {"remote_path": "xlam_function_calling_60k.json", "local_path": "xlam_function_calling_60k.json", "size": 96116570, "sha256": "4ef5c6f0dc552f2231f93f5853a9ef431e9e806d7aa514d0f6b615606ce576c6"}
+      ]
+    },
+    "codeact_instruct": {
+      "repo_id": "neulab/agent-data-collection",
+      "revision": "68744540161f136acacb2aca1d54bdaee7b00e24",
+      "local_directory": "CodeActInstruct",
+      "files": [
+        {"remote_path": "codeactinstruct/full_std.jsonl", "local_path": "full_std.jsonl", "size": 29780924, "sha256": "95d2ab18c02f806af5069d7090e191dd5b252033898f8fbaabfa36e2a2fd7040"},
+        {"remote_path": "codeactinstruct/README.md", "local_path": "README.md", "size": 1387, "git_oid": "875f715e9e830f7180eaf01236194e9187bce7e0"},
+        {"remote_path": "codeactinstruct/LICENSE", "local_path": "LICENSE", "size": 11356, "git_oid": "f49a4e16e68b128803cc2dcea614603632b04eac"}
+      ]
+    },
+    "swe_care": {
+      "repo_id": "inclusionAI/SWE-CARE",
+      "revision": "3b3a625ef26bd497a3a13485c0dc9ece537f24d0",
+      "local_directory": "SWE-CARE",
+      "files": [
+        {"remote_path": "README.md", "local_path": "README.md", "size": 9225, "git_oid": "bbcf90562e8ef135a9f0f456c86d26138cade28b"},
+        {"remote_path": "data/dev-00000-of-00001.parquet", "local_path": "dev-00000-of-00001.parquet", "size": 125079708, "sha256": "39bcd8ff2f833e5aae381a26d110f52999d1ac60a7715c0d5604e19b558f5e18"}
+      ],
+      "permanently_excluded": ["data/test-00000-of-00001.parquet"]
+    }
+  }
+}

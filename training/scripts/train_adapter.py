@@ -9,6 +9,8 @@ estimate until a separately authorized training run measures its actual peak.
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import importlib
 import json
 import math
@@ -40,6 +42,300 @@ REQUIRED_IMPORTS = (
 )
 CONFIRMATION = "TRAIN_LOCALPILOT_ADAPTER_V1"
 TARGET_MODULES = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+
+
+def _native_tool(tool: Any, *, record_id: str) -> dict[str, Any]:
+    """Return one tool in the OpenAI shape expected by the gpt-oss template."""
+    if not isinstance(tool, dict):
+        raise RuntimeError(f"{record_id}: native tool must be an object")
+    function = tool.get("function", tool)
+    if not isinstance(function, dict) or not isinstance(function.get("name"), str) or not function["name"].strip():
+        raise RuntimeError(f"{record_id}: native tool requires a function name")
+    parameters = function.get("parameters", {"type": "object", "properties": {}})
+    if not isinstance(parameters, dict):
+        raise RuntimeError(f"{record_id}: native tool parameters must be an object")
+    normalized_function = copy.deepcopy(function)
+    normalized_function["name"] = function["name"].strip()
+    normalized_function["description"] = str(function.get("description", ""))
+    normalized_function["parameters"] = copy.deepcopy(parameters)
+    return {"type": "function", "function": normalized_function}
+
+
+def _native_call(call: Any, *, record_id: str) -> dict[str, Any]:
+    """Normalize a native call without retaining provider-specific hidden fields."""
+    if not isinstance(call, dict):
+        raise RuntimeError(f"{record_id}: native tool call must be an object")
+    function = call.get("function", call)
+    if not isinstance(function, dict) or not isinstance(function.get("name"), str) or not function["name"].strip():
+        raise RuntimeError(f"{record_id}: native tool call requires a function name")
+    arguments = function.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except ValueError as exc:
+            raise RuntimeError(f"{record_id}: native tool-call arguments are not valid JSON") from exc
+    if not isinstance(arguments, dict):
+        raise RuntimeError(f"{record_id}: native tool-call arguments must be an object")
+    normalized: dict[str, Any] = {
+        "type": "function",
+        "function": {"name": function["name"].strip(), "arguments": copy.deepcopy(arguments)},
+    }
+    if isinstance(call.get("id"), str) and call["id"].strip():
+        normalized["id"] = call["id"].strip()
+    return normalized
+
+
+def _native_message(message: Any, *, record_id: str) -> dict[str, Any]:
+    if not isinstance(message, dict) or message.get("role") not in {"system", "user", "assistant", "tool"}:
+        raise RuntimeError(f"{record_id}: malformed native message")
+    unknown = set(message) - {"role", "content", "name", "tool_call_id", "tool_calls"}
+    if unknown:
+        raise RuntimeError(f"{record_id}: unsupported native message fields: {', '.join(sorted(unknown))}")
+    role = message["role"]
+    content = message.get("content", "")
+    # The pinned gpt-oss template checks membership in assistant content and cannot
+    # consume None, even though None is conventional in OpenAI tool-call messages.
+    if content is None and role == "assistant" and message.get("tool_calls"):
+        content = ""
+    if not isinstance(content, str):
+        raise RuntimeError(f"{record_id}: native message content must be text")
+    normalized: dict[str, Any] = {"role": role, "content": content}
+    for key in ("name", "tool_call_id"):
+        if key in message:
+            if not isinstance(message[key], str) or not message[key].strip():
+                raise RuntimeError(f"{record_id}: native message {key} must be nonempty text")
+            normalized[key] = message[key].strip()
+    calls = message.get("tool_calls")
+    if calls is not None:
+        if role != "assistant" or not isinstance(calls, list) or len(calls) != 1:
+            raise RuntimeError(f"{record_id}: gpt-oss requires exactly one tool call per assistant message")
+        normalized["tool_calls"] = [_native_call(calls[0], record_id=record_id)]
+    if role == "assistant":
+        if not content.strip() and "tool_calls" not in normalized:
+            raise RuntimeError(f"{record_id}: assistant training target is empty")
+    elif not content.strip():
+        raise RuntimeError(f"{record_id}: native {role} message content is empty")
+    return normalized
+
+
+def _target_message(target: Any, *, record_id: str) -> dict[str, Any]:
+    """Accept the canonical assistant-message target and legacy bare call shape."""
+    if isinstance(target, dict) and target.get("role") == "assistant":
+        return _native_message(target, record_id=record_id)
+    if isinstance(target, dict) and "tool_calls" in target:
+        return _native_message({"role": "assistant", "content": target.get("content", ""), "tool_calls": target["tool_calls"]}, record_id=record_id)
+    return _native_message({"role": "assistant", "content": "", "tool_calls": [target]}, record_id=record_id)
+
+
+def _validate_native_sequence(messages: list[dict[str, Any]], *, record_id: str, require_resolved_call: bool) -> None:
+    outstanding_id: str | None = None
+    outstanding_name: str | None = None
+    outstanding = False
+    seen_ids: set[str] = set()
+    for message in messages:
+        if message["role"] == "assistant":
+            if outstanding:
+                raise RuntimeError(f"{record_id}: assistant message appears before the outstanding tool result")
+            calls = message.get("tool_calls", [])
+            if calls:
+                outstanding = True
+                outstanding_id = calls[0].get("id")
+                outstanding_name = calls[0]["function"]["name"]
+                if outstanding_id:
+                    if outstanding_id in seen_ids:
+                        raise RuntimeError(f"{record_id}: native tool-call ids must be unique")
+                    seen_ids.add(outstanding_id)
+        elif message["role"] == "tool":
+            if not outstanding:
+                raise RuntimeError(f"{record_id}: tool result has no preceding native tool call")
+            result_id = message.get("tool_call_id")
+            if outstanding_id and result_id != outstanding_id:
+                raise RuntimeError(f"{record_id}: tool result id does not match its native tool call")
+            result_name = message.get("name")
+            if result_name and outstanding_name and result_name != outstanding_name:
+                raise RuntimeError(f"{record_id}: tool result name does not match its native tool call")
+            outstanding = False
+            outstanding_id = None
+            outstanding_name = None
+        elif outstanding:
+            raise RuntimeError(f"{record_id}: native tool call is not followed by its tool result")
+    if outstanding and require_resolved_call:
+        raise RuntimeError(f"{record_id}: native tool call is missing its tool result")
+
+
+def expand_training_examples(rows: Sequence[dict[str, Any]], split: str | None = None) -> list[dict[str, Any]]:
+    """Expand records into one prompt/completion example per assistant target.
+
+    Native agent traces retain structured calls/results and their tool schemas. xLAM
+    parallel calls are represented as independent single-call targets because the
+    pinned gpt-oss template deliberately supports at most one call per message.
+    """
+    expanded: list[dict[str, Any]] = []
+    for row in rows:
+        if split is not None and row.get("split") != split:
+            continue
+        record_id = row.get("id")
+        if not isinstance(record_id, str) or not record_id:
+            raise RuntimeError("Training record requires a nonempty id")
+        metadata = row.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise RuntimeError(f"{record_id}: metadata must be an object")
+
+        native_tools_value = metadata.get("native_tools")
+        if "native_tools" in metadata and not isinstance(native_tools_value, list):
+            raise RuntimeError(f"{record_id}: native_tools must be a list")
+        tools = [_native_tool(tool, record_id=record_id) for tool in (native_tools_value or [])]
+        tool_names = {tool["function"]["name"] for tool in tools}
+        if len(tool_names) != len(tools):
+            raise RuntimeError(f"{record_id}: native tool names must be unique")
+
+        native_messages_value = metadata.get("native_messages")
+        if "native_messages" in metadata:
+            if not isinstance(native_messages_value, list) or not native_messages_value:
+                raise RuntimeError(f"{record_id}: native_messages must be a nonempty list")
+            messages = [_native_message(message, record_id=record_id) for message in native_messages_value]
+        else:
+            value = row.get("messages")
+            if not isinstance(value, list) or not value:
+                raise RuntimeError(f"{record_id}: messages must be a nonempty list")
+            messages = [_native_message(message, record_id=record_id) for message in value]
+
+        message_call_names = {
+            call["function"]["name"]
+            for message in messages
+            for call in message.get("tool_calls", [])
+        }
+        if not message_call_names.issubset(tool_names):
+            raise RuntimeError(f"{record_id}: native message calls a tool absent from native_tools")
+
+        call_targets = metadata.get("native_call_targets")
+        _validate_native_sequence(
+            messages,
+            record_id=record_id,
+            require_resolved_call="native_messages" in metadata and "native_call_targets" not in metadata,
+        )
+        if "native_call_targets" in metadata:
+            if not isinstance(call_targets, list) or not call_targets:
+                raise RuntimeError(f"{record_id}: native_call_targets must be a nonempty list")
+            first_assistant = next((index for index, message in enumerate(messages) if message["role"] == "assistant"), len(messages))
+            prompt = messages[:first_assistant]
+            if not prompt or not any(message["role"] == "user" for message in prompt):
+                raise RuntimeError(f"{record_id}: native call targets require a user prompt")
+            for turn, target in enumerate(call_targets):
+                completion = _target_message(target, record_id=record_id)
+                called_name = completion["tool_calls"][0]["function"]["name"]
+                if called_name not in tool_names:
+                    raise RuntimeError(f"{record_id}: native call target names a tool absent from native_tools")
+                example: dict[str, Any] = {
+                    "prompt": copy.deepcopy(prompt),
+                    "completion": [completion],
+                    "tools": copy.deepcopy(tools),
+                    "source_record_id": record_id,
+                    "assistant_turn": turn,
+                }
+                expanded.append(example)
+            continue
+
+        assistant_turn = 0
+        for index, message in enumerate(messages):
+            if message["role"] != "assistant":
+                continue
+            prompt = messages[:index]
+            if not prompt or not any(item["role"] == "user" for item in prompt):
+                raise RuntimeError(f"{record_id}: assistant target has no preceding user prompt")
+            example = {
+                "prompt": copy.deepcopy(prompt),
+                "completion": [copy.deepcopy(message)],
+                "tools": copy.deepcopy(tools),
+                "source_record_id": record_id,
+                "assistant_turn": assistant_turn,
+            }
+            expanded.append(example)
+            assistant_turn += 1
+        if assistant_turn == 0:
+            raise RuntimeError(f"{record_id}: no assistant training targets")
+    if not expanded:
+        raise RuntimeError("No assistant training examples were produced")
+    return expanded
+
+
+def _template_tokens(tokenizer: Any, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None, add_generation_prompt: bool) -> list[int]:
+    kwargs: dict[str, Any] = {
+        "tokenize": True,
+        "add_generation_prompt": add_generation_prompt,
+        "truncation": False,
+    }
+    if tools is not None:
+        kwargs["tools"] = tools
+    tokens = tokenizer.apply_chat_template(messages, **kwargs)
+    if hasattr(tokens, "tolist"):
+        tokens = tokens.tolist()
+    if not isinstance(tokens, list) or (tokens and not isinstance(tokens[0], int)):
+        raise RuntimeError("Tokenizer returned an unexpected token structure")
+    return tokens
+
+
+def _tokenized_example(tokenizer: Any, example: dict[str, Any], max_sequence_length: int) -> tuple[list[int], int]:
+    tools = example.get("tools")
+    prompt = _template_tokens(tokenizer, example["prompt"], tools=tools, add_generation_prompt=True)
+    full = _template_tokens(
+        tokenizer,
+        example["prompt"] + example["completion"],
+        tools=tools,
+        add_generation_prompt=False,
+    )
+    if not prompt or full[: len(prompt)] != prompt:
+        raise RuntimeError(f"{example['source_record_id']}: tokenized prompt is not a prefix of the full target")
+    completion_length = len(full) - len(prompt)
+    if completion_length < 1:
+        raise RuntimeError(f"{example['source_record_id']}: tokenized completion is empty")
+    if len(full) > max_sequence_length:
+        raise RuntimeError(
+            f"{example['source_record_id']}: tokenized example exceeds {max_sequence_length} tokens ({len(full)})"
+        )
+    return full, len(prompt)
+
+
+def validate_tokenized_examples(tokenizer: Any, examples: Sequence[dict[str, Any]], max_sequence_length: int) -> dict[str, int]:
+    """Prove every completion is nonempty, prefix-aligned, and untruncated."""
+    lengths: list[int] = []
+    completion_lengths: list[int] = []
+    for example in examples:
+        full, prompt_length = _tokenized_example(tokenizer, example, max_sequence_length)
+        completion_length = len(full) - prompt_length
+        lengths.append(len(full))
+        completion_lengths.append(completion_length)
+    if not lengths:
+        raise RuntimeError("No tokenized training examples were validated")
+    return {
+        "total": sum(lengths),
+        "maximum": max(lengths),
+        "minimum_completion": min(completion_lengths),
+        "training_examples": len(lengths),
+        "source_records": len({example["source_record_id"] for example in examples}),
+    }
+
+
+def tokenize_training_examples(tokenizer: Any, examples: Sequence[dict[str, Any]], max_sequence_length: int) -> list[dict[str, list[int]]]:
+    """Render before Arrow ingestion so heterogeneous JSON tool schemas stay exact."""
+    tokenized: list[dict[str, list[int]]] = []
+    for example in examples:
+        full, prompt_length = _tokenized_example(tokenizer, example, max_sequence_length)
+        tokenized.append({
+            "input_ids": full,
+            "completion_mask": [0] * prompt_length + [1] * (len(full) - prompt_length),
+        })
+    if not tokenized:
+        raise RuntimeError("No tokenized training examples were produced")
+    return tokenized
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -163,6 +459,8 @@ def _validate_config(config: dict[str, Any]) -> None:
         raise RuntimeError("Require NF4 double quantization with BF16 compute")
     if data.get("packing") is not False or data.get("train_split") != "train" or data.get("validation_split") != "validation":
         raise RuntimeError("Require unpacked train and validation splits")
+    if not isinstance(data.get("corpus_manifest"), str) or not data["corpus_manifest"]:
+        raise RuntimeError("A frozen corpus manifest is required")
     for key in ("minimum_vram_gib", "estimated_peak_vram_gib", "minimum_system_ram_gib", "minimum_storage_free_gib"):
         number(resources, key, 1, 10000)
     promotion = config["promotion"]
@@ -214,9 +512,8 @@ def _model_preflight(config: dict[str, Any], rows: list[dict[str, Any]], modules
     if not isinstance(quant, dict) or quant.get("quant_method") != "bitsandbytes" or quant.get("bnb_4bit_quant_type") != "nf4" or quant.get("bnb_4bit_use_double_quant") is not True:
         raise RuntimeError("Snapshot does not match the proposed prequantized NF4 weights")
     tokenizer = transformers.AutoTokenizer.from_pretrained(str(snapshot), local_files_only=True, trust_remote_code=False)
-    lengths = [len(tokenizer.apply_chat_template(row["messages"], tokenize=True, add_generation_prompt=False)) for row in rows]
-    if not lengths or min(lengths) < 1 or max(lengths) > config["data"]["max_sequence_length"]:
-        raise RuntimeError(f"Empty or overlength tokenized examples; maximum={max(lengths, default=0)}")
+    examples = expand_training_examples(rows)
+    token_counts = validate_tokenized_examples(tokenizer, examples, config["data"]["max_sequence_length"])
     adapter = config["adapter"]
     modules["peft"].LoraConfig(
         task_type="CAUSAL_LM", r=adapter["rank"], lora_alpha=adapter["alpha"],
@@ -225,7 +522,7 @@ def _model_preflight(config: dict[str, Any], rows: list[dict[str, Any]], modules
     return {
         "model_id": model["training_model_id"], "revision": model["revision"],
         "snapshot_path": str(snapshot), "weight_inventory": inventory,
-        "token_counts": {"total": sum(lengths), "maximum": max(lengths), "records": len(lengths)},
+        "token_counts": token_counts,
         "adapter_config_validated": True,
     }
 
@@ -267,6 +564,7 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, report_path: Pa
     checks: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     manifest: dict[str, Any] | None = None
+    corpus_manifest: dict[str, Any] | None = None
     model_evidence: dict[str, Any] = {}
     gpu: dict[str, Any] = {}
     modules: dict[str, Any] = {}
@@ -299,7 +597,14 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, report_path: Pa
         _add_check(checks, "resource_estimate", resources["estimated_peak_vram_gib"] <= resources["minimum_vram_gib"], {"estimated_peak_vram_gib": resources["estimated_peak_vram_gib"], "measured": False, "limitation": "No model allocation/backward pass occurs in dry-run"})
 
         def dataset_check() -> dict[str, Any]:
+            nonlocal corpus_manifest
             path = _under(ROOT / data["corpus_path"], ROOT / "training/datasets")
+            manifest_path = _under(ROOT / data["corpus_manifest"], ROOT / "training/manifests")
+            corpus_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if corpus_manifest.get("artifact_type") != "external_corpus_manifest":
+                raise RuntimeError("Configured corpus manifest has the wrong artifact type")
+            if corpus_manifest.get("corpus_sha256") != _sha256_file(path):
+                raise RuntimeError("Corpus bytes differ from the frozen corpus manifest")
             report = validate_files([path])
             if not report.valid:
                 raise RuntimeError(f"Dataset schema errors: {report.errors}")
@@ -307,7 +612,21 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, report_path: Pa
             splits = {row["split"] for row in rows}
             if not rows or splits != {"train", "validation"}:
                 raise RuntimeError("Nonempty train and validation splits are both required")
-            return {"records": len(rows), "splits": sorted(splits)}
+            split_counts = {split: sum(row["split"] == split for row in rows) for split in sorted(splits)}
+            if corpus_manifest.get("records") != len(rows) or corpus_manifest.get("split_counts") != split_counts:
+                raise RuntimeError("Corpus counts differ from the frozen corpus manifest")
+            training_example_counts: dict[str, int] = {
+                split: len(expand_training_examples(rows, split)) for split in sorted(splits)
+            }
+            training_example_counts["total"] = sum(training_example_counts.values())
+            declared_examples = corpus_manifest.get("training_example_counts")
+            if not isinstance(declared_examples, dict) or declared_examples != training_example_counts:
+                raise RuntimeError("Expanded training-example counts differ from the frozen corpus manifest")
+            return {
+                "records": len(rows), "splits": sorted(splits),
+                "training_example_counts": training_example_counts,
+                "manifest": str(manifest_path), "corpus_sha256": corpus_manifest["corpus_sha256"],
+            }
 
         check("dataset_schema_and_splits", dataset_check)
 
@@ -348,7 +667,8 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, report_path: Pa
         "schema_version": 2, "artifact_type": "adapter_training_dry_run",
         "created_at": datetime.now(UTC).isoformat(), "passed": all(item["passed"] for item in checks),
         "config": str(config_path), "config_sha256": sha256_json(config), "training_spec_sha256": training_spec_digest(config),
-        "dataset_sha256": sha256_json(rows), "eval_manifest_sha256": sha256_json(manifest) if manifest else None,
+        "dataset_sha256": sha256_json(rows), "corpus_manifest_sha256": sha256_json(corpus_manifest) if corpus_manifest else None,
+        "eval_manifest_sha256": sha256_json(manifest) if manifest else None,
         "allow_downloads": allow_downloads, "checks": checks, "environment": environment,
         "gpu": gpu, "model_evidence": model_evidence, "resolved_config": config,
         "resolved_training_command": command, "training_performed": False,
@@ -371,8 +691,13 @@ def _verify_training_gate(config: dict[str, Any], report: dict[str, Any], config
         raise RuntimeError("Dry-run report belongs to a different local environment")
     data = config["data"]
     rows = load_jsonl(_under(ROOT / data["corpus_path"], ROOT / "training/datasets"))
+    corpus_manifest = json.loads(_under(ROOT / data["corpus_manifest"], ROOT / "training/manifests").read_text(encoding="utf-8"))
     manifest = load_eval_manifest(_under(ROOT / data["eval_manifest"], ROOT / "training/manifests"))
-    if report.get("dataset_sha256") != sha256_json(rows) or report.get("eval_manifest_sha256") != sha256_json(manifest):
+    if (
+        report.get("dataset_sha256") != sha256_json(rows)
+        or report.get("corpus_manifest_sha256") != sha256_json(corpus_manifest)
+        or report.get("eval_manifest_sha256") != sha256_json(manifest)
+    ):
         raise RuntimeError("Dry-run report does not match the current dataset and held-out manifest")
     safe, detail = _safe_output(ROOT / config["output"]["directory"])
     if not safe:
@@ -401,11 +726,12 @@ def execute_training(config: dict[str, Any], snapshot_path: str) -> None:
     rows = load_jsonl(ROOT / data["corpus_path"])
 
     def prepared(split: str) -> Any:
-        # Explicit prompt/completion structure masks user text from target loss.
-        return Dataset.from_list([
-            {"prompt": row["messages"][:-1], "completion": row["messages"][-1:]}
-            for row in rows if row["split"] == split
-        ])
+        # Prompt/completion masking targets every assistant turn while preserving
+        # native tool schemas, calls and results for the chat-template renderer.
+        # Render before Arrow sees the rows: JSON-schema property names vary by
+        # tool, and coercing those schemas into one Arrow struct can alter them.
+        examples = expand_training_examples(rows, split)
+        return Dataset.from_list(tokenize_training_examples(tokenizer, examples, data["max_sequence_length"]))
 
     output = (ROOT / config["output"]["directory"]).resolve()
     safe, detail = _safe_output(output)

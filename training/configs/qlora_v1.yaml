@@ -45,7 +45,8 @@
     "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
   },
   "data": {
-    "corpus_path": "training/datasets/corpus_v1_seed.jsonl",
+    "corpus_path": "training/datasets/external_corpus_v1.jsonl",
+    "corpus_manifest": "training/manifests/external_corpus_v1_manifest.json",
     "eval_manifest": "training/manifests/eval_v1_manifest.json",
     "eval_manifest_records_sha256": "3954ce3bb45523abbfa535cbfd8e93d1e615f00e3ea7c14a05d0dbed3ee1ab42",
     "max_sequence_length": 1024,
@@ -72,9 +73,9 @@
     "weight_decay": 0.01,
     "epochs": 3,
     "max_steps": null,
-    "estimated_optimizer_steps": 15,
-    "validation_steps": 5,
-    "checkpoint_steps": 5,
+    "estimated_optimizer_steps": 11112,
+    "validation_steps": 3704,
+    "checkpoint_steps": 3704,
     "logging_steps": 1,
     "save_total_limit": 3,
     "seed": 3407

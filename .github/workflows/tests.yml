@@ -24,3 +24,6 @@ jobs:
       - run: python -m pytest training/tests -q
       - run: python training/scripts/build_eval_manifest.py --check
       - run: python training/scripts/build_localpilot_history_dataset.py --check
+      - run: python training/scripts/validate_dataset.py training/datasets/external_corpus_v1.jsonl
+      - run: python training/scripts/validate_external_corpus_v1.py
+      - run: python training/scripts/audit_external_corpus_v1_leakage.py

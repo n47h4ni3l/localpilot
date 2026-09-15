@@ -204,6 +204,40 @@ Generate and verify the artifacts from the repository root:
 
 Corpus statistics are written to the ignored `training/reports/corpus_v1_stats.json`, including category/tier/split/source/license counts, provenance completeness, duplicate and leakage rejections, size estimates, and split ratio.
 
+## External Corpus v1
+
+`training/datasets/external_corpus_v1.jsonl` is the real external-data training corpus. Every accepted row is Tier B and retains its immutable upstream revision, original row/task/PR identifier, source path, license, acquisition date, transformation version, and family identifier in the matching `training/sources/external_corpus_v1_sources.jsonl` record. The tracked manifest freezes source-file hashes, accepted counts, source-record and expanded-training-example split counts, tokenizer identity, corpus digest, the acquisition-lock digest, the exact build-runtime lock digest, and the Eval v1 manifest digest.
+
+`training/manifests/external_corpus_v1_acquisition_lock.json` is the acquisition authority. It freezes all 64 approved local/remote paths, repository revisions, byte sizes, and SHA-256 or Git-blob identities. The acquisition script verifies owner-provided files in place and never renames, replaces, or deletes them. Missing files alone are downloaded into a revision-scoped persistent staging directory under `E:\LocalPilot-Training-Data\.external-corpus-v1-staging`, verified as a complete batch, and then exposed without overwrite. It requests only the approved files: two Nemotron SWE JSONL files, all 50 OpenCodeInstruct Parquet shards, Nemotron Agentic tool-calling and search JSONL, xLAM's single JSON file, CodeActInstruct's standardized subfolder, and SWE-CARE dev. It never requests SWE-CARE test, Nemotron customer-service data, or the remainder of the roughly 499 GB agent-data-collection repository.
+
+The builder applies source-specific verification, deterministic 40/25/20/15 ranking, exact and near duplicate rejection, canonical code duplicate rejection, provider-shaped credential and private-key rejection, source/family caps, family-grouped 90/10 splitting, the PR #90 Eval v1 hash/shingle leakage gate, and the pinned gpt-oss tokenizer's native chat template at 1,024 tokens. It never truncates an example to make it fit. Rejection reporting contains counts and source IDs only, never rejected content; the detailed report remains ignored under `training/reports/`.
+
+Tool-use records retain structured native tool schemas, calls, and results rather than flattening them into prose. `train_adapter.py` expands each assistant turn into its own completion-masked training example, with all preceding user, assistant, and tool-result messages as context. Independent xLAM calls are separate native call targets. Consequently, a corpus record can produce more than one optimizer example; the manifest freezes both counts by split.
+
+The deterministic semantic audit is a second, offline leakage gate after the builder's exact hash and shingle checks. It compares the built corpus with Eval v1 without invoking a model or exposing held-out material to generation or repair. Its ignored report contains only IDs, reason labels, counts, and similarity scores—not corpus or evaluation text. A normal release build must return zero findings; `--allow-findings` is for diagnostic tests only.
+
+From the repository root on 64-bit Windows, create a dedicated CPython 3.13.3 build environment and verify the already-present E: source tree before rebuilding:
+
+```powershell
+py -3.13 -m venv .venv-corpus-v1
+.\.venv-corpus-v1\Scripts\python.exe -m pip install --requirement training\requirements-external-corpus-v1.txt
+.\.venv-corpus-v1\Scripts\python.exe -c "from training.scripts.external_corpus_runtime import build_runtime; build_runtime(require_exact=True)"
+.\.venv-corpus-v1\Scripts\python.exe training\scripts\acquire_external_corpus_v1.py --source-root "E:\LocalPilot-Training-Data" --verify-only
+.\.venv-corpus-v1\Scripts\python.exe training\scripts\build_external_corpus_v1.py --source-root "E:\LocalPilot-Training-Data" --allow-tokenizer-download
+.\.venv-corpus-v1\Scripts\python.exe training\scripts\audit_external_corpus_v1_leakage.py
+.\.venv-corpus-v1\Scripts\python.exe training\scripts\validate_dataset.py training\datasets\external_corpus_v1.jsonl
+.\.venv-corpus-v1\Scripts\python.exe training\scripts\validate_external_corpus_v1.py
+```
+
+If verification reports a missing file, acquire only the missing locked paths, then repeat the full verification before building:
+
+```powershell
+.\.venv-corpus-v1\Scripts\python.exe training\scripts\acquire_external_corpus_v1.py --source-root "E:\LocalPilot-Training-Data" --max-workers 2
+.\.venv-corpus-v1\Scripts\python.exe training\scripts\acquire_external_corpus_v1.py --source-root "E:\LocalPilot-Training-Data" --verify-only
+```
+
+Authenticate with `hf auth login` before acquisition if a gated xLAM file is absent. A read token is sufficient after the repository terms have been accepted. Never place a token in this repository or in a command committed to shell history. Run the repository's training tests separately in its development environment; installing `.[dev]` into the isolated corpus-build environment would add dependencies outside the frozen corpus runtime.
+
 ## Promotion comparison
 
 `compare_models.py` compares a baseline and candidate across both Eval v1 and Evolution Execution v1. It reports category deltas and requires no overall Eval regression, no material regression in the critical aggregate or any critical category, no increase in Eval or execution hard failures, execution performance at least at baseline, and zero scope violations. Complete matching task/category coverage, frozen suite hashes, and matching model identity across each model's two benchmark runs are required. Missing evidence produces an incomplete comparison, never a recommendation. Historical aggregates remain useful for deltas, but lack enough recorded metadata to authorize a model promotion. The scoring tools now emit the coverage, scope, and suite metadata needed for future comparisons. Training loss is deliberately not a promotion signal; final promotion requires human review.

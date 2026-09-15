@@ -6,7 +6,7 @@
   "assets": {
     "idle": {"file": "idle.png", "columns": 4, "rows": 2, "frames": 8, "bytes": 2322758},
     "listening": {"file": "listening.png", "columns": 8, "rows": 1, "frames": 8, "bytes": 1547667},
-    "thinking": {"file": "thinking.png", "columns": 8, "rows": 1, "frames": 8, "bytes": 1512965},
+    "thinking": {"file": "thinking.png", "columns": 6, "rows": 4, "frames": 24, "bytes": 2833561},
     "researching": {"file": "researching.png", "columns": 4, "rows": 2, "frames": 8, "bytes": 2109922},
     "working": {"file": "working.png", "columns": 4, "rows": 3, "frames": 12, "bytes": 2135507},
     "speaking": {"file": "speaking.png", "columns": 8, "rows": 1, "frames": 8, "bytes": 1643239},
@@ -18,14 +18,14 @@
   "states": {
     "idle": {"asset": "idle", "frame_ms": 420, "representative_frame": 0},
     "listening": {"asset": "listening", "frame_ms": 190, "representative_frame": 0},
-    "thinking": {"asset": "thinking", "frame_ms": 190, "representative_frame": 2},
+    "thinking": {"asset": "thinking", "frame_ms": 63, "representative_frame": 6},
     "researching": {"asset": "researching", "frame_ms": 210, "representative_frame": 1},
     "working": {"asset": "working", "frame_ms": 150, "representative_frame": 0},
     "speaking": {"asset": "speaking", "frame_ms": 155, "representative_frame": 0},
     "success": {"asset": "success", "frame_ms": 165, "representative_frame": 2},
     "uncertain": {"asset": "uncertain", "frame_ms": 240, "representative_frame": 0},
     "error": {"asset": "uncertain", "frame_ms": 220, "representative_frame": 2},
-    "learning": {"asset": "thinking", "frame_ms": 200, "representative_frame": 3},
+    "learning": {"asset": "thinking", "frame_ms": 63, "representative_frame": 9},
     "restarting": {"asset": "working", "frame_ms": 180, "representative_frame": 0},
     "sleeping": {"asset": "sleeping", "frame_ms": 480, "representative_frame": 0},
     "offline": {"asset": "offline", "frame_ms": 340, "representative_frame": 0}

@@ -67,9 +67,13 @@ class ResourceGovernor:
         if not idle_allowed:
             idle_reason = f"user idle {idle:.0f}s < {self.config.background_idle_seconds}s"
         if cpu > self.config.max_cpu_percent_for_background:
-            capacity_reasons.append(f"CPU {cpu:.0f}% > {self.config.max_cpu_percent_for_background:.0f}%")
+            capacity_reasons.append(
+                f"CPU {cpu:.1f}% > {self.config.max_cpu_percent_for_background:.1f}%"
+            )
         if memory > self.config.max_memory_percent_for_background:
-            capacity_reasons.append(f"memory {memory:.0f}% > {self.config.max_memory_percent_for_background:.0f}%")
+            capacity_reasons.append(
+                f"memory {memory:.1f}% > {self.config.max_memory_percent_for_background:.1f}%"
+            )
         capacity_reason = "; ".join(capacity_reasons)
         capacity_allowed = not capacity_reasons
         allowed = idle_allowed and capacity_allowed

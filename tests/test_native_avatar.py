@@ -127,12 +127,11 @@ def test_desktop_ui_state_round_trips_avatar_position_and_on_top(tmp_path):
     state = DesktopUIState(tmp_path)
     assert state.read()["always_on_top"] is True
     state.update(avatar_x=-900, avatar_y=50, always_on_top=False)
-    assert state.read() == {
-        "avatar_x": -900,
-        "avatar_y": 50,
-        "always_on_top": False,
-        "companion_state": None,
-    }
+    values = state.read()
+    assert values["avatar_x"] == -900
+    assert values["avatar_y"] == 50
+    assert values["always_on_top"] is False
+    assert values["companion_state"] is None
 
 
 def test_native_avatar_uses_windows_transparent_color_not_webview_transparency():

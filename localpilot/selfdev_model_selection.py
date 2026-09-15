@@ -28,6 +28,46 @@ _GROUNDING_FINALIZATION_AFTER_TOOL_TURNS = 3
 _STATIC_REPAIR_PLAN_MARKER = (
     "return one strict json object with summary, reusable_lesson, and a non-empty changes list"
 )
+_GROUNDING_PLAN_FIELDS = (
+    "referenced_symbols",
+    "referenced_config_fields",
+    "referenced_paths",
+    "required_test_contracts",
+    "integration_points",
+    "expected_call_relationships",
+    "planned_subsystems",
+    "new_runtime_paths",
+)
+_GROUNDING_PLAN_FORMAT = {
+    "type": "object",
+    "properties": {
+        "change_plan": {
+            "type": "object",
+            "properties": {
+                "referenced_symbols": {"type": "array", "items": {"type": "string"}},
+                "referenced_config_fields": {"type": "array", "items": {"type": "string"}},
+                "referenced_paths": {"type": "array", "items": {"type": "string"}},
+                "required_test_contracts": {"type": "array", "items": {"type": "string"}},
+                "integration_points": {"type": "array", "items": {"type": "string"}},
+                "expected_call_relationships": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 2,
+                        "maxItems": 2,
+                    },
+                },
+                "planned_subsystems": {"type": "array", "items": {"type": "string"}},
+                "new_runtime_paths": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": list(_GROUNDING_PLAN_FIELDS),
+            "additionalProperties": False,
+        }
+    },
+    "required": ["change_plan"],
+    "additionalProperties": False,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,6 +365,7 @@ def _prepare_grounding_finalization(call_kwargs: dict[str, Any]) -> None:
 
     if not tools and _STATIC_REPAIR_PLAN_MARKER in system_text:
         call_kwargs["format"] = "json"
+        call_kwargs["think"] = False
         options = dict(call_kwargs.get("options") or {})
         options["temperature"] = 0.0
         call_kwargs["options"] = options
@@ -363,7 +404,8 @@ def _prepare_grounding_finalization(call_kwargs: dict[str, Any]) -> None:
     )
     call_kwargs["messages"] = final_messages
     call_kwargs.pop("tools", None)
-    call_kwargs["format"] = "json"
+    call_kwargs["format"] = _GROUNDING_PLAN_FORMAT
+    call_kwargs["think"] = False
     options = dict(call_kwargs.get("options") or {})
     options["temperature"] = 0.0
     call_kwargs["options"] = options
@@ -484,7 +526,6 @@ def developer_chat(
 
     def invoke(*, think: bool | str | None) -> Any:
         call_kwargs = dict(kwargs)
-        _prepare_grounding_finalization(call_kwargs)
         if context_tokens is not None:
             options = dict(call_kwargs.get("options") or {})
             options["num_ctx"] = int(context_tokens)
@@ -493,6 +534,7 @@ def developer_chat(
             call_kwargs["think"] = think
         if keep_alive is not None:
             call_kwargs["keep_alive"] = keep_alive
+        _prepare_grounding_finalization(call_kwargs)
         if stream_guard is None:
             return chat(**call_kwargs)
 

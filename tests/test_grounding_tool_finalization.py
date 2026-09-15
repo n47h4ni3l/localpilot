@@ -42,25 +42,61 @@ def _grounding_messages(tool_turns: int) -> list[dict]:
     return messages
 
 
-def test_grounding_fourth_turn_is_reserved_for_json_synthesis():
+def test_grounding_fourth_turn_is_reserved_for_schema_bound_json_synthesis():
     original = _grounding_messages(3)
     kwargs = {
         "messages": original,
         "tools": ["read_project_file"],
         "options": {"temperature": 0.4},
+        "think": "medium",
     }
 
     _prepare_grounding_finalization(kwargs)
 
     assert "tools" not in kwargs
-    assert kwargs["format"] == "json"
+    assert isinstance(kwargs["format"], dict)
+    assert kwargs["format"]["type"] == "object"
+    change_plan = kwargs["format"]["properties"]["change_plan"]
+    assert set(change_plan["required"]) == {
+        "referenced_symbols",
+        "referenced_config_fields",
+        "referenced_paths",
+        "required_test_contracts",
+        "integration_points",
+        "expected_call_relationships",
+        "planned_subsystems",
+        "new_runtime_paths",
+    }
     assert kwargs["options"]["temperature"] == 0.0
+    assert kwargs["think"] is False
     assert kwargs["messages"] is not original
     assert len(original) + 1 == len(kwargs["messages"])
     final = kwargs["messages"][-1]
     assert final["role"] == "user"
     assert "Do not call any more tools" in final["content"]
     assert "strict JSON object" in final["content"]
+
+
+def test_grounding_finalization_overrides_requested_thinking_at_transport():
+    captured = {}
+
+    def fake_chat(**kwargs):
+        captured.update(kwargs)
+        return {"message": {"content": '{"change_plan": {}}'}}
+
+    developer_chat(
+        fake_chat,
+        request_think="medium",
+        model="gpt-oss:20b",
+        messages=_grounding_messages(3),
+        tools=["read_project_file"],
+        options={"temperature": 0.8},
+    )
+
+    assert captured["think"] is False
+    assert isinstance(captured["format"], dict)
+    assert "tools" not in captured
+    assert captured["options"]["temperature"] == 0.0
 
 
 def test_grounding_keeps_tools_during_first_three_inspection_turns():
@@ -83,13 +119,18 @@ def test_static_repair_fallback_forces_json_without_tool_mutation():
         },
         {"role": "user", "content": "Produce the concrete static-repair plan now."},
     ]
-    kwargs = {"messages": messages, "options": {"temperature": 0.7}}
+    kwargs = {
+        "messages": messages,
+        "options": {"temperature": 0.7},
+        "think": "medium",
+    }
 
     _prepare_grounding_finalization(kwargs)
 
     assert kwargs["messages"] is messages
     assert kwargs["format"] == "json"
     assert kwargs["options"]["temperature"] == 0.0
+    assert kwargs["think"] is False
     assert "tools" not in kwargs
 
 

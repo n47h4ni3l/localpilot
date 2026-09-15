@@ -59,12 +59,14 @@ class SelfDeveloper(_BaseSelfDeveloper):
         try:
             checkpoint = self.checkpoints.load()
         except Exception:
-            # The base implementation owns the user-facing invalid-checkpoint
-            # error and must remain authoritative.
             checkpoint = None
 
         result = super().retry_candidate(identifier, reason=reason)
-        if checkpoint is None or result.branch != result.prior_branch:
+        if checkpoint is None:
+            return result
+        if result.branch != result.prior_branch:
+            return result
+        if result.resume_mode != "resume_existing_worktree":
             return result
         if checkpoint.branch != result.branch:
             return result
@@ -74,22 +76,31 @@ class SelfDeveloper(_BaseSelfDeveloper):
         }:
             return result
 
-        retry_candidate = self.memory.candidate_for_cycle(result.retry_cycle_id)
-        if retry_candidate is None or not retry_candidate.workspace:
-            return result
         try:
-            retry_workspace = Path(retry_candidate.workspace).resolve()
+            registered = self.github.worktree_for_branch(result.branch)
             checkpoint_workspace = Path(checkpoint.workspace).resolve()
-        except (OSError, RuntimeError, ValueError):
-            return result
-        if retry_workspace != checkpoint_workspace:
+            if registered is None or registered.resolve() != checkpoint_workspace:
+                self.audit.write(
+                    "candidate_policy_retry_checkpoint_rebind",
+                    status="skipped",
+                    prior_cycle_id=result.prior_cycle_id,
+                    retry_cycle_id=result.retry_cycle_id,
+                    branch=result.branch,
+                    reason="registered worktree does not match checkpoint workspace",
+                )
+                return result
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.audit.write(
+                "candidate_policy_retry_checkpoint_rebind",
+                status="skipped",
+                prior_cycle_id=result.prior_cycle_id,
+                retry_cycle_id=result.retry_cycle_id,
+                branch=result.branch,
+                error=f"{type(exc).__name__}: {exc}"[:1000],
+            )
             return result
 
         rebound = checkpoint.rebind_cycle(result.retry_cycle_id)
-        # Generic recovery is intentionally refined only when the checkpoint
-        # itself proves a concrete post-implementation validation state. This
-        # avoids repeating research/grounding after a framework failure while
-        # never pretending an unvalidated implementation is ready for delivery.
         if rebound.milestone == "recovery" and rebound.files_changed:
             if rebound.static_check_status == "failed":
                 rebound = replace(
@@ -113,9 +124,6 @@ class SelfDeveloper(_BaseSelfDeveloper):
         try:
             self.checkpoints.save(rebound)
         except Exception as exc:
-            # Authorization is already durable. Failing to preserve an optional
-            # resume optimization must fall back to the base full-objective retry,
-            # not corrupt or revoke the human-authorized retry.
             self.audit.write(
                 "candidate_policy_retry_checkpoint_rebind",
                 status="failed",

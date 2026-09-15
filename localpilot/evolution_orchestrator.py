@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+import psutil
+
 
 _WORD = re.compile(r"[a-z0-9]+")
 _LOW_SIGNAL_WORDS = {
@@ -63,6 +65,148 @@ def opportunity_similarity(left: dict[str, Any], right: dict[str, Any]) -> float
 
 class EvolutionBudgetExceeded(RuntimeError):
     pass
+
+
+class EvolutionRunAlreadyActive(RuntimeError):
+    """Raised when another live process already owns the evolution lease."""
+
+
+class EvolutionRunLease:
+    """Crash-safe inter-process lease for one mutable evolution invocation.
+
+    The lease uses atomic create-once semantics rather than a best-effort state
+    file. PID reuse is guarded by the process creation time. A stale/corrupt
+    lease is removed only after its contents are rechecked, so two contenders
+    cannot both decide the same live lease is stale and silently proceed.
+    """
+
+    def __init__(self, path: str | Path, invocation_id: str) -> None:
+        self.path = Path(path).resolve()
+        self.invocation_id = str(invocation_id)
+        self.pid = os.getpid()
+        try:
+            self.process_create_time = float(psutil.Process(self.pid).create_time())
+        except (psutil.Error, OSError):
+            self.process_create_time = 0.0
+        self.acquired = False
+
+    @staticmethod
+    def _decode(raw: str) -> dict[str, Any] | None:
+        try:
+            value = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    @staticmethod
+    def _owner_live(owner: dict[str, Any] | None) -> bool:
+        if not owner:
+            return False
+        try:
+            pid = int(owner.get("pid"))
+        except (TypeError, ValueError):
+            return False
+        if pid <= 0 or not psutil.pid_exists(pid):
+            return False
+        expected = owner.get("process_create_time")
+        try:
+            process = psutil.Process(pid)
+            actual = float(process.create_time())
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            return False
+        except (psutil.AccessDenied, OSError):
+            # If a process exists but its metadata cannot be inspected, fail
+            # closed and treat the lease as live rather than risking overlap.
+            return True
+        try:
+            expected_time = float(expected)
+        except (TypeError, ValueError):
+            return True
+        return abs(actual - expected_time) < 1.0
+
+    def _payload(self) -> str:
+        return json.dumps(
+            {
+                "version": 1,
+                "invocation_id": self.invocation_id,
+                "pid": self.pid,
+                "process_create_time": self.process_create_time,
+                "started_at": _utc_now(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ) + "\n"
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        for _attempt in range(3):
+            try:
+                descriptor = os.open(
+                    self.path,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+            except FileExistsError:
+                try:
+                    observed = self.path.read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    continue
+                owner = self._decode(observed)
+                if self._owner_live(owner):
+                    owner_pid = owner.get("pid") if owner else "unknown"
+                    owner_id = owner.get("invocation_id") if owner else "unknown"
+                    raise EvolutionRunAlreadyActive(
+                        "another evolution invocation is already active "
+                        f"(pid={owner_pid}, invocation={owner_id})"
+                    )
+                try:
+                    current = self.path.read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    continue
+                if current != observed:
+                    continue
+                try:
+                    self.path.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            else:
+                try:
+                    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                        handle.write(self._payload())
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                except Exception:
+                    self.path.unlink(missing_ok=True)
+                    raise
+                self.acquired = True
+                return
+        raise EvolutionRunAlreadyActive(
+            "could not acquire the evolution lease because its owner changed concurrently"
+        )
+
+    def release(self) -> None:
+        if not self.acquired:
+            return
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            self.acquired = False
+            return
+        owner = self._decode(raw)
+        if owner and str(owner.get("invocation_id") or "") == self.invocation_id:
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+        self.acquired = False
+
+    def __enter__(self) -> "EvolutionRunLease":
+        self.acquire()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.release()
 
 
 @dataclass

@@ -53,6 +53,37 @@ class SelfDeveloper(_BaseSelfDeveloper):
         finally:
             lease.release()
 
+    @staticmethod
+    def _normalize_recovery_checkpoint(checkpoint):
+        """Resume an existing candidate diff at validation, never pre-write grounding.
+
+        A ``recovery`` checkpoint can be recorded after any exception. If the
+        candidate already has changed files, implementation has already happened
+        and re-running research/grounding can only discard progress or fail on a
+        stage that is no longer relevant. Revalidate the retained diff first;
+        if the prior static status is known-failed, resume directly at repair.
+        """
+        if checkpoint.milestone != "recovery" or not checkpoint.files_changed:
+            return checkpoint
+        if checkpoint.static_check_status == "failed":
+            return replace(
+                checkpoint,
+                milestone="local_static_repair",
+                next_action=(
+                    "Resume the retained candidate at static repair using the "
+                    "recorded failure evidence; do not repeat completed research, "
+                    "grounding, or implementation."
+                ),
+            )
+        return replace(
+            checkpoint,
+            milestone="static_checks",
+            next_action=(
+                "Revalidate the retained candidate before delivery; do not repeat "
+                "completed research, grounding, or implementation."
+            ),
+        )
+
     def retry_candidate(self, identifier: str, *, reason: str):
         """Preserve a valid checkpoint whenever retry resumes the same worktree."""
         try:
@@ -66,27 +97,9 @@ class SelfDeveloper(_BaseSelfDeveloper):
         if checkpoint.branch != result.branch:
             return result
 
-        rebound = checkpoint.rebind_cycle(result.retry_cycle_id)
-        if rebound.milestone == "recovery" and rebound.files_changed:
-            if rebound.static_check_status == "failed":
-                rebound = replace(
-                    rebound,
-                    milestone="local_static_repair",
-                    next_action=(
-                        "Resume the retained candidate at static repair using the "
-                        "recorded failure evidence; do not repeat completed research "
-                        "or grounding."
-                    ),
-                )
-            elif rebound.static_check_status == "passed":
-                rebound = replace(
-                    rebound,
-                    milestone="static_checks",
-                    next_action=(
-                        "Revalidate the retained candidate and continue delivery; do "
-                        "not repeat completed research or grounding."
-                    ),
-                )
+        rebound = self._normalize_recovery_checkpoint(
+            checkpoint.rebind_cycle(result.retry_cycle_id)
+        )
         try:
             self.checkpoints.save(rebound)
             verified = self.checkpoints.load()
@@ -117,6 +130,53 @@ class SelfDeveloper(_BaseSelfDeveloper):
             git_state_digest=rebound.git_state_digest,
         )
         return result
+
+    def _resume_checkpoint_candidate(self, validated, *, force: bool) -> EvolutionResult:
+        """Normalize recovery checkpoints with an existing diff before base resume."""
+        checkpoint, candidate, task, workspace = validated
+        normalized = self._normalize_recovery_checkpoint(checkpoint)
+        if normalized is not checkpoint:
+            try:
+                self.checkpoints.save(normalized)
+                verified = self.checkpoints.load()
+                if (
+                    verified is None
+                    or verified.cycle_id != normalized.cycle_id
+                    or verified.branch != normalized.branch
+                    or verified.milestone != normalized.milestone
+                ):
+                    raise RuntimeError(
+                        "normalized recovery checkpoint did not persist safely"
+                    )
+            except Exception as exc:
+                self.audit.write(
+                    "selfdev_recovery_checkpoint_normalization",
+                    status="failed",
+                    branch=checkpoint.branch,
+                    cycle_id=checkpoint.cycle_id,
+                    error=f"{type(exc).__name__}: {exc}"[:1000],
+                )
+                return EvolutionResult(
+                    "failed",
+                    checkpoint.branch,
+                    workspace,
+                    "Recovered candidate could not be rebound safely to its "
+                    f"validation stage: {type(exc).__name__}: {exc}",
+                    False,
+                )
+            self.audit.write(
+                "selfdev_recovery_checkpoint_normalization",
+                status="preserved",
+                branch=normalized.branch,
+                cycle_id=normalized.cycle_id,
+                prior_milestone=checkpoint.milestone,
+                milestone=normalized.milestone,
+                files_changed=len(normalized.files_changed),
+            )
+        return super()._resume_checkpoint_candidate(
+            (normalized, candidate, task, workspace),
+            force=force,
+        )
 
     def _repair_static_failures(self, *args: Any, **kwargs: Any):
         """Retain structured-repair framework failures outside mutable summary text."""

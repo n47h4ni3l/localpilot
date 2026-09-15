@@ -25,6 +25,13 @@ class DesktopUIState:
             # the only visible avatar and reads this value as an override on
             # top of the broker event stream.
             "companion_state": None,
+            # Desktop update preference/status. Update application remains a
+            # separate trusted-main handoff; these fields are safe UI state.
+            "automatic_updates": False,
+            "update_last_checked": None,
+            "update_available": None,
+            "update_target_version": None,
+            "update_check_error": None,
         }
 
     def read(self) -> dict[str, Any]:
@@ -45,6 +52,15 @@ class DesktopUIState:
         values["always_on_top"] = bool(values["always_on_top"])
         if not isinstance(values["companion_state"], str):
             values["companion_state"] = None
+        values["automatic_updates"] = bool(values["automatic_updates"])
+        if not isinstance(values["update_last_checked"], str):
+            values["update_last_checked"] = None
+        if not isinstance(values["update_available"], bool):
+            values["update_available"] = None
+        if not isinstance(values["update_target_version"], str):
+            values["update_target_version"] = None
+        if not isinstance(values["update_check_error"], str):
+            values["update_check_error"] = None
         return values
 
     def update(self, **changes: Any) -> dict[str, Any]:

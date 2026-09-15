@@ -14,7 +14,7 @@ from typing import Any, Callable, IO
 from localpilot.audit import AuditLog
 from localpilot.config import Config, load_config
 from localpilot.process import hidden_process_creation_flags
-from localpilot.selfdev import SelfDeveloper
+from localpilot.evolution_reliability import SelfDeveloper
 
 
 DEFAULT_INTERVAL_SECONDS = 30.0

@@ -4,20 +4,32 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from localpilot.evolution import normalize_evolution_task
+
 
 CHECKPOINT_VERSION = 2
+CHECKPOINT_MAX_BYTES = 512_000
+# Only redact secret-looking labels when they are actually assigning a value.
+# Ordinary engineering prose such as "token budget" or "context tokens" must
+# remain stable across checkpoint save/resume.
 _SENSITIVE = re.compile(
-    r"(?i)(password|passwd|token|secret|api[_-]?key|credential|authorization|bearer)"
+    r"(?i)\b(password|passwd|secret|api[_-]?key|credential|authorization|bearer|"
+    r"access[_-]?token|auth[_-]?token|refresh[_-]?token)\b\s*[:=]"
 )
 _TOKEN_SHAPES = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})")
+# The opaque-value heuristic must not classify normal durable identifiers such
+# as candidate branch slugs as secrets. Require mixed-case entropy plus digits;
+# explicit secret assignments and known provider token shapes remain covered by
+# the stronger guards above.
 _OPAQUE_VALUES = re.compile(
-    r"\b(?=[A-Za-z0-9+/=_-]{32,}\b)(?=[A-Za-z0-9+/=_-]*[A-Za-z])"
-    r"(?=[A-Za-z0-9+/=_-]*\d)[A-Za-z0-9+/=_-]+\b"
+    r"\b(?=[A-Za-z0-9+/=_-]{32,}\b)(?=[A-Za-z0-9+/=_-]*[A-Z])"
+    r"(?=[A-Za-z0-9+/=_-]*[a-z])(?=[A-Za-z0-9+/=_-]*\d)"
+    r"[A-Za-z0-9+/=_-]+\b"
 )
 
 
@@ -44,11 +56,31 @@ def _safe_items(values: Iterable[Any], *, count: int = 50, limit: int = 1000) ->
 
 
 def task_fingerprint(task: dict[str, Any]) -> str:
-    """Fingerprint the reviewable task contract without storing source content."""
+    """Fingerprint the complete normalized, reviewable evolution contract.
+
+    A checkpoint is safe to resume only while the objective, evidence contract,
+    hypothesis, and measurement plan are unchanged. Repository state is checked
+    separately by the candidate snapshot digest.
+    """
+    normalized = normalize_evolution_task(task)
     contract = {
-        "id": str(task.get("id") or ""),
-        "title": str(task.get("title") or ""),
-        "acceptance": list(task.get("acceptance") or []),
+        "id": str(normalized.get("id") or ""),
+        "title": str(normalized.get("title") or ""),
+        "acceptance": list(normalized.get("acceptance") or []),
+        "evolution_class": str(normalized.get("evolution_class") or ""),
+        "capability_target": str(normalized.get("capability_target") or ""),
+        "mission_alignment": str(normalized.get("mission_alignment") or ""),
+        "current_frontier": str(normalized.get("current_frontier") or ""),
+        "why_high_leverage": str(normalized.get("why_high_leverage") or ""),
+        "capability_unlocked": str(normalized.get("capability_unlocked") or ""),
+        "next_frontier": str(normalized.get("next_frontier") or ""),
+        "question": str(normalized.get("question") or ""),
+        "observed_limitation": str(normalized.get("observed_limitation") or ""),
+        "evidence": list(normalized.get("evidence") or []),
+        "alternatives": list(normalized.get("alternatives") or []),
+        "hypothesis": str(normalized.get("hypothesis") or ""),
+        "evaluation": normalized.get("evaluation") or {},
+        "expected_complexity": str(normalized.get("expected_complexity") or ""),
     }
     encoded = json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -111,26 +143,27 @@ class EvolutionCheckpoint:
         next_action: str = "Validate the candidate state and continue the current milestone.",
         reusable_lessons: Iterable[str] = (),
     ) -> "EvolutionCheckpoint":
+        normalized = normalize_evolution_task(task)
         return cls(
             version=CHECKPOINT_VERSION,
             updated_at=_now(),
             cycle_id=int(cycle_id),
-            task_id=_safe_text(task.get("id"), 200),
+            task_id=_safe_text(normalized.get("id"), 200),
             branch=_safe_text(branch, 300),
             workspace=str(Path(workspace).resolve()),
-            objective=_safe_text(task.get("title"), 1000),
-            acceptance_criteria=_safe_items(task.get("acceptance") or (), count=30, limit=1000),
-            task_fingerprint=task_fingerprint(task),
-            evolution_class=_safe_text(task.get("evolution_class") or "repair", 80),
-            capability_target=_safe_text(task.get("capability_target") or task.get("title"), 1000),
-            hypothesis=_safe_text(task.get("hypothesis"), 2000),
+            objective=_safe_text(normalized.get("title"), 1000),
+            acceptance_criteria=_safe_items(normalized.get("acceptance") or (), count=30, limit=1000),
+            task_fingerprint=task_fingerprint(normalized),
+            evolution_class=_safe_text(normalized.get("evolution_class") or "repair", 80),
+            capability_target=_safe_text(normalized.get("capability_target") or normalized.get("title"), 1000),
+            hypothesis=_safe_text(normalized.get("hypothesis"), 2000),
             evaluation_plan=_safe_text(
-                json.dumps(task.get("evaluation") or {}, ensure_ascii=False, sort_keys=True),
+                json.dumps(normalized.get("evaluation") or {}, ensure_ascii=False, sort_keys=True),
                 3000,
             ),
             milestone=_safe_text(milestone, 100),
-            files_inspected=_safe_items(files_inspected, count=100, limit=500),
-            files_changed=_safe_items(files_changed, count=100, limit=500),
+            files_inspected=_safe_items(files_inspected, count=500, limit=500),
+            files_changed=_safe_items(files_changed, count=500, limit=500),
             research_findings=_safe_items(research_findings, count=20, limit=2000),
             decisions=_safe_items(decisions, count=20, limit=1000),
             git_head=str(git_head or "")[:100],
@@ -144,6 +177,14 @@ class EvolutionCheckpoint:
             next_action=_safe_text(next_action, 1000),
             reusable_lessons=_safe_items(reusable_lessons, count=20, limit=1000),
         )
+
+    def rebind_cycle(self, cycle_id: int) -> "EvolutionCheckpoint":
+        """Retarget an otherwise unchanged checkpoint to a linked retry cycle.
+
+        The caller must still perform the normal live Git snapshot validation
+        before resuming; this method only updates durable cycle identity.
+        """
+        return replace(self, cycle_id=int(cycle_id), updated_at=_now())
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "EvolutionCheckpoint":
@@ -215,6 +256,10 @@ class CheckpointStore:
 
     def save(self, checkpoint: EvolutionCheckpoint) -> None:
         payload = json.dumps(asdict(checkpoint), ensure_ascii=False, indent=2) + "\n"
+        if len(payload.encode("utf-8")) > CHECKPOINT_MAX_BYTES:
+            raise ValueError(
+                f"Checkpoint exceeds the {CHECKPOINT_MAX_BYTES // 1000} KB durability limit."
+            )
         temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
         temporary.write_text(payload, encoding="utf-8")
         temporary.replace(self.path)
@@ -222,8 +267,10 @@ class CheckpointStore:
     def load(self) -> EvolutionCheckpoint | None:
         if not self.path.exists():
             return None
-        if self.path.stat().st_size > 128_000:
-            raise ValueError("Checkpoint exceeds the 128 KB durability limit.")
+        if self.path.stat().st_size > CHECKPOINT_MAX_BYTES:
+            raise ValueError(
+                f"Checkpoint exceeds the {CHECKPOINT_MAX_BYTES // 1000} KB durability limit."
+            )
         value = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
             raise ValueError("Checkpoint root must be a JSON object.")

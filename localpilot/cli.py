@@ -20,7 +20,7 @@ from localpilot.implementation_backend import ClaudeCodeBackend
 from localpilot.learning import LearningMemory
 from localpilot.mission import mission_context
 from localpilot.resource import ResourceGovernor
-from localpilot.selfdev import CandidateRejectionError, CandidateRetryError, SelfDeveloper
+from localpilot.evolution_reliability import CandidateRejectionError, CandidateRetryError, SelfDeveloper
 from localpilot.study import STAGES, StudyEngine
 from localpilot.tools.library import LocalLibrary
 

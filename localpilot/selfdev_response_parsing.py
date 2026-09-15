@@ -54,17 +54,37 @@ class StaticRepairResult:
 
 
 def _json_object(text: str) -> dict[str, Any]:
-    candidate = text.strip()
+    """Return the last complete JSON object from bounded model output.
+
+    Local models occasionally surround a valid final object with prose, an
+    earlier example object, or another diagnostic fragment. Slicing from the
+    first opening brace to the last closing brace incorrectly joins those
+    fragments. Scan every object start with ``raw_decode`` instead, then choose
+    the complete object that ends latest; for equal end positions prefer the
+    outermost object. Downstream schema validation remains authoritative.
+    """
+    candidate = str(text or "").strip()
     if candidate.startswith("```"):
         lines = candidate.splitlines()
-        candidate = "\n".join(lines[1:-1]).strip()
-    start = candidate.find("{")
-    end = candidate.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("Model response did not contain a JSON object.")
-    value = json.loads(candidate[start : end + 1])
-    if not isinstance(value, dict):
-        raise ValueError("Change plan must be a JSON object.")
+        if len(lines) >= 2:
+            candidate = "\n".join(lines[1:-1]).strip()
+
+    decoder = json.JSONDecoder()
+    decoded: list[tuple[int, int, dict[str, Any]]] = []
+    for start, char in enumerate(candidate):
+        if char != "{":
+            continue
+        try:
+            value, consumed = decoder.raw_decode(candidate[start:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            decoded.append((start, start + consumed, value))
+
+    if not decoded:
+        raise ValueError("Model response did not contain a valid JSON object.")
+
+    _start, _end, value = max(decoded, key=lambda item: (item[1], -item[0]))
     return value
 
 

@@ -25,6 +25,9 @@ _INFERENCE_MIN_AVAILABLE_GIB = 2.0
 _GIB = 1024**3
 _GROUNDING_PLANNER_MARKER = "pre-implementation repository-grounding planner"
 _GROUNDING_FINALIZATION_AFTER_TOOL_TURNS = 3
+_STATIC_REPAIR_PLAN_MARKER = (
+    "return one strict json object with summary, reusable_lesson, and a non-empty changes list"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,10 +309,10 @@ def _unload_ollama_model(model_name: str) -> None:
 
 
 def _prepare_grounding_finalization(call_kwargs: dict[str, Any]) -> None:
-    """Use the last grounding turn for structured synthesis instead of another tool call."""
+    """Force structured output for final grounding and static-repair synthesis."""
     tools = call_kwargs.get("tools")
     messages = call_kwargs.get("messages")
-    if not tools or not isinstance(messages, list):
+    if not isinstance(messages, list):
         return
 
     system_text = ""
@@ -319,7 +322,15 @@ def _prepare_grounding_finalization(call_kwargs: dict[str, Any]) -> None:
             content = message.get("content") if isinstance(message, dict) else getattr(message, "content", "")
             system_text = str(content or "").casefold()
             break
-    if _GROUNDING_PLANNER_MARKER not in system_text:
+
+    if not tools and _STATIC_REPAIR_PLAN_MARKER in system_text:
+        call_kwargs["format"] = "json"
+        options = dict(call_kwargs.get("options") or {})
+        options["temperature"] = 0.0
+        call_kwargs["options"] = options
+        return
+
+    if not tools or _GROUNDING_PLANNER_MARKER not in system_text:
         return
 
     tool_turns = 0

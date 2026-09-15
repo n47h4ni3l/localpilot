@@ -37,8 +37,13 @@ _CLASS_ALIASES = {
     "cognition": EvolutionClass.IMPROVE_COGNITION,
     "explore": EvolutionClass.EXPLORE,
 }
+# Redact secret-bearing values, not ordinary engineering language such as
+# "token budget" or "context tokens". Known token shapes and opaque high-entropy
+# values remain independently guarded below.
 _SENSITIVE = re.compile(
-    r"(?i)(password|passwd|token|secret|api[_-]?key|credential|authorization|bearer)"
+    r"(?i)(?:\b(?:password|passwd|secret|api[_-]?key|credential|authorization|"
+    r"access[_-]?token|auth[_-]?token|refresh[_-]?token)\b\s*(?:[:=]|\bis\b)\s*\S+|"
+    r"\bbearer\s+\S+)"
 )
 _TOKEN_SHAPES = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})")
 _OPAQUE_VALUES = re.compile(
@@ -317,17 +322,29 @@ def _proposal(value: dict[str, Any]) -> CapabilityProposal:
     return proposal
 
 
-def parse_capability_proposals(text: str) -> list[CapabilityProposal]:
-    candidate = text.strip()
+def _last_json_object(text: str) -> dict[str, Any]:
+    candidate = str(text or "").strip()
     if candidate.startswith("```"):
         candidate = "\n".join(candidate.splitlines()[1:-1]).strip()
-    start = candidate.find("{")
-    end = candidate.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("Capability discovery did not return a JSON object.")
-    root = json.loads(candidate[start : end + 1])
-    if not isinstance(root, dict):
-        raise ValueError("Capability discovery root must be a JSON object.")
+    decoder = json.JSONDecoder()
+    decoded: list[tuple[int, int, dict[str, Any]]] = []
+    for start, char in enumerate(candidate):
+        if char != "{":
+            continue
+        try:
+            value, consumed = decoder.raw_decode(candidate[start:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            decoded.append((start, start + consumed, value))
+    if not decoded:
+        raise ValueError("Capability discovery did not return a valid JSON object.")
+    _start, _end, value = max(decoded, key=lambda item: (item[1], -item[0]))
+    return value
+
+
+def parse_capability_proposals(text: str) -> list[CapabilityProposal]:
+    root = _last_json_object(text)
     values = root.get("proposals")
     if not isinstance(values, list) or not values:
         values = [root]

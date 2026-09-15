@@ -25,9 +25,7 @@ _INFERENCE_MIN_AVAILABLE_GIB = 2.0
 _GIB = 1024**3
 _GROUNDING_PLANNER_MARKER = "pre-implementation repository-grounding planner"
 _GROUNDING_FINALIZATION_AFTER_TOOL_TURNS = 3
-_STATIC_REPAIR_PLAN_MARKER = (
-    "return one strict json object with summary, reusable_lesson, and a non-empty changes list"
-)
+_STATIC_REPAIR_PLAN_MARKER = "return one strict json object with summary, reusable_lesson, and"
 _GROUNDING_PLAN_FIELDS = (
     "referenced_symbols",
     "referenced_config_fields",

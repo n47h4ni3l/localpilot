@@ -77,6 +77,28 @@ def test_grounding_fourth_turn_is_reserved_for_schema_bound_json_synthesis():
     assert "strict JSON object" in final["content"]
 
 
+def test_grounding_finalization_overrides_requested_thinking_at_transport():
+    captured = {}
+
+    def fake_chat(**kwargs):
+        captured.update(kwargs)
+        return {"message": {"content": '{"change_plan": {}}'}}
+
+    developer_chat(
+        fake_chat,
+        request_think="medium",
+        model="gpt-oss:20b",
+        messages=_grounding_messages(3),
+        tools=["read_project_file"],
+        options={"temperature": 0.8},
+    )
+
+    assert captured["think"] is False
+    assert isinstance(captured["format"], dict)
+    assert "tools" not in captured
+    assert captured["options"]["temperature"] == 0.0
+
+
 def test_grounding_keeps_tools_during_first_three_inspection_turns():
     kwargs = {"messages": _grounding_messages(2), "tools": ["read_project_file"]}
 

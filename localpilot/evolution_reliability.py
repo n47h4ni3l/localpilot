@@ -9,12 +9,13 @@ from localpilot.evolution_orchestrator import (
     EvolutionRunAlreadyActive,
     EvolutionRunLease,
 )
+from localpilot.implementation_backend import ClaudeCodeBackend
 from localpilot.selfdev import (
     CandidateRejectionError,
     CandidateRetryError,
     SelfDeveloper as _BaseSelfDeveloper,
 )
-from localpilot.selfdev_results import EvolutionResult
+from localpilot.selfdev_results import CyclePaused, EvolutionResult
 
 
 class SelfDeveloper(_BaseSelfDeveloper):
@@ -125,9 +126,21 @@ class SelfDeveloper(_BaseSelfDeveloper):
             status="preserved",
             prior_cycle_id=result.prior_cycle_id,
             retry_cycle_id=result.retry_cycle_id,
+            prior_branch=result.prior_branch,
             branch=result.branch,
-            milestone=rebound.milestone,
-            git_state_digest=rebound.git_state_digest,
+            task_id=result.task_id,
+            reason=result.reason,
+            failure_attribution="framework_policy",
+            candidate_idea_at_fault=False,
+            checkpoint_cleared=False,
+            resume_mode=result.resume_mode,
+            counters_reset=["local_repair_attempts", "write_integrity_failure"],
+            history_preserved=True,
+            prior_pushed=False,
+            prior_pull_request_url=None,
+            prior_pull_request_state="previously_verified",
+            fresh_retry_branch=False,
+            promotion_performed=False,
         )
         return result
 
@@ -177,6 +190,38 @@ class SelfDeveloper(_BaseSelfDeveloper):
             (normalized, candidate, task, workspace),
             force=force,
         )
+
+    def _claude_code_backend(self, *, force: bool, branch: str):
+        """Reuse one verified live preflight throughout one Claude repair loop.
+
+        ``ClaudeCodeBackend.run`` defensively preflights before each invocation.
+        During a multi-pass LocalPilot review loop that used to reload/probe
+        Ollama repeatedly. Ollama can briefly report an active model without its
+        ``context_length`` field while a runner is transitioning, which turned a
+        successful first Claude pass into a false backend-unavailable failure on
+        the next repair pass. A backend instance is scoped to one implementation
+        loop, so once its full live preflight succeeds, subsequent passes reuse
+        that proof. Runtime process failures and the resource guard still fail
+        independently and are not cached.
+        """
+        backend = super()._claude_code_backend(force=force, branch=branch)
+        if not isinstance(backend, ClaudeCodeBackend):
+            return backend
+
+        original_preflight = backend.preflight
+        verified_preflight = None
+
+        def stable_preflight():
+            nonlocal verified_preflight
+            if verified_preflight is not None and verified_preflight.healthy:
+                return verified_preflight
+            result = original_preflight()
+            if result.healthy:
+                verified_preflight = result
+            return result
+
+        backend.preflight = stable_preflight
+        return backend
 
     def _claude_repair_scope(self, workspace, tools) -> tuple[str, ...]:
         """Return the existing candidate-owned paths Claude may repair.
@@ -321,26 +366,50 @@ class SelfDeveloper(_BaseSelfDeveloper):
             allowed_paths=list(allowed_paths),
             reviewer_protected_paths=sorted(tools.protected_paths),
         )
-        return self._run_claude_code_implementation(
-            chat=chat,
-            developer_model=model,
-            task=task,
-            branch=branch,
-            workspace=workspace,
-            tools=tools,
-            cycle_id=int(cycle_id),
-            research=research,
-            grounding_plan={
-                "referenced_paths": list(allowed_paths),
-                "new_runtime_paths": [],
-            },
-            grounding_evidence=[
-                "Repair scope is confined to existing candidate-owned paths relative to trusted main."
-            ],
-            evolution_context=self._evolution_context(task),
-            lessons=lessons,
-            force=force,
-        )
+        try:
+            return self._run_claude_code_implementation(
+                chat=chat,
+                developer_model=model,
+                task=task,
+                branch=branch,
+                workspace=workspace,
+                tools=tools,
+                cycle_id=int(cycle_id),
+                research=research,
+                grounding_plan={
+                    "referenced_paths": list(allowed_paths),
+                    "new_runtime_paths": [],
+                },
+                grounding_evidence=[
+                    "Repair scope is confined to existing candidate-owned paths relative to trusted main."
+                ],
+                evolution_context=self._evolution_context(task),
+                lessons=lessons,
+                force=force,
+            )
+        except RuntimeError as exc:
+            detail = str(exc)
+            normalized = detail.lower()
+            transient = (
+                "implementation backend unavailable:",
+                "implementation backend backend_unavailable:",
+                "implementation backend timeout:",
+                "implementation backend resource_pressure:",
+            )
+            if any(marker in normalized for marker in transient):
+                self.audit.write(
+                    "selfdev_claude_repair_deferred",
+                    branch=branch,
+                    cycle_id=int(cycle_id),
+                    task_id=str(task.get("id") or ""),
+                    stage=stage,
+                    reason=detail[:2000],
+                    candidate_preserved=True,
+                )
+                raise CyclePaused(
+                    f"Claude Code {stage} temporarily unavailable; candidate preserved: {detail}"
+                ) from exc
+            raise
 
     def _repair_static_failures(self, *args: Any, **kwargs: Any):
         """Preserve repair evidence and the capability-evaluation handoff."""

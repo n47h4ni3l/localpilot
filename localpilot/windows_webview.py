@@ -14,33 +14,16 @@ not need a second platform-specific path.
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 from collections.abc import Callable
 from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Any
 
-_HOST_PAPER_RGB = (248, 242, 232)
-_CHAT_PANEL_WIDTH = 458.0
-_CHAT_RIGHT_INSET = 34.0
-_SURFACE_TOP_INSET = 8.0
-_SURFACE_BOTTOM_INSET = 10.0
-_SYSTEMSENSE_WIDTH = 360.0
-_SYSTEMSENSE_GAP = 22.0
-_SYSTEMSENSE_THRESHOLD = 700.0
-_SYSTEMSENSE_BINDING_REVEAL = 8.0
+from localpilot.comic_geometry import pixel, pixels
 
-# These mirror comic-shell.css' outer `.panel::before` triangle.  Keeping the
-# native region on the same box-model geometry matters: the previous region
-# treated `bottom: 45px` as the triangle centre, while CSS applies it to the
-# *bottom of the border box*.  That shifted the native clip down far enough to
-# remove the visible speech tail even though the rest of the bubble was fine.
-_TAIL_RIGHT_OFFSET = 31.0
-_TAIL_BORDER_LEFT = 33.0
-_TAIL_BORDER_TOP = 18.0
-_TAIL_BORDER_BOTTOM = 13.0
-_TAIL_BOTTOM_OFFSET = 45.0
-_TAIL_CLIP_BLEED = 2.0
+_HOST_PAPER_RGB = (248, 242, 232)
 
 # Keep event handlers alive for the lifetime of the process.  pythonnet event
 # subscriptions can otherwise lose a Python callback after garbage collection.
@@ -52,56 +35,104 @@ class ComicHostGeometry:
     """Physical-pixel native regions matching the fixed CSS comic geometry."""
 
     chat_rect: tuple[int, int, int, int]
-    chat_radius: int
+    chat_outline: tuple[tuple[int, int], ...]
     tail_points: tuple[tuple[int, int], tuple[int, int], tuple[int, int]]
     notepad_rect: tuple[int, int, int, int] | None
-    notepad_radius: int
+    notepad_outline: tuple[tuple[int, int], ...]
+    binding_holes: tuple[tuple[int, int, int, int], ...]
 
 
 def _scale_value(value: float, scale: float) -> int:
     return int(round(value * scale))
 
 
-def comic_host_geometry(client_width: int, client_height: int, scale: float = 1.0) -> ComicHostGeometry:
-    """Return the native window silhouette for the current logical host size."""
+def rounded_outline(rect, radii_x, radii_y, scale):
+    """Trace CSS's four elliptical corners, then rasterize at the current DPI.
+
+    Four-degree segments stay below a physical pixel even at 300% scaling.
+    Using a single circular GDI radius used to expose pale crescent fringes.
+    """
+    left, top, right, bottom = rect
+    corners = (
+        (right - radii_x[1], top + radii_y[1], radii_x[1], radii_y[1], -90),
+        (right - radii_x[2], bottom - radii_y[2], radii_x[2], radii_y[2], 0),
+        (left + radii_x[3], bottom - radii_y[3], radii_x[3], radii_y[3], 90),
+        (left + radii_x[0], top + radii_y[0], radii_x[0], radii_y[0], 180),
+    )
+    return tuple(
+        (_scale_value(cx + rx * math.cos(math.radians(start + step * 90 / 24)), scale),
+         _scale_value(cy + ry * math.sin(math.radians(start + step * 90 / 24)), scale))
+        for cx, cy, rx, ry, start in corners for step in range(25)
+    )
+
+
+def comic_host_geometry(
+    client_width: int, client_height: int, scale: float = 1.0,
+    *, systemsense_open: bool = False, tail_left: bool = False,
+) -> ComicHostGeometry:
+    """Match the CSS border boxes, including their padding-box containing block.
+
+    Visibility is explicit: a wide chat window must not expose a phantom
+    notepad. All shape dimensions come from comic-geometry.css.
+    """
     scale = float(scale or 1.0)
-    if scale <= 0:
+    if not math.isfinite(scale) or scale <= 0:
         scale = 1.0
 
     logical_width = max(1.0, client_width / scale)
     logical_height = max(1.0, client_height / scale)
 
-    chat_left = max(0.0, logical_width - _CHAT_RIGHT_INSET - _CHAT_PANEL_WIDTH)
-    chat_top = _SURFACE_TOP_INSET
-    chat_right = min(logical_width, chat_left + _CHAT_PANEL_WIDTH)
-    chat_bottom = max(chat_top + 1.0, logical_height - _SURFACE_BOTTOM_INSET)
+    reserve = pixel("systemsense-width") + pixel("systemsense-gap") if systemsense_open else 0
+    chat_right = logical_width - pixel("chat-right-inset")
+    chat_left = max(pixel("surface-left-inset") + reserve, chat_right - pixel("chat-panel-width"))
+    if tail_left:
+        chat_left = pixel("chat-right-inset")
+        chat_right = min(chat_left + pixel("chat-panel-width"), logical_width - pixel("surface-left-inset") - reserve)
+    chat_top = pixel("surface-top-inset")
+    chat_bottom = max(chat_top + 1, logical_height - pixel("surface-bottom-inset"))
+    border = pixel("chat-border")
 
-    # Match the CSS triangle's border box rather than approximating it around
-    # `bottom: 45px`. For a zero-sized pseudo element with a 18px top border and
-    # 13px bottom border, the triangle tip/content point sits 58px above the
-    # panel bottom and the base spans 76px..45px above it. A tiny bleed absorbs
-    # the -4deg hand-drawn rotation without exposing a rectangular host fringe.
-    tail_tip_x = min(logical_width - 1.0, chat_right + _TAIL_RIGHT_OFFSET)
-    tail_base_x = chat_right + _TAIL_RIGHT_OFFSET - _TAIL_BORDER_LEFT
-    tail_base_bottom_y = chat_bottom - _TAIL_BOTTOM_OFFSET
-    tail_tip_y = tail_base_bottom_y - _TAIL_BORDER_BOTTOM
-    tail_base_top_y = tail_tip_y - _TAIL_BORDER_TOP
+    # Absolutely positioned pseudo-elements use the panel's padding edge,
+    # which is one border width *inside* its outer native rectangle.
+    tail_tip_x = chat_right - border + pixel("tail-right")
+    tail_base_x = tail_tip_x - pixel("tail-width")
+    if tail_left:
+        tail_tip_x = chat_left + border - pixel("tail-right")
+        tail_base_x = tail_tip_x + pixel("tail-width")
+    tail_base_bottom_y = chat_bottom - border - pixel("tail-offset")
+    tail_tip_y = tail_base_bottom_y - pixel("tail-bottom")
+    tail_base_top_y = tail_tip_y - pixel("tail-top")
     tail_points = (
-        (tail_base_x, tail_base_top_y - _TAIL_CLIP_BLEED),
-        (tail_tip_x, tail_tip_y - _TAIL_CLIP_BLEED),
-        (tail_base_x, tail_base_bottom_y + _TAIL_CLIP_BLEED),
+        (tail_base_x, tail_base_top_y),
+        (tail_tip_x, tail_tip_y),
+        (tail_base_x, tail_base_bottom_y),
     )
 
     notepad_rect: tuple[int, int, int, int] | None = None
-    if logical_width >= _SYSTEMSENSE_THRESHOLD:
-        notepad_right = chat_left - _SYSTEMSENSE_GAP
-        notepad_paper_left = max(0.0, notepad_right - _SYSTEMSENSE_WIDTH)
-        # comic-shell.css places the binding-hole strip partly outside the
-        # notepad's paper edge. Include that strip in the native region so the
-        # left-edge holes remain visible instead of being clipped to tiny dashes.
-        notepad_left = max(0.0, notepad_paper_left - _SYSTEMSENSE_BINDING_REVEAL)
-        notepad_top = chat_top + 8.0
-        notepad_bottom = max(notepad_top + 1.0, chat_bottom - 8.0)
+    notepad_outline = ()
+    holes = []
+    if systemsense_open:
+        notepad_right = chat_left - pixel("systemsense-gap")
+        notepad_left = notepad_right - pixel("systemsense-width")
+        if tail_left:
+            notepad_left = chat_right + pixel("systemsense-gap")
+            notepad_right = notepad_left + pixel("systemsense-width")
+        notepad_top = chat_top + border + pixel("notepad-inset")
+        notepad_bottom = chat_bottom - border - pixel("notepad-inset")
+        notepad_outline = rounded_outline(
+            (notepad_left, notepad_top, notepad_right, notepad_bottom),
+            pixels("notepad-radii"), pixels("notepad-radii"), scale,
+        )
+        note_border = pixel("notepad-border")
+        cx = notepad_left + note_border + pixel("binding-left") + pixel("binding-width") / 2
+        cy = notepad_top + note_border + pixel("binding-top") + pixel("binding-pitch") / 2
+        # Match CSS's strip rounded down to complete background tiles.
+        strip_height = notepad_bottom - notepad_top - 2 * note_border - 2 * pixel("binding-top")
+        row_count = max(0, int(strip_height // pixel("binding-pitch")))
+        radius = pixel("binding-hole-radius")
+        for _ in range(row_count):
+            holes.append(tuple(_scale_value(v, scale) for v in (cx-radius, cy-radius, cx+radius, cy+radius)))
+            cy += pixel("binding-pitch")
         notepad_rect = (
             _scale_value(notepad_left, scale),
             _scale_value(notepad_top, scale),
@@ -119,10 +150,14 @@ def comic_host_geometry(client_width: int, client_height: int, scale: float = 1.
             _scale_value(chat_right, scale),
             _scale_value(chat_bottom, scale),
         ),
-        chat_radius=max(2, _scale_value(34.0, scale)),
+        chat_outline=rounded_outline(
+            (chat_left, chat_top, chat_right, chat_bottom),
+            pixels("chat-radii-x"), pixels("chat-radii-y"), scale,
+        ),
         tail_points=(scaled_tail[0], scaled_tail[1], scaled_tail[2]),
         notepad_rect=notepad_rect,
-        notepad_radius=max(2, _scale_value(10.0, scale)),
+        notepad_outline=notepad_outline,
+        binding_holes=tuple(holes),
     )
 
 
@@ -143,6 +178,7 @@ def _apply_win32_region(native: Any, geometry: ComicHostGeometry) -> None:
     user32 = ctypes.windll.user32
 
     RGN_OR = 2
+    RGN_DIFF = 4
     ALTERNATE = 1
 
     class POINT(ctypes.Structure):
@@ -151,15 +187,8 @@ def _apply_win32_region(native: Any, geometry: ComicHostGeometry) -> None:
     # GDI object and HWND handles are pointer-sized on 64-bit Windows. Explicit
     # ctypes signatures prevent the default c_int conversion from truncating
     # valid handles on the machines LocalPilot actually runs on.
-    gdi32.CreateRoundRectRgn.argtypes = [
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_int,
-    ]
-    gdi32.CreateRoundRectRgn.restype = wintypes.HANDLE
+    gdi32.CreateEllipticRgn.argtypes = [ctypes.c_int] * 4
+    gdi32.CreateEllipticRgn.restype = wintypes.HANDLE
     gdi32.CreatePolygonRgn.argtypes = [ctypes.POINTER(POINT), ctypes.c_int, ctypes.c_int]
     gdi32.CreatePolygonRgn.restype = wintypes.HANDLE
     gdi32.CombineRgn.argtypes = [wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE, ctypes.c_int]
@@ -169,41 +198,37 @@ def _apply_win32_region(native: Any, geometry: ComicHostGeometry) -> None:
     user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HANDLE, wintypes.BOOL]
     user32.SetWindowRgn.restype = ctypes.c_int
 
-    left, top, right, bottom = geometry.chat_rect
-    chat = gdi32.CreateRoundRectRgn(
-        left,
-        top,
-        right + 1,
-        bottom + 1,
-        geometry.chat_radius,
-        geometry.chat_radius,
-    )
+    def polygon(outline):
+        points = (POINT * len(outline))(*(POINT(x, y) for x, y in outline))
+        return gdi32.CreatePolygonRgn(points, len(points), ALTERNATE)
+
+    chat = polygon(geometry.chat_outline)
     if not chat:
-        raise OSError("CreateRoundRectRgn failed for chat surface")
+        raise OSError("CreatePolygonRgn failed for chat surface")
 
     owned_regions: list[Any] = []
     try:
-        points = (POINT * 3)(*(POINT(x, y) for x, y in geometry.tail_points))
-        tail = gdi32.CreatePolygonRgn(points, 3, ALTERNATE)
+        tail = polygon(geometry.tail_points)
         if not tail:
             raise OSError("CreatePolygonRgn failed for speech tail")
         owned_regions.append(tail)
-        gdi32.CombineRgn(chat, chat, tail, RGN_OR)
+        if not gdi32.CombineRgn(chat, chat, tail, RGN_OR):
+            raise OSError("CombineRgn failed for speech tail")
 
         if geometry.notepad_rect is not None:
-            n_left, n_top, n_right, n_bottom = geometry.notepad_rect
-            notepad = gdi32.CreateRoundRectRgn(
-                n_left,
-                n_top,
-                n_right + 1,
-                n_bottom + 1,
-                geometry.notepad_radius,
-                geometry.notepad_radius,
-            )
+            notepad = polygon(geometry.notepad_outline)
             if not notepad:
-                raise OSError("CreateRoundRectRgn failed for SystemSense surface")
+                raise OSError("CreatePolygonRgn failed for SystemSense surface")
             owned_regions.append(notepad)
-            gdi32.CombineRgn(chat, chat, notepad, RGN_OR)
+            if not gdi32.CombineRgn(chat, chat, notepad, RGN_OR):
+                raise OSError("CombineRgn failed for SystemSense surface")
+            for bounds in geometry.binding_holes:
+                hole = gdi32.CreateEllipticRgn(*bounds)
+                if not hole:
+                    raise OSError("CreateEllipticRgn failed for binding hole")
+                owned_regions.append(hole)
+                if not gdi32.CombineRgn(chat, chat, hole, RGN_DIFF):
+                    raise OSError("CombineRgn failed for binding hole")
 
         # On success Windows owns `chat`; it must not be DeleteObject'd here.
         if not user32.SetWindowRgn(_native_handle(native), chat, True):
@@ -257,8 +282,17 @@ def make_host_background_transparent(
             # a TransparencyKey/layered window, removes the rectangular chrome.
             native.BackColor = paper
             scale = float(getattr(native, "_scale", 1.0) or 1.0)
+            if hasattr(native, "MinimumSize"):
+                from System.Drawing import Size  # type: ignore[import-not-found]
+
+                min_width, min_height = window.min_size
+                native.MinimumSize = Size(round(min_width * scale), round(min_height * scale))
             size = native.ClientSize
-            geometry = comic_host_geometry(int(size.Width), int(size.Height), scale)
+            geometry = comic_host_geometry(
+                int(size.Width), int(size.Height), scale,
+                systemsense_open=bool(getattr(window, "_comic_systemsense_open", False)),
+                tail_left=bool(getattr(window, "_comic_tail_left", False)),
+            )
             region_applier(native, geometry)
 
         def marshal(callback: Callable[[], None]) -> None:

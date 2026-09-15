@@ -20,6 +20,7 @@ import webview
 from webview.window import FixPoint
 
 from localpilot.config import load_config
+from localpilot.comic_geometry import pixel
 from localpilot.desktop import BrokerClient, ensure_broker
 from localpilot.desktop_state import DesktopUIState
 from localpilot.process import hidden_process_creation_flags
@@ -28,10 +29,10 @@ from localpilot.windows_webview import make_host_background_transparent
 WEBVIEW_DIR = Path(__file__).resolve().parent / "webview"
 INDEX_HTML = WEBVIEW_DIR / "index.html"
 
-EXPANDED_SIZE = (500, 640)
-MIN_SIZE = (420, 520)
-SYSTEMSENSE_WIDTH = 360
-SYSTEMSENSE_GAP = 22
+EXPANDED_SIZE = (int(pixel("chat-window-width")), int(pixel("chat-window-height")))
+MIN_SIZE = (int(pixel("chat-min-width")), int(pixel("chat-min-height")))
+SYSTEMSENSE_WIDTH = int(pixel("systemsense-width"))
+SYSTEMSENSE_GAP = int(pixel("systemsense-gap"))
 SYSTEMSENSE_SIZE = (EXPANDED_SIZE[0] + SYSTEMSENSE_WIDTH + SYSTEMSENSE_GAP, EXPANDED_SIZE[1])
 NATIVE_AVATAR_SIZE = 128
 EDGE_INSET = 24
@@ -204,21 +205,35 @@ class WindowBridge:
         return self._avatar_external
 
     def _surface_size(self) -> tuple[int, int]:
-        return SYSTEMSENSE_SIZE if self._systemsense_open else EXPANDED_SIZE
+        extra = SYSTEMSENSE_WIDTH + SYSTEMSENSE_GAP if self._systemsense_open else 0
+        return (max(MIN_SIZE[0] + extra, int(self._window.width)),
+                max(MIN_SIZE[1], int(self._window.height)))
 
     def expand(self) -> dict[str, Any]:
         w, h = self._surface_size()
-        self._window.resize(w, h, fix_point=_ANCHOR_BOTTOM_RIGHT)
+        self._window.resize(w, h, fix_point=self._resize_anchor())
         return {"ok": True}
+
+    def _resize_anchor(self):
+        return (FixPoint.SOUTH | FixPoint.WEST) if getattr(self._window, "_comic_tail_left", False) else _ANCHOR_BOTTOM_RIGHT
 
     def set_systemsense_open(self, value: bool) -> dict[str, Any]:
         """Reserve transparent space to the left for the real SystemSense panel."""
         enabled = bool(value)
         if enabled == self._systemsense_open:
             return {"ok": True, "open": enabled}
-        self._systemsense_open = enabled
         w, h = self._surface_size()
-        self._window.resize(w, h, fix_point=_ANCHOR_BOTTOM_RIGHT)
+        extra = SYSTEMSENSE_WIDTH + SYSTEMSENSE_GAP
+        w += extra if enabled else -extra
+        self._systemsense_open = enabled
+        self._window._comic_systemsense_open = enabled
+        self._window.min_size = (MIN_SIZE[0] + (extra if enabled else 0), MIN_SIZE[1])
+        # Lower the minimum before closing. Raising it before opening would
+        # enlarge WinForms at its top-left corner, defeating the resize anchor.
+        if not enabled:
+            make_host_background_transparent(self._window)
+        self._window.resize(w, h, fix_point=self._resize_anchor())
+        make_host_background_transparent(self._window)
         return {"ok": True, "open": enabled}
 
     def _avatar_position(self) -> tuple[int | None, int | None]:
@@ -280,7 +295,15 @@ class WindowBridge:
 
     def set_always_on_top(self, value: bool) -> dict[str, Any]:
         enabled = bool(value)
-        self._window.on_top = enabled
+        native = getattr(self._window, "native", None)
+        if native is not None and bool(getattr(native, "InvokeRequired", False)):
+            # pywebview's WinForms set_on_top assigns TopMost directly. Its
+            # exposed API runs on a worker thread; marshal before changing it.
+            from System import Action
+
+            native.Invoke(Action(lambda: setattr(self._window, "on_top", enabled)))
+        else:
+            self._window.on_top = enabled
         self._state.update(always_on_top=enabled)
         return {"ok": True}
 
@@ -387,6 +410,8 @@ def main(
     x: int | None = None,
     y: int | None = None,
     companion: bool = False,
+    physical_position: bool = False,
+    tail_left: bool = False,
 ) -> None:
     root = Path(root).resolve()
 
@@ -423,6 +448,7 @@ def main(
     )
 
     bridge = WindowBridge(window, root, config_path, avatar_external=companion)
+    window._comic_tail_left = tail_left
     window.expose(
         bridge.expand,
         bridge.collapse,
@@ -437,6 +463,17 @@ def main(
     )
 
     def on_shown() -> None:
+        # WinForms removes its frame after assigning the initial Size, which
+        # otherwise leaves the actual client 16x39 pixels short at 100% DPI.
+        # Reapply the requested logical size once the frameless Form exists.
+        window.resize(width, height)
+        if physical_position and x is not None and y is not None and os.name == "nt":
+            # Tk hands off absolute physical desktop coordinates. pywebview's
+            # launch x/y are logical, so place the native Form after creation.
+            from System import Action
+            from System.Drawing import Point
+
+            window.native.Invoke(Action(lambda: setattr(window.native, "Location", Point(int(x), int(y)))))
         make_host_background_transparent(window)
 
     def on_loaded() -> None:
@@ -445,6 +482,8 @@ def main(
         # Chromium child has not finished attaching to it yet.
         make_host_background_transparent(window)
         window.evaluate_js("document.getElementById('app').classList.add('is-expanded')")
+        if tail_left:
+            window.evaluate_js("document.getElementById('app').classList.add('tail-left')")
         _install_expanded_window_chrome(window)
         payload = _bridge_payload(client, config_path)
         window.evaluate_js(f"window.__initLocalPilot({json.dumps(payload)})")
@@ -470,6 +509,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=None, help="Path to localpilot.toml")
     parser.add_argument("--x", type=int, default=None)
     parser.add_argument("--y", type=int, default=None)
+    parser.add_argument("--physical-position", action="store_true", help="Coordinates are native physical desktop pixels")
+    parser.add_argument("--tail-left", action="store_true", help="Chat is to the right of the native companion")
     parser.add_argument(
         "--companion",
         action="store_true",
@@ -486,6 +527,8 @@ def cli_main() -> None:
         x=args.x,
         y=args.y,
         companion=args.companion,
+        physical_position=args.physical_position,
+        tail_left=args.tail_left,
     )
 
 

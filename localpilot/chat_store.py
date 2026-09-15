@@ -72,6 +72,9 @@ class ChatStore:
                     ON chat_events(session_id, id);
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(chat_sessions)")}
+            if "title_is_custom" not in columns:
+                connection.execute("ALTER TABLE chat_sessions ADD COLUMN title_is_custom INTEGER NOT NULL DEFAULT 0")
 
     def create_session(self, title: str = "New conversation") -> dict[str, Any]:
         session_id = str(uuid.uuid4())
@@ -106,6 +109,32 @@ class ChatStore:
         sessions = self.sessions(limit=1)
         return sessions[0] if sessions else self.create_session()
 
+    def rename_session(self, session_id: str, title: str) -> dict[str, Any]:
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 120:
+            raise ValueError("Conversation title must contain 1 to 120 characters")
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE chat_sessions SET title = ?, title_is_custom = 1 WHERE id = ?",
+                (title.strip(), session_id),
+            )
+            if not cursor.rowcount:
+                raise KeyError(f"Unknown chat session: {session_id}")
+        return self.session(session_id)
+
+    def delete_session(self, session_id: str) -> None:
+        """Remove one transcript and its replay events in the same transaction."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if not connection.execute("SELECT 1 FROM chat_sessions WHERE id = ?", (session_id,)).fetchone():
+                raise KeyError(f"Unknown chat session: {session_id}")
+            if connection.execute(
+                "SELECT 1 FROM chat_messages WHERE session_id = ? AND status = 'streaming'", (session_id,)
+            ).fetchone():
+                raise RuntimeError("Wait until this conversation finishes responding before deleting it.")
+            connection.execute("DELETE FROM chat_events WHERE session_id = ?", (session_id,))
+            connection.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+            connection.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+
     def add_message(
         self,
         session_id: str,
@@ -125,7 +154,7 @@ class ChatStore:
             )
             connection.execute(
                 "UPDATE chat_sessions SET updated_at = ?, "
-                "title = CASE WHEN ? = 'user' AND title = 'New conversation' THEN ? ELSE title END "
+                "title = CASE WHEN ? = 'user' AND title = 'New conversation' AND title_is_custom = 0 THEN ? ELSE title END "
                 "WHERE id = ?",
                 (timestamp, role, _conversation_title(content), session_id),
             )

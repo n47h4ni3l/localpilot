@@ -303,6 +303,14 @@
   const historyClose = document.getElementById("history-close");
   const historyNew = document.getElementById("history-new");
   const historyList = document.getElementById("history-list");
+  const historyEditor = document.getElementById("history-editor");
+  const historyEditorHeading = document.getElementById("history-editor-heading");
+  const historyEditorDescription = document.getElementById("history-editor-description");
+  const historyTitleLabel = document.getElementById("history-title-label");
+  const historyTitle = document.getElementById("history-title");
+  const historySave = document.getElementById("history-save");
+  const historyCancel = document.getElementById("history-cancel");
+  const historyFeedback = document.getElementById("history-feedback");
   const settingsToggle = document.getElementById("settings-toggle");
   const settingsPopover = document.getElementById("settings-popover");
   const collapseBtn = document.getElementById("collapse-btn");
@@ -411,14 +419,30 @@
   /* ======================================================================
      History sheet (§2.3) — backed by the real /v1/sessions list.
      ====================================================================== */
-  function openHistory() { closeSystemPanel(); historySheet.classList.add("is-open"); historySheet.setAttribute("aria-hidden", "false"); loadSessionList(); }
-  function closeHistory() { historySheet.classList.remove("is-open"); historySheet.setAttribute("aria-hidden", "true"); }
+  function openHistory() {
+    historySheet.inert = false;
+    historySheet.classList.add("is-open");
+    historySheet.setAttribute("aria-hidden", "false");
+    historyToggle.setAttribute("aria-expanded", "true");
+    loadSessionList();
+    historyNew.focus();
+  }
+  function closeHistory() {
+    closeHistoryEditor(false);
+    if (historySheet.contains(document.activeElement)) historyToggle.focus();
+    historySheet.inert = true;
+    historySheet.classList.remove("is-open");
+    historySheet.setAttribute("aria-hidden", "true");
+    historyToggle.setAttribute("aria-expanded", "false");
+  }
   historyToggle.addEventListener("click", function () {
     if (historySheet.classList.contains("is-open")) closeHistory();
     else { closeSettings(); openHistory(); }
   });
   historyClose.addEventListener("click", closeHistory);
   historyNew.addEventListener("click", async function () {
+    if (historyMutationPending) return;
+    historyNew.disabled = true;
     try {
       const created = await api("POST", "/v1/sessions", {});
       await switchSession(created.session.id);
@@ -426,8 +450,115 @@
       composerInput.focus();
     } catch (e) {
       console.warn("LocalPilot: failed to create conversation", e);
+      showHistoryFeedback("Couldn't create a conversation. Please try again.");
+    } finally {
+      historyNew.disabled = false;
     }
   });
+
+  let historyEditing = null;
+  let historyMutationPending = false;
+  let sessionListRequest = 0;
+  let deletionRecovery = null;
+
+  function showHistoryFeedback(message) {
+    historyFeedback.textContent = message;
+    historyFeedback.hidden = !message;
+  }
+
+  function closeHistoryEditor(restoreFocus = true) {
+    const editing = historyEditing;
+    historyEditing = null;
+    historyEditor.hidden = true;
+    historyList.hidden = false;
+    historyTitle.disabled = true;
+    showHistoryFeedback("");
+    if (restoreFocus && editing) {
+      const row = Array.from(historyList.querySelectorAll(".session-row"))
+        .find(function (button) { return button.dataset.sessionId === editing.session.id; });
+      (row || historyNew).focus();
+    }
+  }
+
+  function editHistorySession(session, mode) {
+    if (historyMutationPending) return;
+    historyEditing = { session: session, mode: mode };
+    historyList.hidden = true;
+    historyEditor.hidden = false;
+    showHistoryFeedback("");
+    const deleting = mode === "delete";
+    historyEditorHeading.textContent = deleting ? "Delete conversation?" : "Rename conversation";
+    historyEditorDescription.textContent = deleting
+      ? 'Delete “' + session.title + '” and its messages? This cannot be undone.' : "Choose a name you can find again.";
+    historyTitleLabel.hidden = deleting;
+    historyTitle.hidden = deleting;
+    historyTitle.disabled = deleting;
+    historyTitle.value = session.title;
+    historySave.textContent = deleting ? "Delete" : "Save";
+    historySave.classList.toggle("is-destructive", deleting);
+    historySave.disabled = false;
+    historyCancel.disabled = false;
+    if (deleting) historyCancel.focus();
+    else { historyTitle.focus(); historyTitle.select(); }
+  }
+
+  historyCancel.addEventListener("click", function () { closeHistoryEditor(); });
+  async function saveHistoryEdit(event) {
+    event.preventDefault();
+    const editing = historyEditing;
+    if (!editing || historyMutationPending) return;
+    const deleting = editing.mode === "delete";
+    const title = historyTitle.value.trim();
+    if (!deleting && (!title || title.length > 120)) {
+      showHistoryFeedback("Enter a name between 1 and 120 characters.");
+      historyTitle.focus();
+      return;
+    }
+    historyMutationPending = true;
+    historySave.disabled = historyCancel.disabled = historyNew.disabled = true;
+    showHistoryFeedback("");
+    try {
+      await api(deleting ? "DELETE" : "PATCH", "/v1/sessions/" + encodeURIComponent(editing.session.id),
+        deleting ? undefined : { title: title });
+      closeHistoryEditor(false);
+      if (deleting) await handleSessionDeleted(editing.session.id);
+      else await loadSessionList({ strict: true });
+      showHistoryFeedback(deleting ? "Conversation deleted." : "Conversation renamed.");
+      if (historySheet.classList.contains("is-open")) historyNew.focus();
+    } catch (error) {
+      showHistoryFeedback(error.status === 409
+        ? "Wait until this conversation finishes responding before deleting it."
+        : error.status === 404 ? "This conversation is no longer available. Cancel to refresh history."
+        : "Couldn't update the conversation. Please try again.");
+    } finally {
+      historyMutationPending = false;
+      historySave.disabled = historyCancel.disabled = historyNew.disabled = false;
+    }
+  }
+  historySave.addEventListener("click", saveHistoryEdit);
+  historyTitle.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") saveHistoryEdit(event);
+  });
+
+  async function handleSessionDeleted(sessionId) {
+    if (deletionRecovery) return deletionRecovery;
+    if (activeSessionId !== sessionId) return loadSessionList();
+    // Clear immediately so late messages and another delete event cannot revive it.
+    switchSession(null);
+    deletionRecovery = (async function () {
+      try {
+        const sessions = await loadSessionList({ strict: true });
+        if (activeSessionId !== null) return;
+        const next = sessions.length ? sessions[0] : (await api("POST", "/v1/sessions", {})).session;
+        if (activeSessionId === null) await switchSession(next.id);
+      } catch (error) {
+        showHistoryFeedback("Conversation deleted. Select another conversation or create a new one.");
+      } finally {
+        deletionRecovery = null;
+      }
+    })();
+    return deletionRecovery;
+  }
 
   function relativeTime(isoString) {
     const then = new Date(isoString).getTime();
@@ -446,7 +577,11 @@
   function renderHistoryList(sessions) {
     historyList.replaceChildren();
     sessions.forEach(function (s) {
-      const row = document.createElement("div");
+      const entry = document.createElement("div");
+      entry.className = "session-entry";
+      const row = document.createElement("button");
+      row.type = "button";
+      row.dataset.sessionId = s.id;
       row.className = "session-row" + (s.id === activeSessionId ? " is-active" : "");
       const dot = document.createElement("span"); dot.className = "dot";
       const meta = document.createElement("div");
@@ -458,23 +593,35 @@
       row.appendChild(dot); row.appendChild(meta);
       row.tabIndex = 0;
       row.addEventListener("click", function () { switchSession(s.id); closeHistory(); });
-      row.addEventListener("keydown", function (e) {
-        if (e.key === "Enter") { switchSession(s.id); closeHistory(); }
+      const actions = document.createElement("div");
+      actions.className = "session-row__actions";
+      ["Rename", "Delete"].forEach(function (label) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        button.setAttribute("aria-label", label + " conversation: " + s.title);
+        button.addEventListener("click", function () { editHistorySession(s, label.toLowerCase()); });
+        actions.appendChild(button);
       });
-      historyList.appendChild(row);
+      entry.appendChild(row);
+      entry.appendChild(actions);
+      historyList.appendChild(entry);
     });
   }
 
-  async function loadSessionList() {
+  async function loadSessionList({ strict = false } = {}) {
+    const request = ++sessionListRequest;
     try {
       const data = await api("GET", "/v1/sessions");
       const sessions = (data.sessions || []).slice().sort(function (a, b) {
         return new Date(b.updated_at) - new Date(a.updated_at);
       });
-      renderHistoryList(sessions);
+      if (request === sessionListRequest) renderHistoryList(sessions);
       return sessions;
     } catch (e) {
       console.warn("LocalPilot: failed to load session list", e);
+      if (strict) throw e;
+      showHistoryFeedback("Couldn't load conversation history. Close and reopen it to retry.");
       return [];
     }
   }
@@ -483,8 +630,29 @@
      Settings popover (§2.4) — status from /health, restart via the real
      endpoint, window-chrome toggles via the bridge, config via the bridge.
      ====================================================================== */
-  function openSettings() { closeSystemPanel(); settingsPopover.classList.add("is-open"); }
-  function closeSettings() { settingsPopover.classList.remove("is-open"); }
+  function openSettings() {
+    settingsPopover.inert = false;
+    settingsPopover.classList.add("is-open");
+    settingsPopover.setAttribute("aria-hidden", "false");
+    settingsToggle.setAttribute("aria-expanded", "true");
+    restartBtn.focus();
+  }
+  function closeSettings() {
+    if (settingsPopover.contains(document.activeElement)) settingsToggle.focus();
+    settingsPopover.inert = true;
+    settingsPopover.classList.remove("is-open");
+    settingsPopover.setAttribute("aria-hidden", "true");
+    settingsToggle.setAttribute("aria-expanded", "false");
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if (historyEditing && !historyMutationPending) closeHistoryEditor();
+    else if (settingsPopover.classList.contains("is-open")) closeSettings();
+    else if (historySheet.classList.contains("is-open")) closeHistory();
+    else if (systemPanelOpen) { closeSystemPanel(); systemToggle.focus(); }
+    else return;
+    e.preventDefault();
+  });
   settingsToggle.addEventListener("click", function () {
     if (settingsPopover.classList.contains("is-open")) closeSettings();
     else { closeHistory(); openSettings(); }
@@ -796,15 +964,41 @@
   const knownMessageIds = new Set();
   const messageElementsById = new Map(); // message id -> render state
 
-  function scrollToBottom() { messageStream.scrollTop = messageStream.scrollHeight; }
+  let followMessages = true;
+  messageStream.addEventListener("scroll", function () {
+    followMessages = messageStream.scrollHeight - messageStream.clientHeight - messageStream.scrollTop < 48;
+  });
+  function scrollToBottom() {
+    if (followMessages) messageStream.scrollTop = messageStream.scrollHeight;
+  }
+  const surfaceObserver = new ResizeObserver(function () {
+    panelEl.style.setProperty("--toolbar-height", panelEl.querySelector(".panel-header").offsetHeight + "px");
+    panelEl.style.setProperty("--composer-height", panelEl.querySelector(".composer-wrap").offsetHeight + "px");
+    scrollToBottom();
+  });
+  surfaceObserver.observe(panelEl.querySelector(".panel-header"));
+  surfaceObserver.observe(panelEl.querySelector(".composer-wrap"));
 
   function appendInlineMarkdown(container, text) {
-    const pattern = /(\*\*[^\n]+?\*\*|`[^`\n]+`)/g;
+    const pattern = /(`[^`\n]+`|\*\*[^\n]+?\*\*|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s<>]+)/g;
     let position = 0;
     let match;
     while ((match = pattern.exec(text)) !== null) {
       if (match.index > position) container.appendChild(document.createTextNode(text.slice(position, match.index)));
       const token = match[0];
+      const link = token.match(/^\[([^\]]+)\]\((https?:\/\/[^\s]+)\)$/);
+      if (link || /^https?:\/\//.test(token)) {
+        const href = (link ? link[2] : token).replace(/[.,;!?:]+$/, "");
+        const anchor = document.createElement("a");
+        anchor.href = href;
+        anchor.textContent = link ? link[1] : href;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        container.appendChild(anchor);
+        if (!link && href.length < token.length) container.appendChild(document.createTextNode(token.slice(href.length)));
+        position = match.index + token.length;
+        continue;
+      }
       const element = document.createElement(token.startsWith("**") ? "strong" : "code");
       element.textContent = token.startsWith("**")
         ? token.slice(2, -2).replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1$2")
@@ -817,27 +1011,57 @@
 
   function renderSafeMarkdown(target, content) {
     target.replaceChildren();
-    let fenced = false;
-    String(content || "").split("\n").forEach(function (sourceLine) {
-      if (sourceLine.trim().startsWith("```")) { fenced = !fenced; return; }
-      const line = document.createElement(fenced ? "pre" : "div");
-      if (fenced) {
-        const code = document.createElement("code"); code.textContent = sourceLine; line.appendChild(code);
-      } else {
-        const heading = sourceLine.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
-        const bullet = sourceLine.match(/^(\s*)[-*+]\s+(.*)$/);
-        if (heading) {
-          line.className = "markdown-heading";
-          appendInlineMarkdown(line, heading[2]);
-        } else if (bullet) {
-          line.className = "markdown-bullet";
-          appendInlineMarkdown(line, "\u2022 " + bullet[2]);
-        } else {
-          appendInlineMarkdown(line, sourceLine || "\u00a0");
-        }
+    let fence = null;
+    let code = null;
+    let codeLines = [];
+    let list = null;
+    String(content || "").replace(/\r\n?/g, "\n").split("\n").forEach(function (sourceLine) {
+      // Broker history also contains fences indented within numbered lists.
+      const marker = sourceLine.match(/^\s*(`{3,}|~{3,})(.*)$/);
+      if (fence) {
+        if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) {
+          code.textContent = codeLines.join("\n");
+          fence = null;
+        } else codeLines.push(sourceLine);
+        return;
       }
+      if (marker) {
+        fence = marker[1];
+        codeLines = [];
+        list = null;
+        const pre = document.createElement("pre");
+        pre.tabIndex = 0;
+        pre.setAttribute("aria-label", "Code block");
+        code = document.createElement("code");
+        pre.appendChild(code);
+        target.appendChild(pre);
+        return;
+      }
+      const heading = sourceLine.match(/^ {0,3}(#{1,6})\s+(.*)$/);
+      const bullet = sourceLine.match(/^\s*(?:([-*+])|([0-9]+)[.)])\s+(.*)$/);
+      if (bullet) {
+        const tag = bullet[2] ? "ol" : "ul";
+        if (!list || list.tagName.toLowerCase() !== tag) {
+          list = document.createElement(tag);
+          if (bullet[2]) list.start = Number(bullet[2]);
+          target.appendChild(list);
+        }
+        const item = document.createElement("li");
+        appendInlineMarkdown(item, bullet[3]);
+        list.appendChild(item);
+        return;
+      }
+      list = null;
+      const line = document.createElement("div");
+      if (heading) {
+        line.className = "markdown-heading";
+        line.setAttribute("role", "heading");
+        line.setAttribute("aria-level", String(heading[1].length));
+      }
+      appendInlineMarkdown(line, heading ? heading[2] : sourceLine || "\u00a0");
       target.appendChild(line);
     });
+    if (fence) code.textContent = codeLines.join("\n");
   }
 
   function renderUserTurn(message) {
@@ -911,7 +1135,8 @@
     if (!entry || entry.revealTimer) return;
     function step() {
       if (entry.revealedLength < entry.targetContent.length) {
-        entry.revealedLength = Math.min(entry.targetContent.length, entry.revealedLength + 1);
+        const remaining = entry.targetContent.length - entry.revealedLength;
+        entry.revealedLength += Math.min(remaining, Math.max(1, Math.ceil(remaining / 20)));
         entry.revealEl.textContent = entry.targetContent.slice(0, entry.revealedLength);
         const level = 0.5 + 0.5 * Math.sin(entry.revealedLength * 0.35);
         avatars.forEach(function (a) { a.ventLevel = level; });
@@ -923,6 +1148,7 @@
         if (entry.finalizeAfterReveal) {
           if (entry.caretEl && entry.caretEl.parentNode) entry.caretEl.remove();
           renderSafeMarkdown(entry.revealEl, entry.targetContent);
+          scrollToBottom();
         }
       }
     }
@@ -943,6 +1169,7 @@
     if (entry.revealedLength >= entry.targetContent.length) {
       if (entry.caretEl && entry.caretEl.parentNode) entry.caretEl.remove();
       renderSafeMarkdown(entry.revealEl, entry.targetContent);
+      scrollToBottom();
     } else {
       entry.finalizeAfterReveal = true;
     }
@@ -1021,6 +1248,7 @@
       chip.textContent = "\u2699 " + activityRunSteps.length + " step" + (activityRunSteps.length > 1 ? "s" : "");
       chip.title = activityRunSteps.map(function (s) { return s.label; }).join(", ");
       entry.bubbleEl.appendChild(chip);
+      scrollToBottom();
     }
     activityRunSteps = [];
   }
@@ -1045,7 +1273,11 @@
         setGlobalState("error");
         break;
       case "session.created":
+      case "session.renamed":
         if (historySheet.classList.contains("is-open")) loadSessionList();
+        break;
+      case "session.deleted":
+        if (evt.payload && evt.payload.session_id) handleSessionDeleted(evt.payload.session_id);
         break;
       case "message.created": {
         const message = evt.payload && evt.payload.message;
@@ -1108,12 +1340,20 @@
 
   async function switchSession(sessionId) {
     activeSessionId = sessionId;
+    composerInput.disabled = sendBtn.disabled = !sessionId;
+    messageElementsById.forEach(function (entry) { clearTimeout(entry.revealTimer); });
+    followMessages = true;
     knownMessageIds.clear();
     messageElementsById.clear();
     messageStream.replaceChildren();
     lastUserContent = "";
+    activityStrip.classList.remove("is-visible");
+    previewLine.classList.remove("is-visible");
+    activityRunSteps = [];
+    if (!sessionId) return;
     try {
       const messages = await loadMessages(sessionId);
+      if (activeSessionId !== sessionId) return;
       messages.forEach(function (m) {
         if (m.role === "user") renderUserTurn(m);
         else renderAssistantTurn(m);
@@ -1174,6 +1414,7 @@
       lastHealthState = "restarting";
       settingsStatusText.textContent = "Restarting\u2026";
     } else {
+      if (currentState === "offline" || currentState === "restarting") setGlobalState("idle");
       lastHealthState = "running";
       settingsStatusText.textContent = "Runtime running";
     }
@@ -1205,6 +1446,7 @@
   async function trySend() {
     const text = composerInput.value.trim();
     if (!text || !activeSessionId) return;
+    followMessages = true;
     composerInput.value = "";
     sendBtn.classList.remove("is-ready");
     composerWrap.classList.add("is-busy");

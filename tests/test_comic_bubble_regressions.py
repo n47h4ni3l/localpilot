@@ -17,8 +17,9 @@ def test_legacy_chrome_no_longer_overrides_comic_panel_geometry():
     assert ".app.is-expanded .panel {\n  width: 100%;" not in chrome
     assert "width: var(--chat-panel-width);" in comic
     assert "right: var(--chat-right-inset);" in comic
-    assert "--chat-panel-width: 458px;" in comic
-    assert "--chat-right-inset: 34px;" in comic
+    geometry = _css("comic-geometry.css")
+    assert "--chat-panel-width: 458px;" in geometry
+    assert "--chat-right-inset: 34px;" in geometry
 
 
 def test_closed_history_sheet_cannot_bleed_into_speech_tail_space():

@@ -86,6 +86,64 @@ def test_systemsense_expands_host_left_without_resizing_chat_surface(tmp_path):
     )
 
 
+def test_systemsense_preserves_custom_size_and_tracks_the_open_minimum(tmp_path):
+    window = FakeWindow()
+    window.width, window.height = 620, 760
+    bridge = webview_app.WindowBridge(window, tmp_path, None, avatar_external=True)
+    bridge.set_systemsense_open(True)
+    assert (window.width, window.height) == (1002, 760)
+    assert window.min_size == (802, 520)
+    window.width, window.height = 1102, 800
+    bridge.set_systemsense_open(False)
+    assert (window.width, window.height) == (720, 800)
+    assert window.min_size == webview_app.MIN_SIZE
+    bridge.expand()
+    assert (window.width, window.height) == (720, 800)
+
+
+def test_systemsense_does_not_raise_native_minimum_before_anchored_expansion(tmp_path, monkeypatch):
+    window = FakeWindow()
+    changes = []
+    def shape(native_window):
+        changes.append((native_window.width, native_window.min_size[0]))
+        # WinForms would expand at the top-left if MinimumSize exceeds Width.
+        assert native_window.width >= native_window.min_size[0]
+    monkeypatch.setattr(webview_app, "make_host_background_transparent", shape)
+    bridge = webview_app.WindowBridge(window, tmp_path, None)
+    bridge.set_systemsense_open(True)
+    assert changes == [(882, 802)]
+    bridge.set_systemsense_open(False)
+    assert changes[-2:] == [(882, 420), (500, 420)]
+    assert window.min_size == webview_app.MIN_SIZE
+
+
+def test_right_side_composition_expands_away_from_avatar(tmp_path):
+    window = FakeWindow()
+    window._comic_tail_left = True
+    bridge = webview_app.WindowBridge(window, tmp_path, None, avatar_external=True)
+    bridge.set_systemsense_open(True)
+    assert window.resized[-1][2] == webview_app.FixPoint.SOUTH | webview_app.FixPoint.WEST
+
+
+def test_always_on_top_is_marshaled_before_touching_winforms(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    window = FakeWindow()
+    class Native:
+        InvokeRequired = True
+        invoked = False
+        def Invoke(self, callback):
+            self.invoked = True
+            callback()
+    window.native = Native()
+    monkeypatch.setitem(sys.modules, "System", types.SimpleNamespace(Action=lambda callback: callback))
+    bridge = webview_app.WindowBridge(window, tmp_path, None)
+    assert bridge.set_always_on_top(False) == {"ok": True}
+    assert window.native.invoked
+    assert window.on_top is False
+
+
 def test_companion_state_bridge_accepts_only_real_known_states(tmp_path):
     window = FakeWindow()
     bridge = webview_app.WindowBridge(window, tmp_path, None, avatar_external=True)
@@ -334,7 +392,7 @@ def test_systemsense_glance_panel_uses_authenticated_summary_surface_only():
     assert ".panel.is-system-open .composer-wrap" in stylesheet
     assert ".panel.is-system-open .message-stream" in comic
     assert "repeating-linear-gradient" in comic
-    assert "right: calc(100% + var(--systemsense-gap))" in comic
+    assert "right: calc(100% + var(--systemsense-gap) + var(--chat-border))" in comic
     assert "repeat-y" in comic
     assert "repeat-x" not in comic
     assert "set_systemsense_open" in sync
@@ -347,8 +405,8 @@ def test_comic_shell_has_real_tail_no_outer_rectangular_host_and_consistent_font
 
     assert 'href="comic-shell.css"' in index
     assert "background: transparent !important" in comic
-    assert "border-left: 33px solid var(--comic-ink)" in comic
-    assert "border-left: 28px solid #f4eadc" in comic
+    assert "border-left: var(--tail-width) solid var(--comic-ink)" in comic
+    assert "border-left: calc(var(--tail-width) - 5px) solid #f4eadc" in comic
     assert 'transparent=True' in source
     assert 'shadow=False' in source
     assert "--comic-font:" in comic

@@ -20,13 +20,6 @@
   --comic-warning: #8A5119;
   --comic-critical: #992E2E;
   --comic-code: #7C5228;
-  --chat-window-width: 500px;
-  --chat-panel-width: 458px;
-  --chat-right-inset: 34px;
-  --surface-top-inset: 8px;
-  --surface-bottom-inset: 10px;
-  --systemsense-width: 360px;
-  --systemsense-gap: 22px;
   --comic-font: "Segoe Print", "Bradley Hand", "Comic Sans MS", "Segoe UI", sans-serif;
 }
 
@@ -81,6 +74,7 @@ body {
   bottom: var(--surface-bottom-inset);
   right: var(--chat-right-inset);
   width: var(--chat-panel-width);
+  max-width: calc(100% - var(--surface-left-inset) - var(--chat-right-inset));
   height: auto;
   min-height: 0;
   box-sizing: border-box;
@@ -88,13 +82,15 @@ body {
     radial-gradient(circle at 18% 12%, rgba(255,255,255,0.68), transparent 30%),
     linear-gradient(180deg, var(--comic-paper) 0%, #f4eadc 100%);
   color: var(--comic-ink);
-  border: 3px solid var(--comic-ink);
-  border-radius: 34px 28px 38px 30px / 28px 36px 30px 40px;
-  box-shadow:
-    5px 6px 0 rgba(40,49,63,0.15),
-    10px 12px 24px var(--comic-shadow);
+  border: var(--chat-border) solid var(--comic-ink);
+  border-radius: var(--chat-radii-x) / var(--chat-radii-y);
+  box-shadow: none;
   overflow: visible;
-  transform: rotate(-0.18deg);
+  transform: none;
+}
+
+.panel.is-system-open {
+  max-width: calc(100% - var(--surface-left-inset) - var(--chat-right-inset) - var(--systemsense-width) - var(--systemsense-gap));
 }
 
 .panel::before,
@@ -109,25 +105,40 @@ body {
 /* Proper outlined comic tail. The transparent host reserves 34px on the right,
    so this points cleanly toward Astra rather than being clipped by WebView2. */
 .panel::before {
-  right: -31px;
-  bottom: 45px;
-  border-top: 18px solid transparent;
-  border-bottom: 13px solid transparent;
-  border-left: 33px solid var(--comic-ink);
-  transform: rotate(-4deg);
-  transform-origin: left center;
+  right: calc(-1 * var(--tail-right));
+  bottom: var(--tail-offset);
+  border-top: var(--tail-top) solid transparent;
+  border-bottom: var(--tail-bottom) solid transparent;
+  border-left: var(--tail-width) solid var(--comic-ink);
   z-index: 20;
 }
 
 .panel::after {
-  right: -25px;
-  bottom: 49px;
-  border-top: 14px solid transparent;
-  border-bottom: 10px solid transparent;
-  border-left: 28px solid #f4eadc;
-  transform: rotate(-4deg);
-  transform-origin: left center;
+  right: calc(6px - var(--tail-right));
+  bottom: calc(var(--tail-offset) + 4px);
+  border-top: calc(var(--tail-top) - 4px) solid transparent;
+  border-bottom: calc(var(--tail-bottom) - 3px) solid transparent;
+  border-left: calc(var(--tail-width) - 5px) solid #f4eadc;
   z-index: 21;
+}
+
+/* Near a monitor's left edge the complete composition opens to Astra's right. */
+.app.tail-left .panel { left: var(--chat-right-inset); right: auto; }
+.app.tail-left .panel::before {
+  right: auto;
+  left: calc(-1 * var(--tail-right));
+  border-left: 0;
+  border-right: var(--tail-width) solid var(--comic-ink);
+}
+.app.tail-left .panel::after {
+  right: auto;
+  left: calc(6px - var(--tail-right));
+  border-left: 0;
+  border-right: calc(var(--tail-width) - 5px) solid #f4eadc;
+}
+.app.tail-left .system-panel {
+  right: auto;
+  left: calc(100% + var(--systemsense-gap) + var(--chat-border));
 }
 
 /* One typography system for every visible control/content type. Browser-default
@@ -354,7 +365,8 @@ body {
   box-shadow: inset 0 -2px 0 rgba(40,49,63,0.06);
 }
 
-.composer:focus-within {
+.composer:focus-within,
+.composer.is-focused {
   border-color: var(--comic-accent);
   box-shadow: 0 0 0 2px rgba(154,123,191,0.18);
 }
@@ -385,11 +397,61 @@ body {
 
 .history-sheet {
   border-radius: 22px 18px 26px 19px;
+  top: calc(var(--toolbar-height, 58px) + 8px);
+  bottom: calc(var(--composer-height, 84px) + 8px);
+  right: 12px;
+  width: min(300px, calc(100% - 24px));
+  transform: none;
+  overflow: hidden;
 }
 
 .settings-popover {
   border-radius: 18px 15px 20px 14px;
+  visibility: hidden;
+  max-width: calc(100% - 28px);
+  max-height: calc(100% - var(--toolbar-height, 58px) - var(--composer-height, 84px) - 16px);
+  overflow-y: auto;
 }
+
+.settings-popover.is-open { visibility: visible; }
+.history-sheet__header { flex: 0 0 auto; }
+.history-list { min-height: 0; }
+.session-row {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: var(--comic-ink);
+}
+.session-row > div { min-width: 0; overflow-wrap: anywhere; }
+.session-row:focus-visible { outline: 2px solid var(--comic-accent); outline-offset: -2px; }
+.session-entry { border-bottom: 1px dashed rgba(40,49,63,0.18); padding-bottom: 6px; margin-bottom: 4px; }
+.session-row__actions { display: flex; gap: 14px; padding: 0 12px 4px 27px; }
+.session-row__actions button {
+  color: var(--comic-ink-soft); background: none; border: 0; padding: 4px 0;
+  font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer;
+}
+.session-row__actions button:focus-visible,
+.history-editor button:focus-visible { outline: 2px solid var(--comic-accent); outline-offset: 2px; }
+.history-editor { min-height: 0; overflow-y: auto; padding: 16px; }
+.history-editor h3 { font-size: 18px; margin: 0 0 12px; }
+.history-editor p { margin: 0 0 16px; overflow-wrap: anywhere; line-height: 1.45; }
+.history-editor label { display: block; margin-bottom: 8px; }
+.history-editor input {
+  box-sizing: border-box; width: 100%; min-width: 0; color: var(--comic-ink); background: #fffaf0;
+  border: 1px solid var(--comic-ink-soft); border-radius: 8px; padding: 10px; font: inherit;
+}
+.history-editor input:focus { outline: 2px solid var(--comic-accent); outline-offset: 2px; }
+.history-editor__actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.history-editor button {
+  background: #f4eadc; color: var(--comic-ink); border: 1px solid var(--comic-ink-soft);
+  border-radius: 8px; padding: 8px 14px; cursor: pointer;
+}
+.history-editor button.is-destructive { color: #843e33; border-color: #843e33; }
+.history-editor button:disabled { opacity: 0.5; cursor: wait; }
+.history-feedback { flex: 0 0 auto; margin: 0; padding: 10px 16px; font-size: 13px; overflow-wrap: anywhere; }
+.history-list[hidden], .history-editor[hidden], .history-feedback[hidden],
+.history-editor [hidden] { display: none !important; }
 
 /* Keep chat usable while the notepad is open; app.css' old replacement-panel
    behavior is explicitly neutralised here. */
@@ -419,10 +481,10 @@ body {
 .system-panel {
   position: absolute;
   left: auto;
-  right: calc(100% + var(--systemsense-gap));
-  top: 8px;
+  right: calc(100% + var(--systemsense-gap) + var(--chat-border));
+  top: var(--notepad-inset);
   width: var(--systemsense-width);
-  height: calc(100% - 16px);
+  height: calc(100% - 2 * var(--notepad-inset));
   min-height: 0;
   max-height: none;
   box-sizing: border-box;
@@ -438,29 +500,27 @@ body {
       var(--comic-note-rule) 26px,
       var(--comic-note) 27px
     );
-  border: 2px solid var(--comic-ink);
-  border-radius: 7px 10px 8px 6px;
-  box-shadow:
-    4px 5px 0 rgba(40,49,63,0.13),
-    8px 10px 18px rgba(43,49,61,0.16);
-  transform: rotate(0.35deg);
+  border: var(--notepad-border) solid var(--comic-ink);
+  border-radius: var(--notepad-radii);
+  box-shadow: none;
+  transform: none;
   overflow: visible;
   z-index: 10;
 }
 
-/* Punched binding holes now run vertically down the left edge. */
+/* Ink rings sit inside the paper; the matching native holes are transparent
+   and click-through. No rectangular host strip is needed outside the paper. */
 .system-panel::before {
   content: "";
   position: absolute;
-  left: -10px;
-  top: 18px;
-  bottom: 18px;
-  width: 18px;
-  height: auto;
+  left: var(--binding-left);
+  top: var(--binding-top);
+  bottom: auto;
+  width: var(--binding-width);
+  height: round(down, calc(100% - 2 * var(--binding-top)), var(--binding-pitch));
   background:
-    radial-gradient(circle, var(--comic-ink) 0 2.2px, transparent 2.8px)
-    center top / 16px 22px repeat-y;
-  opacity: 0.78;
+    radial-gradient(circle, var(--comic-ink) 0 calc(var(--binding-hole-radius) + 1.5px), transparent calc(var(--binding-hole-radius) + 2px))
+    center top / var(--binding-width) var(--binding-pitch) repeat-y;
   pointer-events: none;
 }
 
@@ -487,11 +547,43 @@ body {
 }
 
 .system-content {
+  flex: 1;
   gap: 10px;
   min-height: 0;
   overflow-y: auto;
   scrollbar-color: rgba(40,49,63,0.28) transparent;
 }
+
+.system-content > * { flex-shrink: 0; }
+
+/* Content retains its natural height; only the conversation/code panes scroll. */
+.turn--user .bubble { white-space: pre-wrap; }
+.turn--assistant .bubble-plain { width: 100%; }
+.reveal-text { display: block; white-space: pre-wrap; }
+.reveal-text > div,
+.reveal-text ul,
+.reveal-text ol { white-space: normal; }
+.reveal-text ul,
+.reveal-text ol { margin: 0.4em 0; padding-left: 1.5em; }
+.reveal-text a { color: #584078; text-decoration: underline; }
+.reveal-text a:focus-visible { outline: 2px solid var(--comic-accent); }
+.reveal-text pre {
+  white-space: pre;
+  overflow-wrap: normal;
+  background: var(--comic-paper-deep);
+  border: 1px solid rgba(40,49,63,0.35);
+  scrollbar-width: thin;
+  scrollbar-color: var(--comic-ink-soft) transparent;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.panel .reveal-text code { font-family: Consolas, "Cascadia Mono", monospace !important; }
+#send-btn.is-ready { color: var(--comic-ink); background: var(--comic-user); box-shadow: none; }
+.activity-strip:not(.is-visible) { display: none; }
+.activity-strip .gear,
+.activity-strip .steps { color: var(--comic-ink-soft); text-shadow: none; }
+.status-row .dot { background: var(--comic-good); box-shadow: none; }
+#composer-input { min-width: 0; scrollbar-width: thin; }
 
 .system-hero,
 .system-metric,
@@ -543,11 +635,4 @@ body {
 
 .system-health-dot {
   border-color: var(--comic-paper);
-}
-
-@media (max-height: 700px) {
-  .system-panel {
-    top: 5px;
-    height: calc(100% - 10px);
-  }
 }

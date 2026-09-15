@@ -8,6 +8,7 @@ one visible avatar renderer, one animation state machine, and one persisted
 desktop position. The WebView is only the conversation surface.
 """
 
+import ctypes
 import os
 import queue
 import subprocess
@@ -24,6 +25,7 @@ def _chat_position_from_avatar(
     x: int,
     y: int,
     work_area: tuple[int, int, int, int] | None = None,
+    *, scale: float = 1.0,
 ) -> tuple[int, int]:
     """Place chat beside the avatar without covering it.
 
@@ -32,7 +34,7 @@ def _chat_position_from_avatar(
     monitor's left edge, then clamp the complete chat window to that monitor.
     """
 
-    width, height = EXPANDED_SIZE
+    width, height = (round(value * scale) for value in EXPANDED_SIZE)
     if work_area is None:
         work_area = _avatar._monitor_work_area_for_point(
             int(x) + _avatar.AVATAR_SIZE // 2,
@@ -58,6 +60,7 @@ def _launch_chat(
     *,
     x: int,
     y: int,
+    tail_left: bool = False,
 ) -> subprocess.Popen[Any] | None:
     executable = _desktop_python_executable()
     argv = [
@@ -71,7 +74,10 @@ def _launch_chat(
         "--y",
         str(int(y)),
         "--companion",
+        "--physical-position",
     ]
+    if tail_left:
+        argv.append("--tail-left")
     if config_path:
         argv.extend(["--config", str(Path(config_path).resolve())])
 
@@ -147,12 +153,22 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
         self.x, self.y = _avatar._recover_avatar_position(self.x, self.y)
         _avatar._set_window_position(self.root, self.x, self.y)
         self.state_store.update(avatar_x=self.x, avatar_y=self.y, companion_state=None)
-        chat_x, chat_y = _chat_position_from_avatar(self.x, self.y)
+        scale = 1.0
+        if os.name == "nt":
+            try:
+                get_dpi = ctypes.windll.user32.GetDpiForWindow
+                get_dpi.argtypes = [ctypes.c_void_p]
+                get_dpi.restype = ctypes.c_uint
+                scale = (get_dpi(_avatar._top_level_hwnd(self.root)) or 96) / 96
+            except (AttributeError, OSError):
+                pass
+        chat_x, chat_y = _chat_position_from_avatar(self.x, self.y, scale=scale)
         process = _launch_chat(
             self.project_root,
             self.config_path,
             x=chat_x,
             y=chat_y,
+            tail_left=chat_x >= self.x + _avatar.AVATAR_SIZE,
         )
         if process is None:
             self.runtime_state = "error"

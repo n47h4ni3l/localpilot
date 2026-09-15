@@ -6,6 +6,7 @@
 <title>LocalPilot</title>
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="chrome-polish.css">
+<link rel="stylesheet" href="comic-geometry.css">
 <link rel="stylesheet" href="comic-shell.css">
 <link rel="stylesheet" href="comic-final-polish.css">
 </head>
@@ -30,10 +31,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12h4l2-6 4 12 2-6h6"/><path d="M4 5a9 9 0 1016 0" opacity="0.35"/></svg>
           <span class="system-health-dot is-unknown" id="system-health-dot" aria-hidden="true"></span>
         </button>
-        <button class="icon-btn" id="history-toggle" aria-label="Conversation history">
+        <button class="icon-btn" id="history-toggle" aria-label="Conversation history" aria-expanded="false" aria-controls="history-sheet">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
         </button>
-        <button class="icon-btn" id="settings-toggle" aria-label="Settings">
+        <button class="icon-btn" id="settings-toggle" aria-label="Settings" aria-expanded="false" aria-controls="settings-popover">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 005 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06-.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
         </button>
         <button class="icon-btn" id="collapse-btn" aria-label="Close chat bubble">
@@ -114,7 +115,7 @@
         </div>
       </div>
 
-      <div class="history-sheet" id="history-sheet" aria-hidden="true">
+      <div class="history-sheet" id="history-sheet" aria-hidden="true" inert>
         <div class="history-sheet__header">
           Conversations
           <div class="history-actions">
@@ -125,9 +126,20 @@
           </div>
         </div>
         <div class="history-list" id="history-list"></div>
+        <div class="history-editor" id="history-editor" role="group" hidden aria-labelledby="history-editor-heading">
+          <h3 id="history-editor-heading"></h3>
+          <p id="history-editor-description"></p>
+          <label id="history-title-label" for="history-title">Conversation name</label>
+          <input id="history-title" type="text" maxlength="120" autocomplete="off" required>
+          <div class="history-editor__actions">
+            <button type="button" id="history-cancel">Cancel</button>
+            <button type="button" id="history-save">Save</button>
+          </div>
+        </div>
+        <p class="history-feedback" id="history-feedback" role="status" aria-live="polite" hidden></p>
       </div>
 
-      <div class="settings-popover" id="settings-popover">
+      <div class="settings-popover" id="settings-popover" aria-hidden="true" inert>
         <section>
           <h4>Status</h4>
           <div class="status-row"><span class="dot" id="settings-dot"></span><span id="settings-status-text">Runtime running</span></div>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import subprocess
 import threading
+import pytest
 
 from localpilot import native_avatar_companion, webview_app
 
@@ -25,6 +26,14 @@ def test_chat_moves_to_right_side_when_avatar_is_near_left_edge():
     x, y = native_avatar_companion._chat_position_from_avatar(0, 400, work_area)
     assert x == 128 + native_avatar_companion.CHAT_GAP
     assert 0 <= y <= 1040 - webview_app.EXPANDED_SIZE[1]
+
+
+@pytest.mark.parametrize("scale", [1, 1.25, 1.5, 1.75, 2, 3])
+def test_chat_handoff_uses_physical_size_on_scaled_and_negative_origin_displays(scale):
+    area = (-4000, -200, 0, 2500)
+    x, y = native_avatar_companion._chat_position_from_avatar(-200, 2200, area, scale=scale)
+    assert x + round(500 * scale) + native_avatar_companion.CHAT_GAP == -200
+    assert y + round(640 * scale) == 2200 + 128
 
 
 def test_launch_chat_marks_webview_as_existing_avatar_companion(tmp_path, monkeypatch):
@@ -59,6 +68,7 @@ def test_launch_chat_marks_webview_as_existing_avatar_companion(tmp_path, monkey
         "--y",
         "222",
         "--companion",
+        "--physical-position",
     ]
     assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
     assert captured["kwargs"]["stdout"] is subprocess.DEVNULL

@@ -160,11 +160,32 @@ class BrokerApp:
         payload: dict[str, Any] | None = None,
         *,
         session_id: str | None = None,
-    ) -> dict[str, Any]:
-        event = self.store.append_event(event_type, payload, session_id=session_id)
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            # A late runtime notification must not recreate deleted transcript data.
+            if session_id:
+                try:
+                    self.store.session(session_id)
+                except KeyError:
+                    return None
+            event = self.store.append_event(event_type, payload, session_id=session_id)
         with self._condition:
             self._condition.notify_all()
         return event
+
+    def rename_session(self, session_id: str, title: str) -> dict[str, Any]:
+        with self._lock:
+            session = self.store.rename_session(session_id, title)
+            self._event("session.renamed", {"session": session}, session_id=session_id)
+            return session
+
+    def delete_session(self, session_id: str) -> None:
+        with self._lock:
+            self.store.session(session_id)
+            if any(item["session_id"] == session_id for item in self._pending.values()):
+                raise RuntimeError("Wait until this conversation finishes responding before deleting it.")
+            self.store.delete_session(session_id)
+            self._event("session.deleted", {"session_id": session_id})
 
     def submit(self, session_id: str, content: str) -> dict[str, Any]:
         content = str(content)
@@ -172,18 +193,19 @@ class BrokerApp:
             raise ValueError("Message content must not be empty")
         if len(content) > 100_000:
             raise ValueError("Message content exceeds the 100,000 character limit")
-        self.store.session(session_id)
-        history = self.store.completed_history(session_id)
-        user_message = self.store.add_message(session_id, "user", content.strip())
-        assistant_message = self.store.add_message(session_id, "assistant", "", status="streaming")
-        request_id = str(uuid.uuid4())
-        timer = threading.Timer(
-            float(self.config.desktop.request_timeout_seconds),
-            self._expire_request,
-            args=(request_id,),
-        )
-        timer.daemon = True
         with self._lock:
+            # Serialize transcript creation with deletion, before the runtime starts.
+            self.store.session(session_id)
+            history = self.store.completed_history(session_id)
+            user_message = self.store.add_message(session_id, "user", content.strip())
+            assistant_message = self.store.add_message(session_id, "assistant", "", status="streaming")
+            request_id = str(uuid.uuid4())
+            timer = threading.Timer(
+                float(self.config.desktop.request_timeout_seconds),
+                self._expire_request,
+                args=(request_id,),
+            )
+            timer.daemon = True
             self._pending[request_id] = {
                 "session_id": session_id,
                 "message_id": assistant_message["id"],
@@ -210,15 +232,15 @@ class BrokerApp:
             with self._lock:
                 pending = self._pending.pop(request_id, None)
                 self._sync_foreground_turns_locked()
-            if pending is not None:
-                pending["timer"].cancel()
-            marker = f"[LocalPilot runtime unavailable: {type(exc).__name__}: {exc}]"
-            failed = self.store.update_message(assistant_message["id"], marker, status="error")
-            self._event(
-                "runtime.error",
-                {"error_type": type(exc).__name__, "message": str(exc), "message_record": failed},
-                session_id=session_id,
-            )
+                if pending is not None:
+                    pending["timer"].cancel()
+                marker = f"[LocalPilot runtime unavailable: {type(exc).__name__}: {exc}]"
+                failed = self.store.update_message(assistant_message["id"], marker, status="error")
+                self._event(
+                    "runtime.error",
+                    {"error_type": type(exc).__name__, "message": str(exc), "message_record": failed},
+                    session_id=session_id,
+                )
             raise
         return {
             "request_id": request_id,
@@ -229,6 +251,10 @@ class BrokerApp:
         }
 
     def _expire_request(self, request_id: str) -> None:
+        with self._lock:
+            self._expire_pending_request(request_id)
+
+    def _expire_pending_request(self, request_id: str) -> None:
         with self._lock:
             pending = self._pending.get(request_id)
             if pending is None or pending.get("timed_out"):
@@ -281,15 +307,15 @@ class BrokerApp:
             pending = list(self._pending.values())
             self._pending.clear()
             self._sync_foreground_turns_locked()
-        for item in pending:
-            item["timer"].cancel()
-            marker = f"[LocalPilot runtime restarted before this answer completed: {reason}]"
-            failed = self.store.update_message(item["message_id"], marker, status="error")
-            self._event(
-                "message.failed",
-                {"message": failed, "reason": reason},
-                session_id=item["session_id"],
-            )
+            for item in pending:
+                item["timer"].cancel()
+                marker = f"[LocalPilot runtime restarted before this answer completed: {reason}]"
+                failed = self.store.update_message(item["message_id"], marker, status="error")
+                self._event(
+                    "message.failed",
+                    {"message": failed, "reason": reason},
+                    session_id=item["session_id"],
+                )
 
     def _on_runtime_message(self, message: dict[str, Any]) -> None:
         kind = str(message.get("kind") or "")
@@ -335,31 +361,31 @@ class BrokerApp:
             with self._lock:
                 pending = self._pending.pop(request_id, None)
                 self._sync_foreground_turns_locked()
-            if pending is None:
-                return
-            pending["timer"].cancel()
-            answer = str(message.get("answer") or pending["content"])
-            completed = self.store.update_message(pending["message_id"], answer, status="complete")
-            self._event("message.completed", {"message": completed}, session_id=session_id)
-            self._event("runtime.state", {"state": "success"}, session_id=session_id)
-            self._event("runtime.state", {"state": "idle"}, session_id=session_id)
+                if pending is None:
+                    return
+                pending["timer"].cancel()
+                answer = str(message.get("answer") or pending["content"])
+                completed = self.store.update_message(pending["message_id"], answer, status="complete")
+                self._event("message.completed", {"message": completed}, session_id=session_id)
+                self._event("runtime.state", {"state": "success"}, session_id=session_id)
+                self._event("runtime.state", {"state": "idle"}, session_id=session_id)
             return
 
         if kind in {"error", "protocol_error"}:
             with self._lock:
                 pending = self._pending.pop(request_id, None)
                 self._sync_foreground_turns_locked()
-            payload = {
-                "error_type": str(message.get("error_type") or "RuntimeError"),
-                "message": "The local runtime reported an error.",
-            }
-            if pending is not None:
-                pending["timer"].cancel()
-                marker = f"[LocalPilot error: {payload['error_type']}: {payload['message']}]"
-                failed = self.store.update_message(pending["message_id"], marker, status="error")
-                payload["message_record"] = failed
-            self._event("runtime.error", payload, session_id=session_id)
-            self._event("runtime.state", {"state": "error"}, session_id=session_id)
+                payload = {
+                    "error_type": str(message.get("error_type") or "RuntimeError"),
+                    "message": "The local runtime reported an error.",
+                }
+                if pending is not None:
+                    pending["timer"].cancel()
+                    marker = f"[LocalPilot error: {payload['error_type']}: {payload['message']}]"
+                    failed = self.store.update_message(pending["message_id"], marker, status="error")
+                    payload["message_record"] = failed
+                self._event("runtime.error", payload, session_id=session_id)
+                self._event("runtime.state", {"state": "error"}, session_id=session_id)
 
     def events_after(
         self,
@@ -414,7 +440,7 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
         }
         if (
             origin is None
-            or requested_method not in {"GET", "POST"}
+            or requested_method not in {"GET", "POST", "PATCH", "DELETE"}
             or not requested_headers <= {"authorization", "content-type"}
         ):
             self.send_response(HTTPStatus.FORBIDDEN)
@@ -423,7 +449,7 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
             return
         self.send_response(HTTPStatus.NO_CONTENT)
         self._cors_headers(origin)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Max-Age", "600")
         self.send_header("Content-Length", "0")
@@ -484,6 +510,36 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def do_PATCH(self) -> None:
+        self._edit_session(delete=False)
+
+    def do_DELETE(self) -> None:
+        self._edit_session(delete=True)
+
+    def _edit_session(self, *, delete: bool) -> None:
+        try:
+            if not self._authorized():
+                self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                return
+            parts, _ = self._route()
+            if len(parts) != 3 or parts[:2] != ["v1", "sessions"]:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                return
+            if delete:
+                self.server.app.delete_session(parts[2])
+                self._json(HTTPStatus.OK, {"deleted": parts[2]})
+            else:
+                body = self._body()
+                title = body.get("title") if isinstance(body, dict) else None
+                session = self.server.app.rename_session(parts[2], title)
+                self._json(HTTPStatus.OK, {"session": session})
+        except KeyError as exc:
+            self._json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+        except (TypeError, ValueError) as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except RuntimeError as exc:
+            self._json(HTTPStatus.CONFLICT, {"error": str(exc)})
 
     def do_POST(self) -> None:
         try:

@@ -1,0 +1,32 @@
+/* Single source of truth for CSS and Win32 geometry. comic_geometry.py reads
+   these literal pixel values. Keep outer surfaces untransformed: rotations and
+   external shadows cannot be represented by a rounded Win32 host region. */
+:root {
+  --chat-window-width: 500px;
+  --chat-window-height: 640px;
+  --chat-min-width: 420px;
+  --chat-min-height: 520px;
+  --chat-panel-width: 458px;
+  --chat-right-inset: 34px;
+  --surface-left-inset: 8px;
+  --surface-top-inset: 8px;
+  --surface-bottom-inset: 10px;
+  --chat-border: 3px;
+  --chat-radii-x: 34px 28px 38px 30px;
+  --chat-radii-y: 28px 36px 30px 40px;
+  --systemsense-width: 360px;
+  --systemsense-gap: 22px;
+  --notepad-inset: 8px;
+  --notepad-border: 2px;
+  --notepad-radii: 7px 10px 8px 6px;
+  --binding-left: 5px;
+  --binding-top: 18px;
+  --binding-width: 16px;
+  --binding-pitch: 22px;
+  --binding-hole-radius: 3px;
+  --tail-right: 31px;
+  --tail-width: 33px;
+  --tail-top: 18px;
+  --tail-bottom: 13px;
+  --tail-offset: 45px;
+}

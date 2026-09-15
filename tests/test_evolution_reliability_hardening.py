@@ -171,6 +171,8 @@ def test_production_evolve_defers_when_another_process_owns_lease(tmp_path: Path
 
 def test_same_worktree_policy_retry_preserves_checkpoint(tmp_path: Path, monkeypatch) -> None:
     developer = _developer(tmp_path)
+    assert type(developer) is SelfDeveloper
+    assert developer.retry_candidate.__func__ is SelfDeveloper.retry_candidate
     workspace = tmp_path / "candidate"
     workspace.mkdir()
     branch = "localpilot/candidate-context-token-budget-20260915-000000"
@@ -206,6 +208,7 @@ def test_same_worktree_policy_retry_preserves_checkpoint(tmp_path: Path, monkeyp
         static_check_status="failed",
         static_check_failures=["example failure"],
     )
+    assert checkpoint.branch == branch
     developer.checkpoints.save(checkpoint)
     monkeypatch.setattr(
         developer.github,
@@ -218,7 +221,15 @@ def test_same_worktree_policy_retry_preserves_checkpoint(tmp_path: Path, monkeyp
         reason="Framework output contract failed; retry the same candidate.",
     )
     restored = developer.checkpoints.load()
+    rebind_event = developer.audit.latest("candidate_policy_retry_checkpoint_rebind")
 
+    assert result.resume_mode == "resume_existing_worktree"
+    assert result.branch == branch
+    assert rebind_event is not None, (
+        f"wrapper returned without checkpoint-rebind evidence; checkpoint={checkpoint.branch!r}, "
+        f"result={result.branch!r}, mode={result.resume_mode!r}"
+    )
+    assert rebind_event["status"] == "preserved", rebind_event
     assert restored is not None
     assert restored.cycle_id == result.retry_cycle_id
     assert restored.branch == branch

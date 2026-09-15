@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import json
+import sys
 import uuid
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
+from localpilot import selfdev_model_selection
 from localpilot.evolution_orchestrator import (
     EvolutionRunAlreadyActive,
     EvolutionRunLease,
 )
-from localpilot.implementation_backend import ClaudeCodeBackend
+from localpilot.implementation_backend import (
+    ClaudeCodeBackend,
+    ImplementationRequest,
+    ImplementationResult,
+    ImplementationStatus,
+)
 from localpilot.selfdev import (
     CandidateRejectionError,
     CandidateRetryError,
@@ -179,6 +187,151 @@ class SelfDeveloper(_BaseSelfDeveloper):
             force=force,
         )
 
+    def _claude_progress_path(self) -> Path:
+        return self.data_dir / "claude-repair-progress.json"
+
+    def _load_claude_repair_progress(
+        self,
+        *,
+        branch: str,
+        cycle_id: int,
+        stage: str,
+    ) -> dict[str, Any] | None:
+        path = self._claude_progress_path()
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        try:
+            repair_pass = int(payload.get("repair_pass") or 0)
+            saved_cycle = int(payload.get("cycle_id") or 0)
+        except (TypeError, ValueError):
+            return None
+        if (
+            saved_cycle != int(cycle_id)
+            or str(payload.get("branch") or "") != str(branch)
+            or str(payload.get("stage") or "") != str(stage)
+            or repair_pass < 1
+        ):
+            return None
+        return {
+            "repair_pass": repair_pass,
+            "review_feedback": str(payload.get("review_feedback") or "")[:12000],
+            "review_summary": str(payload.get("review_summary") or "")[:2000],
+        }
+
+    def _save_claude_repair_progress(
+        self,
+        *,
+        branch: str,
+        cycle_id: int,
+        task_id: str,
+        stage: str,
+        repair_pass: int,
+        review_feedback: str,
+        review_summary: str,
+    ) -> None:
+        path = self._claude_progress_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "branch": str(branch)[:300],
+            "cycle_id": int(cycle_id),
+            "task_id": str(task_id)[:200],
+            "stage": str(stage)[:100],
+            "repair_pass": max(1, int(repair_pass)),
+            "review_feedback": str(review_feedback or "")[:12000],
+            "review_summary": str(review_summary or "")[:2000],
+        }
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+        self.audit.write(
+            "selfdev_claude_repair_progress_saved",
+            branch=branch,
+            cycle_id=int(cycle_id),
+            task_id=str(task_id),
+            stage=stage,
+            repair_pass=payload["repair_pass"],
+        )
+
+    def _clear_claude_repair_progress(
+        self,
+        *,
+        branch: str,
+        cycle_id: int,
+        stage: str,
+        reason: str,
+    ) -> None:
+        path = self._claude_progress_path()
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        self.audit.write(
+            "selfdev_claude_repair_progress_cleared",
+            branch=branch,
+            cycle_id=int(cycle_id),
+            stage=stage,
+            reason=str(reason)[:500],
+        )
+
+    def _check_resources(
+        self,
+        force: bool,
+        branch: str,
+        *,
+        during_inference: bool = False,
+    ) -> None:
+        """Do not interrupt an already-admitted Claude/reviewer unit for wall time.
+
+        The whole-cycle budget is an admission boundary between Claude repair
+        passes. Once one pass has been admitted, its own 600-second backend
+        timeout plus the following bounded LocalPilot review are allowed to
+        finish. Foreground and memory/resource gates remain active because only
+        the run-budget object is temporarily detached while the base resource
+        checks execute.
+        """
+        if not bool(getattr(self, "_claude_unit_admitted", False)):
+            return super()._check_resources(
+                force,
+                branch,
+                during_inference=during_inference,
+            )
+        budget = self._budget
+        self._budget = None
+        try:
+            return super()._check_resources(
+                force,
+                branch,
+                during_inference=during_inference,
+            )
+        finally:
+            self._budget = budget
+
+    def _admit_claude_unit(self, *, force: bool, branch: str, stage: str) -> None:
+        """Enforce the whole-cycle budget before starting another bounded pass."""
+        self._claude_unit_admitted = False
+        selfdev_model_selection._run_inference_guard(
+            lambda: self._check_resources(
+                force,
+                branch,
+                during_inference=True,
+            )
+        )
+        self._claude_unit_admitted = True
+        self.audit.write(
+            "selfdev_claude_unit_admitted",
+            branch=branch,
+            stage=stage,
+            budget_boundary_checked=True,
+        )
+
     def _claude_code_backend(self, *, force: bool, branch: str):
         """Reuse one verified live preflight throughout one Claude repair loop.
 
@@ -209,7 +362,341 @@ class SelfDeveloper(_BaseSelfDeveloper):
             return result
 
         backend.preflight = stable_preflight
+        backend.resource_guard = lambda: selfdev_model_selection._run_inference_guard(
+            lambda: self._check_resources(
+                force,
+                branch,
+                during_inference=True,
+            )
+        )
         return backend
+
+    def _run_claude_code_implementation(
+        self,
+        *,
+        chat,
+        developer_model: str,
+        task: dict[str, Any],
+        branch: str,
+        workspace: Path,
+        tools,
+        cycle_id: int,
+        research: str,
+        grounding_plan: dict[str, list[Any]],
+        grounding_evidence: list[str],
+        evolution_context: str,
+        lessons: list[Any],
+        force: bool,
+    ) -> str:
+        """Run a durable Claude/reviewer loop whose repair passes survive pauses."""
+        allowed_paths = tuple(
+            sorted(
+                {
+                    Path(str(item)).as_posix()
+                    for field in ("referenced_paths", "new_runtime_paths")
+                    for item in grounding_plan.get(field, [])
+                    if str(item).strip()
+                }
+            )
+        )
+        if not allowed_paths:
+            raise RuntimeError("Claude Code implementation requires grounded allowed paths")
+
+        context = self._active_checkpoint if isinstance(self._active_checkpoint, dict) else {}
+        explicit_stage = str(getattr(self, "_active_claude_repair_stage", "") or "")
+        checkpoint_stage = str(context.get("milestone") or "")
+        stage = explicit_stage or (
+            checkpoint_stage
+            if checkpoint_stage in {"implementation", "ci_repair", "local_static_repair"}
+            else "implementation"
+        )
+        max_repairs = int(self.config.selfdev.implementation_review_repair_passes)
+        progress = self._load_claude_repair_progress(
+            branch=branch,
+            cycle_id=cycle_id,
+            stage=stage,
+        )
+        if progress is not None and int(progress["repair_pass"]) > max_repairs:
+            self._clear_claude_repair_progress(
+                branch=branch,
+                cycle_id=cycle_id,
+                stage=stage,
+                reason="configured repair limit is now lower than durable progress",
+            )
+            raise RuntimeError(
+                "implementation backend review_rejected: durable Claude repair progress "
+                "exceeds the current configured repair-pass limit"
+            )
+
+        prompt = (
+            "Work only inside the current isolated candidate Git workspace. Implement the focused contract below. "
+            "Perform the complete read, edit, repository-test, and repair loop before returning. Do not access parent "
+            "directories, localpilot-data, training/evals, training/evolution_execution/acceptance, secrets, the web, "
+            "GitHub, package managers, or any network endpoint. Do not commit, push, checkout, switch, branch, reset, "
+            "clean, delete files, spawn another shell, or weaken tests. Use only the explicitly available file tools, "
+            "narrow git inspection, Python compile checks, and existing repository tests. Change only the exact grounded "
+            f"paths listed here: {json.dumps(allowed_paths)}. Reviewer-protected paths are read-only: "
+            f"{json.dumps(sorted(tools.protected_paths))}. Finish with one strict JSON object containing summary and "
+            "tests. tests must be a non-empty list of {command, passed, exit_code, output_digest}; output_digest is a "
+            "SHA-256 digest of bounded command output, never raw logs or reasoning. Do not return chain-of-thought.\n"
+            f"Task: {task['title']}\nAcceptance: {json.dumps(task.get('acceptance', []), ensure_ascii=False)}\n"
+            f"Capability experiment contract:\n{evolution_context}\n"
+            f"LocalPilot research brief:\n{research[:12000]}\n"
+            f"Verified grounding plan:\n{json.dumps(grounding_plan, ensure_ascii=False)}\n"
+            f"Grounding evidence:\n{json.dumps(grounding_evidence, ensure_ascii=False)}\n"
+            f"Earlier reusable lessons:\n{json.dumps(lessons, ensure_ascii=False)}"
+        )
+
+        self._admit_claude_unit(force=force, branch=branch, stage=stage)
+        try:
+            backend = self._claude_code_backend(force=force, branch=branch)
+            preflight = backend.preflight()
+            self.audit.write(
+                "selfdev_implementation_preflight",
+                cycle_id=cycle_id,
+                backend=preflight.backend,
+                model=preflight.model,
+                executable=preflight.executable,
+                version=preflight.version,
+                context_tokens=preflight.context_tokens,
+                healthy=preflight.healthy,
+                messages=list(preflight.messages),
+            )
+            if not preflight.healthy:
+                raise RuntimeError(
+                    "implementation backend unavailable: " + "; ".join(preflight.messages)
+                )
+
+            if (workspace / "tests").is_dir():
+                uses_pytest = any(
+                    (workspace / name).is_file()
+                    for name in ("pytest.ini", "conftest.py")
+                )
+                pyproject = workspace / "pyproject.toml"
+                if pyproject.is_file() and "[tool.pytest" in pyproject.read_text(
+                    encoding="utf-8", errors="replace"
+                ):
+                    uses_pytest = True
+                test_command = (
+                    (sys.executable, "-m", "pytest", "-q")
+                    if uses_pytest
+                    else (
+                        sys.executable,
+                        "-m",
+                        "unittest",
+                        "discover",
+                        "-s",
+                        "tests",
+                        "-p",
+                        "test_*.py",
+                    )
+                )
+                test_commands = (test_command,)
+            else:
+                test_commands = ()
+
+            request = ImplementationRequest(
+                workspace=workspace,
+                prompt=prompt,
+                allowed_paths=allowed_paths,
+                protected_paths=tuple(sorted(tools.protected_paths)),
+                test_commands=test_commands,
+            )
+            if progress is not None:
+                repair_count = int(progress["repair_pass"])
+                self._emit(
+                    f"Resuming Claude Code {stage} repair pass {repair_count}/{max_repairs}"
+                )
+                result = backend.run(
+                    replace(
+                        request,
+                        review_feedback=(
+                            str(progress.get("review_feedback") or "")
+                            or str(progress.get("review_summary") or "")
+                        ),
+                    ),
+                    repair_pass=repair_count,
+                )
+            else:
+                repair_count = 0
+                result = backend.run(request)
+
+            review_status = "not_reviewed"
+            terminal_without_review = {
+                ImplementationStatus.BACKEND_UNAVAILABLE,
+                ImplementationStatus.TIMEOUT,
+                ImplementationStatus.RESOURCE_PRESSURE,
+                ImplementationStatus.CLI_ERROR,
+                ImplementationStatus.CONFINEMENT_VIOLATION,
+            }
+            if result.status in terminal_without_review:
+                if result.status == ImplementationStatus.CONFINEMENT_VIOLATION:
+                    self.memory.record_write_integrity_failure(cycle_id, result.summary)
+                self._record_backend_evidence(
+                    cycle_id=cycle_id,
+                    task=task,
+                    result=result,
+                    review_passes=repair_count,
+                    review_status=review_status,
+                )
+                raise RuntimeError(
+                    f"implementation backend {result.status.value}: {result.summary}"
+                )
+
+            while True:
+                static_result = tools.run_candidate_static_checks()
+                diff = tools.show_candidate_diff()
+                review_response = self._developer_chat(
+                    chat,
+                    force=force,
+                    branch=branch,
+                    model=developer_model,
+                    _request_think="low",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are LocalPilot's independent acceptance reviewer. You did not implement this change. "
+                                "Review the bounded diff, test evidence, static checks, task contract, and scope. Reject missing "
+                                "tests, failed tests, incomplete acceptance, unsafe scope, or unsupported evidence. Return one "
+                                "strict JSON object with approved (boolean), feedback (list of concrete repair instructions), "
+                                "and summary. Do not reveal hidden reasoning.\n"
+                                f"Task: {task['title']}\nAcceptance: {json.dumps(task.get('acceptance', []))}\n"
+                                f"Backend status: {result.status.value}\nChanged paths: {json.dumps(result.changed_paths)}\n"
+                                f"Test evidence: {json.dumps(result.tests, ensure_ascii=False)}\n"
+                                f"Static checks:\n{static_result[:6000]}\nDiff:\n{diff[-24000:]}"
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": "Independently accept or reject this candidate implementation.",
+                        },
+                    ],
+                    options={"temperature": 0.0, "num_predict": 1024},
+                )
+                try:
+                    approved, feedback, review_summary = self._implementation_review_payload(
+                        self._content(review_response)
+                    )
+                except ValueError as exc:
+                    approved, feedback, review_summary = (
+                        False,
+                        str(exc),
+                        "malformed LocalPilot review",
+                    )
+                if result.status != ImplementationStatus.COMPLETED:
+                    approved = False
+                    feedback = (
+                        f"Backend reported {result.status.value}: {result.summary}. "
+                        + feedback
+                    )[:12000]
+                if not static_result.startswith("static_checks=passed"):
+                    approved = False
+                    feedback = (
+                        f"LocalPilot static checks failed:\n{static_result}\n" + feedback
+                    )[:12000]
+                if approved:
+                    review_status = "approved"
+                    break
+                if repair_count >= max_repairs:
+                    review_status = "rejected"
+                    result = ImplementationResult(
+                        ImplementationStatus.REVIEW_REJECTED,
+                        result.backend,
+                        result.model,
+                        review_summary
+                        or feedback
+                        or "LocalPilot rejected the candidate implementation.",
+                        changed_paths=result.changed_paths,
+                        diff_digest=result.diff_digest,
+                        tests=result.tests,
+                        session_id=result.session_id,
+                        exit_code=result.exit_code,
+                        usage=result.usage,
+                        duration_seconds=result.duration_seconds,
+                        repair_pass=repair_count,
+                        sanitized_output=result.sanitized_output,
+                    )
+                    self._clear_claude_repair_progress(
+                        branch=branch,
+                        cycle_id=cycle_id,
+                        stage=stage,
+                        reason="independent review exhausted the configured repair limit",
+                    )
+                    break
+
+                next_repair = repair_count + 1
+                self._save_claude_repair_progress(
+                    branch=branch,
+                    cycle_id=cycle_id,
+                    task_id=str(task.get("id") or ""),
+                    stage=stage,
+                    repair_pass=next_repair,
+                    review_feedback=feedback,
+                    review_summary=review_summary,
+                )
+                self._claude_unit_admitted = False
+                self._admit_claude_unit(force=force, branch=branch, stage=stage)
+                repair_count = next_repair
+                self._emit(
+                    f"LocalPilot review requested Claude Code repair pass {repair_count}/{max_repairs}"
+                )
+                result = backend.run(
+                    replace(
+                        request,
+                        review_feedback=feedback or review_summary,
+                    ),
+                    repair_pass=repair_count,
+                )
+                if result.status in terminal_without_review:
+                    review_status = "repair_failed"
+                    break
+
+            for relative in result.changed_paths:
+                path = tools.validate_project_write(
+                    relative,
+                    (workspace / relative).read_text(encoding="utf-8"),
+                )
+                tools.files_written.add(path)
+                tools.write_count += 1
+            self._record_backend_evidence(
+                cycle_id=cycle_id,
+                task=task,
+                result=result,
+                review_passes=repair_count,
+                review_status=review_status,
+            )
+            if result.status != ImplementationStatus.COMPLETED or review_status != "approved":
+                raise RuntimeError(
+                    f"implementation backend {result.status.value}: {result.summary}"
+                )
+            self._clear_claude_repair_progress(
+                branch=branch,
+                cycle_id=cycle_id,
+                stage=stage,
+                reason="independent review approved the Claude implementation",
+            )
+            return json.dumps(
+                {
+                    "summary": result.summary,
+                    "reusable_lesson": (
+                        "Use Claude Code inside the candidate boundary and retain "
+                        "independent LocalPilot acceptance review."
+                    ),
+                    "evaluation_evidence": {
+                        "metric": task["evaluation"]["metric"],
+                        "baseline_evidence": task["evaluation"]["baseline"],
+                        "candidate_evidence": (
+                            "Claude Code tests passed; "
+                            f"diff sha256={result.diff_digest}; LocalPilot review approved."
+                        ),
+                        "result": "pending_ci",
+                        "measurement_artifact": task["evaluation"]["measurement_method"],
+                    },
+                }
+            )
+        finally:
+            self._claude_unit_admitted = False
 
     def _claude_repair_scope(self, workspace, tools) -> tuple[str, ...]:
         """Return the existing candidate-owned paths Claude may repair.
@@ -354,6 +841,8 @@ class SelfDeveloper(_BaseSelfDeveloper):
             allowed_paths=list(allowed_paths),
             reviewer_protected_paths=sorted(tools.protected_paths),
         )
+        previous_stage = getattr(self, "_active_claude_repair_stage", None)
+        self._active_claude_repair_stage = stage
         try:
             return self._run_claude_code_implementation(
                 chat=chat,
@@ -398,6 +887,14 @@ class SelfDeveloper(_BaseSelfDeveloper):
                     f"Claude Code {stage} temporarily unavailable; candidate preserved: {detail}"
                 ) from exc
             raise
+        finally:
+            if previous_stage is None:
+                try:
+                    delattr(self, "_active_claude_repair_stage")
+                except AttributeError:
+                    pass
+            else:
+                self._active_claude_repair_stage = previous_stage
 
     def _repair_static_failures(self, *args: Any, **kwargs: Any):
         """Preserve repair evidence and the capability-evaluation handoff."""

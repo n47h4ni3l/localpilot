@@ -22,9 +22,8 @@ class SelfDeveloper(_BaseSelfDeveloper):
 
     The base pipeline remains the single owner of research, grounding,
     implementation, safety checks, delivery, and durable learning. This wrapper
-    only closes lifecycle failure modes that sit around those stages: concurrent
-    invocations, retry/checkpoint continuity, durable framework-failure evidence,
-    and cleanup of clean terminal worktrees.
+    closes lifecycle failure modes around those stages and keeps configured
+    Claude Code ownership intact for implementation repair work.
     """
 
     def run_once(self, *, force: bool = False) -> EvolutionResult:
@@ -176,6 +175,170 @@ class SelfDeveloper(_BaseSelfDeveloper):
             )
         return super()._resume_checkpoint_candidate(
             (normalized, candidate, task, workspace),
+            force=force,
+        )
+
+    def _claude_repair_scope(self, workspace, tools) -> tuple[str, ...]:
+        """Return the existing candidate-owned paths Claude may repair.
+
+        A pushed candidate is normally clean, so ``git status`` alone is not
+        enough. The repair scope is the committed candidate diff from the merge
+        base with trusted main plus any current uncommitted candidate changes.
+        Reviewer-protected tests are always removed from the writable scope.
+        """
+        main_branch = str(self.config.github.main_branch).strip()
+        base = self.github._run(
+            ["git", "merge-base", main_branch, "HEAD"],
+            cwd=workspace,
+        )
+        if not base.ok or not base.stdout:
+            raise RuntimeError(
+                "Claude Code repair could not establish the candidate merge base with trusted main."
+            )
+        committed = self.github._run(
+            [
+                "git",
+                "diff",
+                "--name-only",
+                "--diff-filter=ACMRT",
+                f"{base.stdout}..HEAD",
+                "--",
+                ".",
+            ],
+            cwd=workspace,
+        )
+        if not committed.ok:
+            raise RuntimeError(
+                "Claude Code repair could not establish the committed candidate path scope: "
+                + (committed.stderr or committed.stdout or "git diff failed")
+            )
+
+        candidates = {
+            line.strip().replace("\\", "/")
+            for line in committed.stdout.splitlines()
+            if line.strip()
+        }
+        candidates.update(
+            str(item).strip().replace("\\", "/")
+            for item in self.github.candidate_changed_paths(workspace)
+            if str(item).strip()
+        )
+        scope: list[str] = []
+        for relative in sorted(candidates):
+            if relative in tools.protected_paths:
+                continue
+            try:
+                resolved = tools._resolve(relative)
+            except Exception:
+                continue
+            if resolved.is_file():
+                scope.append(relative)
+        return tuple(scope)
+
+    def _tool_stage(
+        self,
+        *,
+        chat,
+        model: str,
+        messages: list[dict[str, Any]],
+        functions,
+        rounds: int,
+        force: bool,
+        branch: str,
+        stage: str,
+    ) -> str:
+        """Keep LocalPilot as reviewer while Claude Code owns repair edits.
+
+        The base implementation predates the Claude Code backend and still uses
+        LocalPilot's direct file-tool loop for ``ci_repair`` and
+        ``local_static_repair``. When Claude Code is configured, route those
+        write stages through the same confined implementation backend and its
+        independent LocalPilot acceptance-review loop instead.
+        """
+        if (
+            stage not in {"ci_repair", "local_static_repair"}
+            or self.config.selfdev.implementation_backend != "claude_code"
+        ):
+            return super()._tool_stage(
+                chat=chat,
+                model=model,
+                messages=messages,
+                functions=functions,
+                rounds=rounds,
+                force=force,
+                branch=branch,
+                stage=stage,
+            )
+
+        context = self._active_checkpoint
+        if not isinstance(context, dict):
+            raise RuntimeError(
+                f"Claude Code {stage} requires an active candidate checkpoint."
+            )
+        task = context.get("task")
+        tools = context.get("tools")
+        workspace = context.get("workspace")
+        cycle_id = context.get("cycle_id")
+        if not isinstance(task, dict) or tools is None or workspace is None or cycle_id is None:
+            raise RuntimeError(
+                f"Claude Code {stage} could not resolve the active candidate context."
+            )
+        evaluation = task.get("evaluation")
+        if not isinstance(evaluation, dict):
+            raise RuntimeError(
+                f"Claude Code {stage} requires the candidate evaluation contract."
+            )
+
+        allowed_paths = self._claude_repair_scope(workspace, tools)
+        if not allowed_paths:
+            raise RuntimeError(
+                f"Claude Code {stage} has no safe candidate-owned paths to repair."
+            )
+
+        stage_label = "CI failure" if stage == "ci_repair" else "static-check failure"
+        system_context = "\n".join(
+            str(item.get("content") or "")
+            for item in messages
+            if isinstance(item, dict) and item.get("role") == "system"
+        )
+        research = (
+            f"REPAIR DIRECTIVE: Repair the existing candidate's {stage_label}. Preserve correct "
+            "existing work, make the smallest concrete fix, and do not broaden scope. LocalPilot "
+            "remains the independent reviewer and will send rejected work back for another bounded "
+            "Claude Code pass.\n\n"
+            f"Recorded repair evidence:\n{system_context[:18000]}"
+        )
+        lessons = self.memory.reusable_lessons(self.config.selfdev.lesson_limit)
+        self._emit(
+            f"Delegating {stage} edits to Claude Code across {len(allowed_paths)} confined path(s)"
+        )
+        self.audit.write(
+            "selfdev_claude_repair_handoff",
+            branch=branch,
+            cycle_id=int(cycle_id),
+            task_id=str(task.get("id") or ""),
+            stage=stage,
+            allowed_paths=list(allowed_paths),
+            reviewer_protected_paths=sorted(tools.protected_paths),
+        )
+        return self._run_claude_code_implementation(
+            chat=chat,
+            developer_model=model,
+            task=task,
+            branch=branch,
+            workspace=workspace,
+            tools=tools,
+            cycle_id=int(cycle_id),
+            research=research,
+            grounding_plan={
+                "referenced_paths": list(allowed_paths),
+                "new_runtime_paths": [],
+            },
+            grounding_evidence=[
+                "Repair scope is confined to existing candidate-owned paths relative to trusted main."
+            ],
+            evolution_context=self._evolution_context(task),
+            lessons=lessons,
             force=force,
         )
 

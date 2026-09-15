@@ -22,9 +22,14 @@ _SENSITIVE = re.compile(
     r"access[_-]?token|auth[_-]?token|refresh[_-]?token)\b\s*[:=]"
 )
 _TOKEN_SHAPES = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})")
+# The opaque-value heuristic must not classify normal durable identifiers such
+# as candidate branch slugs as secrets. Require mixed-case entropy plus digits;
+# explicit secret assignments and known provider token shapes remain covered by
+# the stronger guards above.
 _OPAQUE_VALUES = re.compile(
-    r"\b(?=[A-Za-z0-9+/=_-]{32,}\b)(?=[A-Za-z0-9+/=_-]*[A-Za-z])"
-    r"(?=[A-Za-z0-9+/=_-]*\d)[A-Za-z0-9+/=_-]+\b"
+    r"\b(?=[A-Za-z0-9+/=_-]{32,}\b)(?=[A-Za-z0-9+/=_-]*[A-Z])"
+    r"(?=[A-Za-z0-9+/=_-]*[a-z])(?=[A-Za-z0-9+/=_-]*\d)"
+    r"[A-Za-z0-9+/=_-]+\b"
 )
 
 

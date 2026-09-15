@@ -129,7 +129,7 @@ class SelfDevConfig:
     implementation_context_tokens: int = 65536
     implementation_max_turns: int = 40
     implementation_timeout_seconds: float = 600.0
-    implementation_review_repair_passes: int = 1
+    implementation_review_repair_passes: int = 12
     implementation_max_output_tokens: int = 2048
     implementation_max_output_chars: int = 120_000
     implementation_executable: str = "claude"
@@ -322,8 +322,8 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ValueError("selfdev.implementation_max_turns must be between 1 and 100")
     if not 30 <= cfg.selfdev.implementation_timeout_seconds <= 3600:
         raise ValueError("selfdev.implementation_timeout_seconds must be between 30 and 3600")
-    if not 1 <= cfg.selfdev.implementation_review_repair_passes <= 5:
-        raise ValueError("selfdev.implementation_review_repair_passes must be between 1 and 5")
+    if not 1 <= cfg.selfdev.implementation_review_repair_passes <= 20:
+        raise ValueError("selfdev.implementation_review_repair_passes must be between 1 and 20")
     if not 10_000 <= cfg.selfdev.implementation_max_output_chars <= 1_000_000:
         raise ValueError("selfdev.implementation_max_output_chars must be between 10000 and 1000000")
     if not 256 <= cfg.selfdev.implementation_max_output_tokens <= 8192:

@@ -97,7 +97,9 @@ implementation_model = "gpt-oss:20b"
 implementation_context_tokens = 65536
 implementation_max_turns = 40
 implementation_timeout_seconds = 600
-implementation_review_repair_passes = 1
+# LocalPilot independently reviews Claude Code's work and can send it back for
+# several bounded repair passes before retaining the candidate for later review.
+implementation_review_repair_passes = 12
 implementation_max_output_tokens = 2048
 implementation_max_output_chars = 120000
 # Use an absolute path when Claude Code is not on PATH, for example:

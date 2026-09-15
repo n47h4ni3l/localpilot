@@ -27,7 +27,7 @@ def test_one_model_is_used_across_operator_planning_review_and_implementation():
     assert cfg.selfdev.implementation_backend == "claude_code"
     assert cfg.selfdev.implementation_model == "gpt-oss:20b"
     assert cfg.selfdev.implementation_context_tokens == 65536
-    assert cfg.selfdev.implementation_review_repair_passes == 1
+    assert cfg.selfdev.implementation_review_repair_passes == 12
     assert cfg.selfdev.implementation_max_output_tokens == 2048
     assert cfg.selfdev.ollama_keep_alive == 0
     assert cfg.selfdev.candidate_file_soft_budget == 100
@@ -144,6 +144,19 @@ def test_implementation_backend_bounds_and_loopback_are_validated(tmp_path: Path
     )
     with pytest.raises(ValueError, match="max_output_tokens"):
         load_config(too_many_tokens)
+
+    generous_repair_budget = tmp_path / "repairs.toml"
+    generous_repair_budget.write_text(
+        '[selfdev]\nimplementation_review_repair_passes = 20\n', encoding="utf-8"
+    )
+    assert load_config(generous_repair_budget).selfdev.implementation_review_repair_passes == 20
+
+    excessive_repair_budget = tmp_path / "too-many-repairs.toml"
+    excessive_repair_budget.write_text(
+        '[selfdev]\nimplementation_review_repair_passes = 21\n', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="between 1 and 20"):
+        load_config(excessive_repair_budget)
 
 
 def test_local_tools_backend_is_an_explicit_rollback_setting(tmp_path: Path):

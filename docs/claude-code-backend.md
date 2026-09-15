@@ -23,12 +23,14 @@ implementation_model = "gpt-oss:20b"
 implementation_context_tokens = 65536
 implementation_max_turns = 40
 implementation_timeout_seconds = 600
-implementation_review_repair_passes = 1
+implementation_review_repair_passes = 12
 implementation_max_output_tokens = 2048
 implementation_max_output_chars = 120000
 implementation_executable = "E:\\Tools\\ClaudeCode\\claude.exe"
 implementation_base_url = "http://localhost:11434"
 ```
+
+LocalPilot independently reviews Claude Code's candidate after each implementation attempt. If review or static checks reject the candidate, it can send the concrete failure evidence back to Claude Code for another bounded repair pass. The default allowance is twelve repair passes, with configuration accepted up to twenty; whole-cycle wall-clock, resource, and foreground-preemption guards still bound the run.
 
 No Anthropic login is required in local Ollama mode. The child receives `ANTHROPIC_AUTH_TOKEN=ollama`, an empty `ANTHROPIC_API_KEY`, and `ANTHROPIC_BASE_URL=http://localhost:11434`. `ollama launch claude --config` is an optional interactive setup convenience; LocalPilot does not depend on it.
 

@@ -39,6 +39,43 @@ def test_model_selection_preserves_background_memory_ceiling():
     assert "qwen2.5:32b would project memory" in selection.reason
 
 
+def test_model_selection_allows_expected_model_load_above_admission_ceiling():
+    gib = 1024**3
+    selection = select_resource_aware_developer_model(
+        "gpt-oss:20b",
+        "gpt-oss:20b",
+        [],
+        {"gpt-oss:20b": 13 * gib},
+        total_memory_bytes=32 * gib,
+        available_memory_bytes=18 * gib,
+        max_memory_percent=82,
+        overhead_bytes=1 * gib,
+    )
+
+    assert selection.model == "gpt-oss:20b"
+    assert selection.projected_memory_percent == pytest.approx(87.5)
+    assert "82.0% background admission ceiling" in selection.reason
+    assert "94.0% / 2.0 GiB inference safety boundary" in selection.reason
+
+
+def test_model_selection_still_refuses_when_current_memory_exceeds_admission_ceiling():
+    gib = 1024**3
+    selection = select_resource_aware_developer_model(
+        "tiny",
+        "tiny",
+        [],
+        {"tiny": 1 * gib},
+        total_memory_bytes=32 * gib,
+        available_memory_bytes=5 * gib,
+        max_memory_percent=82,
+        overhead_bytes=0,
+    )
+
+    assert selection.model is None
+    assert selection.projected_memory_percent == pytest.approx(84.375)
+    assert "already exceeds the 82.0% background admission ceiling" in selection.reason
+
+
 def test_model_selection_defers_when_no_configured_model_fits():
     gib = 1024**3
     selection = select_resource_aware_developer_model(
@@ -84,12 +121,30 @@ def test_resident_everyday_model_is_preserved_when_context_overhead_would_be_uns
         total_memory_bytes=32 * gib,
         available_memory_bytes=6 * gib,
         max_memory_percent=82,
-        overhead_bytes=1 * gib,
+        overhead_bytes=5 * gib,
         resident_models={"daily"},
     )
 
     assert selection.model is None
     assert "Preserved the resident foreground model" in selection.reason
+    assert "inference emergency ceiling" in selection.reason
+
+
+def test_model_selection_preserves_minimum_free_memory_reserve():
+    gib = 1024**3
+    selection = select_resource_aware_developer_model(
+        "large",
+        "large",
+        [],
+        {"large": 15 * gib},
+        total_memory_bytes=32 * gib,
+        available_memory_bytes=17 * gib,
+        max_memory_percent=82,
+        overhead_bytes=1 * gib,
+    )
+
+    assert selection.model is None
+    assert "GiB available < 2.0 GiB reserve" in selection.reason
 
 
 def test_ollama_keep_alive_duration_parser_covers_runtime_forms():
@@ -133,4 +188,3 @@ def test_backlog_advances_only_after_validated_merge_or_terminal_rejection():
     assert choose_next_task(tasks, {"first"})["id"] == "second"
     assert choose_next_task(tasks, set(), set(), {"first"})["id"] == "second"
     assert choose_next_task(tasks, set(), set(), {"first", "second"}) is None
-

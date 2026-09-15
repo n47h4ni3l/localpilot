@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from localpilot.checkpoint import CheckpointStore, EvolutionCheckpoint, task_fingerprint
+from localpilot.config import Config
 from localpilot.evolution_orchestrator import EvolutionRunAlreadyActive, EvolutionRunLease
-from localpilot.selfdev_response_parsing import _json_object
+from localpilot.evolution_reliability import SelfDeveloper
+from localpilot.selfdev import SelfDeveloper as BaseSelfDeveloper
+from localpilot.selfdev_response_parsing import StaticRepairResult, _json_object
+from localpilot.selfdev_results import EvolutionResult
 
 
 def _task() -> dict:
@@ -35,6 +40,12 @@ def _task() -> dict:
         },
         "expected_complexity": "medium",
     }
+
+
+def _developer(tmp_path: Path) -> SelfDeveloper:
+    config = Config()
+    config.agent.data_dir = "data"
+    return SelfDeveloper(config, tmp_path)
 
 
 def test_json_object_uses_last_complete_outer_object() -> None:
@@ -143,3 +154,140 @@ def test_evolution_run_lease_recovers_stale_owner(tmp_path: Path) -> None:
         assert payload["invocation_id"] == "replacement"
     finally:
         lease.release()
+
+
+def test_production_evolve_defers_when_another_process_owns_lease(tmp_path: Path) -> None:
+    developer = _developer(tmp_path)
+    lease = EvolutionRunLease(tmp_path / "data" / "evolution-run.lock", "owner")
+    lease.acquire()
+    try:
+        result = developer.run_once(force=True)
+    finally:
+        lease.release()
+
+    assert result.status == "deferred"
+    assert "already active" in result.summary
+
+
+def test_same_worktree_policy_retry_preserves_checkpoint(tmp_path: Path, monkeypatch) -> None:
+    developer = _developer(tmp_path)
+    workspace = tmp_path / "candidate"
+    workspace.mkdir()
+    branch = "localpilot/candidate-context-token-budget-20260915-000000"
+    cycle_id = developer.memory.start_cycle(
+        task_id=_task()["id"],
+        branch=branch,
+        everyday_model="daily",
+        developer_model="developer",
+        workspace=workspace,
+        is_worktree=True,
+    )
+    developer.memory.finish_cycle(
+        cycle_id,
+        status="candidate_needs_work",
+        summary="Static repair did not complete.",
+        reusable_lesson="Preserve framework failure evidence.",
+        checks_passed=False,
+        pushed=False,
+    )
+    developer.memory.record_write_integrity_failure(
+        cycle_id,
+        "Framework policy blocked the structured static-repair contract.",
+    )
+    checkpoint = EvolutionCheckpoint.create(
+        cycle_id=cycle_id,
+        task=_task(),
+        branch=branch,
+        workspace=workspace,
+        milestone="local_static_repair",
+        files_changed=["localpilot/example.py"],
+        git_head="a" * 40,
+        git_state_digest="b" * 64,
+        static_check_status="failed",
+        static_check_failures=["example failure"],
+    )
+    developer.checkpoints.save(checkpoint)
+    monkeypatch.setattr(
+        developer.github,
+        "worktree_for_branch",
+        lambda candidate_branch: workspace if candidate_branch == branch else None,
+    )
+
+    result = developer.retry_candidate(
+        branch,
+        reason="Framework output contract failed; retry the same candidate.",
+    )
+    restored = developer.checkpoints.load()
+
+    assert restored is not None
+    assert restored.cycle_id == result.retry_cycle_id
+    assert restored.branch == branch
+    assert restored.milestone == "local_static_repair"
+    assert restored.git_state_digest == checkpoint.git_state_digest
+
+
+def test_structured_static_repair_failure_becomes_durable_policy_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    developer = _developer(tmp_path)
+    workspace = tmp_path / "candidate"
+    workspace.mkdir()
+    branch = "localpilot/candidate-repair-contract-20260915-000000"
+    cycle_id = developer.memory.start_cycle(
+        task_id="repair-contract",
+        branch=branch,
+        everyday_model="daily",
+        developer_model="developer",
+        workspace=workspace,
+        is_worktree=True,
+    )
+
+    def failed_repair(_self, *args, **kwargs):
+        return StaticRepairResult(
+            "static_checks=failed",
+            False,
+            "Structured static repair failed: ValueError: Model response did not contain a valid JSON object.",
+            3,
+        )
+
+    monkeypatch.setattr(BaseSelfDeveloper, "_repair_static_failures", failed_repair)
+    developer._repair_static_failures(cycle_id=cycle_id, branch=branch)
+    durable = developer.memory.candidate_for_cycle(cycle_id)
+
+    assert durable is not None
+    assert "Framework policy/orchestration failure" in durable.write_integrity_failure
+    assert "structured static-repair contract failed" in durable.write_integrity_failure
+
+
+def test_clean_terminal_candidate_worktree_is_removed(tmp_path: Path, monkeypatch) -> None:
+    developer = _developer(tmp_path)
+    workspace = tmp_path / "candidate"
+    workspace.mkdir()
+    branch = "localpilot/candidate-clean-failure-20260915-000000"
+    removed: list[tuple[str, Path]] = []
+
+    monkeypatch.setattr(
+        BaseSelfDeveloper,
+        "_continue_candidate",
+        lambda _self, **_kwargs: EvolutionResult(
+            "failed", branch, workspace, "pre-write failure", False
+        ),
+    )
+    monkeypatch.setattr(developer.github, "worktree_for_branch", lambda _branch: workspace)
+    monkeypatch.setattr(developer.github, "candidate_changed_paths", lambda _workspace: [])
+    monkeypatch.setattr(developer.github, "branch_has_candidate_commit", lambda _workspace: False)
+
+    def remove(candidate_branch, *, expected_workspace):
+        removed.append((candidate_branch, Path(expected_workspace)))
+        return SimpleNamespace(ok=True, stdout="removed", stderr="")
+
+    monkeypatch.setattr(developer.github, "remove_candidate_worktree", remove)
+    result = developer._continue_candidate(
+        branch=branch,
+        workspace=workspace,
+        is_worktree=True,
+    )
+
+    assert removed == [(branch, workspace.resolve())]
+    assert "worktree removed" in result.summary

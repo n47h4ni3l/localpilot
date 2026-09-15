@@ -125,7 +125,14 @@ def select_resource_aware_developer_model(
     overhead_bytes: int = 0,
     resident_models: Iterable[str] = (),
 ) -> DeveloperModelSelection:
-    """Select the first configured model that preserves the memory ceiling."""
+    """Select a model after background admission, bounded by inference safety.
+
+    ``max_memory_percent`` is the conservative background-admission threshold.
+    It applies to memory already in use before LocalPilot loads a developer
+    model. Expected model residency is instead checked against the separate
+    inference emergency ceiling and minimum-free-memory reserve used by the
+    streaming guard.
+    """
     candidates: list[str] = []
     for name in (preferred, everyday, *fallbacks):
         normalized = str(name).strip()
@@ -133,13 +140,52 @@ def select_resource_aware_developer_model(
             candidates.append(normalized)
 
     total = max(1, int(total_memory_bytes))
-    available = max(0, int(available_memory_bytes))
+    available = max(0, min(int(available_memory_bytes), total))
     used = max(0, total - available)
-    ceiling = total * max(0.0, min(float(max_memory_percent), 100.0)) / 100.0
+    admission_percent = max(0.0, min(float(max_memory_percent), 100.0))
+    admission_ceiling = total * admission_percent / 100.0
+    current_percent = used * 100.0 / total
+
+    if used > admission_ceiling:
+        return DeveloperModelSelection(
+            None,
+            None,
+            current_percent,
+            f"Current memory {current_percent:.1f}% already exceeds the "
+            f"{admission_percent:.1f}% background admission ceiling; "
+            "developer-model loading was not attempted.",
+        )
+
+    inference_ceiling = total * _INFERENCE_EMERGENCY_MEMORY_PERCENT / 100.0
+    minimum_available = int(_INFERENCE_MIN_AVAILABLE_GIB * _GIB)
     rejected: list[str] = []
     resident = {str(name).strip() for name in resident_models}
     if everyday in resident and everyday in candidates:
         candidates = [everyday, *(name for name in candidates if name != everyday)]
+
+    def projection_status(projected: int) -> tuple[bool, float, float]:
+        projected_percent = projected * 100.0 / total
+        projected_available = max(0, total - projected)
+        projected_available_gib = projected_available / _GIB
+        safe = (
+            projected < inference_ceiling
+            and projected_available >= minimum_available
+        )
+        return safe, projected_percent, projected_available_gib
+
+    def rejection_detail(name: str, projected_percent: float, available_gib: float) -> str:
+        reasons: list[str] = []
+        if projected_percent >= _INFERENCE_EMERGENCY_MEMORY_PERCENT:
+            reasons.append(
+                f"{projected_percent:.1f}% >= "
+                f"{_INFERENCE_EMERGENCY_MEMORY_PERCENT:.1f}% inference emergency ceiling"
+            )
+        if available_gib < _INFERENCE_MIN_AVAILABLE_GIB:
+            reasons.append(
+                f"{available_gib:.2f} GiB available < "
+                f"{_INFERENCE_MIN_AVAILABLE_GIB:.1f} GiB reserve"
+            )
+        return f"{name} would project memory to " + " and ".join(reasons)
 
     for name in candidates:
         if name not in installed:
@@ -151,20 +197,27 @@ def select_resource_aware_developer_model(
             continue
         if name in resident:
             projected = used + max(0, int(overhead_bytes))
-            projected_percent = projected * 100.0 / total
-            if projected <= ceiling:
+            safe, projected_percent, projected_available_gib = projection_status(projected)
+            if safe:
                 skipped = f"Skipped {'; '.join(rejected)}. " if rejected else ""
                 return DeveloperModelSelection(
                     name,
                     size,
                     projected_percent,
-                    f"{skipped}Reused resident {name}; projected incremental memory "
-                    f"{projected_percent:.1f}% within the {max_memory_percent:.1f}% "
-                    "background ceiling. This preserves foreground model residency.",
+                    f"{skipped}Reused resident {name}; current memory passed the "
+                    f"{admission_percent:.1f}% background admission ceiling and projected "
+                    f"incremental memory is {projected_percent:.1f}% with "
+                    f"{projected_available_gib:.2f} GiB available, inside the "
+                    f"{_INFERENCE_EMERGENCY_MEMORY_PERCENT:.1f}% / "
+                    f"{_INFERENCE_MIN_AVAILABLE_GIB:.1f} GiB inference safety boundary. "
+                    "This preserves foreground model residency.",
                 )
             rejected.append(
-                f"resident {name} plus context overhead would project memory to "
-                f"{projected_percent:.1f}% > {max_memory_percent:.1f}%"
+                rejection_detail(
+                    f"resident {name} plus context overhead",
+                    projected_percent,
+                    projected_available_gib,
+                )
             )
             return DeveloperModelSelection(
                 None,
@@ -175,19 +228,22 @@ def select_resource_aware_developer_model(
                 + ".",
             )
         projected = used + max(0, int(size)) + max(0, int(overhead_bytes))
-        projected_percent = projected * 100.0 / total
-        if projected <= ceiling:
+        safe, projected_percent, projected_available_gib = projection_status(projected)
+        if safe:
             skipped = f"Skipped {'; '.join(rejected)}. " if rejected else ""
             return DeveloperModelSelection(
                 name,
                 size,
                 projected_percent,
-                f"{skipped}Selected {name}; projected memory {projected_percent:.1f}% "
-                f"within the {max_memory_percent:.1f}% background ceiling.",
+                f"{skipped}Selected {name}; current memory passed the "
+                f"{admission_percent:.1f}% background admission ceiling and projected "
+                f"loaded-model memory is {projected_percent:.1f}% with "
+                f"{projected_available_gib:.2f} GiB available, inside the "
+                f"{_INFERENCE_EMERGENCY_MEMORY_PERCENT:.1f}% / "
+                f"{_INFERENCE_MIN_AVAILABLE_GIB:.1f} GiB inference safety boundary.",
             )
         rejected.append(
-            f"{name} would project memory to {projected_percent:.1f}% "
-            f"> {max_memory_percent:.1f}%"
+            rejection_detail(name, projected_percent, projected_available_gib)
         )
 
     detail = "; ".join(rejected) or "no configured model candidates were provided"
@@ -195,7 +251,8 @@ def select_resource_aware_developer_model(
         None,
         None,
         None,
-        f"No installed developer model fits the background memory budget: {detail}.",
+        f"No installed developer model fits the inference memory safety budget after "
+        f"passing the {admission_percent:.1f}% background admission gate: {detail}.",
     )
 
 

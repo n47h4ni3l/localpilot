@@ -90,13 +90,14 @@ try {
     Assert-LastExitCode "Could not fast-forward '$Branch' from '$Remote/$Branch'."
 
     Write-Host "Refreshing LocalPilot environment..."
+    # bootstrap.ps1 and build-systemsense-hardware.ps1 use terminating errors
+    # for failure. Do not inspect LASTEXITCODE after a PowerShell script because
+    # it can legitimately retain the last native command's code from inside it.
     & (Join-Path $repoRoot "scripts\bootstrap.ps1")
-    Assert-LastExitCode "LocalPilot bootstrap failed."
 
     $runtimeIdentifier = Get-RuntimeIdentifier
     Write-Host "Rebuilding SystemSense hardware provider ($runtimeIdentifier)..."
     & (Join-Path $repoRoot "scripts\build-systemsense-hardware.ps1") -RuntimeIdentifier $runtimeIdentifier
-    Assert-LastExitCode "SystemSense hardware provider build failed."
 
     if (-not $SkipHardwareSmokeCheck) {
         $provider = Join-Path $repoRoot "localpilot\_hardware\$runtimeIdentifier\LocalPilot.SystemSense.HardwareProvider.exe"

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 from localpilot import systemsense_collectors
 from localpilot.systemsense_hardware import (
     BundledHardwareMonitorCollector,
@@ -37,6 +40,18 @@ class FakeWmi:
                 }
             ]
         return []
+
+
+class FakeStdin:
+    def __init__(self):
+        self.writes = []
+        self.flushes = 0
+
+    def write(self, value):
+        self.writes.append(value)
+
+    def flush(self):
+        self.flushes += 1
 
 
 def test_package_installs_bundled_first_collector():
@@ -99,6 +114,49 @@ def test_bundled_payload_normalization_rejects_non_sensor_payloads():
 
     assert result["available"] is False
     assert result["sensors"] == []
+
+
+def test_provider_readiness_uses_separate_startup_handshake(tmp_path):
+    collector = BundledHardwareMonitorCollector(
+        tmp_path / "provider.exe",
+        timeout_seconds=1.0,
+        startup_timeout_seconds=12.0,
+    )
+    stdin = FakeStdin()
+    process = SimpleNamespace(pid=4242, stdin=stdin)
+    collector._responses.put(
+        (
+            4242,
+            json.dumps(
+                {
+                    "ok": True,
+                    "source": "LibreHardwareMonitorLib",
+                    "command": "pong",
+                }
+            ),
+        )
+    )
+
+    ready, errors = collector._wait_until_ready(process)
+
+    assert ready is True
+    assert errors == []
+    assert stdin.writes == ["ping\n"]
+    assert stdin.flushes == 1
+    assert collector.startup_timeout_seconds == 12.0
+    assert collector.timeout_seconds == 1.0
+
+
+def test_provider_response_wait_ignores_lines_from_replaced_process(tmp_path):
+    collector = BundledHardwareMonitorCollector(tmp_path / "provider.exe")
+    process = SimpleNamespace(pid=22)
+    collector._responses.put((11, json.dumps({"ok": False, "command": "stale"})))
+    collector._responses.put((22, json.dumps({"ok": True, "command": "pong"})))
+
+    payload, error = collector._await_payload(process, timeout_seconds=0.2)
+
+    assert error is None
+    assert payload == {"ok": True, "command": "pong"}
 
 
 def test_collector_close_releases_bundled_provider():

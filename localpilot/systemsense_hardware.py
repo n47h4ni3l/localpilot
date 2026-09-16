@@ -14,7 +14,8 @@ from localpilot.process import hidden_process_creation_flags
 
 
 _HELPER_NAME = "LocalPilot.SystemSense.HardwareProvider.exe"
-_DEFAULT_TIMEOUT_SECONDS = 5.0
+_DEFAULT_TIMEOUT_SECONDS = 10.0
+_DEFAULT_STARTUP_TIMEOUT_SECONDS = 30.0
 _legacy_collector_factory: Callable[..., Any] | None = None
 
 
@@ -45,6 +46,11 @@ class BundledHardwareMonitorCollector:
     The helper is a separate read-only process so low-level hardware probing is
     isolated from the LocalPilot runtime. One helper stays alive across samples;
     the process exits automatically when its stdin closes with the parent.
+
+    LibreHardwareMonitor performs its hardware enumeration before it begins
+    reading commands from stdin. On machines with many devices that cold start
+    can take materially longer than a normal warm sensor snapshot, so startup
+    readiness and per-snapshot timeouts are deliberately separate.
     """
 
     def __init__(
@@ -52,6 +58,7 @@ class BundledHardwareMonitorCollector:
         helper_path: str | Path | None = None,
         *,
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+        startup_timeout_seconds: float = _DEFAULT_STARTUP_TIMEOUT_SECONDS,
         popen_factory: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
     ) -> None:
         self.helper_path = (
@@ -60,6 +67,9 @@ class BundledHardwareMonitorCollector:
             else bundled_helper_path()
         )
         self.timeout_seconds = max(0.5, float(timeout_seconds))
+        self.startup_timeout_seconds = max(
+            self.timeout_seconds, float(startup_timeout_seconds)
+        )
         self._popen_factory = popen_factory
         self._process: subprocess.Popen[str] | None = None
         self._responses: queue.Queue[tuple[int, str]] = queue.Queue()
@@ -105,6 +115,57 @@ class BundledHardwareMonitorCollector:
         with self._lock:
             self._stop_process()
 
+    def _await_payload(
+        self,
+        process: subprocess.Popen[str],
+        *,
+        timeout_seconds: float,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None, "timeout"
+            try:
+                pid, line = self._responses.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            if pid != int(process.pid):
+                # A line from a provider instance that has already been replaced
+                # must never satisfy the current process's request.
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                return None, "invalid-json"
+            if not isinstance(payload, dict):
+                return None, "invalid-payload"
+            return payload, None
+
+    def _wait_until_ready(
+        self, process: subprocess.Popen[str]
+    ) -> tuple[bool, list[str]]:
+        if process.stdin is None:
+            return False, ["bundled-provider:no-stdin"]
+        try:
+            # The C# helper does not read this until Computer.Open() has
+            # completed. A pong therefore proves that LibreHardwareMonitor has
+            # finished its cold hardware enumeration and is ready for snapshots.
+            process.stdin.write("ping\n")
+            process.stdin.flush()
+        except (OSError, ValueError):
+            return False, ["bundled-provider:readiness-write-failed"]
+
+        payload, error = self._await_payload(
+            process,
+            timeout_seconds=self.startup_timeout_seconds,
+        )
+        if error is not None:
+            return False, [f"bundled-provider:startup-{error}"]
+        if not payload or not payload.get("ok") or payload.get("command") != "pong":
+            return False, ["bundled-provider:readiness-invalid"]
+        return True, []
+
     def _start_process(self) -> tuple[subprocess.Popen[str] | None, list[str]]:
         process = self._process
         if process is not None and process.poll() is None:
@@ -140,6 +201,11 @@ class BundledHardwareMonitorCollector:
             daemon=True,
         )
         self._reader_thread.start()
+
+        ready, errors = self._wait_until_ready(process)
+        if not ready:
+            self._stop_process()
+            return None, errors
         return process, []
 
     @staticmethod
@@ -201,34 +267,19 @@ class BundledHardwareMonitorCollector:
                     "errors": ["bundled-provider:write-failed"],
                 }
 
-            deadline = time.monotonic() + self.timeout_seconds
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    self._stop_process()
-                    return {
-                        "source": "LibreHardwareMonitorLib",
-                        "available": False,
-                        "sensors": [],
-                        "errors": ["bundled-provider:timeout"],
-                    }
-                try:
-                    pid, line = self._responses.get(timeout=remaining)
-                except queue.Empty:
-                    continue
-                if pid != int(process.pid):
-                    continue
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    self._stop_process()
-                    return {
-                        "source": "LibreHardwareMonitorLib",
-                        "available": False,
-                        "sensors": [],
-                        "errors": ["bundled-provider:invalid-json"],
-                    }
-                return self._normalize_payload(payload)
+            payload, error = self._await_payload(
+                process,
+                timeout_seconds=self.timeout_seconds,
+            )
+            if error is not None:
+                self._stop_process()
+                return {
+                    "source": "LibreHardwareMonitorLib",
+                    "available": False,
+                    "sensors": [],
+                    "errors": [f"bundled-provider:snapshot-{error}"],
+                }
+            return self._normalize_payload(payload)
 
 
 class SystemSenseHardwareCollector:

@@ -17,8 +17,8 @@ class _BaseCollector:
             "storage": {
                 "io": {"read_mb_s": 1.0, "write_mb_s": 2.0},
                 "volumes": [
-                    {"device": "C:", "free_percent": 31.0},
-                    {"device": "D:", "free_percent": 8.0},
+                    {"device": "C drive", "free_percent": 31.0},
+                    {"device": "D drive", "free_percent": 8.0},
                 ],
             },
             "network": {"send_mbps": 0.1, "receive_mbps": 0.2},

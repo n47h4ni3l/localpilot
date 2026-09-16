@@ -8,3 +8,11 @@ from localpilot.systemsense_hardware import install_bundled_hardware_provider as
 
 _install_hardware_provider()
 del _install_hardware_provider
+
+# Keep LocalPilot's model-facing machine evidence on canonical raw collector
+# output while deriving a separate, one-way normalized snapshot for the human
+# desktop UI. The presentation layer must never become model evidence.
+from localpilot.systemsense_views import install_systemsense_truth_views as _install_systemsense_truth_views
+
+_install_systemsense_truth_views()
+del _install_systemsense_truth_views

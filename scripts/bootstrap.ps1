@@ -51,6 +51,30 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "Pillow: $pillowVersion"
 
+# Source checkouts build the same self-contained sensor helper that packaged
+# releases carry inside LocalPilot. The helper is optional only when the SDK is
+# unavailable during development; SystemSense retains its native/WMI fallbacks.
+if ($env:OS -eq "Windows_NT") {
+    $rid = switch ($env:PROCESSOR_ARCHITECTURE) {
+        "ARM64" { "win-arm64" }
+        "x86" { "win-x86" }
+        default { "win-x64" }
+    }
+    $hardwareProvider = Join-Path $PWD "localpilot\_hardware\$rid\LocalPilot.SystemSense.HardwareProvider.exe"
+    if (-not (Test-Path -LiteralPath $hardwareProvider -PathType Leaf)) {
+        if (Get-Command dotnet -ErrorAction SilentlyContinue) {
+            & (Join-Path $PWD "scripts\build-systemsense-hardware.ps1") -RuntimeIdentifier $rid
+            if ($LASTEXITCODE -ne 0) {
+                throw "SystemSense hardware provider build failed."
+            }
+        } else {
+            Write-Host "SystemSense hardware provider was not built because the .NET SDK is not installed. Native/WMI telemetry will remain available; packaged releases include the helper automatically." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "SystemSense hardware provider: bundled ($rid)"
+    }
+}
+
 if (-not (Test-Path "localpilot.toml")) {
     Copy-Item "config.example.toml" "localpilot.toml"
     Write-Host "Created localpilot.toml from the example config."

@@ -7,6 +7,7 @@ htmlcov/
 .env
 localpilot.toml
 localpilot-data/
+localpilot/_hardware/
 *.log
 .DS_Store
 Thumbs.db

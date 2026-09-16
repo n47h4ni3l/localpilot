@@ -2,30 +2,80 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "LocalPilot v0.1 bootstrap" -ForegroundColor Cyan
 
-if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-    throw "Python was not found on PATH. Install Python 3.11 or newer, then rerun this script."
+function Test-Python311 {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Executable,
+        [string[]]$PrefixArgs = @()
+    )
+
+    try {
+        $output = & $Executable @PrefixArgs -c "import platform,sys; print(platform.python_version()); raise SystemExit(0 if sys.version_info >= (3,11) else 1)" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $output) {
+            return [string]($output | Select-Object -Last 1)
+        }
+    } catch {
+        # Treat launch failures (including the Windows Store python alias) as
+        # an unusable interpreter and continue probing other candidates.
+    }
+
+    return $null
 }
 
-$versionOk = python -c "import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)"
-if ($LASTEXITCODE -ne 0) {
-    $actual = python -c "import platform; print(platform.python_version())"
-    throw "Python $actual is too old. LocalPilot requires Python 3.11+."
+$python = Join-Path $PWD ".venv\Scripts\python.exe"
+$pythonVersion = $null
+
+if (Test-Path -LiteralPath $python -PathType Leaf) {
+    $pythonVersion = Test-Python311 -Executable $python
+    if (-not $pythonVersion) {
+        throw "LocalPilot's existing .venv does not contain a usable Python 3.11+ interpreter. Recreate the virtual environment, then rerun this script."
+    }
+} else {
+    $bootstrapPython = $null
+    $bootstrapPythonArgs = @()
+
+    $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
+    if ($pyLauncher) {
+        $candidateVersion = Test-Python311 -Executable $pyLauncher.Source -PrefixArgs @("-3")
+        if ($candidateVersion) {
+            $bootstrapPython = $pyLauncher.Source
+            $bootstrapPythonArgs = @("-3")
+        }
+    }
+
+    if (-not $bootstrapPython) {
+        $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+        if ($pythonCommand) {
+            $candidateVersion = Test-Python311 -Executable $pythonCommand.Source
+            if ($candidateVersion) {
+                $bootstrapPython = $pythonCommand.Source
+            }
+        }
+    }
+
+    if (-not $bootstrapPython) {
+        throw "Python 3.11 or newer was not found. Install Python 3.11+ (or make the Python launcher available), then rerun this script."
+    }
+
+    Write-Host "Creating isolated Python environment..."
+    & $bootstrapPython @bootstrapPythonArgs -m venv .venv
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to create LocalPilot's virtual environment."
+    }
+
+    $pythonVersion = Test-Python311 -Executable $python
+    if (-not $pythonVersion) {
+        throw "LocalPilot's virtual environment was created but its Python interpreter could not be validated."
+    }
 }
 
 if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     throw "Ollama was not found on PATH. Install Ollama for Windows, then rerun this script."
 }
 
-$pyver = python -c "import platform; print(platform.python_version())"
-Write-Host "Python: $pyver"
+Write-Host "Python: $pythonVersion"
 Write-Host "Ollama: $((ollama --version) -join ' ')"
 
-if (-not (Test-Path ".venv")) {
-    Write-Host "Creating isolated Python environment..."
-    python -m venv .venv
-}
-
-$python = Join-Path $PWD ".venv\Scripts\python.exe"
 & $python -m pip install --upgrade pip
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to upgrade pip in LocalPilot's virtual environment."
@@ -52,8 +102,9 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "Pillow: $pillowVersion"
 
 # Source checkouts build the same self-contained sensor helper that packaged
-# releases carry inside LocalPilot. The helper is optional only when the SDK is
-# unavailable during development; SystemSense retains its native/WMI fallbacks.
+# releases carry inside LocalPilot. The helper is optional only when a usable
+# .NET 8+ SDK is unavailable during development; SystemSense retains its
+# native/WMI fallbacks.
 if ($env:OS -eq "Windows_NT") {
     $rid = switch ($env:PROCESSOR_ARCHITECTURE) {
         "ARM64" { "win-arm64" }
@@ -62,13 +113,32 @@ if ($env:OS -eq "Windows_NT") {
     }
     $hardwareProvider = Join-Path $PWD "localpilot\_hardware\$rid\LocalPilot.SystemSense.HardwareProvider.exe"
     if (-not (Test-Path -LiteralPath $hardwareProvider -PathType Leaf)) {
-        if (Get-Command dotnet -ErrorAction SilentlyContinue) {
+        $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
+        $hasDotNet8Sdk = $false
+
+        if ($dotnetCommand) {
+            try {
+                $sdkLines = @(& $dotnetCommand.Source --list-sdks 2>$null)
+                if ($LASTEXITCODE -eq 0) {
+                    foreach ($sdkLine in $sdkLines) {
+                        if ($sdkLine -match '^\s*(\d+)\.' -and [int]$Matches[1] -ge 8) {
+                            $hasDotNet8Sdk = $true
+                            break
+                        }
+                    }
+                }
+            } catch {
+                $hasDotNet8Sdk = $false
+            }
+        }
+
+        if ($hasDotNet8Sdk) {
             & (Join-Path $PWD "scripts\build-systemsense-hardware.ps1") -RuntimeIdentifier $rid
             if ($LASTEXITCODE -ne 0) {
                 throw "SystemSense hardware provider build failed."
             }
         } else {
-            Write-Host "SystemSense hardware provider was not built because the .NET SDK is not installed. Native/WMI telemetry will remain available; packaged releases include the helper automatically." -ForegroundColor Yellow
+            Write-Host "SystemSense hardware provider was not built because a .NET SDK 8 or newer is not installed. Native/WMI telemetry will remain available; packaged releases include the helper automatically." -ForegroundColor Yellow
         }
     } else {
         Write-Host "SystemSense hardware provider: bundled ($rid)"

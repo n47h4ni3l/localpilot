@@ -9,13 +9,31 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $project = Join-Path $repoRoot "tools\SystemSense.HardwareProvider\SystemSense.HardwareProvider.csproj"
 $output = Join-Path $repoRoot "localpilot\_hardware\$RuntimeIdentifier"
 
-if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+$dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
+if (-not $dotnet) {
     throw ".NET SDK 8 or newer is required to build the SystemSense hardware provider. Packaged LocalPilot releases ship the published helper and do not require the SDK at runtime."
 }
 
-$major = [int]((& dotnet --version).Split('.')[0])
-if ($major -lt 8) {
-    throw ".NET SDK 8 or newer is required to build the SystemSense hardware provider."
+try {
+    $sdkLines = @(& $dotnet.Source --list-sdks 2>$null)
+} catch {
+    throw ".NET was found, but the installed SDKs could not be queried. Install .NET SDK 8 or newer to build the SystemSense hardware provider."
+}
+
+if ($LASTEXITCODE -ne 0) {
+    throw ".NET was found, but the installed SDKs could not be queried. Install .NET SDK 8 or newer to build the SystemSense hardware provider."
+}
+
+$hasCompatibleSdk = $false
+foreach ($sdkLine in $sdkLines) {
+    if ($sdkLine -match '^\s*(\d+)\.' -and [int]$Matches[1] -ge 8) {
+        $hasCompatibleSdk = $true
+        break
+    }
+}
+
+if (-not $hasCompatibleSdk) {
+    throw ".NET SDK 8 or newer is required to build the SystemSense hardware provider. The .NET host may be installed, but no compatible SDK is available."
 }
 
 if (Test-Path -LiteralPath $output) {
@@ -24,7 +42,7 @@ if (Test-Path -LiteralPath $output) {
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 
 Write-Host "Publishing bundled SystemSense hardware provider ($RuntimeIdentifier)..." -ForegroundColor Cyan
-& dotnet publish $project `
+& $dotnet.Source publish $project `
     --configuration Release `
     --framework net8.0-windows `
     --runtime $RuntimeIdentifier `

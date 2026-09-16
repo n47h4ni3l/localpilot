@@ -348,6 +348,271 @@ human interaction
 
 This is not a prohibition on interleaving work. It defines priority and dependency: each stage should establish enough competence and evaluation coverage to support the next one.
 
+## Ordered training package ledger
+
+This section is the working checklist for training. It is deliberately ordered so the project can move through one package at a time and visibly preserve achievements.
+
+### Progress notation
+
+- `[ ]` means not yet achieved or not yet verified.
+- `[x] ~~struck-through text~~` means achieved and backed by durable evidence.
+- A completed item stays in the historical record. If a later adapter regresses that capability, do **not** erase the achievement; add a remediation item beneath the affected package and link it to the new checkpoint/evaluation evidence.
+- A package is not complete merely because training finished. Completion requires its dataset/intervention, held-out evaluation, cross-capability regression check, checkpoint metadata, and any required remediation to be complete.
+- Promotion is separate from package completion. A useful intermediate checkpoint may complete a package while remaining unpromoted until later consolidation.
+
+### Package 0 — training runtime and evidence foundation
+
+**Purpose:** prove that the training pipeline itself is reproducible before spending significant compute on adapters.
+
+- [x] ~~Freeze pre- and post-Claude-Code aggregate benchmarks.~~
+- [x] ~~Build the first verified project-owned Corpus v1 seed and held-out hash manifest.~~
+- [x] ~~Build and validate the external-corpus acquisition/build/leakage pipeline.~~
+- [ ] Validate the pinned WSL2/ROCm/Unsloth environment on the target machine.
+- [ ] Verify GPU visibility, supported precision/quantization behavior, RAM/VRAM headroom, and required filesystem/data access.
+- [ ] Verify model, tokenizer, corpus, configuration, and source-data digests against the frozen training contract.
+- [ ] Run the exact supported QLoRA dry-run.
+- [ ] Repeat the dry-run until the report is reproducible and internally consistent.
+- [ ] Freeze the successful target-machine training-runtime report as the starting environment baseline.
+
+**Exit condition:** the exact adapter configuration can start, perform a bounded training step, save/reload its output, and produce the expected report on the actual target machine without unexplained warnings, digest mismatches, OOMs, or unsupported fallbacks.
+
+### Package 1 — code and software engineering
+
+**Purpose:** make LocalPilot exceptionally capable at understanding, repairing, extending, and evaluating software, especially LocalPilot itself.
+
+Training targets:
+
+- repository reasoning;
+- debugging and failure diagnosis;
+- multi-file changes;
+- architecture and compatibility reasoning;
+- test design and interpretation;
+- CI diagnosis and repair;
+- disciplined scope control;
+- Claude Code delegation/review; and
+- candidate/PR lifecycle reasoning.
+
+Checklist:
+
+- [x] ~~Prepare the initial project-owned software-engineering training seed and supporting external corpus pipeline.~~
+- [x] ~~Freeze the existing Eval v1 and Evolution Execution baseline evidence.~~
+- [ ] Train the first authorized coding/software-engineering adapter.
+- [ ] Save the adapter checkpoint, training manifest, exact config/digests, runtime metrics, and lineage metadata.
+- [ ] Run the unchanged held-out Eval v1 suite.
+- [ ] Run the unchanged Evolution Execution suite.
+- [ ] Compare software-engineering gains and all cross-capability regressions against the pre-training baseline.
+- [ ] Build and train focused remediation package(s) for any material regression.
+- [ ] Repeat full evaluation after each remediation package.
+- [ ] Mark Package 1 complete when coding/software-engineering gains are durable and remaining weaknesses are either recovered or explicitly carried into the next checkpoint lineage.
+
+**Exit condition:** a retained checkpoint shows measurable software-engineering improvement while preserving the safety, scope-control, epistemic, and tool-discipline behaviours required to continue autonomous development.
+
+### Package 2 — machine stewardship
+
+**Purpose:** teach LocalPilot how to understand, diagnose, maintain, and recover the Windows/Linux machine it inhabits.
+
+Training targets:
+
+- Windows internals relevant to a workstation;
+- Linux and WSL;
+- hardware topology and device identity;
+- CPU/GPU/RAM/VRAM/storage/network/firmware/drivers;
+- services, scheduled tasks, startup, event logs, registry concepts, Defender, updates and recovery;
+- Linux processes, packages, permissions, filesystems and logs;
+- thermals, power, throttling, paging/swap/commit pressure;
+- driver/runtime compatibility; and
+- evidence-based troubleshooting.
+
+Checklist:
+
+- [ ] Define a machine-stewardship capability taxonomy and failure classes.
+- [ ] Build a verified training corpus from authoritative Windows/Linux/hardware sources and project-owned machine-diagnostic evidence.
+- [ ] Build held-out diagnosis scenarios that require evidence gathering rather than memorized answers.
+- [ ] Include explicit `observe -> diagnose -> act -> verify -> recover/rollback` reasoning examples.
+- [ ] Train the machine-stewardship adapter/package from the strongest retained checkpoint.
+- [ ] Evaluate diagnosis accuracy, evidence discipline, causal caution, and recovery/rollback judgment.
+- [ ] Run the full prior evaluation suite for regression detection.
+- [ ] Remediate regressions and repeat evaluation until the package converges.
+
+**Exit condition:** LocalPilot can reliably reason about machine health across Windows and Linux/WSL, distinguish observation from inference, and select safe diagnostic/repair strategies without inventing live machine facts.
+
+### Package 3 — tool use and computer control
+
+**Purpose:** teach LocalPilot to operate the computer safely rather than merely explain how a human could operate it.
+
+Training targets:
+
+- tool selection;
+- bounded filesystem operations;
+- typed PowerShell/Linux actions;
+- application launch/control;
+- settings/configuration changes;
+- package/service/process/task management;
+- UI interaction where native interfaces are insufficient;
+- permission/authority awareness;
+- post-action verification; and
+- rollback/recovery.
+
+Checklist:
+
+- [ ] Define an action-risk taxonomy and permission model for training/evaluation.
+- [ ] Build tool-use examples where deterministic tools are preferred over free-form reasoning.
+- [ ] Build held-out action plans with hidden expected state transitions and rollback requirements.
+- [ ] Train the tool-use/computer-control package.
+- [ ] Evaluate correct-tool selection, minimal authority, action sequencing, verification, and rollback behavior.
+- [ ] Validate performance against real typed interfaces in safe test fixtures/sandboxes.
+- [ ] Run all prior capability suites and remediate regressions.
+
+**Exit condition:** LocalPilot consistently chooses appropriate bounded tools, performs only authorized actions, verifies outcomes, and prefers reversible recovery paths over uncontrolled mutation.
+
+### Package 4 — self-evolution and experimental reasoning
+
+**Purpose:** teach LocalPilot to improve itself scientifically and continuously rather than merely generate changes.
+
+Training targets:
+
+- epistemics and self-correction;
+- hypothesis formation;
+- baseline/success-criterion design;
+- experiment design;
+- measurement discipline;
+- failure attribution;
+- regression diagnosis;
+- curriculum/remediation selection;
+- checkpoint/lineage reasoning; and
+- promotion-versus-more-training decisions.
+
+Checklist:
+
+- [ ] Build training examples from verified evolution successes, failures, CI repairs, policy blocks, and remediation histories.
+- [ ] Build held-out experiments requiring falsifiable hypotheses and measurable success criteria.
+- [ ] Include examples where the correct response is to gather more evidence rather than modify code or train again.
+- [ ] Train the self-evolution/experimental-reasoning package.
+- [ ] Evaluate hypothesis quality, causal caution, experiment validity, failure attribution, and remediation selection.
+- [ ] Evaluate autonomous discovery-to-PR cycles as an execution benchmark.
+- [ ] Run all prior suites and remediate regressions.
+
+**Exit condition:** LocalPilot can identify a real weakness, propose a bounded improvement, measure it honestly, attribute failure correctly, preserve lineage, and turn regressions into targeted learning work without human micromanagement.
+
+### Package 5 — resource intelligence
+
+**Purpose:** make LocalPilot highly capable on ordinary hardware by teaching it to reason about the cost of its own computation.
+
+Training targets:
+
+- context-window selection;
+- RAM/VRAM/commit/swap reasoning;
+- CPU/GPU contention;
+- model residency/unloading;
+- inference scheduling;
+- foreground/background priority;
+- caching and reuse;
+- quantization/batching/sequence tradeoffs;
+- deciding when Claude Code is worth invoking;
+- choosing smaller/faster reasoning paths when sufficient; and
+- deferring work when resources are constrained.
+
+Checklist:
+
+- [ ] Build resource-state scenarios from SystemSense/runtime measurements and controlled synthetic fixtures.
+- [ ] Separate dynamic state (tool input) from transferable resource reasoning (training target).
+- [ ] Build held-out scheduling/compute-choice tasks with measurable latency/resource budgets.
+- [ ] Train the resource-intelligence package.
+- [ ] Evaluate task quality per unit of time, memory, VRAM, and tool/model invocation cost.
+- [ ] Evaluate graceful degradation under constrained resources.
+- [ ] Run all prior suites and remediate regressions.
+
+**Exit condition:** LocalPilot demonstrates equal or better task quality while making materially better compute/resource decisions and protecting foreground user work.
+
+### Package 6 — user-workflow learning and specialization
+
+**Purpose:** teach LocalPilot how to learn the work of the person it lives with instead of requiring every domain to be permanently baked into the public model.
+
+Training targets:
+
+- observing permitted workflows;
+- identifying recurring procedures;
+- asking for clarification at the right time;
+- turning repeated work into verified local workflow knowledge;
+- using documentation/interfaces to learn unfamiliar applications;
+- recognizing when a workflow fact is stale;
+- deciding what belongs in local memory versus model training; and
+- proposing safe automation only after understanding the workflow.
+
+Checklist:
+
+- [ ] Define a privacy/permission model for workflow observation and retention.
+- [ ] Build generic workflow-learning examples across several applications/domains rather than overfitting one user's work.
+- [ ] Build held-out tasks where LocalPilot must learn a novel workflow from demonstrations and documentation.
+- [ ] Train the workflow-learning package.
+- [ ] Evaluate transfer to unfamiliar applications and domains.
+- [ ] Validate local specialization using a real permitted workflow without placing private workflow data into the public training corpus.
+- [ ] Run all prior suites and remediate regressions.
+
+**Exit condition:** LocalPilot can watch permitted work, form accurate and revisable local workflow knowledge, reduce repeated user effort, and generalize the learning process to applications it was not specifically trained on.
+
+### Package 7 — human interaction
+
+**Purpose:** make LocalPilot warm, practical, patient, tactful, adaptable, and pleasant to live with while retaining honesty and useful disagreement.
+
+Training targets:
+
+- warmth without artificial sentimentality;
+- patience and tact;
+- practical care;
+- useful disagreement;
+- emotional calibration;
+- recognizing answer-seeking versus collaborative-thinking situations;
+- adapting tone without manipulation or flattery;
+- avoiding fake intimacy and sycophancy; and
+- remaining useful under stress.
+
+Checklist:
+
+- [ ] Define consent, privacy, de-identification, and review rules for any conversation-derived source material.
+- [ ] Build a generalized interpersonal training corpus from consented/reviewed source material plus independently validated synthetic examples.
+- [ ] Ensure no private person's messages, identifying details, or impersonation targets enter the public training artifact.
+- [ ] Build held-out interaction evaluations covering warmth, boundaries, disagreement, calibration, directness, and stress cases.
+- [ ] Train the human-interaction package.
+- [ ] Evaluate interpersonal quality independently from technical benchmark performance.
+- [ ] Run all prior suites and remediate regressions in either direction: technical gains must not make LocalPilot colder, and interpersonal gains must not weaken truthfulness or technical rigor.
+
+**Exit condition:** LocalPilot is measurably more pleasant and adaptive to work with while remaining direct, truthful, non-manipulative, technically disciplined, and recognizably itself rather than an imitation of a private person.
+
+### Package 8 — cross-capability consolidation and continuous curriculum
+
+**Purpose:** turn the completed packages into one coherent LocalPilot rather than a sequence of narrowly optimized adapters.
+
+Checklist:
+
+- [ ] Run the complete accumulated evaluation matrix from one retained checkpoint.
+- [ ] Identify remaining capability interactions and regressions.
+- [ ] Generate targeted remediation packages from the measured weaknesses.
+- [ ] Repeat training/evaluation until major capability tradeoffs converge acceptably.
+- [ ] Validate end-to-end real-machine operation: conversation, machine observation, tools, workflow learning, self-evolution, Claude delegation, resource control, and interpersonal behavior.
+- [ ] Freeze a release-candidate checkpoint and full lineage/evaluation manifest.
+- [ ] Conduct explicit human review before public promotion.
+
+**Exit condition:** one coherent checkpoint demonstrates the intended LocalPilot behavior across the full capability matrix and is suitable to become the next public starting point.
+
+### Permanent rule — remediation follows every package
+
+The package numbers define the main curriculum order, not a prohibition on fixing weaknesses immediately. After **every** training package:
+
+```text
+train
+  -> evaluate target capability
+  -> run all prior capability suites
+  -> identify regressions
+  -> create focused remediation package(s)
+  -> retrain from the strongest appropriate checkpoint
+  -> re-run the complete suite
+  -> preserve results and lineage
+  -> continue to the next numbered package
+```
+
+A regression therefore creates work; it does not automatically erase the checkpoint. A training lineage is abandoned only after bounded remediation fails, the checkpoint is corrupt/unstable, or continuing from it would be unsafe or clearly inferior to branching from a stronger retained checkpoint.
+
 ## Model gains versus system gains
 
 LocalPilot should not try to solve every problem through fine-tuning.
@@ -408,37 +673,34 @@ Examples of meaningful progress include:
 
 ## Immediate execution order
 
-The next work should be systematic rather than exploratory.
+The next work should be systematic rather than exploratory. The numbered training packages above are the source of truth; this section identifies the immediate next actions.
 
-### Phase A — finish the first training readiness gate
+### Phase A — finish Package 0 training readiness
 
 1. Validate the pinned WSL2/ROCm/Unsloth environment on the target machine.
 2. Verify GPU visibility and supported precision/quantization behavior.
 3. Verify model, tokenizer, corpus, config, and data-path digests.
 4. Run the exact supported QLoRA dry-run.
 5. Repair environment/config problems until the dry-run is clean.
-6. Do not start the real adapter run until the dry-run report is internally consistent and reproducible.
+6. Freeze the successful runtime baseline.
+7. Do not start the real adapter run until the dry-run report is internally consistent and reproducible.
 
-### Phase B — first coding adapter
+### Phase B — complete Package 1 coding/software engineering
 
 1. Train the first authorized coding/software-engineering adapter.
 2. Preserve the checkpoint and complete training metadata.
 3. Re-run unchanged held-out evaluation and Evolution Execution benchmarks.
 4. Map gains and regressions by capability.
 5. Build targeted remediation packages for any weakened areas rather than immediately discarding the checkpoint.
-6. Repeat until a promotion candidate is justified or bounded remediation shows that the lineage has stopped converging.
+6. Repeat until Package 1 exit evidence is satisfied or bounded remediation shows that the lineage has stopped converging.
 
-### Phase C — machine stewardship curriculum
+### Phase C — begin Package 2 machine stewardship
 
 Once the first adapter process is proven end-to-end, begin building the Windows/Linux machine-stewardship dataset and evaluation suite. SystemSense and live machine evidence should inform the curriculum, but dynamic machine facts should remain tool/observation data rather than training targets.
 
-### Phase D — safe control expansion
+### Phase D — continue in ledger order
 
-Build typed action interfaces around the machine-stewardship knowledge. Start with reversible, high-confidence actions; require post-action verification and rollback paths; expand authority only after repeated evidence.
-
-### Phase E — continuous curriculum generation
-
-Connect evaluation weaknesses, operational failures, and verified user-workflow friction to the training/evolution opportunity system so that LocalPilot can increasingly propose what it needs to learn next.
+Proceed through Packages 3–8 in order, while allowing measured regressions to create immediate focused remediation packages before moving forward.
 
 ## Final direction
 

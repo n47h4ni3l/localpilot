@@ -47,6 +47,11 @@ corpus = [
 [project.scripts]
 localpilot = "localpilot.cli:main"
 
+[tool.hatch.build]
+# Source checkouts ignore generated self-contained binaries so autonomous Git
+# checks remain clean. Release builds explicitly include the published helper.
+artifacts = ["localpilot/_hardware/**"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["localpilot"]
 

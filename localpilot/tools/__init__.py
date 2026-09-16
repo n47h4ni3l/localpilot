@@ -183,13 +183,13 @@ def registry(
                 [
                     ToolSpec(
                         "get_system_sense_summary",
-                        "Read the compact passive SystemSense health state, rolling-baseline anomalies, contention and model-inference performance.",
+                        "Read current raw SystemSense collector truth for LocalPilot reasoning, including psutil, Windows performance data, complete hardware sensors and source provenance. The desktop snapshot is presentation-only and is not model evidence.",
                         RiskLevel.READ_ONLY,
                         reader.get_system_sense_summary,
                     ),
                     ToolSpec(
                         "inspect_hardware_inventory",
-                        "Drill into one bounded Windows hardware, firmware, identifier, network, storage or PnP-device inventory section after reading the summary.",
+                        "Drill into one bounded Windows hardware, firmware, identifier, network, storage or PnP-device inventory section using raw source evidence.",
                         RiskLevel.READ_ONLY,
                         reader.inspect_hardware_inventory,
                     ),
@@ -213,7 +213,7 @@ def registry(
                     ),
                     ToolSpec(
                         "inspect_raw_system_sense",
-                        "Drill into bounded raw passive telemetry, or set category=backend and choose backend_section=overview, memory, processes, compute, storage, network, or sensors for deeper OS/hardware diagnostics with source provenance. Use this only when the compact summary is insufficient.",
+                        "Inspect bounded raw passive telemetry, or set category=backend and choose backend_section=overview, memory, processes, compute, storage, network, or sensors for deeper OS/hardware diagnostics with source provenance. Prefer this raw evidence for hardware-specific conclusions and actions.",
                         RiskLevel.READ_ONLY,
                         reader.inspect_raw_system_sense,
                     ),

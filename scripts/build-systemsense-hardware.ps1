@@ -1,6 +1,7 @@
 param(
     [ValidateSet("win-x64", "win-x86", "win-arm64")]
-    [string]$RuntimeIdentifier = "win-x64"
+    [string]$RuntimeIdentifier = "win-x64",
+    [string]$DotNetPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,13 +10,21 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $project = Join-Path $repoRoot "tools\SystemSense.HardwareProvider\SystemSense.HardwareProvider.csproj"
 $output = Join-Path $repoRoot "localpilot\_hardware\$RuntimeIdentifier"
 
-$dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
-if (-not $dotnet) {
-    throw ".NET SDK 8 or newer is required to build the SystemSense hardware provider. Packaged LocalPilot releases ship the published helper and do not require the SDK at runtime."
+if ($DotNetPath) {
+    if (-not (Test-Path -LiteralPath $DotNetPath -PathType Leaf)) {
+        throw "The supplied dotnet executable does not exist: $DotNetPath"
+    }
+    $dotnetExecutable = $DotNetPath
+} else {
+    $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
+    if (-not $dotnet) {
+        throw ".NET SDK 8 or newer is required to build the SystemSense hardware provider."
+    }
+    $dotnetExecutable = $dotnet.Source
 }
 
 try {
-    $sdkLines = @(& $dotnet.Source --list-sdks 2>$null)
+    $sdkLines = @(& $dotnetExecutable --list-sdks 2>$null)
 } catch {
     throw ".NET was found, but the installed SDKs could not be queried. Install .NET SDK 8 or newer to build the SystemSense hardware provider."
 }
@@ -42,7 +51,7 @@ if (Test-Path -LiteralPath $output) {
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 
 Write-Host "Publishing bundled SystemSense hardware provider ($RuntimeIdentifier)..." -ForegroundColor Cyan
-& $dotnet.Source publish $project `
+& $dotnetExecutable publish $project `
     --configuration Release `
     --framework net8.0-windows `
     --runtime $RuntimeIdentifier `

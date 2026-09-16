@@ -4,10 +4,11 @@ import json
 
 from localpilot.systemsense import SystemSense
 from localpilot.systemsense_backend import BackendTelemetryCollector
+from localpilot.systemsense_views import build_agent_truth
 
 
 class SystemSenseReader:
-    """Bounded summary-first access to passive environmental telemetry."""
+    """Raw-truth-first read-only access to passive environmental telemetry."""
 
     def __init__(
         self,
@@ -23,8 +24,8 @@ class SystemSenseReader:
         return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
 
     def get_system_sense_summary(self) -> str:
-        """Return compact derived health, pressure, anomalies and inference state."""
-        return self._render(self.systemsense.summary())
+        """Return canonical raw collector truth for LocalPilot reasoning."""
+        return self._render(build_agent_truth(self.systemsense))
 
     def inspect_hardware_inventory(
         self, section: str = "overview", limit: int = 50

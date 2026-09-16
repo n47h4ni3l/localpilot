@@ -25,7 +25,12 @@ class SystemSenseReader:
 
     def get_system_sense_summary(self) -> str:
         """Return canonical raw collector truth for LocalPilot reasoning."""
-        return self._render(build_agent_truth(self.systemsense))
+        if isinstance(self.systemsense, SystemSense):
+            return self._render(build_agent_truth(self.systemsense))
+        # Preserve duck-typed test/integration adapters that intentionally
+        # provide only the legacy summary surface; production SystemSense
+        # instances always take the raw-truth path above.
+        return self._render(self.systemsense.summary())
 
     def inspect_hardware_inventory(
         self, section: str = "overview", limit: int = 50

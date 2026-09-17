@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from localpilot.chat_commands import execute_chat_command, parse_chat_command, render_help
+from localpilot.chat_commands import COMMANDS, execute_chat_command, parse_chat_command, render_help
 from localpilot.config import Config
 from localpilot.runtime_worker import RuntimeWorker
 
@@ -55,6 +56,7 @@ def test_help_explains_desktop_commands_and_memory_boundary():
         assert command in help_text
     assert "not sent to the language model" in help_text
     assert "LearningMemory" in help_text
+    assert "/evolve [--force]" in help_text
 
 
 def test_teach_uses_explicit_durable_agent_path_without_model_inference(tmp_path):
@@ -68,6 +70,30 @@ def test_teach_uses_explicit_durable_agent_path_without_model_inference(tmp_path
     assert agent.teach_calls == [("Verify current evidence before conclusions", "chat")]
     assert agent.ask_calls == []
     assert "Teaching #7 saved" in result.text
+
+
+def test_evolve_force_maps_only_to_existing_manual_force_switch(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeSelfDeveloper:
+        def __init__(self, config, root, progress):
+            calls.append((config, Path(root), progress))
+
+        def run_once(self, *, force=False):
+            calls.append(force)
+            return SimpleNamespace(status="deferred", summary="test cycle", workspace=None)
+
+    monkeypatch.setattr("localpilot.evolution_reliability.SelfDeveloper", FakeSelfDeveloper)
+    result = execute_chat_command(
+        parse_chat_command("/evolve --force"),
+        agent=None,
+        config=Config(),
+        root=tmp_path,
+    )
+
+    assert calls[-1] is True
+    assert "Evolution: deferred" in result.text
+    assert "idle/resource gate only" in result.text
 
 
 def test_unknown_slash_command_never_falls_through_to_model(tmp_path):
@@ -155,8 +181,8 @@ def test_desktop_assets_expose_palette_and_local_clear_contract():
 
     assert 'href="desktop-commands.css"' in html
     assert 'src="desktop-commands.js"' in html
-    assert 'name: "/teach"' in script
-    assert 'name: "/evolve"' in script
-    assert 'name: "/clear"' in script
+    js_commands = set(re.findall(r'name: "(/[a-z]+)"', script))
+    python_commands = {name for name, _usage, _description in COMMANDS}
+    assert js_commands == python_commands
     assert "historyNew.click()" in script
     assert 'addEventListener("keydown"' in script

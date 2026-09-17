@@ -127,14 +127,27 @@ def test_desktop_summary_is_simple_but_model_surface_returns_raw_truth(tmp_path)
     assert presentation["thermal_state"] == "moderate"
     assert presentation["vram_used_mb"] == 2336.0
     assert presentation["vram_total_mb"] == 16364.0
+    assert presentation["sensor_provider_health"] == {
+        "status": "ready",
+        "ready": True,
+        "available": True,
+        "source": "LibreHardwareMonitorLib",
+        "provider_version": "0.9.6.0",
+        "sensor_count": 13,
+        "live_temperature_sensor_count": 8,
+        "errors": [],
+    }
 
     reader = SystemSenseReader(sense)
     truth = json.loads(reader.get_system_sense_summary())
     assert truth["hardware_truth"]["sensor_provider"]["sensor_count"] == 13
+    assert truth["hardware_truth"]["sensors"][0]["Name"] == "CPU Package"
+    assert truth["hardware_truth"]["sensors"][0]["Value"] == 60.0
     assert truth["hardware_truth"]["sensors"][1]["Name"] == "GPU Core"
     assert truth["hardware_truth"]["sensors"][2]["Name"] == "GPU Hot Spot"
     assert "presentation_only" not in truth
     assert "system_average_temperature_c" not in truth
+    assert "sensor_provider_health" not in truth
 
     context = sense.compact_context()
     assert "SYSTEMSENSE PASSIVE STATE" in context

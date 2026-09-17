@@ -16,3 +16,14 @@ from localpilot.systemsense_views import install_systemsense_truth_views as _ins
 
 _install_systemsense_truth_views()
 del _install_systemsense_truth_views
+
+# Baseline deviations are useful context, but a machine being busier than its
+# usual idle baseline is not automatically unhealthy. Apply conservative
+# health semantics only to the human presentation summary; raw model evidence
+# remains untouched.
+from localpilot.systemsense_presentation_health import (
+    install_systemsense_presentation_health as _install_systemsense_presentation_health,
+)
+
+_install_systemsense_presentation_health()
+del _install_systemsense_presentation_health

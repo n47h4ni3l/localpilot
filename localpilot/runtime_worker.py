@@ -51,6 +51,31 @@ class RuntimeWorker:
             }
         )
 
+    @staticmethod
+    def _conversation_history(history: list[dict[str, Any]]) -> list[dict[str, str]]:
+        """Replay visible conversation while excluding application-command transcripts.
+
+        Slash commands stay in ChatStore so the owner can see what happened, but
+        deterministic command inputs/results are application state, not dialogue
+        evidence for the model. Keeping them out of replay also prevents large
+        `/status` diagnostics from consuming conversation context after restart.
+        """
+        replay: list[dict[str, str]] = []
+        index = 0
+        while index < len(history):
+            message = history[index]
+            role = str(message.get("role") or "")
+            content = str(message.get("content") or "")
+            if role == "user" and parse_chat_command(content) is not None:
+                index += 1
+                if index < len(history) and str(history[index].get("role") or "") == "assistant":
+                    index += 1
+                continue
+            if role in {"user", "assistant"} and content.strip():
+                replay.append({"role": role, "content": content})
+            index += 1
+        return replay
+
     def _agent(self, session_id: str, history: list[dict[str, Any]]) -> LocalPilotAgent:
         agent = self._agents.get(session_id)
         if agent is not None:
@@ -58,11 +83,7 @@ class RuntimeWorker:
         # LocalPilotAgent resolves the same process-local SystemSense singleton
         # by database path, preserving its established constructor surface.
         agent = LocalPilotAgent(self.config, self.root, event_sink=self._event_sink)
-        for message in history:
-            role = str(message.get("role") or "")
-            content = str(message.get("content") or "")
-            if role in {"user", "assistant"} and content.strip():
-                agent.messages.append({"role": role, "content": content})
+        agent.messages.extend(self._conversation_history(history))
         self._agents[session_id] = agent
         return agent
 

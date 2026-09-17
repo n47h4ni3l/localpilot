@@ -12,7 +12,7 @@
     { name: "/status", usage: "", description: "Current runtime, resources, evolution and Git status" },
     { name: "/doctor", usage: "", description: "Check LocalPilot prerequisites and runtime health" },
     { name: "/teach", usage: "<lesson>", description: "Save an explicit durable owner teaching" },
-    { name: "/evolve", usage: "[--force]", description: "Run a self-development cycle; --force bypasses the idle gate" },
+    { name: "/evolve", usage: "", description: "Run one manually requested self-development cycle" },
     { name: "/clear", usage: "", description: "Start a fresh conversation; keep durable learning" },
   ];
 

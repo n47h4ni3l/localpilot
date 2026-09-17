@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import time
 from pathlib import Path
 
 from localpilot.agent import _ollama_memory_embedder
@@ -254,7 +253,7 @@ def test_embedding_failure_falls_back_once_to_identical_lexical_results(tmp_path
     assert len(calls) == 1
 
 
-def test_cached_hybrid_benchmark_improves_paraphrase_recall_without_exact_regression(
+def test_cached_hybrid_retrieval_improves_paraphrase_recall_without_exact_regression(
     tmp_path: Path,
 ):
     path = tmp_path / "learning.sqlite3"
@@ -295,15 +294,24 @@ def test_cached_hybrid_benchmark_improves_paraphrase_recall_without_exact_regres
         for index in range(20)
     )
 
-    started = time.perf_counter()
+    # The first hybrid pass lazily builds and persists the fact embedding index.
+    # A warm-cache exact lookup should therefore embed only each new query, not
+    # regenerate document vectors. This is a deterministic functional contract;
+    # wall-clock timing on a shared CI host is not.
+    calls_before_exact_lookup = len(embedder.calls)
     hybrid_exact_hits = sum(
         hybrid.search_knowledge_facts(f"Capability{index}", limit=1)[0].fact_key
         == f"capability-{index}"
         for index in range(20)
     )
-    cached_latency_ms = (time.perf_counter() - started) * 1000
+    exact_lookup_calls = embedder.calls[calls_before_exact_lookup:]
 
     assert lexical_paraphrase_hits == 0
     assert hybrid_paraphrase_hits == 20
     assert hybrid_exact_hits == lexical_exact_hits == 20
-    assert cached_latency_ms < 1000
+    assert hybrid.knowledge_embedding_count() == 20
+    assert len(exact_lookup_calls) == 20
+    assert all(len(batch) == 1 for batch in exact_lookup_calls)
+    assert hybrid.last_retrieval_diagnostics.mode == "hybrid"
+    assert hybrid.last_retrieval_diagnostics.cache_hits == 20
+    assert hybrid.last_retrieval_diagnostics.indexed_facts == 0

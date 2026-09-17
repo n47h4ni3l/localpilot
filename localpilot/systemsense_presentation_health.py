@@ -56,8 +56,16 @@ def _attention_relevant_anomaly(anomaly: dict[str, Any]) -> bool:
     return False
 
 
+def _latest_dynamic_snapshot(systemsense: Any) -> dict[str, Any]:
+    try:
+        snapshot = systemsense.store.latest_snapshot("dynamic")
+    except (AttributeError, TypeError):
+        return {}
+    return snapshot if isinstance(snapshot, dict) else {}
+
+
 def _provider_health(systemsense: Any) -> dict[str, Any]:
-    dynamic = systemsense.store.latest_snapshot("dynamic") or {}
+    dynamic = _latest_dynamic_snapshot(systemsense)
     raw = dynamic.get("raw_sensors") or {}
     rows = [row for row in (raw.get("sensors") or []) if isinstance(row, dict)]
     live_temperatures = 0
@@ -97,12 +105,15 @@ def _strip_null_numeric_fields(output: dict[str, Any]) -> None:
 def harden_presentation_summary(systemsense: Any, state: dict[str, Any]) -> dict[str, Any]:
     """Make the human snapshot conservative without changing model evidence."""
     output = dict(state)
+    dynamic_snapshot = _latest_dynamic_snapshot(systemsense)
     output["sensor_provider_health"] = _provider_health(systemsense)
 
-    # Preserve the existing no-sample contract. A passive summary must remain
-    # unknown until the runtime has actually collected a dynamic sample; the
-    # presentation wrapper must never turn "no evidence yet" into "healthy".
-    if not output.get("captured_at"):
+    # Preserve the existing no-sample contract. Use the store as the source of
+    # truth for whether sampling has happened: presentation callers and focused
+    # unit tests may legitimately pass a state without `captured_at` even though
+    # a real dynamic snapshot exists. Only an actually empty store means there is
+    # no evidence yet and health must remain unknown.
+    if not dynamic_snapshot:
         output.setdefault("baseline_signals", [])
         output.setdefault("health_reasons", [])
         _strip_null_numeric_fields(output)

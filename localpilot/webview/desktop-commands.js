@@ -29,8 +29,8 @@
 
   function commandPrefix() {
     const value = input.value.trimStart();
-    if (!value.startsWith("/") || value.includes("\n")) return null;
-    return value.split(/\s+/, 1)[0].toLowerCase();
+    if (!value.startsWith("/") || value.includes("\n") || /\s/.test(value)) return null;
+    return value.toLowerCase();
   }
 
   function closeMenu() {
@@ -39,6 +39,17 @@
     input.removeAttribute("aria-activedescendant");
     matches = [];
     selected = 0;
+  }
+
+  function setSelected(index) {
+    if (!matches.length) return;
+    selected = (index + matches.length) % matches.length;
+    Array.from(menu.children).forEach(function (option, optionIndex) {
+      const active = optionIndex === selected;
+      option.classList.toggle("is-selected", active);
+      option.setAttribute("aria-selected", String(active));
+    });
+    input.setAttribute("aria-activedescendant", "command-option-" + selected);
   }
 
   function choose(index) {
@@ -88,14 +99,11 @@
         event.preventDefault();
       });
       option.addEventListener("click", function () { choose(index); });
-      option.addEventListener("mouseenter", function () {
-        selected = index;
-        renderMenu();
-      });
+      option.addEventListener("mouseenter", function () { setSelected(index); });
       menu.appendChild(option);
     });
     menu.hidden = false;
-    input.setAttribute("aria-activedescendant", "command-option-" + selected);
+    setSelected(selected);
   }
 
   function executeLocalCommand(text) {
@@ -126,9 +134,7 @@
     if (!menu.hidden && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
       event.preventDefault();
       event.stopImmediatePropagation();
-      const direction = event.key === "ArrowDown" ? 1 : -1;
-      selected = (selected + direction + matches.length) % matches.length;
-      renderMenu();
+      setSelected(selected + (event.key === "ArrowDown" ? 1 : -1));
       return;
     }
 

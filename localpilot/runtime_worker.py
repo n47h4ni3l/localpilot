@@ -9,6 +9,7 @@ from typing import Any
 
 from localpilot.agent import LocalPilotAgent
 from localpilot.background_reading import BackgroundLibraryReader
+from localpilot.chat_commands import execute_chat_command, parse_chat_command
 from localpilot.config import load_config
 from localpilot.systemsense import get_system_sense
 
@@ -50,6 +51,31 @@ class RuntimeWorker:
             }
         )
 
+    @staticmethod
+    def _conversation_history(history: list[dict[str, Any]]) -> list[dict[str, str]]:
+        """Replay visible conversation while excluding application-command transcripts.
+
+        Slash commands stay in ChatStore so the owner can see what happened, but
+        deterministic command inputs/results are application state, not dialogue
+        evidence for the model. Keeping them out of replay also prevents large
+        `/status` diagnostics from consuming conversation context after restart.
+        """
+        replay: list[dict[str, str]] = []
+        index = 0
+        while index < len(history):
+            message = history[index]
+            role = str(message.get("role") or "")
+            content = str(message.get("content") or "")
+            if role == "user" and parse_chat_command(content) is not None:
+                index += 1
+                if index < len(history) and str(history[index].get("role") or "") == "assistant":
+                    index += 1
+                continue
+            if role in {"user", "assistant"} and content.strip():
+                replay.append({"role": role, "content": content})
+            index += 1
+        return replay
+
     def _agent(self, session_id: str, history: list[dict[str, Any]]) -> LocalPilotAgent:
         agent = self._agents.get(session_id)
         if agent is not None:
@@ -57,17 +83,59 @@ class RuntimeWorker:
         # LocalPilotAgent resolves the same process-local SystemSense singleton
         # by database path, preserving its established constructor surface.
         agent = LocalPilotAgent(self.config, self.root, event_sink=self._event_sink)
-        for message in history:
-            role = str(message.get("role") or "")
-            content = str(message.get("content") or "")
-            if role in {"user", "assistant"} and content.strip():
-                agent.messages.append({"role": role, "content": content})
+        agent.messages.extend(self._conversation_history(history))
         self._agents[session_id] = agent
         return agent
 
     @staticmethod
     def _answer_chunks(answer: str, size: int = 80) -> list[str]:
         return [answer[index : index + size] for index in range(0, len(answer), size)] or [""]
+
+    def _write_state(self, request_id: str, session_id: str, state: str) -> None:
+        self._write(
+            {
+                "kind": "event",
+                "request_id": request_id,
+                "session_id": session_id,
+                "type": "runtime.state",
+                "payload": {"state": state},
+            }
+        )
+
+    def _write_answer(self, request_id: str, session_id: str, answer: str) -> None:
+        self._write_state(request_id, session_id, "speaking")
+        for delta in self._answer_chunks(answer):
+            self._write(
+                {
+                    "kind": "event",
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "type": "assistant.delta",
+                    "payload": {"delta": delta},
+                }
+            )
+        self._write(
+            {
+                "kind": "result",
+                "request_id": request_id,
+                "session_id": session_id,
+                "answer": answer,
+            }
+        )
+
+    def _command_progress(self, command_name: str, message: str) -> None:
+        self._write(
+            {
+                "kind": "event",
+                "request_id": self._active_request_id,
+                "session_id": self._active_session_id,
+                "type": "command.progress",
+                "payload": {
+                    "command": command_name,
+                    "message": str(message)[:500],
+                },
+            }
+        )
 
     def handle(self, command: dict[str, Any]) -> None:
         if command.get("kind") != "ask":
@@ -80,44 +148,31 @@ class RuntimeWorker:
         self._active_request_id = request_id
         self._active_session_id = session_id
         try:
-            self._write(
-                {
-                    "kind": "event",
-                    "request_id": request_id,
-                    "session_id": session_id,
-                    "type": "runtime.state",
-                    "payload": {"state": "thinking"},
-                }
-            )
+            parsed = parse_chat_command(prompt)
+            if parsed is not None:
+                # Slash commands are trusted application controls, not model
+                # prompts. Unknown slash commands are also handled here so a
+                # typo can never accidentally become an LLM instruction.
+                self._write_state(request_id, session_id, "working")
+                active_agent = (
+                    self._agent(session_id, list(command.get("history") or []))
+                    if parsed.name == "/teach"
+                    else None
+                )
+                result = execute_chat_command(
+                    parsed,
+                    agent=active_agent,
+                    config=self.config,
+                    root=self.root,
+                    progress=lambda message: self._command_progress(parsed.name, message),
+                )
+                self._write_answer(request_id, session_id, result.text)
+                return
+
+            self._write_state(request_id, session_id, "thinking")
             agent = self._agent(session_id, list(command.get("history") or []))
             answer = agent.ask(prompt, interface="desktop")
-            self._write(
-                {
-                    "kind": "event",
-                    "request_id": request_id,
-                    "session_id": session_id,
-                    "type": "runtime.state",
-                    "payload": {"state": "speaking"},
-                }
-            )
-            for delta in self._answer_chunks(answer):
-                self._write(
-                    {
-                        "kind": "event",
-                        "request_id": request_id,
-                        "session_id": session_id,
-                        "type": "assistant.delta",
-                        "payload": {"delta": delta},
-                    }
-                )
-            self._write(
-                {
-                    "kind": "result",
-                    "request_id": request_id,
-                    "session_id": session_id,
-                    "answer": answer,
-                }
-            )
+            self._write_answer(request_id, session_id, answer)
         except Exception as exc:
             self._write(
                 {

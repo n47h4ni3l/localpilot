@@ -88,9 +88,26 @@ def _provider_health(systemsense: Any) -> dict[str, Any]:
     }
 
 
+def _strip_null_numeric_fields(output: dict[str, Any]) -> None:
+    for key in _NULLABLE_NUMERIC_PRESENTATION_FIELDS:
+        if output.get(key) is None:
+            output.pop(key, None)
+
+
 def harden_presentation_summary(systemsense: Any, state: dict[str, Any]) -> dict[str, Any]:
     """Make the human snapshot conservative without changing model evidence."""
     output = dict(state)
+    output["sensor_provider_health"] = _provider_health(systemsense)
+
+    # Preserve the existing no-sample contract. A passive summary must remain
+    # unknown until the runtime has actually collected a dynamic sample; the
+    # presentation wrapper must never turn "no evidence yet" into "healthy".
+    if not output.get("captured_at"):
+        output.setdefault("baseline_signals", [])
+        output.setdefault("health_reasons", [])
+        _strip_null_numeric_fields(output)
+        return output
+
     anomalies = [dict(row) for row in (output.get("anomalies") or []) if isinstance(row, dict)]
     baseline_signals: list[dict[str, Any]] = []
     attention_anomalies: list[dict[str, Any]] = []
@@ -144,14 +161,11 @@ def harden_presentation_summary(systemsense: Any, state: dict[str, Any]) -> dict
     )
     output["system_health"] = "critical" if critical else "degraded" if degraded else "good"
     output["health_reasons"] = reasons
-    output["sensor_provider_health"] = _provider_health(systemsense)
 
     # app.js correctly renders undefined numeric fields as "—", but JavaScript
     # Number(null) is 0. Until every client is upgraded, never serialize null for
     # the numeric presentation fields consumed by the glance cards.
-    for key in _NULLABLE_NUMERIC_PRESENTATION_FIELDS:
-        if output.get(key) is None:
-            output.pop(key, None)
+    _strip_null_numeric_fields(output)
 
     return output
 

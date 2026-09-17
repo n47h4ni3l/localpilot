@@ -82,6 +82,10 @@ def _render_rich(call: Callable[[Console], object]) -> str:
     return stream.getvalue().strip()
 
 
+def _diagnostic_block(title: str, rendered: str) -> str:
+    return f"### {title}\n\n```text\n{rendered}\n```"
+
+
 def execute_chat_command(
     command: ParsedChatCommand,
     *,
@@ -103,16 +107,14 @@ def execute_chat_command(
         # implementation rather than maintaining a second status definition.
         from localpilot.cli import _show_status
 
-        return ChatCommandResult(
-            _render_rich(lambda console: _show_status(console, config, root))
-        )
+        rendered = _render_rich(lambda console: _show_status(console, config, root))
+        return ChatCommandResult(_diagnostic_block("Current status", rendered))
 
     if command.name == "/doctor":
         from localpilot.cli import _show_doctor
 
-        return ChatCommandResult(
-            _render_rich(lambda console: _show_doctor(console, config, root))
-        )
+        rendered = _render_rich(lambda console: _show_doctor(console, config, root))
+        return ChatCommandResult(_diagnostic_block("Doctor", rendered))
 
     if command.name == "/teach":
         if not command.argument:

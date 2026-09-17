@@ -56,7 +56,7 @@ def test_help_explains_desktop_commands_and_memory_boundary():
         assert command in help_text
     assert "not sent to the language model" in help_text
     assert "LearningMemory" in help_text
-    assert "/evolve [--force]" in help_text
+    assert "/evolve [--force]" not in help_text
 
 
 def test_teach_uses_explicit_durable_agent_path_without_model_inference(tmp_path):
@@ -72,7 +72,7 @@ def test_teach_uses_explicit_durable_agent_path_without_model_inference(tmp_path
     assert "Teaching #7 saved" in result.text
 
 
-def test_evolve_force_maps_only_to_existing_manual_force_switch(tmp_path, monkeypatch):
+def test_desktop_evolve_always_bypasses_idle_gate(tmp_path, monkeypatch):
     calls = []
 
     class FakeSelfDeveloper:
@@ -84,16 +84,28 @@ def test_evolve_force_maps_only_to_existing_manual_force_switch(tmp_path, monkey
             return SimpleNamespace(status="deferred", summary="test cycle", workspace=None)
 
     monkeypatch.setattr("localpilot.evolution_reliability.SelfDeveloper", FakeSelfDeveloper)
+
+    result = execute_chat_command(
+        parse_chat_command("/evolve"),
+        agent=None,
+        config=Config(),
+        root=tmp_path,
+    )
+    assert calls[-1] is True
+    assert "Evolution: deferred" in result.text
+    assert "--force" not in result.text
+    assert "idle/resource gate" not in result.text
+
+    # Keep accepting the explicit legacy spelling, but its behavior and output
+    # are identical: desktop evolve is always a manual forced cycle.
     result = execute_chat_command(
         parse_chat_command("/evolve --force"),
         agent=None,
         config=Config(),
         root=tmp_path,
     )
-
     assert calls[-1] is True
-    assert "Evolution: deferred" in result.text
-    assert "idle/resource gate only" in result.text
+    assert "--force" not in result.text
 
 
 def test_unknown_slash_command_never_falls_through_to_model(tmp_path):
@@ -184,5 +196,6 @@ def test_desktop_assets_expose_palette_and_local_clear_contract():
     js_commands = set(re.findall(r'name: "(/[a-z]+)"', script))
     python_commands = {name for name, _usage, _description in COMMANDS}
     assert js_commands == python_commands
+    assert 'name: "/evolve", usage: ""' in script
     assert "historyNew.click()" in script
     assert 'addEventListener("keydown"' in script

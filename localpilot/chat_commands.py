@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING, Callable
 
 from rich.console import Console
 
-from localpilot.evolution_reliability import SelfDeveloper
-
 if TYPE_CHECKING:
     from localpilot.agent import LocalPilotAgent
     from localpilot.config import Config
@@ -131,6 +129,8 @@ def execute_chat_command(
         )
 
     if command.name == "/evolve":
+        from localpilot.evolution_reliability import SelfDeveloper
+
         progress("Starting a gated self-development cycle")
         result = SelfDeveloper(config, root, progress=progress).run_once(force=False)
         lines = [f"### Evolution: {result.status}", "", result.summary]

@@ -39,11 +39,15 @@ def parse_chat_command(value: str) -> ParsedChatCommand | None:
     source = str(value).strip()
     if not source.startswith("/"):
         return None
-    head, separator, tail = source.partition(" ")
-    name = head.casefold()
+    parts = source.split(maxsplit=1)
+    name = parts[0].casefold()
     if name == "/new":
         name = "/clear"
-    return ParsedChatCommand(name=name, argument=tail.strip() if separator else "", source=source)
+    return ParsedChatCommand(
+        name=name,
+        argument=parts[1].strip() if len(parts) == 2 else "",
+        source=source,
+    )
 
 
 def render_help() -> str:

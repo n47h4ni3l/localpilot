@@ -43,6 +43,9 @@ def test_parse_chat_command_reserves_only_slash_prefixed_input():
     assert parsed is not None
     assert parsed.name == "/teach"
     assert parsed.argument == "Keep answers concise"
+    tabbed = parse_chat_command("/teach\tVerify before acting")
+    assert tabbed.name == "/teach"
+    assert tabbed.argument == "Verify before acting"
     assert parse_chat_command("/new").name == "/clear"
 
 
@@ -123,6 +126,26 @@ def test_normal_desktop_message_still_uses_agent(tmp_path):
     assert agent.ask_calls == [("How are you going?", "desktop")]
     result = next(message for message in messages if message.get("kind") == "result")
     assert result["answer"] == "model answer"
+
+
+def test_command_transcripts_remain_visible_but_are_not_replayed_to_model():
+    history = [
+        {"role": "user", "content": "Before command"},
+        {"role": "assistant", "content": "Normal answer"},
+        {"role": "user", "content": "/status"},
+        {"role": "assistant", "content": "Very large deterministic status output"},
+        {"role": "user", "content": "/teach Keep evidence current"},
+        {"role": "assistant", "content": "Teaching #8 saved"},
+        {"role": "user", "content": "After command"},
+        {"role": "assistant", "content": "Still normal"},
+    ]
+
+    assert RuntimeWorker._conversation_history(history) == [
+        {"role": "user", "content": "Before command"},
+        {"role": "assistant", "content": "Normal answer"},
+        {"role": "user", "content": "After command"},
+        {"role": "assistant", "content": "Still normal"},
+    ]
 
 
 def test_desktop_assets_expose_palette_and_local_clear_contract():

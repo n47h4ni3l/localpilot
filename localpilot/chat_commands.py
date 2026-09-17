@@ -29,7 +29,7 @@ COMMANDS: tuple[tuple[str, str, str], ...] = (
     ("/status", "", "Show LocalPilot, resource, evolution, and repository status."),
     ("/doctor", "", "Run LocalPilot's prerequisite and runtime health checks."),
     ("/teach", "<lesson>", "Save an explicit durable owner teaching and load it now."),
-    ("/evolve", "", "Request one normal gated self-development cycle."),
+    ("/evolve", "[--force]", "Request one self-development cycle; --force bypasses only the idle/resource gate."),
     ("/clear", "", "Start a fresh conversation without changing durable learning."),
 )
 
@@ -135,11 +135,26 @@ def execute_chat_command(
     if command.name == "/evolve":
         from localpilot.evolution_reliability import SelfDeveloper
 
-        progress("Starting a gated self-development cycle")
-        result = SelfDeveloper(config, root, progress=progress).run_once(force=False)
+        option = command.argument.casefold()
+        if option not in {"", "--force"}:
+            return ChatCommandResult("Usage: `/evolve [--force]`")
+        force = option == "--force"
+        progress(
+            "Starting an explicitly forced self-development cycle"
+            if force
+            else "Starting a gated self-development cycle"
+        )
+        result = SelfDeveloper(config, root, progress=progress).run_once(force=force)
         lines = [f"### Evolution: {result.status}", "", result.summary]
         if result.workspace:
             lines.extend(["", f"Candidate workspace: `{result.workspace}`"])
+        if force:
+            lines.extend(
+                [
+                    "",
+                    "`--force` bypassed the normal idle/resource gate only; candidate isolation, evaluation, CI, and human merge controls remain in force.",
+                ]
+            )
         return ChatCommandResult("\n".join(lines))
 
     if command.name == "/clear":

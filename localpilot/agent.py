@@ -2332,6 +2332,14 @@ class LocalPilotAgent:
         temporal_web_research = self._is_temporal_web_prompt(prompt)
         practical_troubleshooting = self._is_practical_troubleshooting_prompt(prompt)
         if systemsense_diagnostic:
+            # This is an explicit evidence-only route. Do not let words inside
+            # the internal diagnostic instruction accidentally classify it as
+            # an ordinary self-status, conversational, web, or troubleshooting
+            # turn and inject unrelated context/guidance.
+            operational_self_status = False
+            direct_conversation = False
+            temporal_web_research = False
+            practical_troubleshooting = False
             learning_context, retrieved_facts = "", []
             self.audit.write(
                 "model_systemsense_diagnostic_route",

@@ -108,19 +108,94 @@ def test_updater_process_matching_is_scoped_to_repo_and_localpilot(monkeypatch, 
     assert desktop_updater._belongs_to_localpilot(OtherProcess(), root.resolve()) is False
 
 
-def test_fast_forward_uses_exact_target_and_verifies_head(monkeypatch, tmp_path):
+def test_shared_update_script_uses_pinned_prefetched_target(monkeypatch, tmp_path):
     root = tmp_path.resolve()
-    target = "b" * 40
+    scripts = root / "scripts"
+    scripts.mkdir()
+    script = scripts / "update-and-restart.ps1"
+    script.write_text("# test", encoding="utf-8")
+    old_sha = "a" * 40
+    target_sha = "b" * 40
     calls = []
 
+    monkeypatch.setattr(desktop_updater, "_powershell_executable", lambda: "pwsh")
+
     def fake_run(call_root: Path, args: list[str], *, timeout: int = 120):
-        calls.append(tuple(args))
-        if args[:3] == ["git", "merge", "--ff-only"]:
-            return _result()
+        calls.append((call_root, list(args), timeout))
+        return _result()
+
+    monkeypatch.setattr(desktop_updater, "_run", fake_run)
+    result = desktop_updater._run_shared_update_script(
+        root,
+        branch="main",
+        remote="origin",
+        old_sha=old_sha,
+        target_sha=target_sha,
+        config_path=None,
+    )
+
+    assert result.returncode == 0
+    call_root, args, timeout = calls[0]
+    assert call_root == root
+    assert timeout == 1800
+    assert "-File" in args
+    assert str(script) in args
+    assert "-SkipFetch" in args
+    assert args[args.index("-ExpectedOldSha") + 1] == old_sha
+    assert args[args.index("-ExpectedTargetSha") + 1] == target_sha
+    assert "git" not in args
+
+
+def test_apply_handoff_routes_normal_update_through_shared_script(monkeypatch, tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    data = tmp_path / "data"
+    state = DesktopUIState(data)
+    state.update(automatic_updates=True)
+
+    old_sha = "a" * 40
+    target_sha = "b" * 40
+    handoff = data / "desktop-update-handoff.json"
+    handoff.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "root": str(root.resolve()),
+                "data_dir": str(data.resolve()),
+                "config_path": None,
+                "remote": "origin",
+                "main_branch": "main",
+                "old_sha": old_sha,
+                "target_sha": target_sha,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    calls = []
+    monkeypatch.setattr(desktop_updater, "_wait_for_parent_exit", lambda pid: None)
+    monkeypatch.setattr(
+        desktop_updater,
+        "_verify_clean_trusted_main",
+        lambda *args, **kwargs: calls.append("verified"),
+    )
+    monkeypatch.setattr(
+        desktop_updater,
+        "_run_shared_update_script",
+        lambda *args, **kwargs: (calls.append(("shared", kwargs)) or _result()),
+    )
+    monkeypatch.setattr(desktop_updater, "_localpilot_process_running", lambda root_path: True)
+    monkeypatch.setattr(desktop_updater.time, "sleep", lambda seconds: None)
+
+    def fake_run(call_root: Path, args: list[str], *, timeout: int = 120):
         if args[:3] == ["git", "rev-parse", "--verify"]:
-            return _result(stdout=target)
+            return _result(stdout=target_sha)
         raise AssertionError(args)
 
     monkeypatch.setattr(desktop_updater, "_run", fake_run)
-    desktop_updater._fast_forward(root, target)
-    assert ("git", "merge", "--ff-only", "--no-edit", target) in calls
+
+    assert desktop_updater.apply_handoff(root, handoff, parent_pid=123) is True
+    shared = next(item for item in calls if isinstance(item, tuple) and item[0] == "shared")
+    assert shared[1]["old_sha"] == old_sha
+    assert shared[1]["target_sha"] == target_sha
+    assert shared[1]["remote"] == "origin"

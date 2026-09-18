@@ -14,6 +14,8 @@ class _FakeAgent:
     def __init__(self):
         self.ask_calls = []
         self.teach_calls = []
+        self.diagnose_calls = []
+        self.messages = []
 
     def ask(self, prompt, *, interface="direct"):
         self.ask_calls.append((prompt, interface))
@@ -22,6 +24,10 @@ class _FakeAgent:
     def teach(self, lesson, *, topic="general"):
         self.teach_calls.append((lesson, topic))
         return SimpleNamespace(id=7, lesson=lesson)
+
+    def diagnose_system(self, scope="signals"):
+        self.diagnose_calls.append(scope)
+        return "No action needed. Raw SystemSense evidence looks normal."
 
 
 def _worker(tmp_path: Path, agent: _FakeAgent):
@@ -52,7 +58,7 @@ def test_parse_chat_command_reserves_only_slash_prefixed_input():
 
 def test_help_explains_desktop_commands_and_memory_boundary():
     help_text = render_help()
-    for command in ("/help", "/status", "/doctor", "/teach", "/evolve", "/clear"):
+    for command in ("/help", "/status", "/doctor", "/teach", "/evolve", "/diagnose", "/clear"):
         assert command in help_text
     assert "not sent to the language model" in help_text
     assert "LearningMemory" in help_text
@@ -147,6 +153,49 @@ def test_help_command_bypasses_agent_entirely(tmp_path):
     assert "LocalPilot commands" in result["answer"]
 
 
+def test_diagnose_uses_model_backed_raw_systemsense_path(tmp_path):
+    agent = _FakeAgent()
+    worker, messages = _worker(tmp_path, agent)
+
+    worker.handle(
+        {
+            "kind": "ask",
+            "request_id": "req-diagnose",
+            "session_id": "session-1",
+            "prompt": "/diagnose signals",
+            "history": [],
+        }
+    )
+
+    assert agent.diagnose_calls == ["signals"]
+    assert agent.ask_calls == []
+    result = next(message for message in messages if message.get("kind") == "result")
+    assert result["answer"].startswith("No action needed")
+    assert agent.messages[-2:] == [
+        {"role": "user", "content": "/diagnose signals"},
+        {"role": "assistant", "content": result["answer"]},
+    ]
+
+
+def test_invalid_diagnose_scope_is_explained_without_model_reasoning(tmp_path):
+    agent = _FakeAgent()
+    worker, messages = _worker(tmp_path, agent)
+
+    worker.handle(
+        {
+            "kind": "ask",
+            "request_id": "req-diagnose-invalid",
+            "session_id": "session-1",
+            "prompt": "/diagnose bananas",
+            "history": [],
+        }
+    )
+
+    assert agent.diagnose_calls == []
+    result = next(message for message in messages if message.get("kind") == "result")
+    assert "Usage:" in result["answer"]
+
+
 def test_normal_desktop_message_still_uses_agent(tmp_path):
     agent = _FakeAgent()
     worker, messages = _worker(tmp_path, agent)
@@ -174,6 +223,8 @@ def test_command_transcripts_remain_visible_but_are_not_replayed_to_model():
         {"role": "assistant", "content": "Very large deterministic status output"},
         {"role": "user", "content": "/teach Keep evidence current"},
         {"role": "assistant", "content": "Teaching #8 saved"},
+        {"role": "user", "content": "/diagnose signals"},
+        {"role": "assistant", "content": "No action needed. The current raw readings are normal."},
         {"role": "user", "content": "After command"},
         {"role": "assistant", "content": "Still normal"},
     ]
@@ -181,6 +232,8 @@ def test_command_transcripts_remain_visible_but_are_not_replayed_to_model():
     assert RuntimeWorker._conversation_history(history) == [
         {"role": "user", "content": "Before command"},
         {"role": "assistant", "content": "Normal answer"},
+        {"role": "user", "content": "/diagnose signals"},
+        {"role": "assistant", "content": "No action needed. The current raw readings are normal."},
         {"role": "user", "content": "After command"},
         {"role": "assistant", "content": "Still normal"},
     ]
@@ -190,6 +243,7 @@ def test_desktop_assets_expose_palette_and_local_clear_contract():
     root = Path(__file__).resolve().parents[1]
     html = (root / "localpilot" / "webview" / "index.html").read_text(encoding="utf-8")
     script = (root / "localpilot" / "webview" / "desktop-commands.js").read_text(encoding="utf-8")
+    app_script = (root / "localpilot" / "webview" / "app.js").read_text(encoding="utf-8")
 
     assert 'href="desktop-commands.css"' in html
     assert 'src="desktop-commands.js"' in html
@@ -197,5 +251,8 @@ def test_desktop_assets_expose_palette_and_local_clear_contract():
     python_commands = {name for name, _usage, _description in COMMANDS}
     assert js_commands == python_commands
     assert 'name: "/evolve", usage: ""' in script
+    assert 'name: "/diagnose"' in script
+    assert 'id="system-diagnose-signals"' in html
+    assert 'requestSystemDiagnosis("signals")' in app_script
     assert "historyNew.click()" in script
     assert 'addEventListener("keydown"' in script

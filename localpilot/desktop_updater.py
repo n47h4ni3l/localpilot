@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -30,6 +31,62 @@ def _run(root: Path, args: list[str], *, timeout: int = 120) -> subprocess.Compl
         timeout=timeout,
         creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0,
     )
+
+
+def _powershell_executable() -> str:
+    executable = shutil.which("pwsh") or shutil.which("powershell")
+    if executable:
+        return executable
+    if os.name == "nt":
+        return "powershell.exe"
+    raise RuntimeError("PowerShell is required for LocalPilot updates.")
+
+
+def _run_shared_update_script(
+    root: Path,
+    *,
+    branch: str,
+    remote: str,
+    old_sha: str,
+    target_sha: str,
+    config_path: str | None,
+) -> subprocess.CompletedProcess[str]:
+    script = root / "scripts" / "update-and-restart.ps1"
+    if not script.is_file():
+        raise RuntimeError(f"Shared LocalPilot updater script is missing: {script}")
+
+    argv = [
+        _powershell_executable(),
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-Branch",
+        branch,
+        "-Remote",
+        remote,
+        "-SkipFetch",
+        "-ExpectedOldSha",
+        old_sha,
+        "-ExpectedTargetSha",
+        target_sha,
+    ]
+    if config_path:
+        argv.extend(["-ConfigPath", str(Path(config_path).resolve())])
+    return _run(root, argv, timeout=1800)
+
+
+def _localpilot_process_running(root: Path) -> bool:
+    for process in psutil.process_iter():
+        try:
+            if _belongs_to_localpilot(process, root):
+                return True
+        except (psutil.Error, OSError):
+            continue
+    return False
 
 
 def _console_python() -> Path:
@@ -213,14 +270,32 @@ def apply_handoff(root: str | Path, handoff_path: str | Path, parent_pid: int) -
         if not state.read().get("automatic_updates"):
             raise RuntimeError("Automatic updates were disabled before the handoff completed.")
         _wait_for_parent_exit(int(parent_pid))
-        _stop_localpilot_processes(root_path)
         _verify_clean_trusted_main(root_path, branch, old_sha, target_sha)
-        _fast_forward(root_path, target_sha)
-        _refresh_environment(root_path)
-        process = _launch_companion(root_path, config_path)
+
+        # The automatic updater uses exactly the same lifecycle as the manual
+        # updater. The target commit was fetched and pinned before the desktop
+        # handed off, so the shared script performs no network access after the
+        # owner-facing process has exited.
+        applied = _run_shared_update_script(
+            root_path,
+            branch=branch,
+            remote=str(handoff.get("remote") or "origin"),
+            old_sha=old_sha,
+            target_sha=target_sha,
+            config_path=config_path,
+        )
+        if applied.returncode != 0:
+            detail = applied.stderr.strip() or applied.stdout.strip()
+            raise RuntimeError(detail or "Shared LocalPilot update script failed.")
+
+        verified = _run(root_path, ["git", "rev-parse", "--verify", "HEAD^{commit}"])
+        if verified.returncode != 0 or verified.stdout.strip() != target_sha:
+            raise RuntimeError("Shared updater completed without reaching the pinned target commit.")
+
         time.sleep(3.0)
-        if process.poll() is not None:
-            raise RuntimeError("Updated LocalPilot desktop exited during startup verification.")
+        if not _localpilot_process_running(root_path):
+            raise RuntimeError("Shared updater completed but the LocalPilot desktop did not remain running.")
+
         state.update(
             update_last_checked=_utc_now(),
             update_available=False,
@@ -252,7 +327,8 @@ def apply_handoff(root: str | Path, handoff_path: str | Path, parent_pid: int) -
         except OSError:
             pass
         try:
-            _launch_companion(root_path, config_path)
+            if not _localpilot_process_running(root_path):
+                _launch_companion(root_path, config_path)
         except OSError:
             pass
         return False

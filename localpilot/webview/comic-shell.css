@@ -636,3 +636,47 @@ body {
 .system-health-dot {
   border-color: var(--comic-paper);
 }
+
+
+/* Current-signals diagnosis affordance: small and discoverable without
+   turning the SystemSense notepad into a control-heavy dashboard. */
+.system-section__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.system-section__heading h3 {
+  margin: 0;
+}
+
+.system-diagnose-button {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1.5px solid var(--comic-ink);
+  border-radius: 50%;
+  background: rgba(255, 248, 216, 0.78);
+  color: var(--comic-ink);
+  box-shadow: 1px 1px 0 rgba(38, 48, 68, 0.22);
+  font: 700 13px/1 var(--font-hand, inherit);
+  cursor: pointer;
+}
+
+.system-diagnose-button:hover,
+.system-diagnose-button:focus-visible {
+  background: rgba(193, 174, 235, 0.42);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.system-diagnose-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  transform: none;
+}

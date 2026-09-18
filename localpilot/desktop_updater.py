@@ -199,15 +199,6 @@ def _verify_clean_trusted_main(root: Path, branch: str, old_sha: str, target_sha
         raise RuntimeError("Automatic update refused because the target is not a fast-forward descendant.")
 
 
-def _fast_forward(root: Path, target_sha: str) -> None:
-    merged = _run(root, ["git", "merge", "--ff-only", "--no-edit", target_sha], timeout=120)
-    if merged.returncode != 0:
-        raise RuntimeError(merged.stderr.strip() or merged.stdout.strip() or "Git fast-forward failed.")
-    verified = _run(root, ["git", "rev-parse", "--verify", "HEAD^{commit}"])
-    if verified.returncode != 0 or verified.stdout.strip() != target_sha:
-        raise RuntimeError("Automatic update fast-forward verification failed.")
-
-
 def _refresh_environment(root: Path) -> None:
     python = _console_python()
     installed = _run(root, [str(python), "-m", "pip", "install", "-e", "."], timeout=600)

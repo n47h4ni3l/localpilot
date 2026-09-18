@@ -13,24 +13,47 @@ def test_update_script_cleans_only_known_systemsense_build_artifacts_before_git_
 
     bin_marker = 'tools\\SystemSense.HardwareProvider\\bin'
     obj_marker = 'tools\\SystemSense.HardwareProvider\\obj'
-    status_marker = 'git status --porcelain --untracked-files=all'
+    # The Git status command now lives inside a helper defined near the top of
+    # the script, so source-order against that command would be meaningless.
+    # Verify the actual execution order instead: known generated artifacts are
+    # removed before the first call to the cleanliness guard.
+    guard_call_marker = "    Assert-CleanWorkingTree"
 
     assert bin_marker in script
     assert obj_marker in script
     assert 'Remove-Item -LiteralPath $artifact -Recurse -Force' in script
-    assert script.index(bin_marker) < script.index(status_marker)
-    assert script.index(obj_marker) < script.index(status_marker)
+    assert script.index(bin_marker) < script.index(guard_call_marker)
+    assert script.index(obj_marker) < script.index(guard_call_marker)
     assert 'git reset --hard' not in script
     assert 'git clean -fd' not in script
 
 
-def test_update_script_stops_updates_rebuilds_and_restarts_localpilot() -> None:
+def test_update_script_prefetches_before_shutdown_then_uses_pinned_target() -> None:
+    script = _script()
+
+    fetch_marker = '& git fetch --no-tags --prune $Remote'
+    stop_marker = 'from localpilot.desktop_updater import _stop_localpilot_processes'
+    merge_marker = '& git merge --ff-only --no-edit $targetSha'
+
+    assert fetch_marker in script
+    assert stop_marker in script
+    assert merge_marker in script
+    assert script.index(fetch_marker) < script.index(stop_marker)
+    assert script.index(stop_marker) < script.index(merge_marker)
+    assert 'git pull --ff-only' not in script
+    assert "LocalPilot was left running unchanged" in script
+    assert "Update preflight complete" in script
+    assert "[switch]$SkipFetch" in script
+    assert "[string]$ExpectedOldSha" in script
+    assert "[string]$ExpectedTargetSha" in script
+
+
+def test_update_script_stops_rebuilds_restores_and_restarts_localpilot() -> None:
     script = _script()
 
     expected_steps = [
         'Disable-ScheduledTask -TaskName $TaskName',
         'from localpilot.desktop_updater import _stop_localpilot_processes',
-        'git pull --ff-only $Remote $Branch',
         'scripts\\bootstrap.ps1',
         'scripts\\build-systemsense-hardware.ps1',
         'LocalPilot.SystemSense.HardwareProvider.exe',
@@ -44,7 +67,9 @@ def test_update_script_stops_updates_rebuilds_and_restarts_localpilot() -> None:
     assert 'finally {' in script
     assert '$taskWasEnabled' in script
     assert '$taskWasRunning' in script
+    assert '$processesStopped' in script
     assert '$updateSucceeded' in script
+    assert 'Attempting to relaunch the current checkout' in script
     assert 'live temperature sensors' in script
 
 

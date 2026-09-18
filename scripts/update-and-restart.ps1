@@ -2,7 +2,11 @@ param(
     [string]$Branch = "main",
     [string]$Remote = "origin",
     [string]$TaskName = "LocalPilot Background Worker",
-    [switch]$SkipHardwareSmokeCheck
+    [switch]$SkipHardwareSmokeCheck,
+    [switch]$SkipFetch,
+    [string]$ExpectedOldSha = "",
+    [string]$ExpectedTargetSha = "",
+    [string]$ConfigPath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -26,6 +30,60 @@ function Get-RuntimeIdentifier {
         "x86" { return "win-x86" }
         default { return "win-x64" }
     }
+}
+
+function Get-GitCommit {
+    param([string]$Revision)
+    $value = (& git rev-parse --verify "$Revision^{commit}" 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $value) {
+        throw "Could not resolve Git revision '$Revision'."
+    }
+    return ($value | Select-Object -First 1).Trim()
+}
+
+function Assert-CleanWorkingTree {
+    $dirty = @(git status --porcelain --untracked-files=all)
+    Assert-LastExitCode "Could not inspect the Git working tree."
+    if ($dirty.Count -gt 0) {
+        $details = ($dirty -join [Environment]::NewLine)
+        throw "Working tree is not clean. Commit or stash your changes first:`n$details"
+    }
+}
+
+function Start-LocalPilotDesktop {
+    if (-not (Test-Path -LiteralPath $localpilot -PathType Leaf)) {
+        throw "LocalPilot launcher is missing: $localpilot"
+    }
+
+    $arguments = @()
+    if ($ConfigPath) {
+        $resolvedConfig = [System.IO.Path]::GetFullPath($ConfigPath)
+        if (-not (Test-Path -LiteralPath $resolvedConfig -PathType Leaf)) {
+            throw "Configured LocalPilot config file does not exist: $resolvedConfig"
+        }
+        # --config is a root CLI option and must precede the desktop subcommand.
+        $arguments += "--config"
+        $arguments += ('"{0}"' -f $resolvedConfig)
+    }
+    $arguments += "desktop"
+
+    Start-Process -FilePath $localpilot -ArgumentList $arguments -WorkingDirectory $repoRoot
+}
+
+if ($Remote -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+    throw "Unsafe Git remote name '$Remote'."
+}
+if ($Branch -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*$') {
+    throw "Unsafe Git branch name '$Branch'."
+}
+if ($ExpectedOldSha -and $ExpectedOldSha -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "ExpectedOldSha must be a full 40-character Git commit SHA."
+}
+if ($ExpectedTargetSha -and $ExpectedTargetSha -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "ExpectedTargetSha must be a full 40-character Git commit SHA."
+}
+if ($SkipFetch -and -not $ExpectedTargetSha) {
+    throw "SkipFetch requires ExpectedTargetSha so the already-fetched update target is explicit."
 }
 
 Write-Host "`n=== LocalPilot clean update/restart ===" -ForegroundColor Cyan
@@ -53,15 +111,55 @@ $task = $null
 $taskWasEnabled = $false
 $taskWasRunning = $false
 $taskTemporarilyDisabled = $false
+$processesStopped = $false
 $updateSucceeded = $false
+$oldSha = ""
+$targetSha = ""
 
 try {
-    $dirty = @(git status --porcelain --untracked-files=all)
-    Assert-LastExitCode "Could not inspect the Git working tree."
-    if ($dirty.Count -gt 0) {
-        $details = ($dirty -join [Environment]::NewLine)
-        throw "Working tree is not clean. Commit or stash your changes first:`n$details"
+    # Everything through the fetch/target validation is deliberately done while
+    # LocalPilot is still running. A transient DNS/GitHub failure therefore
+    # leaves the current desktop and workers untouched.
+    Assert-CleanWorkingTree
+
+    $currentBranch = (& git branch --show-current).Trim()
+    Assert-LastExitCode "Could not inspect the current Git branch."
+    if ($currentBranch -ne $Branch) {
+        throw "Update requires branch '$Branch'; current checkout is '$currentBranch'. Switch branches before running the updater."
     }
+
+    $oldSha = Get-GitCommit "HEAD"
+    if ($ExpectedOldSha -and $oldSha -ne $ExpectedOldSha.ToLowerInvariant()) {
+        throw "Local HEAD changed before update handoff. Expected $ExpectedOldSha, found $oldSha."
+    }
+
+    if (-not $SkipFetch) {
+        Write-Host "Checking $Remote/$Branch for updates (LocalPilot remains running)..."
+        $remoteRef = "refs/remotes/$Remote/$Branch"
+        & git fetch --no-tags --prune $Remote "+refs/heads/$($Branch):$remoteRef"
+        Assert-LastExitCode "Could not fetch '$Remote/$Branch'. LocalPilot was left running unchanged."
+    } else {
+        Write-Host "Using previously fetched update target (no network access required after handoff)..."
+    }
+
+    if ($ExpectedTargetSha) {
+        $targetSha = Get-GitCommit $ExpectedTargetSha
+        if (-not $SkipFetch) {
+            $fetchedTarget = Get-GitCommit "refs/remotes/$Remote/$Branch"
+            if ($fetchedTarget -ne $targetSha) {
+                throw "Fetched '$Remote/$Branch' no longer matches the expected update target."
+            }
+        }
+    } else {
+        $targetSha = Get-GitCommit "refs/remotes/$Remote/$Branch"
+    }
+
+    & git merge-base --is-ancestor $oldSha $targetSha
+    if ($LASTEXITCODE -ne 0) {
+        throw "Update refused because local '$Branch' is ahead of or diverged from target $($targetSha.Substring(0, 7))."
+    }
+
+    Write-Host ("Update preflight complete: {0} -> {1}. LocalPilot is still running." -f $oldSha.Substring(0, 7), $targetSha.Substring(0, 7)) -ForegroundColor Green
 
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($null -ne $task) {
@@ -79,15 +177,28 @@ try {
     Write-Host "Stopping all LocalPilot processes..."
     & $python -c "from pathlib import Path; from localpilot.desktop_updater import _stop_localpilot_processes; _stop_localpilot_processes(Path.cwd())"
     Assert-LastExitCode "LocalPilot processes could not be stopped cleanly."
+    $processesStopped = $true
     Start-Sleep -Seconds 2
 
-    Write-Host "Updating $Branch from $Remote..."
-    git switch $Branch
-    Assert-LastExitCode "Could not switch to branch '$Branch'."
-    git fetch $Remote $Branch
-    Assert-LastExitCode "Could not fetch '$Remote/$Branch'."
-    git pull --ff-only $Remote $Branch
-    Assert-LastExitCode "Could not fast-forward '$Branch' from '$Remote/$Branch'."
+    # The preflight was performed while LocalPilot was live. Reconfirm that the
+    # checkout did not change between preflight and process shutdown.
+    Assert-CleanWorkingTree
+    $headAfterStop = Get-GitCommit "HEAD"
+    if ($headAfterStop -ne $oldSha) {
+        throw "Local HEAD changed during update shutdown; refusing to apply the fetched target."
+    }
+
+    if ($oldSha -ne $targetSha) {
+        Write-Host "Fast-forwarding $Branch to already-fetched target $($targetSha.Substring(0, 7))..."
+        & git merge --ff-only --no-edit $targetSha
+        Assert-LastExitCode "Could not fast-forward '$Branch' to the validated target."
+        $mergedSha = Get-GitCommit "HEAD"
+        if ($mergedSha -ne $targetSha) {
+            throw "Fast-forward verification failed: HEAD is not the validated target."
+        }
+    } else {
+        Write-Host "$Branch is already current; continuing with environment refresh and clean restart."
+    }
 
     Write-Host "Refreshing LocalPilot environment..."
     # bootstrap.ps1 and build-systemsense-hardware.ps1 use terminating errors
@@ -133,12 +244,8 @@ try {
         }
     }
 
-    if (-not (Test-Path -LiteralPath $localpilot -PathType Leaf)) {
-        throw "LocalPilot launcher is missing after bootstrap: $localpilot"
-    }
-
     Write-Host "Starting fresh LocalPilot desktop..."
-    Start-Process -FilePath $localpilot -ArgumentList @("desktop") -WorkingDirectory $repoRoot
+    Start-LocalPilotDesktop
     $updateSucceeded = $true
 
     Write-Host "`nLocalPilot updated, rebuilt, and restarted." -ForegroundColor Green
@@ -155,5 +262,15 @@ finally {
             Write-Warning "Could not fully restore scheduled task '$TaskName': $($_.Exception.Message)"
         }
     }
+
+    if ($processesStopped -and -not $updateSucceeded) {
+        try {
+            Write-Warning "Update/rebuild failed after LocalPilot was stopped. Attempting to relaunch the current checkout."
+            Start-LocalPilotDesktop
+        } catch {
+            Write-Warning "Could not relaunch LocalPilot after the failed update: $($_.Exception.Message)"
+        }
+    }
+
     Pop-Location
 }

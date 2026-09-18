@@ -189,6 +189,22 @@ class LocalPilotAgent:
         )
         return record
 
+    def diagnose_system(self, scope: str = "signals") -> str:
+        """Explain fresh SystemSense raw truth without using presentation data."""
+        from localpilot.systemsense_diagnosis import build_system_diagnosis_prompt
+
+        prompt, evidence = build_system_diagnosis_prompt(self.systemsense, scope=scope)
+        current = evidence.get("current_truth") or {}
+        provider = current.get("hardware_provider") or {}
+        self.audit.write(
+            "systemsense_diagnosis_requested",
+            scope=evidence.get("scope"),
+            captured_at=current.get("captured_at"),
+            sensor_count=len(provider.get("sensors") or []),
+            evidence_chars=len(prompt),
+        )
+        return self.ask(prompt, interface="systemsense_diagnostic")
+
     def _functions(
         self,
         *,
@@ -2299,6 +2315,7 @@ class LocalPilotAgent:
         except ImportError as exc:
             raise RuntimeError("Ollama Python package is not installed. Run scripts/bootstrap.ps1.") from exc
 
+        systemsense_diagnostic = interface == "systemsense_diagnostic"
         self._emit_event("runtime.state", state="thinking", phase="operator")
         desktop_interface_question = bool(
             interface == "desktop"
@@ -2314,7 +2331,23 @@ class LocalPilotAgent:
         direct_conversation = self._is_bounded_conversational_prompt(prompt)
         temporal_web_research = self._is_temporal_web_prompt(prompt)
         practical_troubleshooting = self._is_practical_troubleshooting_prompt(prompt)
-        if operational_self_status or direct_conversation or practical_troubleshooting:
+        if systemsense_diagnostic:
+            # This is an explicit evidence-only route. Do not let words inside
+            # the internal diagnostic instruction accidentally classify it as
+            # an ordinary self-status, conversational, web, or troubleshooting
+            # turn and inject unrelated context/guidance.
+            operational_self_status = False
+            direct_conversation = False
+            temporal_web_research = False
+            practical_troubleshooting = False
+            learning_context, retrieved_facts = "", []
+            self.audit.write(
+                "model_systemsense_diagnostic_route",
+                query_digest=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                source="fresh_raw_systemsense_evidence",
+                durable_memory_retrieval_skipped=True,
+            )
+        elif operational_self_status or direct_conversation or practical_troubleshooting:
             learning_context, retrieved_facts = "", []
             self.audit.write(
                 (
@@ -2379,7 +2412,10 @@ class LocalPilotAgent:
             )
         systemsense_context = (
             self.systemsense.compact_context()
-            if operational_self_status or not (direct_conversation or practical_troubleshooting)
+            if (
+                not systemsense_diagnostic
+                and (operational_self_status or not (direct_conversation or practical_troubleshooting))
+            )
             else ""
         )
         if systemsense_context:
@@ -2506,7 +2542,12 @@ class LocalPilotAgent:
         retried_empty_response = False
         used_tools = False
         evidence_requirements = self._evidence_requirements(prompt)
-        if owner_forbids_tools or operational_self_status or direct_conversation:
+        if (
+            owner_forbids_tools
+            or operational_self_status
+            or direct_conversation
+            or systemsense_diagnostic
+        ):
             evidence_requirements.clear()
         attempted_evidence: set[str] = set()
         succeeded_evidence: set[str] = set()

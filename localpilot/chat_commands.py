@@ -30,8 +30,11 @@ COMMANDS: tuple[tuple[str, str, str], ...] = (
     ("/doctor", "", "Run LocalPilot's prerequisite and runtime health checks."),
     ("/teach", "<lesson>", "Save an explicit durable owner teaching and load it now."),
     ("/evolve", "", "Run one manually requested self-development cycle."),
+    ("/diagnose", "[signals|thermal|memory|gpu|cpu|storage]", "Diagnose fresh raw SystemSense evidence with Astra."),
     ("/clear", "", "Start a fresh conversation without changing durable learning."),
 )
+
+MODEL_BACKED_COMMANDS = frozenset({"/diagnose"})
 
 
 def parse_chat_command(value: str) -> ParsedChatCommand | None:
@@ -48,6 +51,11 @@ def parse_chat_command(value: str) -> ParsedChatCommand | None:
         argument=parts[1].strip() if len(parts) == 2 else "",
         source=source,
     )
+
+
+def is_model_backed_chat_command(value: str | ParsedChatCommand) -> bool:
+    parsed = value if isinstance(value, ParsedChatCommand) else parse_chat_command(value)
+    return parsed is not None and parsed.name in MODEL_BACKED_COMMANDS
 
 
 def render_help() -> str:
@@ -148,6 +156,12 @@ def execute_chat_command(
         if result.workspace:
             lines.extend(["", f"Candidate workspace: `{result.workspace}`"])
         return ChatCommandResult("\n".join(lines))
+
+    if command.name == "/diagnose":
+        return ChatCommandResult(
+            "SystemSense diagnosis requires the active Astra runtime. "
+            "Use `/diagnose` in desktop chat."
+        )
 
     if command.name == "/clear":
         # The webview intercepts this before submission so the current command

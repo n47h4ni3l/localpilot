@@ -345,6 +345,7 @@
   const systemInferenceValue = document.getElementById("system-inference-value");
   const systemInferenceDetail = document.getElementById("system-inference-detail");
   const systemSignalList = document.getElementById("system-signal-list");
+  const systemDiagnoseSignals = document.getElementById("system-diagnose-signals");
   const systemProcessList = document.getElementById("system-process-list");
   const systemRefresh = document.getElementById("system-refresh");
 
@@ -953,6 +954,24 @@
   systemRefresh.addEventListener("click", function () {
     clearTimeout(systemRefreshTimer);
     loadSystemSummary();
+  });
+
+  async function requestSystemDiagnosis(scope) {
+    if (!activeSessionId || composerWrap.classList.contains("is-busy")) return;
+    systemDiagnoseSignals.disabled = true;
+    closeSystemPanel();
+    composerInput.value = "/diagnose " + scope;
+    composerInput.dispatchEvent(new Event("input", { bubbles: true }));
+    composerInput.focus();
+    try {
+      await trySend();
+    } finally {
+      systemDiagnoseSignals.disabled = false;
+    }
+  }
+
+  systemDiagnoseSignals.addEventListener("click", function () {
+    requestSystemDiagnosis("signals");
   });
 
   /* ======================================================================

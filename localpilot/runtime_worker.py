@@ -9,7 +9,12 @@ from typing import Any
 
 from localpilot.agent import LocalPilotAgent
 from localpilot.background_reading import BackgroundLibraryReader
-from localpilot.chat_commands import execute_chat_command, parse_chat_command
+from localpilot.chat_commands import (
+    execute_chat_command,
+    is_model_backed_chat_command,
+    parse_chat_command,
+)
+from localpilot.systemsense_diagnosis import normalize_diagnosis_scope
 from localpilot.config import load_config
 from localpilot.systemsense import get_system_sense
 
@@ -66,7 +71,8 @@ class RuntimeWorker:
             message = history[index]
             role = str(message.get("role") or "")
             content = str(message.get("content") or "")
-            if role == "user" and parse_chat_command(content) is not None:
+            parsed = parse_chat_command(content) if role == "user" else None
+            if parsed is not None and not is_model_backed_chat_command(parsed):
                 index += 1
                 if index < len(history) and str(history[index].get("role") or "") == "assistant":
                     index += 1
@@ -150,10 +156,42 @@ class RuntimeWorker:
         try:
             parsed = parse_chat_command(prompt)
             if parsed is not None:
-                # Slash commands are trusted application controls, not model
-                # prompts. Unknown slash commands are also handled here so a
-                # typo can never accidentally become an LLM instruction.
+                # Most slash commands are deterministic application controls.
+                # /diagnose is deliberately different: it gathers fresh raw
+                # SystemSense evidence, then asks Astra to reason over that
+                # evidence without allowing presentation data or durable memory
+                # to become diagnostic authority.
                 self._write_state(request_id, session_id, "working")
+                if parsed.name == "/diagnose":
+                    try:
+                        scope = normalize_diagnosis_scope(parsed.argument)
+                    except ValueError:
+                        self._write_answer(
+                            request_id,
+                            session_id,
+                            "Usage: `/diagnose [signals|thermal|memory|gpu|cpu|storage]`",
+                        )
+                        return
+                    active_agent = self._agent(
+                        session_id, list(command.get("history") or [])
+                    )
+                    message_count = len(active_agent.messages)
+                    try:
+                        answer = active_agent.diagnose_system(scope)
+                    finally:
+                        # The large raw evidence package is one-turn reasoning
+                        # substrate, not durable chat context. Keep only the
+                        # visible command and resulting diagnosis for follow-up.
+                        del active_agent.messages[message_count:]
+                    active_agent.messages.extend(
+                        [
+                            {"role": "user", "content": parsed.source},
+                            {"role": "assistant", "content": answer},
+                        ]
+                    )
+                    self._write_answer(request_id, session_id, answer)
+                    return
+
                 active_agent = (
                     self._agent(session_id, list(command.get("history") or []))
                     if parsed.name == "/teach"

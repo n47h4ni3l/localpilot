@@ -13,13 +13,17 @@ def test_update_script_cleans_only_known_systemsense_build_artifacts_before_git_
 
     bin_marker = 'tools\\SystemSense.HardwareProvider\\bin'
     obj_marker = 'tools\\SystemSense.HardwareProvider\\obj'
-    status_marker = 'git status --porcelain --untracked-files=all'
+    # The Git status command now lives inside a helper defined near the top of
+    # the script, so source-order against that command would be meaningless.
+    # Verify the actual execution order instead: known generated artifacts are
+    # removed before the first call to the cleanliness guard.
+    guard_call_marker = "    Assert-CleanWorkingTree"
 
     assert bin_marker in script
     assert obj_marker in script
     assert 'Remove-Item -LiteralPath $artifact -Recurse -Force' in script
-    assert script.index(bin_marker) < script.index(status_marker)
-    assert script.index(obj_marker) < script.index(status_marker)
+    assert script.index(bin_marker) < script.index(guard_call_marker)
+    assert script.index(obj_marker) < script.index(guard_call_marker)
     assert 'git reset --hard' not in script
     assert 'git clean -fd' not in script
 

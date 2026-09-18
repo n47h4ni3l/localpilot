@@ -13,6 +13,7 @@
     { name: "/doctor", usage: "", description: "Check LocalPilot prerequisites and runtime health" },
     { name: "/teach", usage: "<lesson>", description: "Save an explicit durable owner teaching" },
     { name: "/evolve", usage: "", description: "Run one manually requested self-development cycle" },
+    { name: "/diagnose", usage: "[signals|thermal|memory|gpu|cpu|storage]", description: "Ask Astra to diagnose fresh raw SystemSense evidence" },
     { name: "/clear", usage: "", description: "Start a fresh conversation; keep durable learning" },
   ];
 

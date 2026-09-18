@@ -131,3 +131,19 @@ def test_agent_diagnosis_uses_special_raw_evidence_interface():
     assert "AMD Radeon RX 9070" in calls[0][0]
     assert agent.audit.events[0][0] == "systemsense_diagnosis_requested"
     assert agent.audit.events[0][1]["sensor_count"] == 1
+
+
+def test_systemsense_diagnostic_is_not_reclassified_as_product_troubleshooting():
+    prompt, _ = build_system_diagnosis_prompt(_FakeSense(), scope="signals")
+    issues = LocalPilotAgent._response_behavior_issues(
+        prompt,
+        (
+            "The current machine state looks healthy. CPU and GPU activity are light, "
+            "the GPU hot spot is 48 C, and the recent history does not show sustained pressure. "
+            "The current readings look like ordinary workload variation rather than a fault. "
+            "No action needed."
+        ),
+    )
+
+    assert "practical_troubleshooting_source_unattributed" not in issues
+    assert "unsafe_pla_temperature_example" not in issues

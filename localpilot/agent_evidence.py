@@ -128,7 +128,12 @@ def _response_behavior_issues(prompt: str, content: str) -> tuple[str, ...]:
     if friendly_personal_advice and pc_maintenance_substitution:
         issues.append("friendly_personal_advice_replaced_by_pc_maintenance")
 
-    practical_troubleshooting = _is_practical_troubleshooting_prompt(prompt)
+    systemsense_diagnostic = request.startswith("systemsense diagnostic request")
+    practical_troubleshooting = (
+        False
+        if systemsense_diagnostic
+        else _is_practical_troubleshooting_prompt(prompt)
+    )
     withheld_unreliable_troubleshooting = bool(
         re.search(
             r"\bwithheld a practical-troubleshooting draft\b.{0,160}\b"

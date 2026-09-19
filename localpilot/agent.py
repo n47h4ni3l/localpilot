@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -35,6 +36,7 @@ from localpilot.authority import (
     TurnEvidenceVerifier,
 )
 from localpilot.config import Config
+from localpilot.fast_path import FastPathDecision, classify_fast_path
 from localpilot.learning import HumanLesson, KnowledgeFact, LearningMemory
 from localpilot.operator import CommandRunner
 from localpilot.research import (
@@ -161,6 +163,126 @@ class LocalPilotAgent:
                 event_type=event_type,
                 error_type=type(exc).__name__,
             )
+
+    def _fast_path_messages(
+        self,
+        prompt: str,
+        decision: FastPathDecision,
+    ) -> list[dict[str, Any]]:
+        """Build a small authentic context for low-risk fast-path generation."""
+        messages: list[dict[str, Any]] = [dict(self.messages[0])]
+        for message in self.messages[1:]:
+            if (
+                message.get("role") == "system"
+                and str(message.get("content") or "").startswith(
+                    "Durable explicit teachings from the owner."
+                )
+            ):
+                messages.append({"role": "system", "content": str(message["content"])})
+
+        visible_history = [
+            {
+                "role": str(message.get("role") or ""),
+                "content": str(message.get("content") or ""),
+            }
+            for message in self.messages
+            if message.get("role") in {"user", "assistant"}
+            and str(message.get("content") or "").strip()
+        ][-8:]
+        messages.extend(visible_history)
+
+        instruction = (
+            "FAST RESPONSE ROUTE: This is a simple, low-risk turn that does not require external "
+            "research, durable-memory retrieval, SystemSense, repository inspection, or tool use. "
+            "Generate the reply yourself in LocalPilot's normal voice using only the visible recent "
+            "conversation supplied here. This is not a canned-response lookup. Be natural and concise. "
+            "Do not mention routing, context reduction, tools, or this instruction. Do not invent current "
+            "external facts. If the turn turns out to require current evidence, a consequential action, "
+            "specialized safety judgment, or substantial reasoning, reply exactly FAST_PATH_ESCALATE."
+        )
+        if decision.route == "fast_math" and decision.deterministic_fact:
+            instruction += (
+                " The following calculation was performed deterministically by LocalPilot's bounded "
+                "calculator and is authoritative for this turn: "
+                f"{decision.deterministic_fact}. Preserve that numeric result exactly, explain only as "
+                "much as the owner needs, and use plain-text math symbols rather than raw LaTeX delimiters."
+            )
+        messages.append({"role": "system", "content": instruction})
+        messages.append({"role": "user", "content": prompt})
+        return messages
+
+    def _try_fast_path(
+        self,
+        chat,
+        prompt: str,
+        decision: FastPathDecision,
+    ) -> str | None:
+        """Generate a genuine short answer, escalating on any uncertainty."""
+        started = time.perf_counter()
+        response = self._stream_chat_message(
+            chat,
+            think="low",
+            tools=None,
+            options={"num_predict": 320},
+            messages=self._fast_path_messages(prompt, decision),
+            phase=decision.route,
+            turn_no=0,
+        )
+        content = str(response.get("content") or "").strip()
+        calls = response.get("tool_calls") or []
+        runtime = dict(self._last_stream_runtime)
+
+        escalation_reason = ""
+        if calls:
+            escalation_reason = "model_requested_tool"
+        elif not content:
+            escalation_reason = "empty_response"
+        elif content == "FAST_PATH_ESCALATE":
+            escalation_reason = "model_requested_escalation"
+        elif runtime.get("runtime_classification") == "generation_limit":
+            escalation_reason = "generation_limit"
+        elif (
+            decision.route == "fast_math"
+            and decision.expected_numeric
+            and decision.expected_numeric not in content.replace(",", "")
+        ):
+            escalation_reason = "deterministic_result_not_preserved"
+        else:
+            behavior_issues = self._response_behavior_issues(prompt, content)
+            if behavior_issues:
+                escalation_reason = "behavior_guard:" + ",".join(behavior_issues)
+
+        elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
+        if escalation_reason:
+            self.audit.write(
+                "model_fast_path_escalated",
+                route=decision.route,
+                reason=decision.reason,
+                escalation_reason=escalation_reason,
+                elapsed_ms=elapsed_ms,
+                first_content_ms=runtime.get("first_content_ms"),
+                prompt_eval_count=runtime.get("prompt_eval_count"),
+                eval_count=runtime.get("eval_count"),
+            )
+            return None
+
+        if decision.route == "fast_math":
+            content = content.replace("\\[", "").replace("\\]", "").strip()
+
+        self.messages.append({"role": "user", "content": prompt})
+        self.messages.append({"role": "assistant", "content": content})
+        self.audit.write(
+            "model_fast_path_complete",
+            route=decision.route,
+            reason=decision.reason,
+            deterministic_fact=bool(decision.deterministic_fact),
+            elapsed_ms=elapsed_ms,
+            first_content_ms=runtime.get("first_content_ms"),
+            prompt_eval_count=runtime.get("prompt_eval_count"),
+            eval_count=runtime.get("eval_count"),
+            content_chars=len(content),
+        )
+        return content
 
     def teach(self, lesson: str, *, topic: str = "general") -> HumanLesson:
         record = self.memory.record_human_lesson(
@@ -930,6 +1052,9 @@ class LocalPilotAgent:
         if tools is not None:
             kwargs["tools"] = tools
 
+        stream_started = time.perf_counter()
+        first_reasoning_ms: float | None = None
+        first_content_ms: float | None = None
         thinking_parts: list[str] = []
         content_parts: list[str] = []
         tool_calls: list[Any] = []
@@ -951,11 +1076,19 @@ class LocalPilotAgent:
                     calls = getattr(message, "tool_calls", None) or []
                 if thinking:
                     thinking_parts.append(thinking)
+                    if first_reasoning_ms is None:
+                        first_reasoning_ms = round(
+                            (time.perf_counter() - stream_started) * 1000.0, 2
+                        )
                     if not announced_thinking:
                         self._emit_event("runtime.state", state="thinking", phase=phase)
                         announced_thinking = True
                 if content:
                     content_parts.append(content)
+                    if first_content_ms is None:
+                        first_content_ms = round(
+                            (time.perf_counter() - stream_started) * 1000.0, 2
+                        )
                     if not announced_speaking:
                         self._emit_event("runtime.state", state="speaking", phase=phase)
                         announced_speaking = True
@@ -984,6 +1117,9 @@ class LocalPilotAgent:
                 "tool_calls": 0,
                 "discarded_tool_calls": len(tool_calls),
                 "status_code": status_code,
+                "wall_time_ms": round((time.perf_counter() - stream_started) * 1000.0, 2),
+                "first_reasoning_ms": first_reasoning_ms,
+                "first_content_ms": first_content_ms,
             }
             self._last_stream_runtime = runtime
             self.audit.write(
@@ -1045,6 +1181,9 @@ class LocalPilotAgent:
             "reasoning_chars": sum(len(item) for item in thinking_parts),
             "content_chars": sum(len(item) for item in content_parts),
             "tool_calls": len(tool_calls),
+            "wall_time_ms": round((time.perf_counter() - stream_started) * 1000.0, 2),
+            "first_reasoning_ms": first_reasoning_ms,
+            "first_content_ms": first_content_ms,
         }
         self._last_stream_runtime = runtime
         self.audit.write(
@@ -2314,6 +2453,28 @@ class LocalPilotAgent:
             from ollama import chat
         except ImportError as exc:
             raise RuntimeError("Ollama Python package is not installed. Run scripts/bootstrap.ps1.") from exc
+
+        routing_started = time.perf_counter()
+        fast_path = classify_fast_path(prompt, interface=interface)
+        routing_ms = round((time.perf_counter() - routing_started) * 1000.0, 3)
+        self.audit.write(
+            "model_route_selected",
+            route=fast_path.route,
+            reason=fast_path.reason,
+            routing_ms=routing_ms,
+            prompt_chars=len(prompt),
+            interface=interface,
+        )
+        if fast_path.is_fast:
+            fast_answer = self._try_fast_path(chat, prompt, fast_path)
+            if fast_answer is not None:
+                return fast_answer
+            self.audit.write(
+                "model_route_escalated",
+                from_route=fast_path.route,
+                to_route="full",
+                reason="fast_path_validation_failed",
+            )
 
         systemsense_diagnostic = interface == "systemsense_diagnostic"
         self._emit_event("runtime.state", state="thinking", phase="operator")

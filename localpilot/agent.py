@@ -2559,6 +2559,7 @@ class LocalPilotAgent:
         temporal_context_message: dict[str, Any] | None = None
         interface_context_message: dict[str, Any] | None = None
         location_context_message: dict[str, Any] | None = None
+        location_turn_start_index: int | None = None
         learning_verification_messages: list[dict[str, Any]] = []
         if learning_context:
             retrieval = self.memory.last_retrieval_diagnostics
@@ -2726,6 +2727,10 @@ class LocalPilotAgent:
             implicit_machine_location or recent_location_context
         )
         if not systemsense_diagnostic and location_requested_for_turn:
+            # Everything after this index belongs to the current local-context
+            # turn. Location-bearing tool plumbing is scrubbed after synthesis
+            # so approximate coordinates do not become durable chat context.
+            location_turn_start_index = len(self.messages)
             status = self.machine_location.public_status()
             if status.get("enabled"):
                 location_context = self.machine_location.coarse_model_context(
@@ -3899,6 +3904,29 @@ class LocalPilotAgent:
                     "machine_location_context_scrubbed",
                     retained_in_messages=False,
                 )
+            if (
+                location_available_for_turn
+                and location_turn_start_index is not None
+                and location_turn_start_index < len(self.messages)
+            ):
+                prefix = self.messages[:location_turn_start_index]
+                turn_messages = self.messages[location_turn_start_index:]
+                retained_turn_messages = []
+                scrubbed_location_research_messages = 0
+                for message in turn_messages:
+                    role = message.get("role")
+                    has_tool_calls = bool(message.get("tool_calls"))
+                    if role == "tool" or (role == "assistant" and has_tool_calls):
+                        scrubbed_location_research_messages += 1
+                        continue
+                    retained_turn_messages.append(message)
+                self.messages[:] = prefix + retained_turn_messages
+                if scrubbed_location_research_messages:
+                    self.audit.write(
+                        "machine_location_research_context_scrubbed",
+                        message_count=scrubbed_location_research_messages,
+                        retained_in_messages=False,
+                    )
             if learning_verification_messages:
                 verification_ids = {
                     id(message) for message in learning_verification_messages

@@ -2740,11 +2740,13 @@ class LocalPilotAgent:
                     )
                     if live_local_information:
                         local_research_instruction += (
-                            " This is live local information: use get_machine_location to "
-                            "confirm the current coarse machine location, then search_public_web "
-                            "and fetch_public_https for fresh evidence relevant to that location "
-                            "before answering. You may use the approximate coordinates as a "
-                            "search disambiguator, but do not print coordinates unless asked."
+                            " This is live local information. The location context below is already "
+                            "authoritative machine-location evidence for this turn; do not ask for "
+                            "the location again and do not spend a tool round re-reading it. Use "
+                            "search_public_web and fetch_public_https for fresh evidence relevant "
+                            "to this approximate location before answering. You may use the "
+                            "approximate coordinates as a search disambiguator, but do not print "
+                            "coordinates unless asked."
                         )
                     location_context_message = {
                         "role": "system",
@@ -2809,6 +2811,15 @@ class LocalPilotAgent:
             evidence_requirements.clear()
         attempted_evidence: set[str] = set()
         succeeded_evidence: set[str] = set()
+        if (
+            location_available_for_turn
+            and "machine location" in evidence_requirements
+        ):
+            # The provider was read directly above before inference. Count that
+            # deterministic local observation as satisfied evidence rather than
+            # forcing a redundant get_machine_location tool round.
+            attempted_evidence.add("machine location")
+            succeeded_evidence.add("machine location")
         successful_tools: set[str] = set()
         failed_evidence: set[str] = set()
         evidence_recovery_attempts = 0

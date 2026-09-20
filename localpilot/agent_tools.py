@@ -38,6 +38,7 @@ _PC_TOOLS = {
     "get_defender_summary",
     "get_device_problem_summary",
     "get_system_sense_summary",
+    "get_machine_location",
     "inspect_hardware_inventory",
     "inspect_driver_inventory",
     "get_system_sense_history",

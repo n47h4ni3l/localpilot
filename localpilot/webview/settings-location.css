@@ -1,0 +1,20 @@
+.settings-location-refresh {
+  margin-top: 6px;
+}
+
+.settings-location-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings-privacy-note {
+  margin: 7px 0 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+}
+
+.settings-popover #location-status,
+.settings-popover #location-source {
+  max-width: 175px;
+}

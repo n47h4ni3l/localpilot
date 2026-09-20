@@ -14,6 +14,41 @@ ask() and _continue_high_reasoning_answer() were not touched."""
 
 import re
 
+
+def _is_live_local_information_prompt(prompt: str) -> bool:
+    """Recognize local facts that inherently require fresh external evidence."""
+    text = " ".join(str(prompt).lower().split())
+    return bool(
+        re.search(
+            r"\b(?:weather|forecast|air quality|pollen(?: count| level| forecast)?)\b",
+            text,
+        )
+    )
+
+
+def _uses_implicit_machine_location(prompt: str) -> bool:
+    """Recognize owner language that refers to the enabled machine location."""
+    text = " ".join(str(prompt).lower().split())
+    if re.search(
+        r"\b(?:here|near me|nearby|around here|around me|closest to me|"
+        r"where i am|where am i|where we are|where are we|my location|"
+        r"our area|this area|local weather)\b",
+        text,
+    ):
+        return True
+    # A bare weather/forecast request has no useful meaning without a place.
+    if _is_live_local_information_prompt(prompt):
+        explicit_place = bool(
+            re.search(
+                r"\b(?:weather|forecast|air quality|pollen(?: count| level| forecast)?)\b"
+                r".{0,80}\b(?:in|at)\s+[a-z][a-z .'-]{1,60}",
+                text,
+            )
+        )
+        return not explicit_place
+    return False
+
+
 def _evidence_requirements(prompt: str) -> set[str]:
     """Identify explicit evidence sources the owner asked LocalPilot to inspect."""
     text = " ".join(str(prompt).lower().split())
@@ -39,6 +74,11 @@ def _evidence_requirements(prompt: str) -> set[str]:
         _is_practical_troubleshooting_prompt(prompt)
         and not forbids_public_web
     ):
+        requirements.update({"public web discovery", "public HTTPS"})
+
+    if _uses_implicit_machine_location(prompt):
+        requirements.add("machine location")
+    if _is_live_local_information_prompt(prompt) and not forbids_public_web:
         requirements.update({"public web discovery", "public HTTPS"})
 
     action_terms = (

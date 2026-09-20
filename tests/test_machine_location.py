@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
+from localpilot.agent import LocalPilotAgent
 from localpilot.machine_location import LocationSnapshot, MachineLocation
 from localpilot.config import Config
 from localpilot.safety import RiskLevel
@@ -171,3 +174,122 @@ def test_registry_exposes_only_coarse_machine_location(tmp_path, monkeypatch):
     assert result["approximate_longitude"] == 138.61
     assert "latitude" not in {key for key in result if key in {"latitude", "longitude"}}
     assert "Exact machine coordinates remain local" in result["privacy"]
+
+
+
+def _chunk(*, content: str = "", thinking: str = "", tool_calls=None):
+    return SimpleNamespace(
+        message=SimpleNamespace(
+            content=content,
+            thinking=thinking,
+            tool_calls=list(tool_calls or []),
+        )
+    )
+
+
+def _call(name: str, arguments: dict | None = None):
+    return SimpleNamespace(
+        function=SimpleNamespace(name=name, arguments=dict(arguments or {}))
+    )
+
+
+def test_enabled_machine_location_drives_here_weather_research(tmp_path, monkeypatch):
+    config = Config()
+    config.agent.research_soft_tool_rounds = 4
+    config.agent.research_hard_tool_rounds = 4
+    monkeypatch.setattr(
+        MachineLocation,
+        "_capture_windows_location",
+        staticmethod(_snapshot),
+    )
+    agent = LocalPilotAgent(config, tmp_path)
+    agent.governor = SimpleNamespace(
+        sample=lambda interval: SimpleNamespace(background_allowed=False),
+        apply_process_priority=lambda idle: None,
+    )
+    agent.machine_location.set_enabled(True)
+
+    search_spec = agent.tools["search_public_web"]
+    fetch_spec = agent.tools["fetch_public_https"]
+    agent.tools["search_public_web"] = SimpleNamespace(
+        risk=search_spec.risk,
+        fn=lambda **_kwargs: (
+            "Public web search: weather tomorrow near -34.81, 138.61\n"
+            "1. Forecast - https://weather.example/forecast"
+        ),
+    )
+    agent.tools["fetch_public_https"] = SimpleNamespace(
+        risk=fetch_spec.risk,
+        fn=lambda **kwargs: (
+            f"Public HTTPS source: {kwargs['url']}\n"
+            "Tomorrow will be mild with a high of 24 C and a chance of showers."
+        ),
+    )
+
+    calls = []
+    streams = iter(
+        [
+            [[_chunk(tool_calls=[_call(
+                "search_public_web",
+                {"query": "weather tomorrow near -34.81 138.61"},
+            )])]],
+            [[_chunk(tool_calls=[_call(
+                "fetch_public_https",
+                {"url": "https://weather.example/forecast"},
+            )])]],
+            [[_chunk(content="I have the location and fresh forecast evidence.")]],
+            [[_chunk(content=(
+                "Tomorrow should be mild, around 24 °C at the top end, with a chance "
+                "of showers. You do not need to give me your suburb while PC location is enabled."
+            ))]],
+        ]
+    )
+
+    def fake_chat(**kwargs):
+        # The agent intentionally scrubs transient location context from its
+        # live message list after the turn. Snapshot the call here so the test
+        # verifies what the model actually saw rather than the later scrubbed
+        # list object.
+        captured = dict(kwargs)
+        captured["messages"] = [dict(message) for message in kwargs["messages"]]
+        calls.append(captured)
+        return iter(next(streams)[0])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+
+    answer = agent.ask(
+        "Good afternoon. What's the weather going to be like here tomorrow?",
+        interface="desktop",
+    )
+
+    assert "24 °C" in answer
+    assert "give me your suburb" in answer
+    assert len(calls) == 4
+
+    first_context = "\n".join(
+        str(message.get("content") or "") for message in calls[0]["messages"]
+    )
+    assert "MACHINE LOCATION CONTEXT" in first_context
+    assert "Do not ask the owner for a city, suburb, postcode, or ZIP" in first_context
+    assert "authoritative machine-location evidence for this turn" in first_context
+    assert '"approximate_latitude": -34.81' in first_context
+    assert '"approximate_longitude": 138.61' in first_context
+
+    evidence_events = agent.audit.recent("tool_result", limit=20)
+    assert not any(event.get("tool") == "get_machine_location" for event in evidence_events)
+    assert any(
+        event.get("tool") == "search_public_web"
+        and event.get("evidence_source") == "public web discovery"
+        and event.get("ok") is True
+        for event in evidence_events
+    )
+    assert any(
+        event.get("tool") == "fetch_public_https"
+        and event.get("evidence_source") == "public HTTPS"
+        and event.get("ok") is True
+        for event in evidence_events
+    )
+
+    assert "MACHINE LOCATION CONTEXT" not in str(agent.messages)
+    assert "-34.81" not in str(agent.messages)
+    assert "138.61" not in str(agent.messages)

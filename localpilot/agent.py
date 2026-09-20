@@ -359,6 +359,14 @@ class LocalPilotAgent:
 
     _is_temporal_web_prompt = staticmethod(agent_prompt_classification._is_temporal_web_prompt)
 
+    _is_live_local_information_prompt = staticmethod(
+        agent_prompt_classification._is_live_local_information_prompt
+    )
+
+    _uses_implicit_machine_location = staticmethod(
+        agent_prompt_classification._uses_implicit_machine_location
+    )
+
     _is_practical_troubleshooting_prompt = staticmethod(agent_prompt_classification._is_practical_troubleshooting_prompt)
 
     _practical_troubleshooting_fallback = staticmethod(agent_prompt_classification._practical_troubleshooting_fallback)
@@ -2494,6 +2502,8 @@ class LocalPilotAgent:
         )
         direct_conversation = self._is_bounded_conversational_prompt(prompt)
         temporal_web_research = self._is_temporal_web_prompt(prompt)
+        live_local_information = self._is_live_local_information_prompt(prompt)
+        implicit_machine_location = self._uses_implicit_machine_location(prompt)
         practical_troubleshooting = self._is_practical_troubleshooting_prompt(prompt)
         if systemsense_diagnostic:
             # This is an explicit evidence-only route. Do not let words inside
@@ -2549,6 +2559,7 @@ class LocalPilotAgent:
         temporal_context_message: dict[str, Any] | None = None
         interface_context_message: dict[str, Any] | None = None
         location_context_message: dict[str, Any] | None = None
+        location_turn_start_index: int | None = None
         learning_verification_messages: list[dict[str, Any]] = []
         if learning_context:
             retrieval = self.memory.last_retrieval_diagnostics
@@ -2705,25 +2716,43 @@ class LocalPilotAgent:
             self.messages.append(temporal_context_message)
 
         recent_location_context = any(
-            self.machine_location.prompt_needs_location(
+            self._uses_implicit_machine_location(
                 str(message.get("content") or "")
             )
             for message in self.messages[-4:]
             if message.get("role") in {"user", "assistant"}
         )
-        if (
-            not systemsense_diagnostic
-            and (
-                self.machine_location.prompt_needs_location(prompt)
-                or recent_location_context
-            )
-        ):
+        location_available_for_turn = False
+        location_requested_for_turn = bool(
+            implicit_machine_location or recent_location_context
+        )
+        if not systemsense_diagnostic and location_requested_for_turn:
+            # Everything after this index belongs to the current local-context
+            # turn. Location-bearing tool plumbing is scrubbed after synthesis
+            # so approximate coordinates do not become durable chat context.
+            location_turn_start_index = len(self.messages)
             status = self.machine_location.public_status()
             if status.get("enabled"):
                 location_context = self.machine_location.coarse_model_context(
                     refresh_if_stale=True
                 )
                 if location_context is not None:
+                    location_available_for_turn = True
+                    local_research_instruction = (
+                        " The owner's words such as 'here', 'near me', or a bare local "
+                        "weather request refer to this machine location. Do not ask the owner "
+                        "for a city, suburb, postcode, or ZIP while this location is available."
+                    )
+                    if live_local_information:
+                        local_research_instruction += (
+                            " This is live local information. The location context below is already "
+                            "authoritative machine-location evidence for this turn; do not ask for "
+                            "the location again and do not spend a tool round re-reading it. Use "
+                            "search_public_web and fetch_public_https for fresh evidence relevant "
+                            "to this approximate location before answering. You may use the "
+                            "approximate coordinates as a search disambiguator, but do not print "
+                            "coordinates unless asked."
+                        )
                     location_context_message = {
                         "role": "system",
                         "content": (
@@ -2731,7 +2760,9 @@ class LocalPilotAgent:
                             "for this PC. Use this transient approximate location only to resolve the "
                             "owner's current location-dependent request. It is not durable memory and is "
                             "not evidence about the owner's home or identity. Do not quote coordinates "
-                            "unless the owner explicitly asks for them. Exact coordinates remain local.\n"
+                            "unless the owner explicitly asks for them. Exact coordinates remain local."
+                            + local_research_instruction
+                            + "\n"
                             + json.dumps(location_context, ensure_ascii=False, sort_keys=True)
                         ),
                     }
@@ -2741,6 +2772,7 @@ class LocalPilotAgent:
                         source=location_context.get("source"),
                         updated_at=location_context.get("updated_at"),
                         approximate=True,
+                        live_local_information=live_local_information,
                         retained_in_messages=False,
                     )
                 else:
@@ -2765,6 +2797,17 @@ class LocalPilotAgent:
         used_tools = False
         evidence_requirements = self._evidence_requirements(prompt)
         if (
+            implicit_machine_location
+            and not location_available_for_turn
+        ):
+            # If the owner has not enabled/provided a usable machine location,
+            # the correct next step is to ask for a city/region. Do not force a
+            # meaningless web search before that clarification.
+            evidence_requirements.discard("machine location")
+            if live_local_information:
+                evidence_requirements.discard("public web discovery")
+                evidence_requirements.discard("public HTTPS")
+        if (
             owner_forbids_tools
             or operational_self_status
             or direct_conversation
@@ -2773,6 +2816,15 @@ class LocalPilotAgent:
             evidence_requirements.clear()
         attempted_evidence: set[str] = set()
         succeeded_evidence: set[str] = set()
+        if (
+            location_available_for_turn
+            and "machine location" in evidence_requirements
+        ):
+            # The provider was read directly above before inference. Count that
+            # deterministic local observation as satisfied evidence rather than
+            # forcing a redundant get_machine_location tool round.
+            attempted_evidence.add("machine location")
+            succeeded_evidence.add("machine location")
         successful_tools: set[str] = set()
         failed_evidence: set[str] = set()
         evidence_recovery_attempts = 0
@@ -3852,6 +3904,29 @@ class LocalPilotAgent:
                     "machine_location_context_scrubbed",
                     retained_in_messages=False,
                 )
+            if (
+                location_available_for_turn
+                and location_turn_start_index is not None
+                and location_turn_start_index < len(self.messages)
+            ):
+                prefix = self.messages[:location_turn_start_index]
+                turn_messages = self.messages[location_turn_start_index:]
+                retained_turn_messages = []
+                scrubbed_location_research_messages = 0
+                for message in turn_messages:
+                    role = message.get("role")
+                    has_tool_calls = bool(message.get("tool_calls"))
+                    if role == "tool" or (role == "assistant" and has_tool_calls):
+                        scrubbed_location_research_messages += 1
+                        continue
+                    retained_turn_messages.append(message)
+                self.messages[:] = prefix + retained_turn_messages
+                if scrubbed_location_research_messages:
+                    self.audit.write(
+                        "machine_location_research_context_scrubbed",
+                        message_count=scrubbed_location_research_messages,
+                        retained_in_messages=False,
+                    )
             if learning_verification_messages:
                 verification_ids = {
                     id(message) for message in learning_verification_messages

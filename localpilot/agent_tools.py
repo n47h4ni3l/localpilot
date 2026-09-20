@@ -81,6 +81,8 @@ def _forbidden_tools(prompt: str) -> frozenset[str]:
 
 
 def _tool_evidence_source(name: str) -> str | None:
+    if name == "get_machine_location":
+        return "machine location"
     if name in _REPOSITORY_TOOLS:
         return "trusted repository"
     if name in _GITHUB_TOOLS:

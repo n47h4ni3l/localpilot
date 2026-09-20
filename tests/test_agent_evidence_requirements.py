@@ -76,3 +76,25 @@ def test_explicit_pc_state_request_requires_pc_evidence():
     assert LocalPilotAgent._evidence_requirements(
         "Check this PC's current storage and Defender status."
     ) == {"Windows/PC state"}
+
+
+def test_implicit_local_weather_requires_machine_location_and_fresh_web_evidence():
+    prompt = "Good afternoon. What's the weather going to be like here tomorrow?"
+
+    assert LocalPilotAgent._uses_implicit_machine_location(prompt) is True
+    assert LocalPilotAgent._is_live_local_information_prompt(prompt) is True
+    assert LocalPilotAgent._evidence_requirements(prompt) == {
+        "machine location",
+        "public web discovery",
+        "public HTTPS",
+    }
+
+
+def test_explicit_weather_place_does_not_require_machine_location():
+    prompt = "What's the weather in Melbourne tomorrow?"
+
+    assert LocalPilotAgent._uses_implicit_machine_location(prompt) is False
+    assert LocalPilotAgent._evidence_requirements(prompt) == {
+        "public web discovery",
+        "public HTTPS",
+    }

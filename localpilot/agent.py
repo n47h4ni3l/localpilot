@@ -2703,9 +2703,19 @@ class LocalPilotAgent:
             }
             self.messages.append(temporal_context_message)
 
+        recent_location_context = any(
+            self.machine_location.prompt_needs_location(
+                str(message.get("content") or "")
+            )
+            for message in self.messages[-4:]
+            if message.get("role") in {"user", "assistant"}
+        )
         if (
             not systemsense_diagnostic
-            and self.machine_location.prompt_needs_location(prompt)
+            and (
+                self.machine_location.prompt_needs_location(prompt)
+                or recent_location_context
+            )
         ):
             status = self.machine_location.public_status()
             if status.get("enabled"):

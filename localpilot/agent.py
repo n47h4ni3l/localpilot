@@ -359,6 +359,14 @@ class LocalPilotAgent:
 
     _is_temporal_web_prompt = staticmethod(agent_prompt_classification._is_temporal_web_prompt)
 
+    _is_live_local_information_prompt = staticmethod(
+        agent_prompt_classification._is_live_local_information_prompt
+    )
+
+    _uses_implicit_machine_location = staticmethod(
+        agent_prompt_classification._uses_implicit_machine_location
+    )
+
     _is_practical_troubleshooting_prompt = staticmethod(agent_prompt_classification._is_practical_troubleshooting_prompt)
 
     _practical_troubleshooting_fallback = staticmethod(agent_prompt_classification._practical_troubleshooting_fallback)
@@ -2494,6 +2502,8 @@ class LocalPilotAgent:
         )
         direct_conversation = self._is_bounded_conversational_prompt(prompt)
         temporal_web_research = self._is_temporal_web_prompt(prompt)
+        live_local_information = self._is_live_local_information_prompt(prompt)
+        implicit_machine_location = self._uses_implicit_machine_location(prompt)
         practical_troubleshooting = self._is_practical_troubleshooting_prompt(prompt)
         if systemsense_diagnostic:
             # This is an explicit evidence-only route. Do not let words inside
@@ -2705,25 +2715,37 @@ class LocalPilotAgent:
             self.messages.append(temporal_context_message)
 
         recent_location_context = any(
-            self.machine_location.prompt_needs_location(
+            self._uses_implicit_machine_location(
                 str(message.get("content") or "")
             )
             for message in self.messages[-4:]
             if message.get("role") in {"user", "assistant"}
         )
-        if (
-            not systemsense_diagnostic
-            and (
-                self.machine_location.prompt_needs_location(prompt)
-                or recent_location_context
-            )
-        ):
+        location_available_for_turn = False
+        location_requested_for_turn = bool(
+            implicit_machine_location or recent_location_context
+        )
+        if not systemsense_diagnostic and location_requested_for_turn:
             status = self.machine_location.public_status()
             if status.get("enabled"):
                 location_context = self.machine_location.coarse_model_context(
                     refresh_if_stale=True
                 )
                 if location_context is not None:
+                    location_available_for_turn = True
+                    local_research_instruction = (
+                        " The owner's words such as 'here', 'near me', or a bare local "
+                        "weather request refer to this machine location. Do not ask the owner "
+                        "for a city, suburb, postcode, or ZIP while this location is available."
+                    )
+                    if live_local_information:
+                        local_research_instruction += (
+                            " This is live local information: use get_machine_location to "
+                            "confirm the current coarse machine location, then search_public_web "
+                            "and fetch_public_https for fresh evidence relevant to that location "
+                            "before answering. You may use the approximate coordinates as a "
+                            "search disambiguator, but do not print coordinates unless asked."
+                        )
                     location_context_message = {
                         "role": "system",
                         "content": (
@@ -2731,7 +2753,9 @@ class LocalPilotAgent:
                             "for this PC. Use this transient approximate location only to resolve the "
                             "owner's current location-dependent request. It is not durable memory and is "
                             "not evidence about the owner's home or identity. Do not quote coordinates "
-                            "unless the owner explicitly asks for them. Exact coordinates remain local.\n"
+                            "unless the owner explicitly asks for them. Exact coordinates remain local."
+                            + local_research_instruction
+                            + "\n"
                             + json.dumps(location_context, ensure_ascii=False, sort_keys=True)
                         ),
                     }
@@ -2741,6 +2765,7 @@ class LocalPilotAgent:
                         source=location_context.get("source"),
                         updated_at=location_context.get("updated_at"),
                         approximate=True,
+                        live_local_information=live_local_information,
                         retained_in_messages=False,
                     )
                 else:
@@ -2764,6 +2789,17 @@ class LocalPilotAgent:
         retried_empty_response = False
         used_tools = False
         evidence_requirements = self._evidence_requirements(prompt)
+        if (
+            implicit_machine_location
+            and not location_available_for_turn
+        ):
+            # If the owner has not enabled/provided a usable machine location,
+            # the correct next step is to ask for a city/region. Do not force a
+            # meaningless web search before that clarification.
+            evidence_requirements.discard("machine location")
+            if live_local_information:
+                evidence_requirements.discard("public web discovery")
+                evidence_requirements.discard("public HTTPS")
         if (
             owner_forbids_tools
             or operational_self_status

@@ -5,6 +5,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from localpilot.machine_location import LocationSnapshot, MachineLocation
+from localpilot.config import Config
+from localpilot.safety import RiskLevel
+from localpilot.tools import registry
 from localpilot import webview_app
 
 
@@ -145,3 +148,26 @@ def test_location_settings_ui_never_renders_precise_coordinates():
     assert "refresh_location" in script
     assert "latitude" not in script
     assert "longitude" not in script
+
+
+def test_registry_exposes_only_coarse_machine_location(tmp_path, monkeypatch):
+    config = Config()
+    location = MachineLocation(tmp_path / config.agent.data_dir)
+    monkeypatch.setattr(
+        MachineLocation,
+        "_capture_windows_location",
+        staticmethod(_snapshot),
+    )
+    location.set_enabled(True)
+
+    tools = registry(tmp_path, config=config, machine_location=location)
+    spec = tools["get_machine_location"]
+    assert spec.risk is RiskLevel.READ_ONLY
+
+    result = spec.fn()
+    assert result["enabled"] is True
+    assert result["available"] is True
+    assert result["approximate_latitude"] == -34.81
+    assert result["approximate_longitude"] == 138.61
+    assert "latitude" not in {key for key in result if key in {"latitude", "longitude"}}
+    assert "Exact machine coordinates remain local" in result["privacy"]

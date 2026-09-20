@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "name": "LocalPilot gpt-oss-20b QLoRA v1",
-  "status": "proposed",
-  "status_note": "Do not change to approved_after_dry_run until the exact tracked config and corpus pass train_adapter.py --dry-run on the target WSL2 ROCm environment.",
+  "status": "approved_after_dry_run",
+  "status_note": "Owner approved the watched first training batch on 2026-09-21 after PR #154 merged and the exact target environment passed the pinned offline dry-run. Stop on any model-load, memory, or first-step failure.",
   "backend": {
     "name": "unsloth",
     "environment": "WSL2 Ubuntu 24.04 stored on E:",

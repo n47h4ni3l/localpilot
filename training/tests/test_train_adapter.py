@@ -351,6 +351,7 @@ class TrainAdapterTests(unittest.TestCase):
 
     def test_training_requires_approval_and_rejects_changed_spec(self) -> None:
         result = self.dry_run()
+        self.config["status"] = "proposed"
         with self.assertRaisesRegex(RuntimeError, "disabled"):
             runner._verify_training_gate(self.config, result, self.config_path)
         self.config["status"] = "approved_after_dry_run"
@@ -425,6 +426,8 @@ class TrainAdapterTests(unittest.TestCase):
         saved_tokenizer.save_pretrained.assert_called_once()
 
     def test_real_training_never_called_when_config_is_proposed(self) -> None:
+        self.config["status"] = "proposed"
+        self.save_config()
         report_path = self.root / "training/reports/saved.json"
         write_json(report_path, self.dry_run())
         with mock.patch.object(runner, "execute_training") as train:

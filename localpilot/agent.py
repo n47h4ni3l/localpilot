@@ -108,6 +108,7 @@ class LocalPilotAgent:
             command_runner=self.command_runner,
             config=config,
             systemsense=self.systemsense,
+            machine_location=self.machine_location,
         )
         self.information_authority = InformationAuthorityVerifier(self.project_root)
         self.turn_evidence = TurnEvidenceVerifier()

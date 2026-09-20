@@ -35,10 +35,13 @@ from validate_dataset import validate_files
 DEFAULT_CONFIG = ROOT / "training/configs/qlora_v1.yaml"
 DEFAULT_REPORT = ROOT / "training/reports/adapter_v1_dry_run.json"
 TRAINING_OUTPUT_ROOT = ROOT / "training/outputs"
-# Unsloth must patch Transformers/PEFT before they are imported.
-REQUIRED_IMPORTS = (
-    "unsloth", "torch", "unsloth_zoo", "transformers", "peft", "trl",
-    "datasets", "bitsandbytes", "triton", "huggingface_hub",
+# Measure clean GPU capacity after Torch/Triton initialize but before Unsloth's
+# ROCm patching changes the process-local free-memory reading. Unsloth still
+# loads before Transformers/PEFT, as required by its import contract.
+GPU_PREFLIGHT_IMPORTS = ("torch", "triton")
+REQUIRED_IMPORTS = GPU_PREFLIGHT_IMPORTS + (
+    "unsloth", "unsloth_zoo", "transformers", "peft", "trl",
+    "datasets", "bitsandbytes", "huggingface_hub",
 )
 CONFIRMATION = "TRAIN_LOCALPILOT_ADAPTER_V1"
 TARGET_MODULES = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
@@ -54,10 +57,24 @@ def _native_tool(tool: Any, *, record_id: str) -> dict[str, Any]:
     parameters = function.get("parameters", {"type": "object", "properties": {}})
     if not isinstance(parameters, dict):
         raise RuntimeError(f"{record_id}: native tool parameters must be an object")
+    normalized_parameters = copy.deepcopy(parameters)
+    properties = normalized_parameters.get("properties", {})
+    if not isinstance(properties, dict):
+        raise RuntimeError(f"{record_id}: native tool parameter properties must be an object")
+    for parameter_name, parameter_schema in properties.items():
+        if not isinstance(parameter_name, str) or not parameter_name.strip():
+            raise RuntimeError(f"{record_id}: native tool parameter names must be nonempty text")
+        if not isinstance(parameter_schema, dict):
+            raise RuntimeError(f"{record_id}: native tool parameter schemas must be objects")
+        # The pinned gpt-oss template concatenates every top-level parameter
+        # description directly. Some valid upstream JSON Schemas omit this
+        # optional annotation, so supply an empty rendering-only default without
+        # mutating the signed corpus row.
+        parameter_schema["description"] = str(parameter_schema.get("description", ""))
     normalized_function = copy.deepcopy(function)
     normalized_function["name"] = function["name"].strip()
     normalized_function["description"] = str(function.get("description", ""))
-    normalized_function["parameters"] = copy.deepcopy(parameters)
+    normalized_function["parameters"] = normalized_parameters
     return {"type": "function", "function": normalized_function}
 
 
@@ -645,18 +662,23 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, report_path: Pa
         # Resolve data before loading model components or permitting any downloads.
         data_valid = all(item["passed"] for item in checks if item["name"] in {"dataset_schema_and_splits", "held_out_leakage", "output_directory_safety", "model_cache_storage"})
         if data_valid:
-            for name in REQUIRED_IMPORTS:
-                module = check(f"import_{name}", lambda name=name: importer(name))
-                if module is not None:
-                    modules[name] = module
-                    versions[name] = str(getattr(module, "__version__", "unknown"))
-                    checks[-1]["detail"] = versions[name]
-            for name, expected in backend["package_versions"].items():
-                _add_check(checks, f"version_{name}", versions.get(name) == expected, {"expected": expected, "actual": versions.get(name)})
-            if "torch" in modules and "triton" in modules:
+            def import_required(names: Sequence[str]) -> None:
+                for name in names:
+                    module = check(f"import_{name}", lambda name=name: importer(name))
+                    if module is not None:
+                        modules[name] = module
+                        versions[name] = str(getattr(module, "__version__", "unknown"))
+                        checks[-1]["detail"] = versions[name]
+
+            import_required(GPU_PREFLIGHT_IMPORTS)
+            if all(name in modules for name in GPU_PREFLIGHT_IMPORTS):
                 gpu = check("rocm_gpu_and_triton", lambda: _gpu_preflight(modules["torch"], modules["triton"], config)) or {}
             else:
                 _add_check(checks, "rocm_gpu_and_triton", False, "Required GPU dependencies unavailable")
+
+            import_required(REQUIRED_IMPORTS[len(GPU_PREFLIGHT_IMPORTS):])
+            for name, expected in backend["package_versions"].items():
+                _add_check(checks, f"version_{name}", versions.get(name) == expected, {"expected": expected, "actual": versions.get(name)})
             if all(name in modules for name in ("huggingface_hub", "transformers", "peft")):
                 model_evidence = check("model_tokenizer_and_adapter", lambda: _model_preflight(config, rows, modules, allow_downloads)) or {}
             else:

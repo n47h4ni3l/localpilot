@@ -38,6 +38,7 @@ from localpilot.authority import (
 from localpilot.config import Config
 from localpilot.fast_path import FastPathDecision, classify_fast_path
 from localpilot.learning import HumanLesson, KnowledgeFact, LearningMemory
+from localpilot.machine_location import MachineLocation
 from localpilot.operator import CommandRunner
 from localpilot.research import (
     RESEARCH_NOTEBOOK_TOOL,
@@ -90,6 +91,7 @@ class LocalPilotAgent:
         self.data_dir = (self.project_root / config.agent.data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
+        self.machine_location = MachineLocation(self.data_dir)
         self.command_runner = CommandRunner(
             audit_callback=lambda event: self.audit.write(
                 "operator_command_executed", **event
@@ -2545,6 +2547,7 @@ class LocalPilotAgent:
         troubleshooting_message: dict[str, Any] | None = None
         temporal_context_message: dict[str, Any] | None = None
         interface_context_message: dict[str, Any] | None = None
+        location_context_message: dict[str, Any] | None = None
         learning_verification_messages: list[dict[str, Any]] = []
         if learning_context:
             retrieval = self.memory.last_retrieval_diagnostics
@@ -2699,6 +2702,53 @@ class LocalPilotAgent:
                 ),
             }
             self.messages.append(temporal_context_message)
+
+        if (
+            not systemsense_diagnostic
+            and self.machine_location.prompt_needs_location(prompt)
+        ):
+            status = self.machine_location.public_status()
+            if status.get("enabled"):
+                location_context = self.machine_location.coarse_model_context(
+                    refresh_if_stale=True
+                )
+                if location_context is not None:
+                    location_context_message = {
+                        "role": "system",
+                        "content": (
+                            "MACHINE LOCATION CONTEXT: The owner has explicitly enabled location access "
+                            "for this PC. Use this transient approximate location only to resolve the "
+                            "owner's current location-dependent request. It is not durable memory and is "
+                            "not evidence about the owner's home or identity. Do not quote coordinates "
+                            "unless the owner explicitly asks for them. Exact coordinates remain local.\n"
+                            + json.dumps(location_context, ensure_ascii=False, sort_keys=True)
+                        ),
+                    }
+                    self.messages.append(location_context_message)
+                    self.audit.write(
+                        "machine_location_context_supplied",
+                        source=location_context.get("source"),
+                        updated_at=location_context.get("updated_at"),
+                        approximate=True,
+                        retained_in_messages=False,
+                    )
+                else:
+                    refreshed_status = self.machine_location.public_status()
+                    location_context_message = {
+                        "role": "system",
+                        "content": (
+                            "MACHINE LOCATION CONTEXT: The owner enabled location access for this PC, "
+                            "but Windows Location Service did not provide a usable current position. "
+                            "Do not guess the location. Ask for a city/region only if the request cannot "
+                            "be completed without it. "
+                            f"Provider status: {refreshed_status.get('error') or 'position unavailable'}."
+                        ),
+                    }
+                    self.messages.append(location_context_message)
+                    self.audit.write(
+                        "machine_location_context_unavailable",
+                        error=refreshed_status.get("error"),
+                    )
         self.messages.append({"role": "user", "content": prompt})
         retried_empty_response = False
         used_tools = False
@@ -3781,6 +3831,16 @@ class LocalPilotAgent:
                     for message in self.messages
                     if id(message) != id(interface_context_message)
                 ]
+            if location_context_message is not None:
+                self.messages[:] = [
+                    message
+                    for message in self.messages
+                    if id(message) != id(location_context_message)
+                ]
+                self.audit.write(
+                    "machine_location_context_scrubbed",
+                    retained_in_messages=False,
+                )
             if learning_verification_messages:
                 verification_ids = {
                     id(message) for message in learning_verification_messages

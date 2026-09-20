@@ -246,7 +246,13 @@ def test_enabled_machine_location_drives_here_weather_research(tmp_path, monkeyp
     )
 
     def fake_chat(**kwargs):
-        calls.append(kwargs)
+        # The agent intentionally scrubs transient location context from its
+        # live message list after the turn. Snapshot the call here so the test
+        # verifies what the model actually saw rather than the later scrubbed
+        # list object.
+        captured = dict(kwargs)
+        captured["messages"] = [dict(message) for message in kwargs["messages"]]
+        calls.append(captured)
         return iter(next(streams)[0])
 
     monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))

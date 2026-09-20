@@ -229,7 +229,6 @@ def test_enabled_machine_location_drives_here_weather_research(tmp_path, monkeyp
     calls = []
     streams = iter(
         [
-            [[_chunk(tool_calls=[_call("get_machine_location")])]],
             [[_chunk(tool_calls=[_call(
                 "search_public_web",
                 {"query": "weather tomorrow near -34.81 138.61"},
@@ -259,23 +258,19 @@ def test_enabled_machine_location_drives_here_weather_research(tmp_path, monkeyp
 
     assert "24 °C" in answer
     assert "give me your suburb" in answer
-    assert len(calls) == 5
+    assert len(calls) == 4
 
     first_context = "\n".join(
         str(message.get("content") or "") for message in calls[0]["messages"]
     )
     assert "MACHINE LOCATION CONTEXT" in first_context
     assert "Do not ask the owner for a city, suburb, postcode, or ZIP" in first_context
+    assert "authoritative machine-location evidence for this turn" in first_context
     assert '"approximate_latitude": -34.81' in first_context
     assert '"approximate_longitude": 138.61' in first_context
 
     evidence_events = agent.audit.recent("tool_result", limit=20)
-    assert any(
-        event.get("tool") == "get_machine_location"
-        and event.get("evidence_source") == "machine location"
-        and event.get("ok") is True
-        for event in evidence_events
-    )
+    assert not any(event.get("tool") == "get_machine_location" for event in evidence_events)
     assert any(
         event.get("tool") == "search_public_web"
         and event.get("evidence_source") == "public web discovery"

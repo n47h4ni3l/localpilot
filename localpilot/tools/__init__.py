@@ -8,6 +8,7 @@ from localpilot.safety import RiskLevel, ToolSpec
 from localpilot.tools.github_readonly import GitHubReader
 from localpilot.tools.learning_readonly import LearningMemoryReader
 from localpilot.tools.library import LocalLibrary
+from localpilot.tools.location import MachineLocationReader
 from localpilot.tools.reading_notes import LibraryReadingNotesReader
 from localpilot.tools.repository import RepositoryReader
 from localpilot.tools.systemsense import SystemSenseReader
@@ -23,6 +24,7 @@ from localpilot.tools.windows import (
 )
 from localpilot.tools.windows_actions import WindowsActions
 from localpilot.systemsense import SystemSense, get_system_sense
+from localpilot.machine_location import MachineLocation
 
 
 def registry(
@@ -31,6 +33,7 @@ def registry(
     command_runner: CommandRunner | None = None,
     config: Config | None = None,
     systemsense: SystemSense | None = None,
+    machine_location: MachineLocation | None = None,
 ) -> dict[str, ToolSpec]:
     actions = WindowsActions(command_runner or CommandRunner())
     specs = [
@@ -87,6 +90,9 @@ def registry(
         )
         github = GitHubReader(project_root)
         learning = LearningMemoryReader(project_root)
+        location = machine_location
+        if location is None and config is not None:
+            location = MachineLocation(root / config.agent.data_dir)
         sense = systemsense
         if sense is None and config is not None:
             sense = get_system_sense(
@@ -97,6 +103,18 @@ def registry(
             )
         specs.extend(
             [
+                *(
+                    [
+                        ToolSpec(
+                            "get_machine_location",
+                            "Read the owner-enabled approximate location of this PC. Returns only coarse coordinates; exact machine coordinates remain local and are not exposed to the model.",
+                            RiskLevel.READ_ONLY,
+                            MachineLocationReader(location).get_machine_location,
+                        )
+                    ]
+                    if location is not None
+                    else []
+                ),
                 ToolSpec(
                     "get_learning_memory_summary",
                     "Inspect LocalPilot's real LearningMemory without mutating it: bounded fact, durable-learning, owner-lesson, development-cycle, experiment, source, and staleness summaries plus the verified writer boundaries.",

@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="comic-shell.css">
 <link rel="stylesheet" href="comic-final-polish.css">
 <link rel="stylesheet" href="settings-updates.css">
+<link rel="stylesheet" href="settings-location.css">
 <link rel="stylesheet" href="desktop-commands.css">
 </head>
 <body>
@@ -162,6 +163,14 @@
           <div class="toggle-row">Always on top <button class="switch is-on" id="toggle-ontop" role="switch" aria-checked="true" aria-label="Always on top"></button></div>
         </section>
         <section>
+          <h4>Location</h4>
+          <div class="toggle-row">Use this PC’s location <button class="switch" id="toggle-location" role="switch" aria-checked="false" aria-label="Use this PC's location"></button></div>
+          <div class="settings-meta-row"><span>Status</span><strong id="location-status">Off</strong></div>
+          <div class="settings-meta-row"><span>Source</span><strong id="location-source">—</strong></div>
+          <button class="action settings-location-refresh" id="location-refresh" type="button" disabled>Refresh location</button>
+          <p class="settings-privacy-note">Used only for location-dependent requests. Exact coordinates stay local and are not saved to chat or LearningMemory.</p>
+        </section>
+        <section>
           <h4>Updates</h4>
           <div class="toggle-row">Automatic updates <button class="switch" id="toggle-auto-updates" role="switch" aria-checked="false" aria-label="Automatic updates"></button></div>
           <div class="settings-meta-row"><span>Last checked</span><strong id="update-last-checked">Never</strong></div>
@@ -178,6 +187,7 @@
 <script src="app.js"></script>
 <script src="desktop-commands.js"></script>
 <script src="settings-updates.js"></script>
+<script src="settings-location.js"></script>
 <script src="companion-state-sync.js"></script>
 </body>
 </html>

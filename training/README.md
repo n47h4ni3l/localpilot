@@ -6,8 +6,8 @@ This workspace exists to improve the single operational LocalPilot model. It is 
 
 1. **Complete:** freeze the pre- and post-Claude-Code aggregate benchmarks.
 2. **Complete:** build the first verified, project-owned Corpus v1 seed and held-out hash manifest.
-3. **Proposed:** validate the pinned WSL2/ROCm/Unsloth adapter environment on the target machine.
-4. Change `qlora_v1.yaml` from `proposed` only after an exact dry-run passes locally and its report matches the config and corpus digests.
+3. **Complete:** validate the pinned WSL2/ROCm/Unsloth adapter environment on the target machine with a non-training dry-run.
+4. Review the passing report with the user; change `qlora_v1.yaml` from `proposed` only in the separate change that authorizes the watched first batch.
 5. Train the first adapter in a separate, explicitly authorized run.
 6. Re-run the unchanged Eval v1 and Evolution Execution v1 benchmarks.
 7. Consider promotion only from held-out and execution evidence, with human review and merge.
@@ -260,9 +260,9 @@ See `training/BACKEND_DECISION.md` for the current primary-source compatibility 
 The proposed `qlora_v1.yaml` pins model revisions and all adapter, data, optimization, validation, checkpoint, seed, and resource settings. It remains `status: proposed` until the actual target environment passes:
 
 ```powershell
-wsl -d LocalPilot-Training --cd <repo> -- bash -lc '~/.venvs/localpilot-training/bin/python training/scripts/train_adapter.py --dry-run --allow-downloads'
+wsl -d LocalPilot-Training --cd <repo> -- bash -lc 'source ~/.venvs/localpilot-training/bin/activate && source /etc/profile.d/rocdxg-amd-smi-lib.sh && python training/scripts/train_adapter.py --dry-run --allow-downloads'
 ```
 
-The dry-run performs no training. It verifies the WSL/Ubuntu/Python environment, pinned backend versions, a small BF16 GPU operation, the HIP Triton target, free VRAM/RAM/storage, local dataset schema and splits, the frozen manifest digest and leakage, all cached model shards, tokenizer/chat-template lengths, PEFT configuration, output safety, and the exact resolved training command. `--allow-downloads` explicitly permits downloading the pinned model weights and tokenizer into the configured cache in the E:-stored WSL distro. Omit it for an offline cache check. The dry-run does not allocate the 20B model or measure its training peak; the memory estimate remains unmeasured.
+The dry-run performs no training. It verifies the WSL/Ubuntu/Python environment, pinned backend versions, a small BF16 GPU operation, the HIP Triton target, clean pre-Unsloth free VRAM, RAM/storage, local dataset schema and splits, the frozen manifest digest and leakage, all cached model shards, tokenizer/chat-template lengths, PEFT configuration, output safety, and the exact resolved training command. Measuring VRAM before Unsloth's ROCm patching avoids treating framework-owned initialization state as an external GPU workload. `--allow-downloads` explicitly permits downloading the pinned model weights and tokenizer into the configured cache in the E:-stored WSL distro. Omit it for an offline cache check. The dry-run does not allocate the 20B model or measure its training peak; the memory estimate remains unmeasured.
 
 Real training additionally requires an approved config, a matching passing local dry-run report, `--train`, and an explicit confirmation string. Changing only the approval status preserves the tested training-settings digest; changing any model/data/resource/training setting invalidates it. The entry point rechecks the environment, corpus, manifest, cached model, and output immediately before loading. Do not approve or execute training in this phase.

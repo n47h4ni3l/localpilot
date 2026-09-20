@@ -151,6 +151,18 @@ class TrainAdapterTests(unittest.TestCase):
         for example in examples:
             self.assertEqual(example["tools"][0]["type"], "function")
             self.assertEqual(example["tools"][0]["function"]["name"], "lookup_build")
+            self.assertEqual(
+                example["tools"][0]["function"]["parameters"]["properties"]["build_id"]["description"],
+                "",
+            )
+
+    def test_native_tool_rejects_malformed_parameter_properties(self) -> None:
+        for properties, expected in (([], "properties must be an object"), ({"build_id": "string"}, "schemas must be objects")):
+            with self.subTest(properties=properties):
+                row = native_trace()
+                row["metadata"]["native_tools"][0]["parameters"]["properties"] = properties
+                with self.assertRaisesRegex(RuntimeError, expected):
+                    runner.expand_training_examples([row])
 
     def test_xlam_parallel_calls_become_independent_native_targets(self) -> None:
         row = record("xlam-example", "Book both legs.", "train")
@@ -226,7 +238,10 @@ class TrainAdapterTests(unittest.TestCase):
         self.assertFalse(result["training_performed"])
         self.assertEqual(result["dataset_sha256"], sha256_json(self.rows))
         self.assertIn(str(report_path.resolve()), result["resolved_training_command"])
-        self.assertEqual(self.importer.call_args_list[0].args, ("unsloth",))
+        self.assertEqual(
+            [call.args for call in self.importer.call_args_list[:3]],
+            [("torch",), ("triton",), ("unsloth",)],
+        )
         self.assertTrue(self.snapshot_loader.call_args.kwargs["local_files_only"])
         self.assertTrue(self.tokenizer_loader.call_args.kwargs["local_files_only"])
         self.lora_loader.assert_called_once()
@@ -295,10 +310,30 @@ class TrainAdapterTests(unittest.TestCase):
         self.importer.assert_not_called()
 
     def test_long_tokenized_example_is_refused_instead_of_truncated(self) -> None:
+        limit = self.config["data"]["max_sequence_length"]
         self.tokenizer_loader.return_value.apply_chat_template = lambda *args, **kwargs: list(
-            range(1024 if kwargs["add_generation_prompt"] else 1025)
+            range(limit if kwargs["add_generation_prompt"] else limit + 1)
         )
         self.assertFalse(self.dry_run()["passed"])
+
+    def test_gpu_preflight_runs_before_unsloth_import(self) -> None:
+        events: list[str] = []
+
+        def importer(name: str) -> object:
+            events.append(f"import:{name}")
+            return self.modules[name]
+
+        def gpu_preflight(*args: object) -> dict[str, str]:
+            events.append("gpu-preflight")
+            return {"architecture": "gfx1201", "hip": "7.14.1"}
+
+        with mock.patch.object(runner, "_gpu_preflight", side_effect=gpu_preflight):
+            result = runner.dry_run(self.config_path, importer=importer)
+        self.assertTrue(result["passed"])
+        self.assertEqual(
+            events[:4],
+            ["import:torch", "import:triton", "gpu-preflight", "import:unsloth"],
+        )
 
     def test_changed_backend_version_or_insufficient_ram_blocks(self) -> None:
         self.modules["bitsandbytes"].__version__ = "0.49.0"

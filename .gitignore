@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+unsloth_compiled_cache/
 .coverage
 htmlcov/
 .env

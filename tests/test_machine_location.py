@@ -269,18 +269,7 @@ def test_enabled_machine_location_drives_here_weather_research(tmp_path, monkeyp
     assert '"approximate_latitude": -34.81' in first_context
     assert '"approximate_longitude": 138.61' in first_context
 
-    tool_names = [
-        call.function.name
-        for batch in (
-            calls[0].get("tools", []),
-        )
-        for call in []
-    ]
-    evidence_events = [
-        event
-        for event in agent.audit.tail(80)
-        if event.get("event") == "tool_result"
-    ]
+    evidence_events = agent.audit.recent("tool_result", limit=20)
     assert any(
         event.get("tool") == "get_machine_location"
         and event.get("evidence_source") == "machine location"

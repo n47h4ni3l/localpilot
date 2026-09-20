@@ -190,6 +190,7 @@ class MachineLocation:
             ),
             "source": snapshot.source,
             "updated_at": snapshot.updated_at,
+            "stale": self._is_stale(snapshot.updated_at),
             "privacy": (
                 "Approximate model context only. Exact coordinates remain in "
                 "machine-local location state and must not be persisted to "
@@ -228,7 +229,10 @@ class MachineLocation:
             "near me",
             "nearby",
             "around here",
+            "around me",
+            "closest to me",
             "local area",
+            "local weather",
             "where am i",
             "where are we",
             "my location",
@@ -272,7 +276,7 @@ class MachineLocation:
         script = r"""
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Device
-$watcher = New-Object System.Device.Location.GeoCoordinateWatcher(
+$watcher = New-Object System.Device.Location.GeoCoordinateWatcher -ArgumentList @(
     [System.Device.Location.GeoPositionAccuracy]::Default
 )
 try {

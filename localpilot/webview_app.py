@@ -29,6 +29,7 @@ from localpilot.desktop_update_status import (
     set_automatic_updates as set_desktop_automatic_updates,
 )
 from localpilot.process import hidden_process_creation_flags
+from localpilot.machine_location import MachineLocation
 from localpilot.windows_webview import make_host_background_transparent
 
 WEBVIEW_DIR = Path(__file__).resolve().parent / "webview"
@@ -197,6 +198,7 @@ class WindowBridge:
         self._config_path = config_path
         self._config = load_config(config_path)
         self._state = DesktopUIState(root / self._config.agent.data_dir)
+        self._location = MachineLocation(root / self._config.agent.data_dir)
         self._avatar_spawned = avatar_external
         self._avatar_external = bool(avatar_external)
         self._exit_requested = False
@@ -329,6 +331,15 @@ class WindowBridge:
             return {"ok": True, "enabled": value}
         except (OSError, subprocess.SubprocessError) as exc:
             return {"ok": False, "reason": str(exc)}
+
+    def get_location_settings(self) -> dict[str, Any]:
+        return self._location.public_status()
+
+    def set_location_enabled(self, value: bool) -> dict[str, Any]:
+        return self._location.set_enabled(bool(value), refresh=bool(value))
+
+    def refresh_location(self) -> dict[str, Any]:
+        return self._location.refresh()
 
     def get_update_settings(self) -> dict[str, Any]:
         return current_update_status(self._root, self._state).as_dict()
@@ -479,6 +490,9 @@ def main(
         bridge.set_always_on_top,
         bridge.get_start_with_windows,
         bridge.set_start_with_windows,
+        bridge.get_location_settings,
+        bridge.set_location_enabled,
+        bridge.refresh_location,
         bridge.get_update_settings,
         bridge.set_automatic_updates,
         bridge.check_for_updates,

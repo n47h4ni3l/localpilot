@@ -710,6 +710,15 @@ class TrainAdapterTests(unittest.TestCase):
                 runner.main(["--config", str(self.config_path), "--train", "--report", str(report_path), "--dry-run-report", str(report_path), "--confirm", runner.CONFIRMATION])
         train.assert_not_called()
 
+    def test_repeat_preflight_names_the_failed_check(self) -> None:
+        report_path = self.root / "training/reports/saved.json"
+        write_json(report_path, {})
+        failed = {"passed": False, "checks": [{"name": "rocm_gpu_and_triton", "passed": False, "detail": {"free_vram_gib": 12.0}}]}
+        with mock.patch.object(runner, "_verify_training_gate"), mock.patch.object(runner, "dry_run", return_value=failed), mock.patch.object(runner, "execute_training") as train:
+            with self.assertRaisesRegex(RuntimeError, "rocm_gpu_and_triton"):
+                runner.main(["--config", str(self.config_path), "--train", "--report", str(report_path), "--dry-run-report", str(report_path), "--confirm", runner.CONFIRMATION])
+        train.assert_not_called()
+
     def test_plain_train_never_silently_restarts_output_with_saved_identity(self) -> None:
         self.config["status"] = "approved_after_dry_run"
         self.save_config()

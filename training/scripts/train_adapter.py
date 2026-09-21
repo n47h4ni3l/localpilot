@@ -1033,7 +1033,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     _verify_training_gate(config, report, args.config, resume=args.resume, restart=args.restart)
     fresh = dry_run(args.config, allow_downloads=False, resume=args.resume, restart=args.restart, report_path=saved_path)
     if not fresh["passed"]:
-        raise RuntimeError("Current local preflight failed; rerun --dry-run and inspect its report")
+        failed = [{"name": item["name"], "detail": item["detail"]} for item in fresh["checks"] if not item["passed"]]
+        raise RuntimeError(f"Current local preflight failed: {json.dumps(failed, ensure_ascii=True)}")
     if fresh["environment"] != report["environment"] or fresh["model_evidence"] != report["model_evidence"]:
         raise RuntimeError("Installed environment or cached model changed after the approved dry-run")
     identity = _run_identity(config, fresh)

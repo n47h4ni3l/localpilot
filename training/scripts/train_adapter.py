@@ -622,8 +622,10 @@ def _validate_config(config: dict[str, Any]) -> None:
     number(adapter, "alpha", 1, 256, integer=True)
     number(adapter, "dropout", 0, 0.5)
     number(data, "max_sequence_length", 256, 4096, integer=True)
-    for key in ("micro_batch_size", "gradient_accumulation_steps", "validation_steps", "checkpoint_steps", "logging_steps", "save_total_limit"):
+    for key in ("micro_batch_size", "gradient_accumulation_steps", "validation_steps", "first_checkpoint_step", "checkpoint_steps", "logging_steps", "save_total_limit"):
         number(training, key, 1, 10000, integer=True)
+    if training["first_checkpoint_step"] > training["checkpoint_steps"]:
+        raise RuntimeError("The first checkpoint must not come after the regular checkpoint cadence")
     number(training, "learning_rate", 1e-7, 1e-2)
     number(training, "epochs", 0.01, 100)
     number(training, "warmup_ratio", 0, 1)
@@ -940,6 +942,11 @@ def execute_training(
     from transformers import TrainerCallback
 
     class CheckpointIntegrityCallback(TrainerCallback):
+        def on_step_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+            if state.global_step == training["first_checkpoint_step"]:
+                control.should_save = True
+            return control
+
         def on_save(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
             step = state.global_step
             checkpoint = output / "checkpoints" / f"checkpoint-{step}"

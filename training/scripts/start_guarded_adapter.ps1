@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $reportDir = Join-Path $repoRoot 'training\reports'
-$pidPath = Join-Path $reportDir 'adapter_v1_eager_22g_20260922.pid'
+$pidPath = Join-Path $reportDir 'adapter_v1_eager_20g_20260922.pid'
 $statusPath = Join-Path $reportDir 'adapter_v1_guard_status.json'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $stdoutPath = Join-Path $reportDir "adapter_v1_$stamp.stdout.log"
@@ -17,16 +17,19 @@ if (-not (Test-Path -LiteralPath $wslConfig)) {
     throw 'The measured WSL memory configuration is missing.'
 }
 $wslSettings = Get-Content -LiteralPath $wslConfig -Raw
-if ($wslSettings -notmatch '(?m)^\s*memory=22GB\s*$' -or $wslSettings -notmatch '(?m)^\s*swap=16GB\s*$') {
-    throw 'This guarded run requires the measured WSL memory=22GB and swap=16GB settings.'
+if ($wslSettings -notmatch '(?m)^\s*memory=20GB\s*$' -or $wslSettings -notmatch '(?m)^\s*swap=16GB\s*$') {
+    throw 'This guarded run requires the measured WSL memory=20GB and swap=16GB settings.'
 }
-if (-not (Test-Path -LiteralPath (Join-Path $reportDir 'adapter_v1_eager_22g_20260922_dry_run.json'))) {
+if (-not (Test-Path -LiteralPath (Join-Path $reportDir 'adapter_v1_eager_20g_20260922_dry_run.json'))) {
     throw 'The passing target-machine dry-run report is missing.'
 }
 
 $worker = Get-ScheduledTask -TaskName 'LocalPilot Background Worker' -TaskPath '\' -ErrorAction Stop
 if ($worker.State -ne 'Disabled') {
     throw 'Pause LocalPilot Background Worker before starting adapter training.'
+}
+if (Get-Process -Name 'ollama', 'ollama app' -ErrorAction SilentlyContinue) {
+    throw 'Close the Ollama app and server before starting adapter training.'
 }
 
 $wslArguments = @('-d', 'LocalPilot-Training', '--cd', '/mnt/e/LLM_HOME/src/localpilot', '--', 'bash', 'training/scripts/launch_adapter_v1.sh')

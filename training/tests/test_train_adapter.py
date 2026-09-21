@@ -167,6 +167,7 @@ class TrainAdapterTests(unittest.TestCase):
         ) // self.config["training"]["effective_batch_size"]
         self.assertEqual(self.config["training"]["estimated_optimizer_steps"], steps_per_epoch * self.config["training"]["epochs"])
         self.assertEqual(self.config["training"]["validation_steps"], steps_per_epoch)
+        self.assertEqual(self.config["training"]["first_checkpoint_step"], 5)
         self.assertEqual(self.config["training"]["checkpoint_steps"], 50)
         self.assertLess(self.config["training"]["checkpoint_steps"], steps_per_epoch)
 
@@ -611,6 +612,13 @@ class TrainAdapterTests(unittest.TestCase):
         self.assertFalse(arguments["save_only_model"])
         self.assertTrue(arguments["save_safetensors"])
         self.assertEqual(len(trainer_factory.call_args.kwargs["callbacks"]), 1)
+        callback = trainer_factory.call_args.kwargs["callbacks"][0]
+        early_control = types.SimpleNamespace(should_save=False)
+        callback.on_step_end(None, types.SimpleNamespace(global_step=5), early_control)
+        self.assertTrue(early_control.should_save)
+        ordinary_control = types.SimpleNamespace(should_save=False)
+        callback.on_step_end(None, types.SimpleNamespace(global_step=6), ordinary_control)
+        self.assertFalse(ordinary_control.should_save)
         trainer.train.assert_called_once_with()
         self.assertEqual(trainer.saved_state_dict, {"lora_A.default.weight": b"test"})
         output = self.root / self.config["output"]["directory"]

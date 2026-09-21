@@ -130,7 +130,24 @@ class TrainAdapterTests(unittest.TestCase):
         ) // self.config["training"]["effective_batch_size"]
         self.assertEqual(self.config["training"]["estimated_optimizer_steps"], steps_per_epoch * self.config["training"]["epochs"])
         self.assertEqual(self.config["training"]["validation_steps"], steps_per_epoch)
-        self.assertEqual(self.config["training"]["checkpoint_steps"], steps_per_epoch)
+        self.assertEqual(self.config["training"]["checkpoint_steps"], 200)
+        self.assertLess(self.config["training"]["checkpoint_steps"], steps_per_epoch)
+
+    def checkpoint(self, step: int, identity: dict, *, mark_complete: bool = True) -> Path:
+        output = self.root / self.config["output"]["directory"]
+        return self.checkpoint_at_output(output, step, identity, mark_complete=mark_complete)
+
+    def checkpoint_at_output(self, output: Path, step: int, identity: dict, *, mark_complete: bool = True) -> Path:
+        checkpoint = output / "checkpoints" / f"checkpoint-{step}"
+        checkpoint.mkdir(parents=True)
+        for name in runner.CHECKPOINT_REQUIRED_FILES:
+            if name == "trainer_state.json":
+                write_json(checkpoint / name, {"global_step": step})
+            else:
+                (checkpoint / name).write_bytes(f"{name}:{step}".encode("utf-8"))
+        if mark_complete:
+            runner._mark_checkpoint_complete(checkpoint, step, output, identity)
+        return checkpoint
 
     def test_native_trace_expands_every_assistant_turn_and_preserves_tools(self) -> None:
         row = native_trace()
@@ -360,6 +377,133 @@ class TrainAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "settings"):
             runner._verify_training_gate(self.config, result, self.config_path)
 
+    def test_early_checkpoint_cadence_requires_new_approved_dry_run(self) -> None:
+        report = self.dry_run()
+        original_digest = runner.training_spec_digest(self.config)
+        self.config["status"] = "approved_after_dry_run"
+        self.config["status_note"] = "Approval note changed, but settings did not."
+        self.assertEqual(runner.training_spec_digest(self.config), original_digest)
+        runner._verify_training_gate(self.config, report, self.config_path)
+        self.config["training"]["checkpoint_steps"] = 100
+        self.assertNotEqual(runner.training_spec_digest(self.config), original_digest)
+        with self.assertRaisesRegex(RuntimeError, "settings"):
+            runner._verify_training_gate(self.config, report, self.config_path)
+
+    def test_run_identity_binds_spec_inputs_environment_and_trainer_script(self) -> None:
+        report = self.dry_run()
+        identity = runner._run_identity(self.config, report)
+        self.assertEqual(identity["training_spec_sha256"], runner.training_spec_digest(self.config))
+        self.assertEqual(identity["dataset_sha256"], report["dataset_sha256"])
+        self.assertEqual(identity["corpus_manifest_sha256"], report["corpus_manifest_sha256"])
+        self.assertEqual(identity["eval_manifest_sha256"], report["eval_manifest_sha256"])
+        self.assertEqual(identity["model_evidence_sha256"], sha256_json(report["model_evidence"]))
+        self.assertEqual(identity["environment_sha256"], sha256_json(report["environment"]))
+        self.assertEqual(len(identity["trainer_script_sha256"]), 64)
+
+    def test_resume_selects_newest_complete_matching_checkpoint(self) -> None:
+        output = self.root / self.config["output"]["directory"]
+        identity = {"test_run": "one"}
+        write_json(output / runner.RUN_IDENTITY_FILE, identity)
+        older = self.checkpoint(200, identity)
+        newest = self.checkpoint(400, identity)
+        self.assertEqual(runner._select_resume_checkpoint(output, identity), newest.resolve())
+        self.assertFalse(runner._safe_output(output)[0])
+        self.assertTrue(runner._safe_output(output, resume=True)[0])
+        (newest / "optimizer.pt").write_bytes(b"corrupted after marking complete")
+        self.assertEqual(runner._select_resume_checkpoint(output, identity), older.resolve())
+
+    def test_completion_marker_requires_full_checkpoint_and_correct_trainer_step(self) -> None:
+        output = self.root / self.config["output"]["directory"]
+        identity = {"test_run": "one"}
+        checkpoint = self.checkpoint(200, identity, mark_complete=False)
+        marker = checkpoint / runner.CHECKPOINT_MARKER_FILE
+        write_json(checkpoint / "trainer_state.json", {"global_step": 199})
+        with self.assertRaisesRegex(RuntimeError, "step mismatch"):
+            runner._mark_checkpoint_complete(checkpoint, 200, output, identity)
+        self.assertFalse(marker.exists())
+        write_json(checkpoint / "trainer_state.json", {"global_step": 200})
+        (checkpoint / "optimizer.pt").unlink()
+        with self.assertRaisesRegex(RuntimeError, "missing optimizer.pt"):
+            runner._mark_checkpoint_complete(checkpoint, 200, output, identity)
+        self.assertFalse(marker.exists())
+
+    def test_resume_rejects_mismatched_identity_and_incomplete_checkpoint(self) -> None:
+        output = self.root / self.config["output"]["directory"]
+        identity = {"test_run": "one"}
+        write_json(output / runner.RUN_IDENTITY_FILE, identity)
+        self.checkpoint(200, identity, mark_complete=False)
+        with self.assertRaisesRegex(RuntimeError, "no complete matching checkpoint"):
+            runner._select_resume_checkpoint(output, identity)
+        self.checkpoint(400, identity)
+        with self.assertRaisesRegex(RuntimeError, "inputs or implementation changed"):
+            runner._select_resume_checkpoint(output, {"test_run": "two"})
+
+    def test_resume_rejects_missing_checkpoint_and_does_not_start_fresh(self) -> None:
+        output = self.root / self.config["output"]["directory"]
+        identity = {"test_run": "one"}
+        write_json(output / runner.RUN_IDENTITY_FILE, identity)
+        (output / "checkpoints").mkdir()
+        with self.assertRaisesRegex(RuntimeError, "no complete matching checkpoint"):
+            runner._select_resume_checkpoint(output, identity)
+        self.assertTrue(runner.build_parser().parse_args(["--train", "--resume"]).resume)
+
+    def test_resume_skips_symlinked_checkpoint_candidate(self) -> None:
+        output = self.root / self.config["output"]["directory"]
+        identity = {"test_run": "one"}
+        write_json(output / runner.RUN_IDENTITY_FILE, identity)
+        older = self.checkpoint(200, identity)
+        newer = self.checkpoint(400, identity)
+        original_is_symlink = Path.is_symlink
+
+        def pretend_symlink(path: Path) -> bool:
+            return (path.name == newer.name and path.parent.name == "checkpoints") or original_is_symlink(path)
+
+        with mock.patch.object(Path, "is_symlink", pretend_symlink):
+            selected = runner._select_resume_checkpoint(output, identity)
+        self.assertEqual(selected, older.resolve())
+
+    def test_explicit_restart_accepts_only_matching_identity_and_empty_checkpoints(self) -> None:
+        output = self.root / self.config["output"]["directory"]
+        identity = {"test_run": "one"}
+        write_json(output / runner.RUN_IDENTITY_FILE, identity)
+        (output / "checkpoints").mkdir()
+        saved_identity_bytes = (output / runner.RUN_IDENTITY_FILE).read_bytes()
+        runner._validate_restart_output(output, identity)
+        self.assertEqual((output / runner.RUN_IDENTITY_FILE).read_bytes(), saved_identity_bytes)
+        self.assertFalse(runner._safe_output(output)[0])
+        with self.assertRaises(RuntimeError):
+            runner._validate_restart_output(output, {"test_run": "different"})
+
+    def test_explicit_restart_refuses_partial_complete_or_extra_output_data(self) -> None:
+        identity = {"test_run": "one"}
+        for unexpected in ("partial", "complete", "extra_file"):
+            with self.subTest(unexpected=unexpected):
+                output = self.root / f"training/outputs/{unexpected}"
+                write_json(output / runner.RUN_IDENTITY_FILE, identity)
+                checkpoint_root = output / "checkpoints"
+                checkpoint_root.mkdir()
+                if unexpected == "partial":
+                    (checkpoint_root / "checkpoint-200").mkdir()
+                elif unexpected == "complete":
+                    self.checkpoint_at_output(output, 200, identity)
+                else:
+                    (output / "unrelated.txt").write_text("do not overwrite", encoding="utf-8")
+                with self.assertRaises(RuntimeError):
+                    runner._validate_restart_output(output, identity)
+
+    def test_restart_cli_is_distinct_from_resume_and_dry_run_records_it(self) -> None:
+        parser = runner.build_parser()
+        self.assertTrue(parser.parse_args(["--train", "--restart"]).restart)
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--train", "--restart", "--resume"])
+        clean_report = self.dry_run()
+        output = self.root / self.config["output"]["directory"]
+        write_json(output / runner.RUN_IDENTITY_FILE, runner._run_identity(self.config, clean_report))
+        (output / "checkpoints").mkdir()
+        restart_report = self.dry_run(restart=True)
+        self.assertTrue(restart_report["passed"], [item for item in restart_report["checks"] if not item["passed"]])
+        self.assertIn("--restart", restart_report["resolved_training_command"])
+
     def test_changed_dataset_manifest_and_environment_invalidate_training_evidence(self) -> None:
         result = self.dry_run()
         self.config["status"] = "approved_after_dry_run"
@@ -409,9 +553,11 @@ class TrainAdapterTests(unittest.TestCase):
             "torch": types.SimpleNamespace(bfloat16=object()),
             "datasets": types.SimpleNamespace(Dataset=types.SimpleNamespace(from_list=dataset_from_list)),
             "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=trainer_factory),
+            "transformers": types.SimpleNamespace(TrainerCallback=type("TrainerCallback", (), {})),
         }
+        identity = {"test_run": "mocked-fresh"}
         with mock.patch.dict(sys.modules, modules), mock.patch.object(runner, "load_jsonl", return_value=rows):
-            runner.execute_training(self.config, str(self.snapshot))
+            runner.execute_training(self.config, str(self.snapshot), run_identity=identity)
 
         train_dataset = trainer_factory.call_args.kwargs["train_dataset"]
         validation_dataset = trainer_factory.call_args.kwargs["eval_dataset"]
@@ -421,9 +567,100 @@ class TrainAdapterTests(unittest.TestCase):
         self.assertTrue(all(item["input_ids"] == list(range(8)) for item in train_dataset))
         self.assertEqual([tools[0]["function"]["name"] for tools in rendered_tools[:4]], ["lookup_build"] * 4)
         self.assertEqual(rendered_tools[-2:], [[], []])
+        arguments = trainer_factory.call_args.kwargs["args"]
+        self.assertEqual(arguments["save_steps"], 200)
+        self.assertEqual(arguments["eval_steps"], 3704)
+        self.assertEqual(arguments["save_strategy"], "steps")
+        self.assertFalse(arguments["save_only_model"])
+        self.assertTrue(arguments["save_safetensors"])
+        self.assertEqual(len(trainer_factory.call_args.kwargs["callbacks"]), 1)
         trainer.train.assert_called_once_with()
+        output = self.root / self.config["output"]["directory"]
+        self.assertEqual(json.loads((output / runner.RUN_IDENTITY_FILE).read_text(encoding="utf-8")), identity)
         saved_model.save_pretrained.assert_called_once()
         saved_tokenizer.save_pretrained.assert_called_once()
+
+    def test_execute_training_resumes_verified_checkpoint_without_overwriting_identity(self) -> None:
+        identity = {"test_run": "mocked-resume"}
+        output = self.root / self.config["output"]["directory"]
+        write_json(output / runner.RUN_IDENTITY_FILE, identity)
+        checkpoint = self.checkpoint(200, identity)
+        saved_identity_bytes = (output / runner.RUN_IDENTITY_FILE).read_bytes()
+        model = types.SimpleNamespace(save_pretrained=mock.Mock())
+        tokenizer = types.SimpleNamespace(
+            save_pretrained=mock.Mock(),
+            apply_chat_template=lambda messages, **kwargs: list(range(5 if kwargs["add_generation_prompt"] else 8)),
+        )
+        trainer = types.SimpleNamespace(train=mock.Mock())
+        trainer_factory = mock.Mock(return_value=trainer)
+        modules = {
+            "unsloth": types.SimpleNamespace(FastLanguageModel=types.SimpleNamespace(
+                from_pretrained=mock.Mock(return_value=(model, tokenizer)),
+                get_peft_model=mock.Mock(return_value=model),
+            )),
+            "torch": types.SimpleNamespace(bfloat16=object()),
+            "datasets": types.SimpleNamespace(Dataset=types.SimpleNamespace(from_list=lambda values: values)),
+            "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=trainer_factory),
+            "transformers": types.SimpleNamespace(TrainerCallback=type("TrainerCallback", (), {})),
+        }
+        rows = [record("train", "Fix it.", "train"), record("validation", "Check it.", "validation")]
+        with mock.patch.dict(sys.modules, modules), mock.patch.object(runner, "load_jsonl", return_value=rows):
+            runner.execute_training(self.config, str(self.snapshot), run_identity=identity, resume_checkpoint=checkpoint)
+        trainer.train.assert_called_once()
+        self.assertEqual(Path(trainer.train.call_args.kwargs["resume_from_checkpoint"]).resolve(), checkpoint.resolve())
+        self.assertEqual((output / runner.RUN_IDENTITY_FILE).read_bytes(), saved_identity_bytes)
+        self.assertEqual(trainer_factory.call_args.kwargs["args"]["save_steps"], 200)
+
+    def test_execute_training_explicit_restart_uses_fresh_train_call(self) -> None:
+        identity = {"test_run": "mocked-restart"}
+        output = self.root / self.config["output"]["directory"]
+        write_json(output / runner.RUN_IDENTITY_FILE, identity)
+        (output / "checkpoints").mkdir()
+        saved_identity_bytes = (output / runner.RUN_IDENTITY_FILE).read_bytes()
+        model = types.SimpleNamespace(save_pretrained=mock.Mock())
+        tokenizer = types.SimpleNamespace(
+            save_pretrained=mock.Mock(),
+            apply_chat_template=lambda messages, **kwargs: list(range(5 if kwargs["add_generation_prompt"] else 8)),
+        )
+        trainer = types.SimpleNamespace(train=mock.Mock())
+        trainer_factory = mock.Mock(return_value=trainer)
+        modules = {
+            "unsloth": types.SimpleNamespace(FastLanguageModel=types.SimpleNamespace(
+                from_pretrained=mock.Mock(return_value=(model, tokenizer)),
+                get_peft_model=mock.Mock(return_value=model),
+            )),
+            "torch": types.SimpleNamespace(bfloat16=object()),
+            "datasets": types.SimpleNamespace(Dataset=types.SimpleNamespace(from_list=lambda values: values)),
+            "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=trainer_factory),
+            "transformers": types.SimpleNamespace(TrainerCallback=type("TrainerCallback", (), {})),
+        }
+        rows = [record("train", "Fix it.", "train"), record("validation", "Check it.", "validation")]
+        with mock.patch.dict(sys.modules, modules), mock.patch.object(runner, "load_jsonl", return_value=rows):
+            runner.execute_training(self.config, str(self.snapshot), run_identity=identity, restart=True)
+        trainer.train.assert_called_once_with()
+        self.assertEqual((output / runner.RUN_IDENTITY_FILE).read_bytes(), saved_identity_bytes)
+
+    def test_invalid_restart_does_not_load_model_or_discard_partial_checkpoint(self) -> None:
+        identity = {"test_run": "mocked-restart"}
+        output = self.root / self.config["output"]["directory"]
+        write_json(output / runner.RUN_IDENTITY_FILE, identity)
+        partial = output / "checkpoints/checkpoint-200"
+        partial.mkdir(parents=True)
+        (partial / "optimizer.pt").write_bytes(b"unfinished save")
+        with mock.patch.dict(sys.modules, {"unsloth": types.SimpleNamespace()}):
+            with self.assertRaisesRegex(RuntimeError, "Restart refused"):
+                runner.execute_training(self.config, str(self.snapshot), run_identity=identity, restart=True)
+        self.assertEqual((partial / "optimizer.pt").read_bytes(), b"unfinished save")
+
+    def test_invalid_resume_checkpoint_does_not_load_model(self) -> None:
+        identity = {"test_run": "mocked-resume"}
+        output = self.root / self.config["output"]["directory"]
+        write_json(output / runner.RUN_IDENTITY_FILE, identity)
+        checkpoint = self.checkpoint(200, identity)
+        (checkpoint / "optimizer.pt").unlink()
+        with mock.patch.dict(sys.modules, {"unsloth": types.SimpleNamespace()}):
+            with self.assertRaisesRegex(RuntimeError, "no complete matching checkpoint"):
+                runner.execute_training(self.config, str(self.snapshot), run_identity=identity, resume_checkpoint=checkpoint)
 
     def test_real_training_never_called_when_config_is_proposed(self) -> None:
         self.config["status"] = "proposed"
@@ -433,6 +670,23 @@ class TrainAdapterTests(unittest.TestCase):
         with mock.patch.object(runner, "execute_training") as train:
             with self.assertRaisesRegex(RuntimeError, "disabled"):
                 runner.main(["--config", str(self.config_path), "--train", "--report", str(report_path), "--dry-run-report", str(report_path), "--confirm", runner.CONFIRMATION])
+        train.assert_not_called()
+
+    def test_plain_train_never_silently_restarts_output_with_saved_identity(self) -> None:
+        self.config["status"] = "approved_after_dry_run"
+        self.save_config()
+        report_path = self.root / "training/reports/saved.json"
+        report = self.dry_run()
+        write_json(report_path, report)
+        output = self.root / self.config["output"]["directory"]
+        write_json(output / runner.RUN_IDENTITY_FILE, runner._run_identity(self.config, report))
+        with mock.patch.object(runner, "execute_training") as train:
+            with self.assertRaisesRegex(RuntimeError, "Fresh training requires"):
+                runner.main([
+                    "--config", str(self.config_path), "--train", "--report", str(report_path),
+                    "--dry-run-report", str(report_path),
+                    "--confirm", runner.CONFIRMATION,
+                ])
         train.assert_not_called()
 
 

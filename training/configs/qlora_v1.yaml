@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "name": "LocalPilot gpt-oss-20b QLoRA v1",
-  "status": "approved_after_dry_run",
-  "status_note": "Owner approved the watched first training batch on 2026-09-21 after PR #154 merged and the exact target environment passed the pinned offline dry-run. Stop on any model-load, memory, or first-step failure.",
+  "status": "proposed",
+  "status_note": "The first approved run was interrupted before its epoch-one checkpoint. Earlier resumable checkpoints change the exact training specification, so a new passing dry-run and owner approval are required before restarting.",
   "backend": {
     "name": "unsloth",
     "environment": "WSL2 Ubuntu 24.04 stored on E:",
@@ -75,7 +75,7 @@
     "max_steps": null,
     "estimated_optimizer_steps": 11112,
     "validation_steps": 3704,
-    "checkpoint_steps": 3704,
+    "checkpoint_steps": 200,
     "logging_steps": 1,
     "save_total_limit": 3,
     "seed": 3407

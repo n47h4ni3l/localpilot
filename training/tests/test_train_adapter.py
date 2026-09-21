@@ -60,7 +60,44 @@ def native_trace(identifier: str = "native-trace", split: str = "train") -> dict
     return row
 
 
+def stub_sft_trainer(factory: mock.Mock) -> type:
+    class StubSFTTrainer:
+        def __init__(self, **kwargs):
+            self.model = kwargs["model"]
+            factory(**kwargs)
+
+        def train(self, **kwargs):
+            self._save(output_dir="checkpoint-fixture")
+            return factory.return_value.train(**kwargs)
+
+        def _save(self, output_dir=None, state_dict=None):
+            factory.return_value.saved_state_dict = state_dict
+
+    return StubSFTTrainer
+
+
 class TrainAdapterTests(unittest.TestCase):
+    def test_adapter_only_state_dict_never_traverses_quantized_base(self) -> None:
+        lora = mock.Mock(requires_grad=True)
+        lora.detach.return_value.cpu.return_value = "cpu-lora-tensor"
+        frozen = mock.Mock(requires_grad=False)
+        model = types.SimpleNamespace(
+            named_parameters=lambda: iter([
+                ("base_model.model.layers.0.lora_A.default.weight", lora),
+                ("base_model.model.layers.0.weight", frozen),
+            ]),
+            state_dict=mock.Mock(side_effect=AssertionError("base weights must not be serialized")),
+        )
+        self.assertEqual(runner._adapter_only_state_dict(model), {
+            "base_model.model.layers.0.lora_A.default.weight": "cpu-lora-tensor",
+        })
+        model.state_dict.assert_not_called()
+        frozen.detach.assert_not_called()
+
+        model.named_parameters = lambda: iter([("base_model.model.layers.0.weight", lora)])
+        with self.assertRaisesRegex(RuntimeError, "Only nonempty LoRA"):
+            runner._adapter_only_state_dict(model)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -130,7 +167,7 @@ class TrainAdapterTests(unittest.TestCase):
         ) // self.config["training"]["effective_batch_size"]
         self.assertEqual(self.config["training"]["estimated_optimizer_steps"], steps_per_epoch * self.config["training"]["epochs"])
         self.assertEqual(self.config["training"]["validation_steps"], steps_per_epoch)
-        self.assertEqual(self.config["training"]["checkpoint_steps"], 200)
+        self.assertEqual(self.config["training"]["checkpoint_steps"], 50)
         self.assertLess(self.config["training"]["checkpoint_steps"], steps_per_epoch)
 
     def checkpoint(self, step: int, identity: dict, *, mark_complete: bool = True) -> Path:
@@ -552,11 +589,11 @@ class TrainAdapterTests(unittest.TestCase):
             "unsloth": types.SimpleNamespace(FastLanguageModel=fast_language_model),
             "torch": types.SimpleNamespace(bfloat16=object()),
             "datasets": types.SimpleNamespace(Dataset=types.SimpleNamespace(from_list=dataset_from_list)),
-            "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=trainer_factory),
+            "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=stub_sft_trainer(trainer_factory)),
             "transformers": types.SimpleNamespace(TrainerCallback=type("TrainerCallback", (), {})),
         }
         identity = {"test_run": "mocked-fresh"}
-        with mock.patch.dict(sys.modules, modules), mock.patch.object(runner, "load_jsonl", return_value=rows):
+        with mock.patch.dict(sys.modules, modules), mock.patch.object(runner, "load_jsonl", return_value=rows), mock.patch.object(runner, "_adapter_only_state_dict", return_value={"lora_A.default.weight": b"test"}):
             runner.execute_training(self.config, str(self.snapshot), run_identity=identity)
 
         train_dataset = trainer_factory.call_args.kwargs["train_dataset"]
@@ -568,13 +605,14 @@ class TrainAdapterTests(unittest.TestCase):
         self.assertEqual([tools[0]["function"]["name"] for tools in rendered_tools[:4]], ["lookup_build"] * 4)
         self.assertEqual(rendered_tools[-2:], [[], []])
         arguments = trainer_factory.call_args.kwargs["args"]
-        self.assertEqual(arguments["save_steps"], 200)
+        self.assertEqual(arguments["save_steps"], 50)
         self.assertEqual(arguments["eval_steps"], 3704)
         self.assertEqual(arguments["save_strategy"], "steps")
         self.assertFalse(arguments["save_only_model"])
         self.assertTrue(arguments["save_safetensors"])
         self.assertEqual(len(trainer_factory.call_args.kwargs["callbacks"]), 1)
         trainer.train.assert_called_once_with()
+        self.assertEqual(trainer.saved_state_dict, {"lora_A.default.weight": b"test"})
         output = self.root / self.config["output"]["directory"]
         self.assertEqual(json.loads((output / runner.RUN_IDENTITY_FILE).read_text(encoding="utf-8")), identity)
         saved_model.save_pretrained.assert_called_once()
@@ -600,16 +638,16 @@ class TrainAdapterTests(unittest.TestCase):
             )),
             "torch": types.SimpleNamespace(bfloat16=object()),
             "datasets": types.SimpleNamespace(Dataset=types.SimpleNamespace(from_list=lambda values: values)),
-            "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=trainer_factory),
+            "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=stub_sft_trainer(trainer_factory)),
             "transformers": types.SimpleNamespace(TrainerCallback=type("TrainerCallback", (), {})),
         }
         rows = [record("train", "Fix it.", "train"), record("validation", "Check it.", "validation")]
-        with mock.patch.dict(sys.modules, modules), mock.patch.object(runner, "load_jsonl", return_value=rows):
+        with mock.patch.dict(sys.modules, modules), mock.patch.object(runner, "load_jsonl", return_value=rows), mock.patch.object(runner, "_adapter_only_state_dict", return_value={"lora_A.default.weight": b"test"}):
             runner.execute_training(self.config, str(self.snapshot), run_identity=identity, resume_checkpoint=checkpoint)
         trainer.train.assert_called_once()
         self.assertEqual(Path(trainer.train.call_args.kwargs["resume_from_checkpoint"]).resolve(), checkpoint.resolve())
         self.assertEqual((output / runner.RUN_IDENTITY_FILE).read_bytes(), saved_identity_bytes)
-        self.assertEqual(trainer_factory.call_args.kwargs["args"]["save_steps"], 200)
+        self.assertEqual(trainer_factory.call_args.kwargs["args"]["save_steps"], 50)
 
     def test_execute_training_explicit_restart_uses_fresh_train_call(self) -> None:
         identity = {"test_run": "mocked-restart"}
@@ -631,11 +669,11 @@ class TrainAdapterTests(unittest.TestCase):
             )),
             "torch": types.SimpleNamespace(bfloat16=object()),
             "datasets": types.SimpleNamespace(Dataset=types.SimpleNamespace(from_list=lambda values: values)),
-            "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=trainer_factory),
+            "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=stub_sft_trainer(trainer_factory)),
             "transformers": types.SimpleNamespace(TrainerCallback=type("TrainerCallback", (), {})),
         }
         rows = [record("train", "Fix it.", "train"), record("validation", "Check it.", "validation")]
-        with mock.patch.dict(sys.modules, modules), mock.patch.object(runner, "load_jsonl", return_value=rows):
+        with mock.patch.dict(sys.modules, modules), mock.patch.object(runner, "load_jsonl", return_value=rows), mock.patch.object(runner, "_adapter_only_state_dict", return_value={"lora_A.default.weight": b"test"}):
             runner.execute_training(self.config, str(self.snapshot), run_identity=identity, restart=True)
         trainer.train.assert_called_once_with()
         self.assertEqual((output / runner.RUN_IDENTITY_FILE).read_bytes(), saved_identity_bytes)

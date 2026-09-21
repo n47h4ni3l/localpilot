@@ -54,6 +54,22 @@ CONFIRMATION = "TRAIN_LOCALPILOT_ADAPTER_V1"
 TARGET_MODULES = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
 
 
+def _configure_compile_mode(config: dict[str, Any]) -> None:
+    """Apply the pinned eager mode before Torch and Unsloth are imported."""
+    if config["backend"].get("compile_mode") != "eager":
+        raise RuntimeError("This machine requires the measured eager training path")
+    os.environ["TORCH_COMPILE_DISABLE"] = "1"
+    os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+
+
+def _adapter_only_state_dict(model: Any) -> dict[str, Any]:
+    """Avoid traversing quantized base weights when PEFT writes a checkpoint."""
+    trainable = [(name, parameter) for name, parameter in model.named_parameters() if parameter.requires_grad]
+    if not trainable or any("lora_" not in name for name, _ in trainable):
+        raise RuntimeError("Only nonempty LoRA parameters may be checkpointed")
+    return {name: parameter.detach().cpu() for name, parameter in trainable}
+
+
 def _native_tool(tool: Any, *, record_id: str) -> dict[str, Any]:
     """Return one tool in the OpenAI shape expected by the gpt-oss template."""
     if not isinstance(tool, dict):
@@ -585,6 +601,8 @@ def _validate_config(config: dict[str, Any]) -> None:
     data, quant, training, resources = (config[key] for key in ("data", "quantization", "training", "resources"))
     if backend.get("name") != "unsloth" or not isinstance(backend.get("package_versions"), dict):
         raise RuntimeError("Unsloth backend and explicit package pins are required")
+    if backend.get("compile_mode") != "eager":
+        raise RuntimeError("The measured training path requires eager mode")
     if model.get("base_identity") != "openai/gpt-oss-20b" or model.get("use_exact_model_name") is not True:
         raise RuntimeError("Require the gpt-oss-20b base and disable implicit model remapping")
     for key in ("revision", "base_revision"):
@@ -748,6 +766,10 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = 
     environment = {"platform": platform.platform(), "machine": platform.node(), "python": sys.executable, "prefix": sys.prefix, "distro": release, "versions": versions}
     _add_check(checks, "environment", _is_wsl() and release.get("ID") == "ubuntu" and release.get("VERSION_ID") == "24.04", environment)
     if checks[0]["passed"]:
+        check("eager_compile_mode", lambda: _configure_compile_mode(config))
+        environment["compile_mode"] = config["backend"]["compile_mode"]
+        environment["torch_compile_disable"] = os.environ.get("TORCH_COMPILE_DISABLE")
+        environment["unsloth_compile_disable"] = os.environ.get("UNSLOTH_COMPILE_DISABLE")
         backend, data, resources = config["backend"], config["data"], config["resources"]
         _add_check(checks, "python_version", list(sys.version_info[:2]) == backend["python_version"], list(sys.version_info[:2]))
         ram = _system_ram_gib()
@@ -909,6 +931,8 @@ def execute_training(
     else:
         output.mkdir(parents=True, exist_ok=True)
 
+    _configure_compile_mode(config)
+
     from unsloth import FastLanguageModel
     import torch
     from datasets import Dataset
@@ -921,6 +945,12 @@ def execute_training(
             checkpoint = output / "checkpoints" / f"checkpoint-{step}"
             _mark_checkpoint_complete(checkpoint, step, output, run_identity)
             return control
+
+    class AdapterOnlySFTTrainer(SFTTrainer):
+        def _save(self, output_dir: str | None = None, state_dict: Any = None) -> None:
+            if state_dict is not None:
+                raise RuntimeError("Unexpected full state dict during adapter checkpoint")
+            super()._save(output_dir=output_dir, state_dict=_adapter_only_state_dict(self.model))
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=snapshot_path, use_exact_model_name=True, fast_inference=False,
@@ -943,7 +973,7 @@ def execute_training(
         examples = expand_training_examples(rows, split)
         return Dataset.from_list(tokenize_training_examples(tokenizer, examples, data["max_sequence_length"]))
 
-    trainer = SFTTrainer(
+    trainer = AdapterOnlySFTTrainer(
         model=model, processing_class=tokenizer, train_dataset=prepared("train"), eval_dataset=prepared("validation"),
         callbacks=[CheckpointIntegrityCallback()],
         args=SFTConfig(
@@ -966,7 +996,7 @@ def execute_training(
         trainer.train()
     else:
         trainer.train(resume_from_checkpoint=str(resume_checkpoint))
-    model.save_pretrained(str(output / "adapter"), safe_serialization=True)
+    model.save_pretrained(str(output / "adapter"), state_dict=_adapter_only_state_dict(model), safe_serialization=True)
     tokenizer.save_pretrained(str(output / "adapter"))
     write_json(output / "training_config.json", config)
 

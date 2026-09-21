@@ -1,10 +1,11 @@
 {
   "schema_version": 1,
   "name": "LocalPilot gpt-oss-20b QLoRA v1",
-  "status": "proposed",
-  "status_note": "The first approved run was interrupted before its epoch-one checkpoint. Earlier resumable checkpoints change the exact training specification, so a new passing dry-run and owner approval are required before restarting.",
+  "status": "approved_after_dry_run",
+  "status_note": "Owner authorized training after the guarded two-step eager run completed, checkpoints 1 and 2 passed integrity checks, a separate process resumed checkpoint 1, and the exact 22 GiB WSL configuration passed its fresh local dry-run.",
   "backend": {
     "name": "unsloth",
+    "compile_mode": "eager",
     "environment": "WSL2 Ubuntu 24.04 stored on E:",
     "python_version": [3, 12],
     "rocm_version": "7.14.1",
@@ -75,7 +76,7 @@
     "max_steps": null,
     "estimated_optimizer_steps": 11112,
     "validation_steps": 3704,
-    "checkpoint_steps": 200,
+    "checkpoint_steps": 50,
     "logging_steps": 1,
     "save_total_limit": 3,
     "seed": 3407
@@ -83,18 +84,18 @@
   "resources": {
     "minimum_vram_gib": 14.0,
     "estimated_peak_vram_gib": 13.5,
-    "minimum_system_ram_gib": 27.0,
+    "minimum_system_ram_gib": 21.0,
     "minimum_storage_free_gib": 50.0,
     "estimated_peak_is_measured": false,
-    "offload_embeddings": true,
-    "cpu_offload": "embeddings_only",
+    "offload_embeddings": false,
+    "cpu_offload": "none",
     "gradient_checkpointing": "unsloth",
     "dataloader_workers": 0,
     "pin_memory": false,
     "reserve_system_ram_gib": 4.0
   },
   "output": {
-    "directory": "training/outputs/adapter_v1",
+    "directory": "training/outputs/adapter_v1_eager_22g_20260922",
     "save_adapter_only": true,
     "checkpoint_format": "safetensors",
     "deployment_path": "merge with the exact base in Unsloth, export GGUF, then import the merged GGUF into Ollama",

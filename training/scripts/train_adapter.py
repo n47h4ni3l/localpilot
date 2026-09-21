@@ -901,8 +901,9 @@ def execute_training(
         raise RuntimeError(detail)
     if resume_checkpoint is not None:
         selected = _select_resume_checkpoint(output, run_identity)
-        if selected != resume_checkpoint:
+        if selected != _under(resume_checkpoint, output / "checkpoints"):
             raise RuntimeError("Selected resume checkpoint changed before model load")
+        resume_checkpoint = selected
     elif restart:
         _validate_restart_output(output, run_identity)
     else:

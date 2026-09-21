@@ -406,11 +406,11 @@ class TrainAdapterTests(unittest.TestCase):
         write_json(output / runner.RUN_IDENTITY_FILE, identity)
         older = self.checkpoint(200, identity)
         newest = self.checkpoint(400, identity)
-        self.assertEqual(runner._select_resume_checkpoint(output, identity), newest)
+        self.assertEqual(runner._select_resume_checkpoint(output, identity), newest.resolve())
         self.assertFalse(runner._safe_output(output)[0])
         self.assertTrue(runner._safe_output(output, resume=True)[0])
         (newest / "optimizer.pt").write_bytes(b"corrupted after marking complete")
-        self.assertEqual(runner._select_resume_checkpoint(output, identity), older)
+        self.assertEqual(runner._select_resume_checkpoint(output, identity), older.resolve())
 
     def test_completion_marker_requires_full_checkpoint_and_correct_trainer_step(self) -> None:
         output = self.root / self.config["output"]["directory"]
@@ -456,10 +456,11 @@ class TrainAdapterTests(unittest.TestCase):
         original_is_symlink = Path.is_symlink
 
         def pretend_symlink(path: Path) -> bool:
-            return path == newer or original_is_symlink(path)
+            return (path.name == newer.name and path.parent.name == "checkpoints") or original_is_symlink(path)
 
         with mock.patch.object(Path, "is_symlink", pretend_symlink):
-            self.assertEqual(runner._select_resume_checkpoint(output, identity), older)
+            selected = runner._select_resume_checkpoint(output, identity)
+        self.assertEqual(selected, older.resolve())
 
     def test_explicit_restart_accepts_only_matching_identity_and_empty_checkpoints(self) -> None:
         output = self.root / self.config["output"]["directory"]
@@ -605,7 +606,8 @@ class TrainAdapterTests(unittest.TestCase):
         rows = [record("train", "Fix it.", "train"), record("validation", "Check it.", "validation")]
         with mock.patch.dict(sys.modules, modules), mock.patch.object(runner, "load_jsonl", return_value=rows):
             runner.execute_training(self.config, str(self.snapshot), run_identity=identity, resume_checkpoint=checkpoint)
-        trainer.train.assert_called_once_with(resume_from_checkpoint=str(checkpoint))
+        trainer.train.assert_called_once()
+        self.assertEqual(Path(trainer.train.call_args.kwargs["resume_from_checkpoint"]).resolve(), checkpoint.resolve())
         self.assertEqual((output / runner.RUN_IDENTITY_FILE).read_bytes(), saved_identity_bytes)
         self.assertEqual(trainer_factory.call_args.kwargs["args"]["save_steps"], 200)
 

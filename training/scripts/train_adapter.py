@@ -20,6 +20,7 @@ import re
 import shutil
 import struct
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -35,6 +36,12 @@ from validate_dataset import validate_files
 DEFAULT_CONFIG = ROOT / "training/configs/qlora_v1.yaml"
 DEFAULT_REPORT = ROOT / "training/reports/adapter_v1_dry_run.json"
 TRAINING_OUTPUT_ROOT = ROOT / "training/outputs"
+RUN_IDENTITY_FILE = "run_identity.json"
+CHECKPOINT_MARKER_FILE = "localpilot_checkpoint_complete.json"
+CHECKPOINT_REQUIRED_FILES = (
+    "adapter_model.safetensors", "adapter_config.json", "trainer_state.json",
+    "optimizer.pt", "scheduler.pt", "rng_state.pth",
+)
 # Measure clean GPU capacity after Torch/Triton initialize but before Unsloth's
 # ROCm patching changes the process-local free-memory reading. Unsloth still
 # loads before Transformers/PEFT, as required by its import contract.
@@ -388,14 +395,152 @@ def _under(path: Path, root: Path) -> Path:
     return resolved
 
 
-def _safe_output(path: Path) -> tuple[bool, str]:
+def _safe_output(path: Path, *, resume: bool = False) -> tuple[bool, str]:
     try:
         resolved = _under(path, TRAINING_OUTPUT_ROOT)
-        if resolved.exists() and (not resolved.is_dir() or any(resolved.iterdir())):
-            raise RuntimeError("Output must be an absent or empty directory")
+        if resolved.exists() and not resolved.is_dir():
+            raise RuntimeError("Output must be a directory")
+        if resume:
+            if not resolved.is_dir():
+                raise RuntimeError("Resume requires an existing output directory")
+        elif resolved.exists():
+            entries = list(resolved.iterdir())
+            # A failed pre-checkpoint run can leave this otherwise empty directory.
+            if entries and not (
+                len(entries) == 1 and entries[0].name == "checkpoints"
+                and entries[0].is_dir() and not entries[0].is_symlink()
+                and not (hasattr(entries[0], "is_junction") and entries[0].is_junction())
+                and not any(entries[0].iterdir())
+            ):
+                raise RuntimeError("Fresh training requires an absent or empty output directory")
         return True, str(resolved)
     except (OSError, RuntimeError) as exc:
         return False, str(exc)
+
+
+def _run_identity(config: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+    """Bind local checkpoints to the exact approved inputs and implementation."""
+    return {
+        "schema_version": 1,
+        "training_spec_sha256": training_spec_digest(config),
+        "dataset_sha256": report["dataset_sha256"],
+        "corpus_manifest_sha256": report["corpus_manifest_sha256"],
+        "eval_manifest_sha256": report["eval_manifest_sha256"],
+        "model_evidence_sha256": sha256_json(report["model_evidence"]),
+        "environment_sha256": sha256_json(report["environment"]),
+        "trainer_script_sha256": _sha256_file(Path(__file__)),
+    }
+
+
+def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+    """Publish a completion marker only after its full contents reach disk."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _checkpoint_inventory(checkpoint: Path, step: int, output: Path) -> dict[str, dict[str, Any]]:
+    _under(checkpoint, output / "checkpoints")
+    trainer_state = checkpoint / "trainer_state.json"
+    inventory: dict[str, dict[str, Any]] = {}
+    for name in CHECKPOINT_REQUIRED_FILES:
+        path = _under(checkpoint / name, checkpoint)
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f"Incomplete checkpoint-{step}: missing {name}")
+        inventory[name] = {"bytes": path.stat().st_size, "sha256": _sha256_file(path)}
+    try:
+        state = json.loads(trainer_state.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Invalid checkpoint-{step} trainer state") from exc
+    if type(state.get("global_step")) is not int or state["global_step"] != step:
+        raise RuntimeError(f"Checkpoint-{step} trainer step mismatch")
+    return inventory
+
+
+def _mark_checkpoint_complete(checkpoint: Path, step: int, output: Path, identity: dict[str, Any]) -> None:
+    inventory = _checkpoint_inventory(checkpoint, step, output)
+    _atomic_json(checkpoint / CHECKPOINT_MARKER_FILE, {
+        "schema_version": 1,
+        "global_step": step,
+        "run_identity_sha256": sha256_json(identity),
+        "files": inventory,
+    })
+    print(f"LocalPilot checkpoint verified: step {step} ({checkpoint})", flush=True)
+
+
+def _validate_restart_output(output: Path, identity: dict[str, Any]) -> None:
+    """Require an explicit restart when the same run stopped before its first save."""
+    safe, detail = _safe_output(output, resume=True)
+    if not safe:
+        raise RuntimeError(detail)
+    identity_path = _under(output / RUN_IDENTITY_FILE, output)
+    if not identity_path.is_file():
+        raise RuntimeError("Restart requires a saved LocalPilot run identity")
+    try:
+        saved_identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Saved LocalPilot run identity is invalid") from exc
+    if saved_identity != identity:
+        raise RuntimeError("Restart refused: training inputs or implementation changed")
+    for entry in output.iterdir():
+        if entry.name == RUN_IDENTITY_FILE:
+            continue
+        if entry.name == "checkpoints":
+            checkpoint_root = _under(entry, output)
+            if checkpoint_root.is_dir() and not any(checkpoint_root.iterdir()):
+                continue
+        raise RuntimeError("Restart refused: output has a checkpoint or other training data; preserve it for review")
+
+
+def _select_resume_checkpoint(output: Path, identity: dict[str, Any]) -> Path:
+    safe, detail = _safe_output(output, resume=True)
+    if not safe:
+        raise RuntimeError(detail)
+    identity_path = _under(output / RUN_IDENTITY_FILE, output)
+    if not identity_path.is_file():
+        raise RuntimeError("Resume requires a saved LocalPilot run identity")
+    try:
+        saved_identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Saved LocalPilot run identity is invalid") from exc
+    if saved_identity != identity:
+        raise RuntimeError("Resume refused: training inputs or implementation changed")
+    checkpoint_root = _under(output / "checkpoints", output)
+    if not checkpoint_root.is_dir():
+        raise RuntimeError("Resume requires a checkpoint directory")
+    candidates: list[tuple[int, Path]] = []
+    for path in checkpoint_root.iterdir():
+        match = re.fullmatch(r"checkpoint-([1-9][0-9]*)", path.name)
+        if match:
+            candidates.append((int(match.group(1)), path))
+    for step, path in sorted(candidates, reverse=True):
+        try:
+            inventory = _checkpoint_inventory(path, step, output)
+            marker_path = _under(path / CHECKPOINT_MARKER_FILE, path)
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            if marker != {
+                "schema_version": 1,
+                "global_step": step,
+                "run_identity_sha256": sha256_json(identity),
+                "files": inventory,
+            }:
+                raise RuntimeError("completion marker mismatch")
+        except (OSError, RuntimeError, ValueError):
+            # A power loss can interrupt the newest checkpoint. Retain it for
+            # diagnosis and use the previous verified checkpoint, if any.
+            continue
+        return path
+    raise RuntimeError("Resume refused: no complete matching checkpoint was found")
 
 
 def _is_wsl() -> bool:
@@ -575,7 +720,9 @@ def _gpu_preflight(torch: Any, triton: Any, config: dict[str, Any]) -> dict[str,
     return {"name": props.name, "architecture": arch, "hip": hip, "torch": str(torch.__version__), "triton": str(triton.__version__), "free_vram_gib": round(free / 1024**3, 3), "total_vram_gib": round(total / 1024**3, 3)}
 
 
-def dry_run(config_path: Path, *, allow_downloads: bool = False, report_path: Path = DEFAULT_REPORT, importer: Callable[[str], Any] = importlib.import_module) -> dict[str, Any]:
+def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = False, restart: bool = False, report_path: Path = DEFAULT_REPORT, importer: Callable[[str], Any] = importlib.import_module) -> dict[str, Any]:
+    if resume and restart:
+        raise RuntimeError("--resume and --restart are mutually exclusive")
     config_path = config_path.resolve()
     config = load_config(config_path)
     checks: list[dict[str, Any]] = []
@@ -605,7 +752,7 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, report_path: Pa
         _add_check(checks, "python_version", list(sys.version_info[:2]) == backend["python_version"], list(sys.version_info[:2]))
         ram = _system_ram_gib()
         _add_check(checks, "system_ram", ram is not None and ram >= resources["minimum_system_ram_gib"], {"detected_gib": ram, "minimum_gib": resources["minimum_system_ram_gib"]})
-        safe, detail = _safe_output(ROOT / config["output"]["directory"])
+        safe, detail = _safe_output(ROOT / config["output"]["directory"], resume=resume or restart)
         _add_check(checks, "output_directory_safety", safe, detail)
         for name, path in (("model_cache_storage", Path(config["model"]["cache_directory"]).expanduser()), ("output_storage", ROOT / config["output"]["directory"])):
             available = check(name, lambda path=path: _free_storage_gib(path))
@@ -685,7 +832,11 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, report_path: Pa
                 _add_check(checks, "model_tokenizer_and_adapter", False, "Required model dependencies unavailable")
 
     command = [sys.executable, str(Path(__file__).resolve()), "--config", str(config_path), "--train", "--dry-run-report", str(report_path.resolve()), "--confirm", CONFIRMATION]
-    return {
+    if resume:
+        command.append("--resume")
+    if restart:
+        command.append("--restart")
+    report = {
         "schema_version": 2, "artifact_type": "adapter_training_dry_run",
         "created_at": datetime.now(UTC).isoformat(), "passed": all(item["passed"] for item in checks),
         "config": str(config_path), "config_sha256": sha256_json(config), "training_spec_sha256": training_spec_digest(config),
@@ -695,9 +846,19 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, report_path: Pa
         "gpu": gpu, "model_evidence": model_evidence, "resolved_config": config,
         "resolved_training_command": command, "training_performed": False,
     }
+    if resume and report["passed"]:
+        checkpoint = check(
+            "resume_checkpoint",
+            lambda: str(_select_resume_checkpoint(ROOT / config["output"]["directory"], _run_identity(config, report))),
+        )
+        report["passed"] = checkpoint is not None and all(item["passed"] for item in checks)
+    if restart and report["passed"]:
+        check("restart_before_first_checkpoint", lambda: _validate_restart_output(ROOT / config["output"]["directory"], _run_identity(config, report)))
+        report["passed"] = all(item["passed"] for item in checks)
+    return report
 
 
-def _verify_training_gate(config: dict[str, Any], report: dict[str, Any], config_path: Path) -> None:
+def _verify_training_gate(config: dict[str, Any], report: dict[str, Any], config_path: Path, *, resume: bool = False, restart: bool = False) -> None:
     if config.get("status") != "approved_after_dry_run":
         raise RuntimeError("Real training is disabled while status is not approved_after_dry_run")
     if report.get("schema_version") != 2 or report.get("artifact_type") != "adapter_training_dry_run" or report.get("passed") is not True:
@@ -721,19 +882,45 @@ def _verify_training_gate(config: dict[str, Any], report: dict[str, Any], config
         or report.get("eval_manifest_sha256") != sha256_json(manifest)
     ):
         raise RuntimeError("Dry-run report does not match the current dataset and held-out manifest")
-    safe, detail = _safe_output(ROOT / config["output"]["directory"])
+    safe, detail = _safe_output(ROOT / config["output"]["directory"], resume=resume or restart)
     if not safe:
         raise RuntimeError(detail)
 
 
-def execute_training(config: dict[str, Any], snapshot_path: str) -> None:
+def execute_training(
+    config: dict[str, Any], snapshot_path: str, *, run_identity: dict[str, Any],
+    resume_checkpoint: Path | None = None, restart: bool = False,
+) -> None:
     # Called only after main verifies saved evidence and repeats the local preflight.
+    if resume_checkpoint is not None and restart:
+        raise RuntimeError("Resume and restart are mutually exclusive")
+    adapter, training, data, resources = (config[key] for key in ("adapter", "training", "data", "resources"))
+    output = (ROOT / config["output"]["directory"]).resolve()
+    safe, detail = _safe_output(output, resume=resume_checkpoint is not None or restart)
+    if not safe:
+        raise RuntimeError(detail)
+    if resume_checkpoint is not None:
+        selected = _select_resume_checkpoint(output, run_identity)
+        if selected != resume_checkpoint:
+            raise RuntimeError("Selected resume checkpoint changed before model load")
+    elif restart:
+        _validate_restart_output(output, run_identity)
+    else:
+        output.mkdir(parents=True, exist_ok=True)
+
     from unsloth import FastLanguageModel
     import torch
     from datasets import Dataset
     from trl import SFTConfig, SFTTrainer
+    from transformers import TrainerCallback
 
-    adapter, training, data, resources = (config[key] for key in ("adapter", "training", "data", "resources"))
+    class CheckpointIntegrityCallback(TrainerCallback):
+        def on_save(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+            step = state.global_step
+            checkpoint = output / "checkpoints" / f"checkpoint-{step}"
+            _mark_checkpoint_complete(checkpoint, step, output, run_identity)
+            return control
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=snapshot_path, use_exact_model_name=True, fast_inference=False,
         max_seq_length=data["max_sequence_length"], dtype=torch.bfloat16, load_in_4bit=True,
@@ -755,13 +942,9 @@ def execute_training(config: dict[str, Any], snapshot_path: str) -> None:
         examples = expand_training_examples(rows, split)
         return Dataset.from_list(tokenize_training_examples(tokenizer, examples, data["max_sequence_length"]))
 
-    output = (ROOT / config["output"]["directory"]).resolve()
-    safe, detail = _safe_output(output)
-    if not safe:
-        raise RuntimeError(detail)
-    output.mkdir(parents=True, exist_ok=True)
     trainer = SFTTrainer(
         model=model, processing_class=tokenizer, train_dataset=prepared("train"), eval_dataset=prepared("validation"),
+        callbacks=[CheckpointIntegrityCallback()],
         args=SFTConfig(
             output_dir=str(output / "checkpoints"), max_length=data["max_sequence_length"], packing=False,
             completion_only_loss=True, per_device_train_batch_size=training["micro_batch_size"],
@@ -769,14 +952,19 @@ def execute_training(config: dict[str, Any], snapshot_path: str) -> None:
             learning_rate=training["learning_rate"], num_train_epochs=training["epochs"],
             max_steps=training["max_steps"] if training["max_steps"] is not None else -1,
             warmup_ratio=training["warmup_ratio"], weight_decay=training["weight_decay"],
-            optim=training["optimizer"], bf16=True, fp16=False, eval_strategy="steps",
+            optim=training["optimizer"], bf16=True, fp16=False, eval_strategy="steps", save_strategy="steps",
             eval_steps=training["validation_steps"], save_steps=training["checkpoint_steps"],
-            save_total_limit=training["save_total_limit"], logging_steps=training["logging_steps"],
+            save_total_limit=training["save_total_limit"], save_only_model=False,
+            save_safetensors=True, logging_steps=training["logging_steps"],
             dataloader_num_workers=resources["dataloader_workers"], dataloader_pin_memory=resources["pin_memory"],
             seed=training["seed"], data_seed=training["seed"], report_to="none", push_to_hub=False,
         ),
     )
-    trainer.train()
+    if resume_checkpoint is None:
+        _atomic_json(output / RUN_IDENTITY_FILE, run_identity)
+        trainer.train()
+    else:
+        trainer.train(resume_from_checkpoint=str(resume_checkpoint))
     model.save_pretrained(str(output / "adapter"), safe_serialization=True)
     tokenizer.save_pretrained(str(output / "adapter"))
     write_json(output / "training_config.json", config)
@@ -792,6 +980,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--dry-run-report", type=Path)
     parser.add_argument("--confirm")
+    recovery = parser.add_mutually_exclusive_group()
+    recovery.add_argument("--resume", action="store_true", help="Resume the latest complete checkpoint from the exact same approved run; never restart silently")
+    recovery.add_argument("--restart", action="store_true", help="Explicitly restart the same approved run only if it stopped before writing any checkpoint")
     return parser
 
 
@@ -800,7 +991,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = load_config(args.config.resolve())
     report_path = _under(args.report, ROOT / "training/reports")
     if args.dry_run:
-        report = dry_run(args.config, allow_downloads=args.allow_downloads, report_path=report_path)
+        report = dry_run(args.config, allow_downloads=args.allow_downloads, resume=args.resume, restart=args.restart, report_path=report_path)
         write_json(report_path, report)
         print(json.dumps({"passed": report["passed"], "checks": [{"name": item["name"], "passed": item["passed"]} for item in report["checks"]], "report": str(report_path), "training_performed": False}, indent=2))
         return 0 if report["passed"] else 1
@@ -808,13 +999,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise RuntimeError(f"Real training requires --dry-run-report PATH and --confirm {CONFIRMATION}")
     saved_path = _under(args.dry_run_report, ROOT / "training/reports")
     report = json.loads(saved_path.read_text(encoding="utf-8"))
-    _verify_training_gate(config, report, args.config)
-    fresh = dry_run(args.config, allow_downloads=False, report_path=saved_path)
+    _verify_training_gate(config, report, args.config, resume=args.resume, restart=args.restart)
+    fresh = dry_run(args.config, allow_downloads=False, resume=args.resume, restart=args.restart, report_path=saved_path)
     if not fresh["passed"]:
         raise RuntimeError("Current local preflight failed; rerun --dry-run and inspect its report")
     if fresh["environment"] != report["environment"] or fresh["model_evidence"] != report["model_evidence"]:
         raise RuntimeError("Installed environment or cached model changed after the approved dry-run")
-    execute_training(config, fresh["model_evidence"]["snapshot_path"])
+    identity = _run_identity(config, fresh)
+    checkpoint = _select_resume_checkpoint(ROOT / config["output"]["directory"], identity) if args.resume else None
+    if checkpoint is not None:
+        print(f"Resuming LocalPilot training from {checkpoint}", flush=True)
+    execute_training(config, fresh["model_evidence"]["snapshot_path"], run_identity=identity, resume_checkpoint=checkpoint, restart=args.restart)
     return 0
 
 

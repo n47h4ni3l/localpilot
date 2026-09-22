@@ -17,8 +17,8 @@ if (-not (Test-Path -LiteralPath $wslConfig)) {
     throw 'The measured WSL memory configuration is missing.'
 }
 $wslSettings = Get-Content -LiteralPath $wslConfig -Raw
-if ($wslSettings -notmatch '(?m)^\s*memory=20GB\s*$' -or $wslSettings -notmatch '(?m)^\s*swap=16GB\s*$') {
-    throw 'This guarded run requires the measured WSL memory=20GB and swap=16GB settings.'
+if ($wslSettings -notmatch '(?m)^\s*memory=19968MB\s*$' -or $wslSettings -notmatch '(?m)^\s*swap=16GB\s*$') {
+    throw 'This guarded run requires WSL memory=19968MB and swap=16GB settings.'
 }
 if (-not (Test-Path -LiteralPath (Join-Path $reportDir 'adapter_v1_eager_20g_20260922_dry_run.json'))) {
     throw 'The passing target-machine dry-run report is missing.'

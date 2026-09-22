@@ -15,6 +15,7 @@ function Show-TrainingStatus {
     if (-not $Once) { Clear-Host }
     Write-Host 'LocalPilot training monitor' -ForegroundColor Cyan
     Write-Host 'Closing this window does not stop training.'
+    Write-Host "Display refreshed: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     Write-Host ''
 
     if (-not (Test-Path -LiteralPath $statusPath)) {

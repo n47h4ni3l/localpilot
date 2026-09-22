@@ -24,8 +24,12 @@ function Show-TrainingStatus {
     }
 
     $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
-    $color = if ($status.state -eq 'running') { 'Green' } else { 'Yellow' }
-    Write-Host "Guard: $($status.state)" -ForegroundColor $color
+    $displayState = $status.state
+    if ($displayState -eq 'running' -and -not (Get-Process -Id $status.windows_process_id -ErrorAction SilentlyContinue)) {
+        $displayState = 'interrupted (launcher process is gone)'
+    }
+    $color = if ($displayState -eq 'running') { 'Green' } else { 'Yellow' }
+    Write-Host "Guard: $displayState" -ForegroundColor $color
     Write-Host "Last guard update: $(([datetime]$status.updated_at_utc).ToLocalTime())"
 
     $step = 0
@@ -71,7 +75,7 @@ function Show-TrainingStatus {
     }
     Write-Host ''
     Write-Host "This display refreshes every $RefreshSeconds seconds. It does not control the run."
-    if ($status.state -ne 'running') {
+    if ($displayState -ne 'running') {
         Write-Host 'Training is not running. Do not repeatedly restart after a safety stop.' -ForegroundColor Yellow
     }
 }

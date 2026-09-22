@@ -37,6 +37,10 @@ if ($worker.State -ne 'Disabled') {
 if (Get-Process -Name 'ollama', 'ollama app' -ErrorAction SilentlyContinue) {
     throw 'Close the Ollama app and server before starting adapter training.'
 }
+if (Get-CimInstance Win32_Process -Filter "name = 'pythonw.exe' OR name = 'python.exe'" |
+    Where-Object { $_.CommandLine -match ' -m localpilot\.(broker|runtime_worker)(\s|$)' }) {
+    throw 'Close the live LocalPilot broker and runtime worker before training; disabling scheduled tasks alone does not stop them.'
+}
 
 $wslArguments = @('-d', 'LocalPilot-Training', '--cd', '/mnt/e/LLM_HOME/src/localpilot', '--', 'bash', 'training/scripts/launch_adapter_v1.sh')
 if ($Mode -eq 'Resume') { $wslArguments += '--resume' }

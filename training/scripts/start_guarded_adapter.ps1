@@ -64,7 +64,7 @@ while (-not $trainingProcess.HasExited) {
     $limit = ($counters.CounterSamples | Where-Object Path -Like '*commit limit').CookedValue
     $headroom = [math]::Round(($limit - $committed) / 1GB, 2)
 
-    if ($available -lt 2.5 -or $headroom -lt 2.8) {
+    if ($available -lt 2.5 -or $headroom -lt 2.5) {
         $safetyStop = $true
         Write-GuardStatus -State 'safety_stop_requested' -AvailableGiB $available -CommitHeadroomGiB $headroom
         if (Test-Path -LiteralPath $pidPath) {

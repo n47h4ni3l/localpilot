@@ -4,6 +4,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'training_memory_policy.ps1')
+$policy = Get-TrainingMemoryPolicy
+$history = @{}
+$decision = $null
+$stopReason = $null
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $reportDir = Join-Path $repoRoot 'training\reports'
 $pidPath = Join-Path $reportDir 'adapter_v1_eager_20g_20260922.pid'
@@ -11,6 +16,7 @@ $statusPath = Join-Path $reportDir 'adapter_v1_guard_status.json'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $stdoutPath = Join-Path $reportDir "adapter_v1_$stamp.stdout.log"
 $stderrPath = Join-Path $reportDir "adapter_v1_$stamp.stderr.log"
+$telemetryPath = Join-Path $reportDir "adapter_v1_$stamp.memory.jsonl"
 $wslConfig = Join-Path $env:USERPROFILE '.wslconfig'
 
 if (-not (Test-Path -LiteralPath $wslConfig)) {
@@ -48,25 +54,53 @@ function Write-GuardStatus {
         exit_code = $ExitCode
         stdout_log = $stdoutPath
         stderr_log = $stderrPath
-    } | ConvertTo-Json | Set-Content -LiteralPath $statusPath -Encoding utf8
+        memory_log = $telemetryPath
+        memory_policy = $policy
+        memory_warning = [bool]$decision.warning
+        stop_reason = $stopReason
+        low_ram_seconds = $decision.low_ram_seconds
+        low_commit_seconds = $decision.low_commit_seconds
+    } | ConvertTo-Json | Set-Content -LiteralPath "$statusPath.tmp" -Encoding utf8
+    [System.IO.File]::Move("$statusPath.tmp", $statusPath, $true)
 }
 
+$available = 0.0
+$headroom = 0.0
 $trainingProcess = Start-Process -FilePath 'wsl.exe' -ArgumentList $wslArguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-Write-GuardStatus -State 'running' -AvailableGiB 0 -CommitHeadroomGiB 0
 $safetyStop = $false
-$samples = 0
+$clock = [System.Diagnostics.Stopwatch]::StartNew()
 
 while (-not $trainingProcess.HasExited) {
-    $os = Get-CimInstance Win32_OperatingSystem
-    $available = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
-    $counters = Get-Counter '\Memory\Committed Bytes', '\Memory\Commit Limit'
-    $committed = ($counters.CounterSamples | Where-Object Path -Like '*committed bytes').CookedValue
-    $limit = ($counters.CounterSamples | Where-Object Path -Like '*commit limit').CookedValue
-    $headroom = [math]::Round(($limit - $committed) / 1GB, 2)
-
-    if ($available -lt 2.5 -or $headroom -lt 2.5) {
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem
+        $available = $os.FreePhysicalMemory / 1MB
+        $counters = Get-Counter '\Memory\Committed Bytes', '\Memory\Commit Limit'
+        $committed = @($counters.CounterSamples | Where-Object Path -Like '*committed bytes')
+        $limit = @($counters.CounterSamples | Where-Object Path -Like '*commit limit')
+        if ($null -eq $os.FreePhysicalMemory -or $committed.Count -ne 1 -or $limit.Count -ne 1 -or
+            $committed[0].Status -ne 0 -or $limit[0].Status -ne 0 -or $limit[0].CookedValue -le 0) {
+            throw 'Memory counters unavailable or invalid.'
+        }
+        $headroom = ($limit[0].CookedValue - $committed[0].CookedValue) / 1GB
+        $decision = Get-TrainingMemoryDecision -AvailableGiB $available -CommitHeadroomGiB $headroom -ElapsedSeconds $clock.Elapsed.TotalSeconds -History $history -Policy $policy
+        $stopReason = $decision.reason
+        [ordered]@{
+            updated_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+            elapsed_seconds = $clock.Elapsed.TotalSeconds
+            available_gib = $available
+            commit_headroom_gib = $headroom
+            decision = $decision
+        } | ConvertTo-Json -Compress | Add-Content -LiteralPath $telemetryPath -Encoding utf8
+        Write-GuardStatus -State 'running' -AvailableGiB $available -CommitHeadroomGiB $headroom
+    } catch {
+        # Never leave a training process running silently without its guard.
+        $stopReason = 'memory_monitor_failed'
+        Write-Warning "Memory monitoring failed: $($_.Exception.Message)"
+    }
+    if ($stopReason) {
         $safetyStop = $true
-        Write-GuardStatus -State 'safety_stop_requested' -AvailableGiB $available -CommitHeadroomGiB $headroom
+        try { Write-GuardStatus -State 'safety_stop_requested' -AvailableGiB $available -CommitHeadroomGiB $headroom }
+        catch { Write-Warning 'Could not write guard status; still stopping training.' }
         if (Test-Path -LiteralPath $pidPath) {
             $linuxPid = (Get-Content -LiteralPath $pidPath -Raw).Trim()
             if ($linuxPid -match '^[1-9][0-9]*$') {
@@ -78,10 +112,6 @@ while (-not $trainingProcess.HasExited) {
         }
         break
     }
-    if (($samples % 100) -eq 0) {
-        Write-GuardStatus -State 'running' -AvailableGiB $available -CommitHeadroomGiB $headroom
-    }
-    $samples++
     Start-Sleep -Seconds 3
     $trainingProcess.Refresh()
 }

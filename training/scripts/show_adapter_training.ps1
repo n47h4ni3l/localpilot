@@ -15,6 +15,7 @@ function Show-TrainingStatus {
     if (-not $Once) { Clear-Host }
     Write-Host 'LocalPilot training monitor' -ForegroundColor Cyan
     Write-Host 'Closing this window does not stop training.'
+    Write-Host "Display refreshed: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     Write-Host ''
 
     if (-not (Test-Path -LiteralPath $statusPath)) {
@@ -23,9 +24,17 @@ function Show-TrainingStatus {
     }
 
     $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
-    $color = if ($status.state -eq 'running') { 'Green' } else { 'Yellow' }
-    Write-Host "Guard: $($status.state)" -ForegroundColor $color
+    $displayState = $status.state
+    if ($displayState -eq 'running' -and -not (Get-Process -Id $status.windows_process_id -ErrorAction SilentlyContinue)) {
+        $displayState = 'interrupted (launcher process is gone)'
+    }
+    $color = if ($displayState -eq 'running') { 'Green' } else { 'Yellow' }
+    Write-Host "Guard: $displayState" -ForegroundColor $color
     Write-Host "Last guard update: $(([datetime]$status.updated_at_utc).ToLocalTime())"
+    if ($status.stop_reason) { Write-Host "Stop reason: $($status.stop_reason)" -ForegroundColor Yellow }
+    if ($displayState -eq 'running' -and $status.memory_warning) {
+        Write-Host 'Low-memory warning: training continues unless pressure persists or reaches an emergency floor.' -ForegroundColor Yellow
+    }
 
     $step = 0
     if ($status.stderr_log -and (Test-Path -LiteralPath $status.stderr_log)) {
@@ -63,14 +72,21 @@ function Show-TrainingStatus {
         $limit = ($counters.CounterSamples | Where-Object Path -Like '*commit limit').CookedValue
         $freeRam = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
         $commitHeadroom = [math]::Round(($limit - $committed) / 1GB, 2)
-        Write-Host "Windows free RAM: $freeRam GiB (guard stops below 2.5)"
-        Write-Host "Commit headroom: $commitHeadroom GiB (guard stops below 2.5)"
+        Write-Host "Windows available RAM: $freeRam GiB"
+        Write-Host "Commit headroom: $commitHeadroom GiB"
+        if ($status.memory_policy.version -eq 2) {
+            $policy = $status.memory_policy
+            Write-Host "RAM guard: below $($policy.sustained_ram_gib) GiB for $($policy.sustained_ram_seconds)s; emergency below $($policy.emergency_ram_gib) GiB."
+            Write-Host "Commit guard: below $($policy.sustained_commit_gib) GiB for $($policy.sustained_commit_seconds)s; emergency below $($policy.emergency_commit_gib) GiB."
+        } else {
+            Write-Host 'Previous guard policy: immediate stop below 2.5 GiB RAM or commit headroom.'
+        }
     } catch {
         Write-Host 'Windows memory reading temporarily unavailable.' -ForegroundColor Yellow
     }
     Write-Host ''
     Write-Host "This display refreshes every $RefreshSeconds seconds. It does not control the run."
-    if ($status.state -ne 'running') {
+    if ($displayState -ne 'running') {
         Write-Host 'Training is not running. Do not repeatedly restart after a safety stop.' -ForegroundColor Yellow
     }
 }

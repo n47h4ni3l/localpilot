@@ -21,6 +21,7 @@ from localpilot.tools.windows import (
     get_storage_summary,
     get_system_summary,
     get_top_processes,
+    inspect_process_identity,
 )
 from localpilot.tools.windows_actions import WindowsActions
 from localpilot.systemsense import SystemSense, get_system_sense
@@ -40,6 +41,12 @@ def registry(
         ToolSpec("get_system_summary", "Read Windows, CPU and RAM summary.", RiskLevel.READ_ONLY, get_system_summary),
         ToolSpec("get_storage_summary", "Read local disk capacity and free space.", RiskLevel.READ_ONLY, get_storage_summary),
         ToolSpec("get_top_processes", "Read top processes by CPU and memory.", RiskLevel.READ_ONLY, get_top_processes),
+        ToolSpec(
+            "inspect_process_identity",
+            "Inspect one currently running PID: executable path, command line, parent process, start time, user, Windows service associations, file version, Authenticode signer and SHA-256. Read-only; never starts or modifies the process.",
+            RiskLevel.READ_ONLY,
+            inspect_process_identity,
+        ),
         ToolSpec("get_startup_items", "Read Windows startup entries.", RiskLevel.READ_ONLY, get_startup_items),
         ToolSpec("get_active_power_plan", "Read the active Windows power plan.", RiskLevel.READ_ONLY, get_active_power_plan),
         ToolSpec("get_defender_summary", "Read basic Microsoft Defender protection state.", RiskLevel.READ_ONLY, get_defender_summary),
@@ -228,6 +235,12 @@ def registry(
                         "Read the latest owner-requested RAM watch report, including sample count, system-memory peaks and independently ranked per-process RAM consumers. Use watch_id=0 for the latest watch.",
                         RiskLevel.READ_ONLY,
                         reader.get_memory_watch_report,
+                    ),
+                    ToolSpec(
+                        "inspect_memory_watch_process",
+                        "Inspect one PID observed by the latest or a specified RAM watch. Returns watch-captured executable, command line, parent/start identity plus executable version/signature/hash; current PID data is attached only if start time proves it is the same process instance.",
+                        RiskLevel.READ_ONLY,
+                        reader.inspect_memory_watch_process,
                     ),
                     ToolSpec(
                         "get_workload_correlations",

@@ -407,21 +407,30 @@ class WindowsPerformanceCollector:
     def __init__(self, wmi: WmiClient | None = None) -> None:
         self.wmi = wmi or WmiClient()
 
-    def collect_process_gpu(self, pids: Iterable[int]) -> dict[int, dict[str, Any]]:
+    def collect_process_gpu(
+        self,
+        pids: Iterable[int] | None = None,
+    ) -> dict[int, dict[str, Any]]:
         """Read Windows GPU and VRAM counters grouped by PID when available."""
-        wanted = {int(pid) for pid in pids if int(pid) > 0}
-        if not wanted or not bool(getattr(self.wmi, "available", os.name == "nt")):
+        wanted = (
+            {int(pid) for pid in pids if int(pid) > 0}
+            if pids is not None
+            else None
+        )
+        if wanted == set() or not bool(getattr(self.wmi, "available", os.name == "nt")):
             return {}
 
-        output: dict[int, dict[str, Any]] = {
-            pid: {
-                "gpu_percent": 0.0,
-                "gpu_dedicated_mb": 0.0,
-                "gpu_shared_mb": 0.0,
-                "gpu_committed_mb": 0.0,
-            }
-            for pid in wanted
-        }
+        output: dict[int, dict[str, Any]] = {}
+        def ensure(pid: int) -> dict[str, Any]:
+            return output.setdefault(
+                pid,
+                {
+                    "gpu_percent": 0.0,
+                    "gpu_dedicated_mb": 0.0,
+                    "gpu_shared_mb": 0.0,
+                    "gpu_committed_mb": 0.0,
+                },
+            )
         pid_pattern = re.compile(r"(?:^|_)pid_(\d+)(?:_|$)", re.IGNORECASE)
 
         try:
@@ -437,15 +446,16 @@ class WindowsPerformanceCollector:
             if not match:
                 continue
             pid = int(match.group(1))
-            if pid not in wanted:
+            if wanted is not None and pid not in wanted:
                 continue
+            values = ensure(pid)
             try:
                 utilization = float(row.get("UtilizationPercentage") or 0.0)
             except (TypeError, ValueError):
                 continue
-            output[pid]["gpu_percent"] = min(
+            values["gpu_percent"] = min(
                 100.0,
-                float(output[pid]["gpu_percent"]) + max(0.0, utilization),
+                float(values["gpu_percent"]) + max(0.0, utilization),
             )
 
         try:
@@ -461,8 +471,9 @@ class WindowsPerformanceCollector:
             if not match:
                 continue
             pid = int(match.group(1))
-            if pid not in wanted:
+            if wanted is not None and pid not in wanted:
                 continue
+            values = ensure(pid)
             for source, target in (
                 ("DedicatedUsage", "gpu_dedicated_mb"),
                 ("SharedUsage", "gpu_shared_mb"),
@@ -472,8 +483,8 @@ class WindowsPerformanceCollector:
                     value = max(0.0, float(row.get(source) or 0.0))
                 except (TypeError, ValueError):
                     continue
-                output[pid][target] = round(
-                    float(output[pid][target]) + value / 1024**2,
+                values[target] = round(
+                    float(values[target]) + value / 1024**2,
                     2,
                 )
 

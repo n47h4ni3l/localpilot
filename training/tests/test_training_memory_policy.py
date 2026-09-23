@@ -112,6 +112,8 @@ def test_training_launcher_defaults_to_observation_not_intervention() -> None:
     assert "[string]$MemoryPolicy = 'MonitorOnly'" in text
     assert "top_memory_processes" in text
     assert "gpu_process_memory" in text
+    assert "windows_memory_breakdown" in text
+    assert "Get-WindowsMemoryBreakdown" in text
     assert "wsl_memory" in text
     assert "Get-WslMemoryState" in text
     assert "latest_complete_checkpoint_step" in text

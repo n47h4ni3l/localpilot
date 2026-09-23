@@ -1,6 +1,9 @@
 param(
     [ValidateSet('Fresh', 'Resume', 'Restart')]
-    [string]$Mode = 'Fresh'
+    [string]$Mode = 'Fresh',
+
+    [ValidateSet('MonitorOnly', 'CriticalOnly', 'Protective')]
+    [string]$MemoryPolicy = 'MonitorOnly'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,6 +12,7 @@ $policy = Get-TrainingMemoryPolicy
 $history = @{}
 $decision = $null
 $stopReason = $null
+$monitorError = $null
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $reportDir = Join-Path $repoRoot 'training\reports'
 $pidPath = Join-Path $reportDir 'adapter_v1_eager_20g_20260922.pid'
@@ -18,13 +22,17 @@ $stdoutPath = Join-Path $reportDir "adapter_v1_$stamp.stdout.log"
 $stderrPath = Join-Path $reportDir "adapter_v1_$stamp.stderr.log"
 $telemetryPath = Join-Path $reportDir "adapter_v1_$stamp.memory.jsonl"
 $wslConfig = Join-Path $env:USERPROFILE '.wslconfig'
+$configPath = Join-Path $repoRoot 'training\configs\qlora_v1.yaml'
+$config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+$outputPath = Join-Path $repoRoot ([string]$config.output.directory)
+$checkpointRoot = Join-Path $outputPath 'checkpoints'
 
 if (-not (Test-Path -LiteralPath $wslConfig)) {
     throw 'The measured WSL memory configuration is missing.'
 }
 $wslSettings = Get-Content -LiteralPath $wslConfig -Raw
 if ($wslSettings -notmatch '(?m)^\s*memory=20GB\s*$' -or $wslSettings -notmatch '(?m)^\s*swap=16GB\s*$') {
-    throw 'This guarded run requires the measured WSL memory=20GB and swap=16GB settings.'
+    throw 'This run requires the measured WSL memory=20GB and swap=16GB settings.'
 }
 if (-not (Test-Path -LiteralPath (Join-Path $reportDir 'adapter_v1_eager_20g_20260922_dry_run.json'))) {
     throw 'The passing target-machine dry-run report is missing.'
@@ -42,15 +50,115 @@ if (Get-CimInstance Win32_Process -Filter "name = 'pythonw.exe' OR name = 'pytho
     throw 'Close the live LocalPilot broker and runtime worker before training; disabling scheduled tasks alone does not stop them.'
 }
 
-$wslArguments = @('-d', 'LocalPilot-Training', '--cd', '/mnt/e/LLM_HOME/src/localpilot', '--', 'bash', 'training/scripts/launch_adapter_v1.sh')
+$wslArguments = @(
+    '-d', 'LocalPilot-Training',
+    '--cd', '/mnt/e/LLM_HOME/src/localpilot',
+    '--', 'bash', 'training/scripts/launch_adapter_v1.sh'
+)
 if ($Mode -eq 'Resume') { $wslArguments += '--resume' }
 if ($Mode -eq 'Restart') { $wslArguments += '--restart' }
 
+function Get-LatestCompleteCheckpoint {
+    if (-not (Test-Path -LiteralPath $checkpointRoot -PathType Container)) {
+        return $null
+    }
+    $candidates = @(
+        Get-ChildItem -LiteralPath $checkpointRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^checkpoint-([1-9][0-9]*)$' } |
+        ForEach-Object {
+            [pscustomobject]@{
+                step = [int]$Matches[1]
+                path = $_.FullName
+                marker = Join-Path $_.FullName 'localpilot_checkpoint_complete.json'
+            }
+        } |
+        Where-Object { Test-Path -LiteralPath $_.marker -PathType Leaf } |
+        Sort-Object step -Descending
+    )
+    if ($candidates.Count -eq 0) { return $null }
+    return $candidates[0]
+}
+
+function Get-TopMemoryProcesses {
+    $rows = @()
+    Get-Process -ErrorAction SilentlyContinue |
+        Sort-Object WorkingSet64 -Descending |
+        Select-Object -First 15 |
+        ForEach-Object {
+            $rows += [ordered]@{
+                pid = $_.Id
+                name = $_.ProcessName
+                working_set_gib = [math]::Round($_.WorkingSet64 / 1GB, 3)
+                private_gib = [math]::Round($_.PrivateMemorySize64 / 1GB, 3)
+                paged_gib = [math]::Round($_.PagedMemorySize64 / 1GB, 3)
+                handles = $_.HandleCount
+            }
+        }
+    return @($rows)
+}
+
+function Get-GpuProcessMemory {
+    try {
+        $counters = Get-Counter @(
+            '\GPU Process Memory(*)\Dedicated Usage',
+            '\GPU Process Memory(*)\Shared Usage'
+        ) -ErrorAction Stop
+        $byPid = @{}
+        foreach ($sample in $counters.CounterSamples) {
+            $path = [string]$sample.Path
+            if ($sample.Status -ne 0 -or $path -notmatch 'pid_(\d+)') { continue }
+            $pid = [int]$Matches[1]
+            if (-not $byPid.ContainsKey($pid)) {
+                $byPid[$pid] = [ordered]@{
+                    pid = $pid
+                    name = $null
+                    dedicated_gib = 0.0
+                    shared_gib = 0.0
+                }
+            }
+            if ($path -like '*dedicated usage') {
+                $byPid[$pid].dedicated_gib += $sample.CookedValue / 1GB
+            }
+            elseif ($path -like '*shared usage') {
+                $byPid[$pid].shared_gib += $sample.CookedValue / 1GB
+            }
+        }
+        foreach ($pid in @($byPid.Keys)) {
+            try { $byPid[$pid].name = (Get-Process -Id $pid -ErrorAction Stop).ProcessName }
+            catch { $byPid[$pid].name = $null }
+            $byPid[$pid].dedicated_gib = [math]::Round($byPid[$pid].dedicated_gib, 3)
+            $byPid[$pid].shared_gib = [math]::Round($byPid[$pid].shared_gib, 3)
+        }
+        return @(
+            $byPid.Values |
+            Sort-Object {
+                [double]$_.dedicated_gib + [double]$_.shared_gib
+            } -Descending |
+            Select-Object -First 15
+        )
+    }
+    catch {
+        return @()
+    }
+}
+
 function Write-GuardStatus {
-    param([string]$State, [double]$AvailableGiB, [double]$CommitHeadroomGiB, [int]$ExitCode = -1)
+    param(
+        [string]$State,
+        [double]$AvailableGiB,
+        [double]$CommitHeadroomGiB,
+        [int]$ExitCode = -1,
+        $LatestCheckpoint = $null
+    )
+    $warning = if ($null -ne $decision) { [bool]$decision.warning } else { $false }
+    $pressureReason = if ($null -ne $decision) { $decision.pressure_reason } else { $null }
+    $lowRamSeconds = if ($null -ne $decision) { $decision.low_ram_seconds } else { 0.0 }
+    $lowCommitSeconds = if ($null -ne $decision) { $decision.low_commit_seconds } else { 0.0 }
+
     [ordered]@{
         state = $State
         mode = $Mode
+        memory_policy_mode = $MemoryPolicy
         updated_at_utc = (Get-Date).ToUniversalTime().ToString('o')
         available_gib = $AvailableGiB
         commit_headroom_gib = $CommitHeadroomGiB
@@ -60,19 +168,29 @@ function Write-GuardStatus {
         stderr_log = $stderrPath
         memory_log = $telemetryPath
         memory_policy = $policy
-        memory_warning = [bool]$decision.warning
+        memory_warning = $warning
+        pressure_reason = $pressureReason
         stop_reason = $stopReason
-        low_ram_seconds = $decision.low_ram_seconds
-        low_commit_seconds = $decision.low_commit_seconds
-    } | ConvertTo-Json | Set-Content -LiteralPath "$statusPath.tmp" -Encoding utf8
+        monitor_error = $monitorError
+        low_ram_seconds = $lowRamSeconds
+        low_commit_seconds = $lowCommitSeconds
+        latest_complete_checkpoint_step = if ($null -ne $LatestCheckpoint) { $LatestCheckpoint.step } else { $null }
+        latest_complete_checkpoint_path = if ($null -ne $LatestCheckpoint) { $LatestCheckpoint.path } else { $null }
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "$statusPath.tmp" -Encoding utf8
     [System.IO.File]::Move("$statusPath.tmp", $statusPath, $true)
 }
 
 $available = 0.0
 $headroom = 0.0
+$latestCheckpoint = Get-LatestCompleteCheckpoint
+$topMemory = @()
+$gpuMemory = @()
 $trainingProcess = Start-Process -FilePath 'wsl.exe' -ArgumentList $wslArguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+
 $safetyStop = $false
 $clock = [System.Diagnostics.Stopwatch]::StartNew()
+$lastDetailElapsed = -999.0
+$lastCheckpointElapsed = -999.0
 
 while (-not $trainingProcess.HasExited) {
     try {
@@ -81,41 +199,93 @@ while (-not $trainingProcess.HasExited) {
         $counters = Get-Counter '\Memory\Committed Bytes', '\Memory\Commit Limit'
         $committed = @($counters.CounterSamples | Where-Object Path -Like '*committed bytes')
         $limit = @($counters.CounterSamples | Where-Object Path -Like '*commit limit')
-        if ($null -eq $os.FreePhysicalMemory -or $committed.Count -ne 1 -or $limit.Count -ne 1 -or
-            $committed[0].Status -ne 0 -or $limit[0].Status -ne 0 -or $limit[0].CookedValue -le 0) {
+        if (
+            $null -eq $os.FreePhysicalMemory -or
+            $committed.Count -ne 1 -or
+            $limit.Count -ne 1 -or
+            $committed[0].Status -ne 0 -or
+            $limit[0].Status -ne 0 -or
+            $limit[0].CookedValue -le 0
+        ) {
             throw 'Memory counters unavailable or invalid.'
         }
+
         $headroom = ($limit[0].CookedValue - $committed[0].CookedValue) / 1GB
-        $decision = Get-TrainingMemoryDecision -AvailableGiB $available -CommitHeadroomGiB $headroom -ElapsedSeconds $clock.Elapsed.TotalSeconds -History $history -Policy $policy
+        $decision = Get-TrainingMemoryDecision -AvailableGiB $available -CommitHeadroomGiB $headroom -ElapsedSeconds $clock.Elapsed.TotalSeconds -History $history -Mode $MemoryPolicy -Policy $policy
         $stopReason = $decision.reason
+        $monitorError = $null
+
+        $needDetail = (
+            ($clock.Elapsed.TotalSeconds - $lastDetailElapsed -ge 15.0) -or
+            [bool]$decision.warning
+        )
+        if ($needDetail) {
+            $topMemory = Get-TopMemoryProcesses
+            $gpuMemory = Get-GpuProcessMemory
+            $lastDetailElapsed = $clock.Elapsed.TotalSeconds
+        }
+        if ($clock.Elapsed.TotalSeconds - $lastCheckpointElapsed -ge 15.0) {
+            $latestCheckpoint = Get-LatestCompleteCheckpoint
+            $lastCheckpointElapsed = $clock.Elapsed.TotalSeconds
+        }
+
         [ordered]@{
             updated_at_utc = (Get-Date).ToUniversalTime().ToString('o')
             elapsed_seconds = $clock.Elapsed.TotalSeconds
-            available_gib = $available
-            commit_headroom_gib = $headroom
+            available_gib = [math]::Round($available, 3)
+            commit_headroom_gib = [math]::Round($headroom, 3)
             decision = $decision
-        } | ConvertTo-Json -Compress | Add-Content -LiteralPath $telemetryPath -Encoding utf8
-        Write-GuardStatus -State 'running' -AvailableGiB $available -CommitHeadroomGiB $headroom
-    } catch {
-        # Never leave a training process running silently without its guard.
-        $stopReason = 'memory_monitor_failed'
-        Write-Warning "Memory monitoring failed: $($_.Exception.Message)"
+            top_memory_processes = if ($needDetail) { $topMemory } else { $null }
+            gpu_process_memory = if ($needDetail) { $gpuMemory } else { $null }
+            latest_complete_checkpoint_step = if ($null -ne $latestCheckpoint) { $latestCheckpoint.step } else { $null }
+        } | ConvertTo-Json -Compress -Depth 8 | Add-Content -LiteralPath $telemetryPath -Encoding utf8
+
+        Write-GuardStatus -State 'running' -AvailableGiB $available -CommitHeadroomGiB $headroom -LatestCheckpoint $latestCheckpoint
     }
+    catch {
+        $monitorError = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+        Write-Warning "Training telemetry degraded: $monitorError"
+        if ($MemoryPolicy -ne 'MonitorOnly') {
+            $stopReason = 'memory_monitor_failed'
+        }
+        try {
+            [ordered]@{
+                updated_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+                elapsed_seconds = $clock.Elapsed.TotalSeconds
+                monitor_error = $monitorError
+                memory_policy_mode = $MemoryPolicy
+            } | ConvertTo-Json -Compress | Add-Content -LiteralPath $telemetryPath -Encoding utf8
+            Write-GuardStatus -State 'monitor_degraded' -AvailableGiB $available -CommitHeadroomGiB $headroom -LatestCheckpoint $latestCheckpoint
+        }
+        catch {
+            Write-Warning 'Could not persist degraded monitor status.'
+        }
+    }
+
     if ($stopReason) {
         $safetyStop = $true
-        try { Write-GuardStatus -State 'safety_stop_requested' -AvailableGiB $available -CommitHeadroomGiB $headroom }
-        catch { Write-Warning 'Could not write guard status; still stopping training.' }
+        try {
+            Write-GuardStatus -State 'safety_stop_requested' -AvailableGiB $available -CommitHeadroomGiB $headroom -LatestCheckpoint $latestCheckpoint
+        }
+        catch {
+            Write-Warning 'Could not write guard status; still stopping training.'
+        }
         if (Test-Path -LiteralPath $pidPath) {
             $linuxPid = (Get-Content -LiteralPath $pidPath -Raw).Trim()
             if ($linuxPid -match '^[1-9][0-9]*$') {
                 $commandLine = wsl.exe -d LocalPilot-Training -- ps -p $linuxPid -o args=
-                if ($LASTEXITCODE -eq 0 -and $commandLine -match 'python training/scripts/train_adapter.py' -and $commandLine -match '--train') {
+                if (
+                    $LASTEXITCODE -eq 0 -and
+                    $commandLine -match 'python training/scripts/train_adapter.py' -and
+                    $commandLine -match '--train'
+                ) {
                     wsl.exe -d LocalPilot-Training -- kill -INT $linuxPid
                 }
             }
         }
         break
     }
+
     Start-Sleep -Seconds 3
     $trainingProcess.Refresh()
 }
@@ -125,7 +295,11 @@ if ($safetyStop -and -not $trainingProcess.WaitForExit(30000)) {
         $linuxPid = (Get-Content -LiteralPath $pidPath -Raw).Trim()
         if ($linuxPid -match '^[1-9][0-9]*$') {
             $commandLine = wsl.exe -d LocalPilot-Training -- ps -p $linuxPid -o args=
-            if ($LASTEXITCODE -eq 0 -and $commandLine -match 'python training/scripts/train_adapter.py' -and $commandLine -match '--train') {
+            if (
+                $LASTEXITCODE -eq 0 -and
+                $commandLine -match 'python training/scripts/train_adapter.py' -and
+                $commandLine -match '--train'
+            ) {
                 wsl.exe -d LocalPilot-Training -- kill -TERM $linuxPid
             }
         }
@@ -133,5 +307,14 @@ if ($safetyStop -and -not $trainingProcess.WaitForExit(30000)) {
 }
 
 $trainingProcess.WaitForExit()
-$finalState = if ($safetyStop) { 'safety_stopped' } elseif ($trainingProcess.ExitCode -eq 0) { 'completed' } else { 'failed' }
-Write-GuardStatus -State $finalState -AvailableGiB $available -CommitHeadroomGiB $headroom -ExitCode $trainingProcess.ExitCode
+$latestCheckpoint = Get-LatestCompleteCheckpoint
+$finalState = if ($safetyStop) {
+    'safety_stopped'
+}
+elseif ($trainingProcess.ExitCode -eq 0) {
+    'completed'
+}
+else {
+    'failed'
+}
+Write-GuardStatus -State $finalState -AvailableGiB $available -CommitHeadroomGiB $headroom -ExitCode $trainingProcess.ExitCode -LatestCheckpoint $latestCheckpoint

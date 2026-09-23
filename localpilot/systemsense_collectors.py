@@ -12,6 +12,8 @@ from typing import Any, Iterable
 
 import psutil
 
+from localpilot.process_identity import sanitize_command_line
+
 from localpilot.process import hidden_process_creation_flags
 
 
@@ -210,7 +212,7 @@ class PsutilTelemetryCollector:
                 process = psutil.Process(int(row["pid"]))
                 with process.oneshot():
                     enriched["executable"] = str(process.exe() or "")[:1000]
-                    enriched["command_line"] = " ".join(process.cmdline())[:4000]
+                    enriched["command_line"] = sanitize_command_line(process.cmdline())
                     enriched["parent_pid"] = int(process.ppid() or 0)
                     enriched["started_at_epoch"] = float(process.create_time())
                     enriched["username"] = str(process.username() or "")[:300]

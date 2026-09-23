@@ -1449,6 +1449,7 @@ class SystemSense:
         self._last_self_observation = 0.0
         self._cached_performance: dict[str, Any] | None = None
         self._cached_raw_sensors: dict[str, Any] | None = None
+        self._cached_self_observation: dict[str, Any] = {}
         self._watch_seen_processes: dict[
             int, dict[tuple[int, float], dict[str, Any]]
         ] = {}
@@ -1630,13 +1631,12 @@ class SystemSense:
         watch_profiles: list[str],
     ) -> dict[str, Any]:
         now = time.monotonic()
-        previous = self.store.latest_snapshot("systemsense_self") or {}
         if (
             self._last_self_observation
             and now - self._last_self_observation
             < self.config.self_observation_interval_seconds
         ):
-            return previous
+            return dict(self._cached_self_observation)
         try:
             process = psutil.Process(os.getpid())
             with process.oneshot():
@@ -1671,6 +1671,7 @@ class SystemSense:
         }
         self.store.replace_latest_snapshot("systemsense_self", payload)
         self._last_self_observation = now
+        self._cached_self_observation = dict(payload)
         return payload
 
     def collect_dynamic(self) -> dict[str, Any]:

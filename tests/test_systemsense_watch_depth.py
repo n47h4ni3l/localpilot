@@ -232,8 +232,8 @@ def test_systemsense_watch_correlates_richer_process_gpu_network_lifecycle_and_f
         label="system test",
     )
 
-    monotonic = iter([100.0, 116.0, 132.0])
-    monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: next(monotonic))
+    monotonic_clock = [100.0]
+    monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: monotonic_clock[0])
 
     real_process = psutil.Process
 
@@ -243,8 +243,10 @@ def test_systemsense_watch_correlates_richer_process_gpu_network_lifecycle_and_f
         return real_process(pid)
 
     sense.collect_dynamic()
+    monotonic_clock[0] = 116.0
     sense.collect_dynamic()
     monkeypatch.setattr("localpilot.systemsense.psutil.Process", fake_process)
+    monotonic_clock[0] = 132.0
     sense.collect_dynamic()
 
     report = sense.watch_report(watch_id=watch["watch_id"])

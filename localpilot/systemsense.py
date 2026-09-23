@@ -753,12 +753,46 @@ class SystemSenseStore:
         *,
         pid: int,
         watch_id: int | None = None,
+        started_at_epoch: float | None = None,
     ) -> dict[str, Any]:
         watch = self.latest_watch(watch_id=watch_id)
         if watch is None:
             return {"available": False, "reason": "no_systemsense_watch"}
         wid = int(watch["watch_id"])
         with self._connect() as connection:
+            instances = connection.execute(
+                "SELECT p.started_at_epoch, p.name, MAX(COALESCE(p.rss_mb,0)) AS peak_ram_mb "
+                "FROM systemsense_watch_process_samples p "
+                "JOIN systemsense_watch_samples s ON s.id=p.sample_id "
+                "WHERE s.watch_id=? AND p.pid=? "
+                "GROUP BY p.started_at_epoch, p.name ORDER BY peak_ram_mb DESC",
+                (wid, int(pid)),
+            ).fetchall()
+            distinct_instances = [
+                dict(item) for item in instances if item["started_at_epoch"] is not None
+            ]
+            if started_at_epoch is None and len(distinct_instances) > 1:
+                return {
+                    "available": False,
+                    "reason": "pid_reused_multiple_process_instances",
+                    "watch_id": wid,
+                    "pid": int(pid),
+                    "instances": distinct_instances,
+                    "instruction": (
+                        "Select the intended started_at_epoch from the watch report "
+                        "and inspect that specific process instance."
+                    ),
+                }
+
+            params: list[Any] = [wid, int(pid)]
+            instance_clause = ""
+            if started_at_epoch is not None:
+                instance_clause = " AND ABS(COALESCE(p.started_at_epoch,-1) - ?) <= 2.0"
+                params.append(float(started_at_epoch))
+            elif distinct_instances:
+                instance_clause = " AND ABS(COALESCE(p.started_at_epoch,-1) - ?) <= 2.0"
+                params.append(float(distinct_instances[0]["started_at_epoch"]))
+
             row = connection.execute(
                 "SELECT s.captured_at, p.*, a.sha256, a.size_bytes, a.modified_ns, "
                 "a.company_name, a.product_name, a.file_description, a.file_version, "
@@ -768,20 +802,28 @@ class SystemSenseStore:
                 "JOIN systemsense_watch_samples s ON s.id=p.sample_id "
                 "LEFT JOIN systemsense_executable_artifacts a ON a.id=p.artifact_id "
                 "WHERE s.watch_id=? AND p.pid=? "
-                "ORDER BY COALESCE(p.rss_mb,0) DESC, s.captured_at DESC LIMIT 1",
-                (wid, int(pid)),
+                + instance_clause
+                + " ORDER BY COALESCE(p.rss_mb,0) DESC, s.captured_at DESC LIMIT 1",
+                tuple(params),
             ).fetchone()
             count = connection.execute(
                 "SELECT COUNT(*) AS count FROM systemsense_watch_process_samples p "
                 "JOIN systemsense_watch_samples s ON s.id=p.sample_id "
-                "WHERE s.watch_id=? AND p.pid=?",
-                (wid, int(pid)),
+                "WHERE s.watch_id=? AND p.pid=?"
+                + instance_clause,
+                tuple(params),
             ).fetchone()
+            lifecycle_params: list[Any] = [wid, int(pid)]
+            lifecycle_clause = ""
+            if params[2:]:
+                lifecycle_clause = " AND ABS(COALESCE(started_at_epoch,-1) - ?) <= 2.0"
+                lifecycle_params.append(params[2])
             lifecycle = connection.execute(
                 "SELECT event, event_at, name, parent_pid, details_json "
-                "FROM systemsense_watch_lifecycle WHERE watch_id=? AND pid=? "
-                "ORDER BY event_at ASC LIMIT 50",
-                (wid, int(pid)),
+                "FROM systemsense_watch_lifecycle WHERE watch_id=? AND pid=?"
+                + lifecycle_clause
+                + " ORDER BY event_at ASC LIMIT 50",
+                tuple(lifecycle_params),
             ).fetchall()
             network = connection.execute(
                 "SELECT n.local_endpoint, n.remote_endpoint, n.status, n.family, n.socket_type "
@@ -792,13 +834,16 @@ class SystemSenseStore:
                 "ORDER BY MAX(s.captured_at) DESC LIMIT 100",
                 (wid, int(pid)),
             ).fetchall()
+
         if row is None:
             return {
                 "available": False,
-                "reason": "pid_not_observed_in_watch",
+                "reason": "process_instance_not_observed_in_watch",
                 "watch_id": wid,
                 "pid": int(pid),
+                "requested_started_at_epoch": started_at_epoch,
             }
+
         output = dict(row)
         output["available"] = True
         output["watch_id"] = wid
@@ -2164,8 +2209,13 @@ class SystemSense:
         *,
         pid: int,
         watch_id: int | None = None,
+        started_at_epoch: float | None = None,
     ) -> dict[str, Any]:
-        return self.store.watch_process_identity(pid=pid, watch_id=watch_id)
+        return self.store.watch_process_identity(
+            pid=pid,
+            watch_id=watch_id,
+            started_at_epoch=started_at_epoch,
+        )
 
     # Compatibility names retained for callers/tests from the first RAM-watch
     # implementation. RAM is now one SystemSense watch profile, not a separate
@@ -2186,8 +2236,13 @@ class SystemSense:
         *,
         pid: int,
         watch_id: int | None = None,
+        started_at_epoch: float | None = None,
     ) -> dict[str, Any]:
-        return self.watch_process_identity(pid=pid, watch_id=watch_id)
+        return self.watch_process_identity(
+            pid=pid,
+            watch_id=watch_id,
+            started_at_epoch=started_at_epoch,
+        )
 
     def memory_watch_report(self, *, watch_id: int | None = None) -> dict[str, Any]:
         return self.watch_report(watch_id=watch_id, profile=None if watch_id else "memory")

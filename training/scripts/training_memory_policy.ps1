@@ -38,9 +38,13 @@ function Get-TrainingMemoryDecision {
             throw 'Invalid memory sample.'
         }
     }
-    if ($AvailableGiB -lt 0 -or $CommitHeadroomGiB -lt 0 -or $ElapsedSeconds -lt 0) {
+    if ($AvailableGiB -lt 0 -or $ElapsedSeconds -lt 0) {
         throw 'Invalid memory sample.'
     }
+    # A racing Windows counter sample can briefly report committed bytes above
+    # the sampled commit limit. Treat negative headroom as exhausted headroom,
+    # not as a monitor failure.
+    $EffectiveCommitHeadroomGiB = [math]::Max(0.0, $CommitHeadroomGiB)
     if ($History.ContainsKey('last_elapsed') -and $ElapsedSeconds -lt $History.last_elapsed) {
         throw 'Memory sample clock moved backwards.'
     }
@@ -48,7 +52,7 @@ function Get-TrainingMemoryDecision {
 
     foreach ($entry in @(
         @{ key = 'ram_since'; low = ($AvailableGiB -lt $Policy.protective_ram_gib) },
-        @{ key = 'commit_since'; low = ($CommitHeadroomGiB -lt $Policy.protective_commit_gib) }
+        @{ key = 'commit_since'; low = ($EffectiveCommitHeadroomGiB -lt $Policy.protective_commit_gib) }
     )) {
         if (-not $entry.low) { $History.Remove($entry.key) }
         elseif (-not $History.ContainsKey($entry.key)) { $History[$entry.key] = $ElapsedSeconds }
@@ -63,7 +67,7 @@ function Get-TrainingMemoryDecision {
 
     $pressureReason = $null
     $severity = 'normal'
-    if ($CommitHeadroomGiB -lt $Policy.critical_commit_gib) {
+    if ($EffectiveCommitHeadroomGiB -lt $Policy.critical_commit_gib) {
         $pressureReason = 'critical_commit'
         $severity = 'critical'
     }
@@ -81,7 +85,7 @@ function Get-TrainingMemoryDecision {
     }
     elseif (
         $AvailableGiB -lt $Policy.warning_gib -or
-        $CommitHeadroomGiB -lt $Policy.warning_gib
+        $EffectiveCommitHeadroomGiB -lt $Policy.warning_gib
     ) {
         $pressureReason = 'low_headroom_warning'
         $severity = 'warning'

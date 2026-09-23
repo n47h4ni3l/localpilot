@@ -1689,13 +1689,18 @@ class SystemSense:
             },
         }
         self.store.replace_latest_snapshot("systemsense_self", payload)
+        self_rows = [
+            ("systemsense.cpu_percent", _finite(cpu_percent), "%", "systemsense_self"),
+            ("systemsense.rss_mb", _finite(rss_mb), "MiB", "systemsense_self"),
+            ("systemsense.cycle_ms", _finite(payload["cycle_ms"]), "ms", "systemsense_self"),
+            ("systemsense.database_mb", _finite(database_mb), "MiB", "systemsense_self"),
+        ]
         self.store.save_metrics(
             payload["captured_at"],
             [
-                ("systemsense.cpu_percent", _finite(cpu_percent), "%", "systemsense_self"),
-                ("systemsense.rss_mb", _finite(rss_mb), "MiB", "systemsense_self"),
-                ("systemsense.cycle_ms", _finite(payload["cycle_ms"]), "ms", "systemsense_self"),
-                ("systemsense.database_mb", _finite(database_mb), "MiB", "systemsense_self"),
+                (key, value, unit, source)
+                for key, value, unit, source in self_rows
+                if value is not None
             ],
         )
         self._last_self_observation = now

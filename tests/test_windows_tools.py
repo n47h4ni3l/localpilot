@@ -165,37 +165,33 @@ def test_windows_powershell_tools_delegate_to_read_only_queries(monkeypatch):
 
 
 
-def test_inspect_executable_metadata_reads_version_signature_and_hash(monkeypatch):
-    monkeypatch.setattr(windows.os, "name", "nt")
-    scripts = []
+def test_inspect_executable_metadata_delegates_to_observation_time_fingerprint(monkeypatch):
+    calls = []
 
-    def fake_powershell(script, timeout=20):
-        scripts.append((script, timeout))
-        return json.dumps(
-            {
+    monkeypatch.setattr(
+        windows,
+        "inspect_executable_artifact",
+        lambda path: (
+            calls.append(path)
+            or {
                 "available": True,
-                "path": r"C:\Apps\worker.exe",
+                "path": path,
                 "company_name": "Example Corp",
                 "product_name": "Example Worker",
-                "file_description": "Worker",
                 "file_version": "1.2.3",
                 "signature_status": "Valid",
                 "signer_subject": "CN=Example Corp",
                 "sha256": "ABC123",
             }
-        )
-
-    monkeypatch.setattr(windows, "_powershell", fake_powershell)
+        ),
+    )
 
     result = windows.inspect_executable_metadata(r"C:\Apps\worker.exe")
 
-    assert result["available"] is True
+    assert calls == [r"C:\Apps\worker.exe"]
     assert result["company_name"] == "Example Corp"
     assert result["signature_status"] == "Valid"
     assert result["sha256"] == "ABC123"
-    assert "Get-AuthenticodeSignature" in scripts[0][0]
-    assert "Get-FileHash" in scripts[0][0]
-    assert scripts[0][1] == 20
 
 
 def test_inspect_process_identity_returns_runtime_parent_services_and_file_provenance(
@@ -304,3 +300,51 @@ def test_process_command_line_redacts_common_secret_values():
     assert "--api-key=<redacted>" in rendered
     assert "https://user:<redacted>@example.test/path" in rendered
     assert "--mode safe" in rendered
+
+
+
+def test_launch_context_redacts_task_and_startup_secrets(monkeypatch):
+    monkeypatch.setattr(windows.os, "name", "nt")
+    monkeypatch.setattr(
+        windows,
+        "_powershell",
+        lambda script, timeout=30: json.dumps(
+            {
+                "available": True,
+                "services": [
+                    {
+                        "Name": "Worker",
+                        "PathName": r"C:\Apps\worker.exe --token service-secret",
+                    }
+                ],
+                "startup_items": [
+                    {
+                        "Name": "Worker",
+                        "Command": r"C:\Apps\worker.exe --api-key=startup-secret",
+                    }
+                ],
+                "scheduled_tasks": [
+                    {
+                        "TaskName": "Worker",
+                        "Execute": r"C:\Apps\worker.exe",
+                        "Arguments": "--password task-secret --mode safe",
+                    }
+                ],
+                "recent_application_events": [],
+            }
+        ),
+    )
+
+    payload = json.loads(
+        windows.inspect_process_launch_context(
+            r"C:\Apps\worker.exe",
+            process_name="worker.exe",
+            pid=42,
+        )
+    )
+
+    rendered = json.dumps(payload)
+    assert "service-secret" not in rendered
+    assert "startup-secret" not in rendered
+    assert "task-secret" not in rendered
+    assert "<redacted>" in rendered

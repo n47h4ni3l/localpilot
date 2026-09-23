@@ -91,3 +91,24 @@ def is_memory_watch_report_request(prompt: str) -> bool:
     if not text or not _MEMORY_TERMS.search(text):
         return False
     return bool(_WATCH_TERMS.search(text) and _REPORT_TERMS.search(text))
+
+
+
+def is_memory_watch_process_investigation_request(prompt: str) -> bool:
+    """Recognize requests to identify/research a process seen by the RAM watch."""
+    text = " ".join(str(prompt or "").strip().split())
+    if not text or not _MEMORY_TERMS.search(text):
+        return False
+    investigation = re.search(
+        r"\b(?:investigate|research|identify|determine|figure out|look into|"
+        r"what is|what's|what does|why is|why does)\b",
+        text,
+        re.IGNORECASE,
+    )
+    process_subject = re.search(
+        r"(?:\bprocess(?:es)?\b|\bpid\b|\bconsumer(?:s)?\b|\bculprit(?:s)?\b|"
+        r"\b[a-z0-9_.-]+\.exe\b)",
+        text,
+        re.IGNORECASE,
+    )
+    return bool(investigation and process_subject)

@@ -170,10 +170,11 @@ def test_systemsense_memory_watch_persists_process_ram_history(tmp_path, monkeyp
     expiry = datetime.now(timezone.utc) + timedelta(hours=2)
     watch = sense.start_memory_watch(expires_at=expiry, label="2 hours")
 
-    monotonic_values = iter([100.0, 116.0])
-    monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: next(monotonic_values))
+    monotonic_clock = [100.0]
+    monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: monotonic_clock[0])
 
     sense.collect_dynamic()
+    monotonic_clock[0] = 116.0
     sense.collect_dynamic()
 
     report = sense.memory_watch_report()

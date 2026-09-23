@@ -129,6 +129,35 @@ class SystemSenseStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_inference_time
                     ON inference_metrics(captured_at DESC);
+                CREATE TABLE IF NOT EXISTS memory_watches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    label TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_watches_status_time
+                    ON memory_watches(status, created_at DESC);
+                CREATE TABLE IF NOT EXISTS memory_watch_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    watch_id INTEGER NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    system_memory_percent REAL NOT NULL,
+                    system_available_gb REAL,
+                    FOREIGN KEY(watch_id) REFERENCES memory_watches(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_watch_samples_watch_time
+                    ON memory_watch_samples(watch_id, captured_at DESC);
+                CREATE TABLE IF NOT EXISTS memory_watch_process_samples (
+                    sample_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    ram_mb REAL NOT NULL,
+                    cpu_percent REAL NOT NULL,
+                    FOREIGN KEY(sample_id) REFERENCES memory_watch_samples(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_watch_process_name
+                    ON memory_watch_process_samples(name, ram_mb DESC);
                 """
             )
 
@@ -223,6 +252,235 @@ class SystemSenseStore:
             ).fetchall()
         return [float(row["value"]) for row in rows]
 
+    def start_memory_watch(self, *, expires_at: str, label: str) -> dict[str, Any]:
+        created_at = utc_timestamp()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE memory_watches SET status='replaced' WHERE status='active'"
+            )
+            cursor = connection.execute(
+                "INSERT INTO memory_watches(created_at, expires_at, status, label) "
+                "VALUES (?, ?, 'active', ?)",
+                (created_at, expires_at, str(label)[:80]),
+            )
+            watch_id = int(cursor.lastrowid)
+        return {
+            "watch_id": watch_id,
+            "created_at": created_at,
+            "expires_at": expires_at,
+            "status": "active",
+            "label": str(label)[:80],
+        }
+
+    def active_memory_watch(self, *, now: str | None = None) -> dict[str, Any] | None:
+        current = now or utc_timestamp()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE memory_watches SET status='completed' "
+                "WHERE status='active' AND expires_at<=?",
+                (current,),
+            )
+            row = connection.execute(
+                "SELECT id, created_at, expires_at, status, label "
+                "FROM memory_watches WHERE status='active' "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["watch_id"] = int(result.pop("id"))
+        return result
+
+    def stop_memory_watch(self) -> dict[str, Any] | None:
+        watch = self.active_memory_watch()
+        if watch is None:
+            return None
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE memory_watches SET status='stopped' WHERE id=?",
+                (int(watch["watch_id"]),),
+            )
+        watch["status"] = "stopped"
+        return watch
+
+    def save_memory_watch_sample(
+        self,
+        *,
+        watch_id: int,
+        captured_at: str,
+        system_memory_percent: float,
+        system_available_gb: float | None,
+        processes: list[dict[str, Any]],
+    ) -> int:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO memory_watch_samples("
+                "watch_id, captured_at, system_memory_percent, system_available_gb"
+                ") VALUES (?, ?, ?, ?)",
+                (
+                    int(watch_id),
+                    captured_at,
+                    float(system_memory_percent),
+                    system_available_gb,
+                ),
+            )
+            sample_id = int(cursor.lastrowid)
+            rows = []
+            for process in processes:
+                try:
+                    rows.append(
+                        (
+                            sample_id,
+                            int(process.get("pid") or 0),
+                            str(process.get("name") or "unknown")[:200],
+                            float(process.get("ram_mb") or 0.0),
+                            float(process.get("cpu_percent") or 0.0),
+                        )
+                    )
+                except (TypeError, ValueError):
+                    continue
+            if rows:
+                connection.executemany(
+                    "INSERT INTO memory_watch_process_samples("
+                    "sample_id, pid, name, ram_mb, cpu_percent"
+                    ") VALUES (?, ?, ?, ?, ?)",
+                    rows,
+                )
+        return sample_id
+
+    def memory_watch_report(self, *, watch_id: int | None = None) -> dict[str, Any]:
+        now = utc_timestamp()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE memory_watches SET status='completed' "
+                "WHERE status='active' AND expires_at<=?",
+                (now,),
+            )
+            if watch_id is None:
+                watch = connection.execute(
+                    "SELECT id, created_at, expires_at, status, label "
+                    "FROM memory_watches ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+            else:
+                watch = connection.execute(
+                    "SELECT id, created_at, expires_at, status, label "
+                    "FROM memory_watches WHERE id=?",
+                    (int(watch_id),),
+                ).fetchone()
+            if watch is None:
+                return {"available": False, "reason": "no_memory_watch"}
+
+            wid = int(watch["id"])
+            stats = connection.execute(
+                "SELECT COUNT(*) AS samples, "
+                "AVG(system_memory_percent) AS avg_memory_percent, "
+                "MAX(system_memory_percent) AS peak_memory_percent, "
+                "MIN(system_available_gb) AS minimum_available_gb, "
+                "MIN(captured_at) AS first_sample_at, "
+                "MAX(captured_at) AS last_sample_at "
+                "FROM memory_watch_samples WHERE watch_id=?",
+                (wid,),
+            ).fetchone()
+            peak = connection.execute(
+                "SELECT captured_at, system_memory_percent, system_available_gb "
+                "FROM memory_watch_samples WHERE watch_id=? "
+                "ORDER BY system_memory_percent DESC, captured_at DESC LIMIT 1",
+                (wid,),
+            ).fetchone()
+            processes = connection.execute(
+                "SELECT p.name, COUNT(*) AS observations, "
+                "MAX(p.ram_mb) AS peak_ram_mb, AVG(p.ram_mb) AS average_observed_ram_mb, "
+                "MAX(p.cpu_percent) AS peak_cpu_percent "
+                "FROM memory_watch_process_samples p "
+                "JOIN memory_watch_samples s ON s.id=p.sample_id "
+                "WHERE s.watch_id=? GROUP BY p.name "
+                "ORDER BY peak_ram_mb DESC LIMIT 12",
+                (wid,),
+            ).fetchall()
+
+        return {
+            "available": True,
+            "watch": {
+                "watch_id": wid,
+                "created_at": watch["created_at"],
+                "expires_at": watch["expires_at"],
+                "status": watch["status"],
+                "label": watch["label"],
+            },
+            "samples": int(stats["samples"] or 0),
+            "first_sample_at": stats["first_sample_at"],
+            "last_sample_at": stats["last_sample_at"],
+            "average_system_memory_percent": (
+                round(float(stats["avg_memory_percent"]), 2)
+                if stats["avg_memory_percent"] is not None
+                else None
+            ),
+            "peak_system_memory_percent": (
+                round(float(stats["peak_memory_percent"]), 2)
+                if stats["peak_memory_percent"] is not None
+                else None
+            ),
+            "minimum_available_gb": (
+                round(float(stats["minimum_available_gb"]), 2)
+                if stats["minimum_available_gb"] is not None
+                else None
+            ),
+            "peak_system_sample": dict(peak) if peak is not None else None,
+            "top_memory_consumers": [
+                {
+                    "name": row["name"],
+                    "observations": int(row["observations"]),
+                    "peak_ram_mb": round(float(row["peak_ram_mb"]), 2),
+                    "average_observed_ram_mb": round(
+                        float(row["average_observed_ram_mb"]), 2
+                    ),
+                    "peak_cpu_percent": round(float(row["peak_cpu_percent"]), 2),
+                }
+                for row in processes
+            ],
+            "note": (
+                "Process rows are the independently ranked top RAM consumers at each "
+                "watch sample. Absence from a sample means the process was outside that "
+                "bounded top-memory set, not necessarily that it was not running."
+            ),
+        }
+
+    def prune_memory_watch(self, *, before: str) -> None:
+        with self._lock, self._connect() as connection:
+            old_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM memory_watches "
+                    "WHERE created_at<? AND status!='active'",
+                    (before,),
+                ).fetchall()
+            ]
+            if not old_ids:
+                return
+            placeholders = ",".join("?" for _ in old_ids)
+            sample_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    f"SELECT id FROM memory_watch_samples WHERE watch_id IN ({placeholders})",
+                    old_ids,
+                ).fetchall()
+            ]
+            if sample_ids:
+                sample_placeholders = ",".join("?" for _ in sample_ids)
+                connection.execute(
+                    f"DELETE FROM memory_watch_process_samples "
+                    f"WHERE sample_id IN ({sample_placeholders})",
+                    sample_ids,
+                )
+            connection.execute(
+                f"DELETE FROM memory_watch_samples WHERE watch_id IN ({placeholders})",
+                old_ids,
+            )
+            connection.execute(
+                f"DELETE FROM memory_watches WHERE id IN ({placeholders})",
+                old_ids,
+            )
+
     def save_inference(self, payload: dict[str, Any]) -> None:
         with self._lock, self._connect() as connection:
             connection.execute(
@@ -303,6 +561,7 @@ class SystemSense:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_prune = 0.0
+        self._last_memory_watch_sample = 0.0
         self._runtime_evidence = (
             RuntimeEvidence(
                 project_root,
@@ -374,6 +633,10 @@ class SystemSense:
             if time.monotonic() - self._last_prune >= 3600:
                 before = (_utc_now() - timedelta(days=self.config.retention_days)).isoformat()
                 self.store.prune(before=before)
+                memory_before = (
+                    _utc_now() - timedelta(days=self.config.memory_watch_retention_days)
+                ).isoformat()
+                self.store.prune_memory_watch(before=memory_before)
                 self._last_prune = time.monotonic()
             remaining = max(0.1, self.config.sample_interval_seconds - (time.monotonic() - started))
             self._stop.wait(remaining)
@@ -506,6 +769,7 @@ class SystemSense:
             self.store.save_metrics(
                 payload["captured_at"], self._metric_rows(payload)
             )
+            self._record_memory_watch_sample(payload)
             return payload
 
     @staticmethod
@@ -1016,6 +1280,75 @@ class SystemSense:
             "items": rows[:limit],
             "warning": (payload.get("summary") or {}).get("classification_warning"),
         }
+
+    def start_memory_watch(
+        self,
+        *,
+        expires_at: datetime,
+        label: str = "memory watch",
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            raise RuntimeError("SystemSense is disabled.")
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.astimezone()
+        now = datetime.now(UTC)
+        expiry = expires_at.astimezone(UTC)
+        if expiry <= now + timedelta(minutes=1):
+            raise ValueError("Memory watch must run for at least one minute.")
+        if expiry > now + timedelta(hours=24):
+            expiry = now + timedelta(hours=24)
+            label = "24 hours"
+        watch = self.store.start_memory_watch(
+            expires_at=expiry.isoformat(),
+            label=label,
+        )
+        self._last_memory_watch_sample = 0.0
+        watch["sample_interval_seconds"] = self.config.memory_watch_sample_interval_seconds
+        watch["retention_days"] = self.config.memory_watch_retention_days
+        return watch
+
+    def stop_memory_watch(self) -> dict[str, Any]:
+        watch = self.store.stop_memory_watch()
+        return watch or {"status": "inactive", "available": False}
+
+    def memory_watch_report(self, *, watch_id: int | None = None) -> dict[str, Any]:
+        report = self.store.memory_watch_report(watch_id=watch_id)
+        report["sample_interval_seconds"] = self.config.memory_watch_sample_interval_seconds
+        report["retention_days"] = self.config.memory_watch_retention_days
+        return report
+
+    def _record_memory_watch_sample(self, payload: dict[str, Any]) -> None:
+        watch = self.store.active_memory_watch(now=str(payload.get("captured_at") or utc_timestamp()))
+        if watch is None:
+            return
+        now_mono = time.monotonic()
+        if (
+            self._last_memory_watch_sample
+            and now_mono - self._last_memory_watch_sample
+            < self.config.memory_watch_sample_interval_seconds
+        ):
+            return
+        memory_percent = _finite(_path_get(payload, "base.memory.percent"))
+        if memory_percent is None:
+            return
+        available_gb = _finite(_path_get(payload, "base.memory.available_gb"))
+        processes = list(_path_get(payload, "base.top_memory_processes") or [])
+        if not processes:
+            # Compatibility for collector adapters predating the independent
+            # memory ranking; production collectors provide top_memory_processes.
+            processes = sorted(
+                list(_path_get(payload, "base.top_processes") or []),
+                key=lambda row: float(row.get("ram_mb") or 0.0),
+                reverse=True,
+            )
+        self.store.save_memory_watch_sample(
+            watch_id=int(watch["watch_id"]),
+            captured_at=str(payload.get("captured_at") or utc_timestamp()),
+            system_memory_percent=memory_percent,
+            system_available_gb=available_gb,
+            processes=processes[: self.config.max_processes],
+        )
+        self._last_memory_watch_sample = now_mono
 
     def history(self, *, metric: str, hours: float = 1.0, limit: int = 120) -> dict[str, Any]:
         if metric not in self._BASELINE_KEYS and metric not in {

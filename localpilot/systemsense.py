@@ -804,6 +804,8 @@ class SystemSenseStore:
         output["watch_id"] = wid
         output["watch_profile"] = watch["profile"]
         output["observations"] = int(count["count"] or 0)
+        output["peak_ram_mb"] = _finite(output.get("rss_mb"))
+        output["cpu_percent_at_peak"] = _finite(output.get("cpu_percent"))
         try:
             output["ancestry"] = json.loads(output.pop("ancestry_json") or "[]")
         except json.JSONDecodeError:

@@ -1586,7 +1586,7 @@ class SystemSense:
             self.store.save_metrics(
                 payload["captured_at"], self._metric_rows(payload)
             )
-            self._record_memory_watch_sample(payload)
+            self._record_systemsense_watch_samples(payload)
             return payload
 
     @staticmethod
@@ -2098,35 +2098,83 @@ class SystemSense:
             "warning": (payload.get("summary") or {}).get("classification_warning"),
         }
 
+    def start_watch(
+        self,
+        *,
+        profile: str,
+        expires_at: datetime,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        """Start one bounded owner-requested SystemSense watch profile."""
+        if not self.enabled:
+            raise RuntimeError("SystemSense is disabled.")
+        profile = str(profile).strip().casefold()
+        if profile not in {"memory", "cpu", "storage", "network", "gpu", "system"}:
+            raise ValueError("profile must be memory, cpu, storage, network, gpu, or system")
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.astimezone()
+        now = datetime.now(UTC)
+        expiry = expires_at.astimezone(UTC)
+        if expiry <= now + timedelta(minutes=1):
+            raise ValueError("SystemSense watch must run for at least one minute.")
+        if expiry > now + timedelta(hours=24):
+            expiry = now + timedelta(hours=24)
+            label = "24 hours"
+        watch = self.store.start_watch(
+            profile=profile,
+            expires_at=expiry.isoformat(),
+            label=label or f"{profile} watch",
+        )
+        self._last_systemsense_watch_sample = 0.0
+        self._watch_seen_processes[int(watch["watch_id"])] = {}
+        watch["sample_interval_seconds"] = self.config.memory_watch_sample_interval_seconds
+        watch["retention_days"] = self.config.memory_watch_retention_days
+        return watch
+
+    def stop_watch(
+        self,
+        *,
+        watch_id: int | None = None,
+        profile: str | None = None,
+    ) -> dict[str, Any]:
+        watch = self.store.stop_watch(watch_id=watch_id, profile=profile)
+        if watch is None:
+            return {"status": "inactive", "available": False}
+        self._watch_seen_processes.pop(int(watch["watch_id"]), None)
+        return watch
+
+    def watch_report(
+        self,
+        *,
+        watch_id: int | None = None,
+        profile: str | None = None,
+    ) -> dict[str, Any]:
+        report = self.store.watch_report(watch_id=watch_id, profile=profile)
+        report["sample_interval_seconds"] = self.config.memory_watch_sample_interval_seconds
+        report["retention_days"] = self.config.memory_watch_retention_days
+        return report
+
+    def watch_process_identity(
+        self,
+        *,
+        pid: int,
+        watch_id: int | None = None,
+    ) -> dict[str, Any]:
+        return self.store.watch_process_identity(pid=pid, watch_id=watch_id)
+
+    # Compatibility names retained for callers/tests from the first RAM-watch
+    # implementation. RAM is now one SystemSense watch profile, not a separate
+    # subsystem or product name.
     def start_memory_watch(
         self,
         *,
         expires_at: datetime,
         label: str = "memory watch",
     ) -> dict[str, Any]:
-        if not self.enabled:
-            raise RuntimeError("SystemSense is disabled.")
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.astimezone()
-        now = datetime.now(UTC)
-        expiry = expires_at.astimezone(UTC)
-        if expiry <= now + timedelta(minutes=1):
-            raise ValueError("Memory watch must run for at least one minute.")
-        if expiry > now + timedelta(hours=24):
-            expiry = now + timedelta(hours=24)
-            label = "24 hours"
-        watch = self.store.start_memory_watch(
-            expires_at=expiry.isoformat(),
-            label=label,
-        )
-        self._last_memory_watch_sample = 0.0
-        watch["sample_interval_seconds"] = self.config.memory_watch_sample_interval_seconds
-        watch["retention_days"] = self.config.memory_watch_retention_days
-        return watch
+        return self.start_watch(profile="memory", expires_at=expires_at, label=label)
 
     def stop_memory_watch(self) -> dict[str, Any]:
-        watch = self.store.stop_memory_watch()
-        return watch or {"status": "inactive", "available": False}
+        return self.stop_watch(profile="memory")
 
     def memory_watch_process_identity(
         self,
@@ -2134,46 +2182,240 @@ class SystemSense:
         pid: int,
         watch_id: int | None = None,
     ) -> dict[str, Any]:
-        return self.store.memory_watch_process_identity(pid=pid, watch_id=watch_id)
+        return self.watch_process_identity(pid=pid, watch_id=watch_id)
 
     def memory_watch_report(self, *, watch_id: int | None = None) -> dict[str, Any]:
-        report = self.store.memory_watch_report(watch_id=watch_id)
-        report["sample_interval_seconds"] = self.config.memory_watch_sample_interval_seconds
-        report["retention_days"] = self.config.memory_watch_retention_days
-        return report
+        return self.watch_report(watch_id=watch_id, profile=None if watch_id else "memory")
 
-    def _record_memory_watch_sample(self, payload: dict[str, Any]) -> None:
-        watch = self.store.active_memory_watch(now=str(payload.get("captured_at") or utc_timestamp()))
-        if watch is None:
+    def _artifact_id_for_process(self, process: dict[str, Any]) -> int | None:
+        path = str(process.get("executable") or "").strip()
+        if not path:
+            return None
+        try:
+            stat = Path(path).stat()
+        except OSError:
+            return None
+        key = (str(Path(path).resolve()), int(stat.st_size), int(stat.st_mtime_ns))
+        if key in self._artifact_cache:
+            return self._artifact_cache[key]
+        artifact = inspect_executable_artifact(path)
+        artifact_id = self.store.upsert_executable_artifact(artifact)
+        self._artifact_cache[key] = artifact_id
+        if len(self._artifact_cache) > 512:
+            self._artifact_cache = dict(list(self._artifact_cache.items())[-256:])
+        return artifact_id
+
+    @staticmethod
+    def _rank_connection_pids(connections: list[dict[str, Any]], limit: int) -> list[int]:
+        counts: dict[int, int] = {}
+        for row in connections:
+            pid = int(row.get("pid") or 0)
+            if pid > 0:
+                counts[pid] = counts.get(pid, 0) + 1
+        return [
+            pid
+            for pid, _count in sorted(
+                counts.items(), key=lambda item: (item[1], item[0]), reverse=True
+            )[:limit]
+        ]
+
+    def _watch_candidate_pids(
+        self,
+        payload: dict[str, Any],
+        profile: str,
+        *,
+        all_connections: list[dict[str, Any]],
+        all_gpu: dict[int, dict[str, Any]],
+    ) -> list[int]:
+        base = payload.get("base") or {}
+        memory_rows = list(base.get("top_memory_processes") or [])
+        cpu_rows = list(base.get("top_processes") or [])
+        io_rows = list(base.get("top_io_processes") or [])
+        limit = max(1, int(self.config.max_processes))
+
+        def pids(rows: list[dict[str, Any]]) -> list[int]:
+            return [int(row.get("pid") or 0) for row in rows if int(row.get("pid") or 0) > 0]
+
+        if profile == "memory":
+            candidates = pids(memory_rows)
+        elif profile == "cpu":
+            candidates = pids(cpu_rows)
+        elif profile == "storage":
+            candidates = pids(io_rows)
+        elif profile == "network":
+            candidates = self._rank_connection_pids(all_connections, limit)
+        elif profile == "gpu":
+            candidates = [
+                pid
+                for pid, _values in sorted(
+                    all_gpu.items(),
+                    key=lambda item: (
+                        float(item[1].get("gpu_percent") or 0.0),
+                        float(item[1].get("gpu_committed_mb") or 0.0),
+                    ),
+                    reverse=True,
+                )[:limit]
+            ]
+        else:
+            candidates = (
+                pids(memory_rows)
+                + pids(cpu_rows)
+                + pids(io_rows)
+                + self._rank_connection_pids(all_connections, limit)
+                + list(all_gpu)
+            )
+
+        return list(dict.fromkeys(pid for pid in candidates if pid > 0))[: limit * 2]
+
+    def _record_process_lifecycle(
+        self,
+        *,
+        watch: dict[str, Any],
+        processes: list[dict[str, Any]],
+        captured_at: str,
+    ) -> None:
+        watch_id = int(watch["watch_id"])
+        seen = self._watch_seen_processes.setdefault(watch_id, {})
+        current_keys: set[tuple[int, float]] = set()
+        for process in processes:
+            pid = int(process.get("pid") or 0)
+            started = _finite(process.get("started_at_epoch"))
+            if pid <= 0 or started is None:
+                continue
+            key = (pid, float(started))
+            current_keys.add(key)
+            if key not in seen:
+                seen[key] = {
+                    "pid": pid,
+                    "started_at_epoch": started,
+                    "name": process.get("name"),
+                }
+                self.store.save_watch_lifecycle(
+                    watch_id=watch_id,
+                    pid=pid,
+                    started_at_epoch=started,
+                    event="first_observed",
+                    event_at=captured_at,
+                    name=str(process.get("name") or "unknown"),
+                    parent_pid=int(process.get("parent_pid") or 0) or None,
+                    details={"ancestry": process.get("ancestry") or []},
+                )
+
+        for key, prior in list(seen.items()):
+            if key in current_keys:
+                continue
+            pid, started = key
+            ended = False
+            reason = ""
+            try:
+                live = psutil.Process(pid)
+                current_started = float(live.create_time())
+                if abs(current_started - started) > 2.0:
+                    ended = True
+                    reason = "pid_reused"
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                ended = True
+                reason = "process_exited"
+            except (psutil.AccessDenied, OSError):
+                # Lack of permission is not evidence that the process ended.
+                continue
+            if ended:
+                self.store.save_watch_lifecycle(
+                    watch_id=watch_id,
+                    pid=pid,
+                    started_at_epoch=started,
+                    event=reason,
+                    event_at=captured_at,
+                    name=str(prior.get("name") or "unknown"),
+                    details={},
+                )
+                seen.pop(key, None)
+
+    def _record_systemsense_watch_samples(self, payload: dict[str, Any]) -> None:
+        captured_at = str(payload.get("captured_at") or utc_timestamp())
+        watches = self.store.active_watches(now=captured_at)
+        active_ids = {int(item["watch_id"]) for item in watches}
+        for watch_id in list(self._watch_seen_processes):
+            if watch_id not in active_ids:
+                self._watch_seen_processes.pop(watch_id, None)
+        if not watches:
             return
+
         now_mono = time.monotonic()
         if (
-            self._last_memory_watch_sample
-            and now_mono - self._last_memory_watch_sample
+            self._last_systemsense_watch_sample
+            and now_mono - self._last_systemsense_watch_sample
             < self.config.memory_watch_sample_interval_seconds
         ):
             return
-        memory_percent = _finite(_path_get(payload, "base.memory.percent"))
-        if memory_percent is None:
-            return
-        available_gb = _finite(_path_get(payload, "base.memory.available_gb"))
-        processes = list(_path_get(payload, "base.top_memory_processes") or [])
-        if not processes:
-            # Compatibility for collector adapters predating the independent
-            # memory ranking; production collectors provide top_memory_processes.
-            processes = sorted(
-                list(_path_get(payload, "base.top_processes") or []),
-                key=lambda row: float(row.get("ram_mb") or 0.0),
-                reverse=True,
+
+        try:
+            all_connections = self.psutil.collect_process_connections(None)
+        except (AttributeError, OSError):
+            all_connections = []
+        try:
+            all_gpu = self.performance.collect_process_gpu(None)
+        except (AttributeError, OSError):
+            all_gpu = {}
+
+        system = {
+            "cpu_percent": _path_get(payload, "base.cpu.percent"),
+            "memory_percent": _path_get(payload, "base.memory.percent"),
+            "system_available_gb": _path_get(payload, "base.memory.available_gb"),
+            "storage_read_mb_s": _path_get(payload, "base.storage.io.read_mb_s"),
+            "storage_write_mb_s": _path_get(payload, "base.storage.io.write_mb_s"),
+            "network_send_mbps": _path_get(payload, "base.network.send_mbps"),
+            "network_receive_mbps": _path_get(payload, "base.network.receive_mbps"),
+            "gpu_percent": _path_get(payload, "derived.gpu_utilization_percent"),
+            "vram_used_mb": _path_get(payload, "derived.vram_used_mb"),
+        }
+
+        for watch in watches:
+            profile = str(watch.get("profile") or "system")
+            candidate_pids = self._watch_candidate_pids(
+                payload,
+                profile,
+                all_connections=all_connections,
+                all_gpu=all_gpu,
             )
-        self.store.save_memory_watch_sample(
-            watch_id=int(watch["watch_id"]),
-            captured_at=str(payload.get("captured_at") or utc_timestamp()),
-            system_memory_percent=memory_percent,
-            system_available_gb=available_gb,
-            processes=processes[: self.config.max_processes],
-        )
-        self._last_memory_watch_sample = now_mono
+            try:
+                processes = self.psutil.enrich_processes(candidate_pids)
+            except AttributeError:
+                base = payload.get("base") or {}
+                rows = (
+                    list(base.get("top_memory_processes") or [])
+                    + list(base.get("top_processes") or [])
+                    + list(base.get("top_io_processes") or [])
+                )
+                by_pid = {int(row.get("pid") or 0): dict(row) for row in rows}
+                processes = [by_pid[pid] for pid in candidate_pids if pid in by_pid]
+
+            for process in processes:
+                gpu = all_gpu.get(int(process.get("pid") or 0), {})
+                process.update(gpu)
+                process["artifact_id"] = self._artifact_id_for_process(process)
+
+            selected_pids = {int(row.get("pid") or 0) for row in processes}
+            connections = [
+                row for row in all_connections if int(row.get("pid") or 0) in selected_pids
+            ]
+            sample_id = self.store.save_watch_sample(
+                watch_id=int(watch["watch_id"]),
+                captured_at=captured_at,
+                system=system,
+            )
+            self.store.save_watch_process_samples(sample_id=sample_id, processes=processes)
+            self.store.save_watch_network_samples(
+                sample_id=sample_id,
+                connections=connections,
+            )
+            self._record_process_lifecycle(
+                watch=watch,
+                processes=processes,
+                captured_at=captured_at,
+            )
+
+        self._last_systemsense_watch_sample = now_mono
 
     def history(self, *, metric: str, hours: float = 1.0, limit: int = 120) -> dict[str, Any]:
         if metric not in self._BASELINE_KEYS and metric not in {

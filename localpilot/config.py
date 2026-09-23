@@ -507,6 +507,17 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg.systemsense.self_observation_interval_seconds = float(
         cfg.systemsense.self_observation_interval_seconds
     )
+    # Older configs only knew the base cadence. If an owner configured a base
+    # interval slower than the new rich/history defaults, migrate those derived
+    # cadences upward rather than rejecting an otherwise valid old config.
+    cfg.systemsense.rich_sample_interval_seconds = max(
+        cfg.systemsense.sample_interval_seconds,
+        cfg.systemsense.rich_sample_interval_seconds,
+    )
+    cfg.systemsense.metric_persist_interval_seconds = max(
+        cfg.systemsense.sample_interval_seconds,
+        cfg.systemsense.metric_persist_interval_seconds,
+    )
     cfg.systemsense.inventory_interval_seconds = float(
         cfg.systemsense.inventory_interval_seconds
     )

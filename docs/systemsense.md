@@ -117,7 +117,8 @@ another non-obvious Windows path. Every package record reports
 
 ## Query surfaces
 
-All six registered surfaces are `READ_ONLY`, bounded, and expose no raw SQL:
+All SystemSense surfaces are `READ_ONLY`, bounded, and expose no raw SQL.
+Core passive-state tools include:
 
 - `get_system_sense_summary()`
 - `inspect_hardware_inventory(section, limit)`
@@ -126,8 +127,18 @@ All six registered surfaces are `READ_ONLY`, bounded, and expose no raw SQL:
 - `get_workload_correlations(limit)`
 - `inspect_raw_system_sense(category, limit)`
 
-The intended flow is summary first, one narrow inventory/history query second,
-and raw telemetry only when needed to resolve a specific question.
+Owner-requested historical watches add:
+
+- `get_systemsense_watch_report(watch_id, profile)`
+- `inspect_systemsense_watch_process(pid, watch_id, started_at_epoch)`
+
+The legacy RAM-watch tool names remain compatibility aliases, and the separate
+current-PID inspector can be used when the question is about a process running
+now rather than a historical watch instance.
+
+The intended flow is summary first, then the narrowest history/watch/process
+evidence that can answer the question. Expensive process identity, network and
+GPU attribution are not part of every passive sample.
 
 The expanded desktop chat also has a SystemSense quick-glance panel. Its header
 indicator refreshes at a low background cadence; opening the panel shows the

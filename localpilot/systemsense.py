@@ -539,6 +539,8 @@ class SystemSenseStore:
         row["observations"] = int(observations["count"] or 0)
         row["watch_id"] = wid
         row["available"] = True
+        row["peak_ram_mb"] = round(float(row.pop("ram_mb")), 2)
+        row["cpu_percent_at_peak"] = round(float(row.pop("cpu_percent")), 2)
         row["executable"] = row.get("executable") or None
         row["command_line"] = row.get("command_line") or None
         row["parent_pid"] = int(row.get("parent_pid") or 0) or None

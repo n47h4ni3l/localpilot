@@ -1403,6 +1403,13 @@ class SystemSenseStore:
 class SystemSense:
     """Always-available environmental state engine beneath the LLM."""
 
+    _SELF_HISTORY_KEYS = (
+        "systemsense.cpu_percent",
+        "systemsense.rss_mb",
+        "systemsense.cycle_ms",
+        "systemsense.database_mb",
+    )
+
     _BASELINE_KEYS = (
         "cpu.percent",
         "cpu.frequency_mhz",
@@ -1444,6 +1451,17 @@ class SystemSense:
         self._last_prune = 0.0
         self._last_memory_watch_sample = 0.0
         self._last_systemsense_watch_sample = 0.0
+        self._last_rich_sample = 0.0
+        self._last_metric_persist = 0.0
+        self._last_self_observation = 0.0
+        self._cached_performance: dict[str, Any] | None = None
+        self._cached_raw_sensors: dict[str, Any] | None = None
+        self._cached_self_observation: dict[str, Any] = {}
+        try:
+            self._self_process: psutil.Process | None = psutil.Process(os.getpid())
+            self._self_process.cpu_percent(None)
+        except psutil.Error:
+            self._self_process = None
         self._watch_seen_processes: dict[
             int, dict[tuple[int, float], dict[str, Any]]
         ] = {}
@@ -1616,13 +1634,121 @@ class SystemSense:
                 rows.append((key, value, unit, source))
         return rows
 
+    def _systemsense_self_observation(
+        self,
+        *,
+        cycle_started: float,
+        rich_refreshed: bool,
+        metrics_persisted: bool,
+        watch_profiles: list[str],
+        snapshot_write_ms: float,
+    ) -> dict[str, Any]:
+        now = time.monotonic()
+        if (
+            self._last_self_observation
+            and now - self._last_self_observation
+            < self.config.self_observation_interval_seconds
+        ):
+            return dict(self._cached_self_observation)
+        try:
+            process = self._self_process or psutil.Process(os.getpid())
+            with process.oneshot():
+                rss_mb = round(process.memory_info().rss / 1024**2, 2)
+                cpu_percent = round(float(process.cpu_percent(None) or 0.0), 2)
+                threads = int(process.num_threads() or 0)
+        except (psutil.Error, OSError):
+            rss_mb = None
+            cpu_percent = None
+            threads = None
+        try:
+            database_mb = round(self.store.path.stat().st_size / 1024**2, 2)
+        except OSError:
+            database_mb = None
+        payload = {
+            "captured_at": utc_timestamp(),
+            "pid": os.getpid(),
+            "scope": "runtime_process_including_systemsense",
+            "measurement_note": (
+                "RSS/CPU/thread values describe the shared LocalPilot runtime process; "
+                "cycle/write timings describe SystemSense collection work specifically."
+            ),
+            "rss_mb": rss_mb,
+            "cpu_percent": cpu_percent,
+            "threads": threads,
+            "database_mb": database_mb,
+            "cycle_ms": round((time.monotonic() - cycle_started) * 1000.0, 2),
+            "snapshot_write_ms": round(float(snapshot_write_ms), 2),
+            "rich_refreshed": bool(rich_refreshed),
+            "metrics_persisted": bool(metrics_persisted),
+            "active_watch_profiles": list(watch_profiles),
+            "cadence_seconds": {
+                "base": self.config.sample_interval_seconds,
+                "rich": self.config.rich_sample_interval_seconds,
+                "metrics": self.config.metric_persist_interval_seconds,
+                "watch": self.config.memory_watch_sample_interval_seconds,
+            },
+        }
+        self.store.replace_latest_snapshot("systemsense_self", payload)
+        self_rows = [
+            ("systemsense.cpu_percent", _finite(cpu_percent), "%", "systemsense_self"),
+            ("systemsense.rss_mb", _finite(rss_mb), "MiB", "systemsense_self"),
+            ("systemsense.cycle_ms", _finite(payload["cycle_ms"]), "ms", "systemsense_self"),
+            ("systemsense.database_mb", _finite(database_mb), "MiB", "systemsense_self"),
+        ]
+        self.store.save_metrics(
+            payload["captured_at"],
+            [
+                (key, value, unit, source)
+                for key, value, unit, source in self_rows
+                if value is not None
+            ],
+        )
+        self._last_self_observation = now
+        self._cached_self_observation = dict(payload)
+        return payload
+
     def collect_dynamic(self) -> dict[str, Any]:
         if not self.enabled:
             return {"enabled": False, "captured_at": utc_timestamp()}
         with self._collect_lock:
-            base = self.psutil.collect()
-            performance = self.performance.collect()
-            raw_sensors = self.sensors.collect()
+            cycle_started = time.monotonic()
+            watches = self.store.active_watches()
+            watch_profiles = {
+                str(item.get("profile") or "system").casefold()
+                for item in watches
+            }
+            watch_sample_due = bool(
+                watches
+                and (
+                    not self._last_systemsense_watch_sample
+                    or cycle_started - self._last_systemsense_watch_sample
+                    >= self.config.memory_watch_sample_interval_seconds
+                )
+            )
+            include_process_io = bool(
+                watch_sample_due and watch_profiles & {"storage", "system"}
+            )
+            if isinstance(self.psutil, PsutilTelemetryCollector):
+                base = self.psutil.collect(include_process_io=include_process_io)
+            else:
+                # Test/custom adapters keep the intentionally small no-arg
+                # collector surface; do not mask a real TypeError raised by the
+                # production psutil collector.
+                base = self.psutil.collect()
+            now = time.monotonic()
+            rich_refreshed = bool(
+                self._cached_performance is None
+                or self._cached_raw_sensors is None
+                or not self._last_rich_sample
+                or now - self._last_rich_sample
+                >= self.config.rich_sample_interval_seconds
+            )
+            if rich_refreshed:
+                self._cached_performance = self.performance.collect()
+                self._cached_raw_sensors = self.sensors.collect()
+                self._last_rich_sample = now
+            performance = dict(self._cached_performance or {})
+            raw_sensors = dict(self._cached_raw_sensors or {})
             sensors = self._sensor_summary(raw_sensors)
             gpu_perf = _finite(
                 _path_get(performance, "gpu.engine_utilization_percent")
@@ -1653,12 +1779,65 @@ class SystemSense:
                     "max_temperature_c": max(temperatures, default=None),
                     "vram_used_mb": _finite(sensors.get("vram_used_mb")),
                 },
+                "collection": {
+                    "base_sample_interval_seconds": self.config.sample_interval_seconds,
+                    "rich_sample_interval_seconds": self.config.rich_sample_interval_seconds,
+                    "rich_refreshed": rich_refreshed,
+                    "rich_age_seconds": round(max(0.0, now - self._last_rich_sample), 3),
+                },
             }
-            self.store.replace_latest_snapshot("dynamic", payload)
-            self.store.save_metrics(
-                payload["captured_at"], self._metric_rows(payload)
+            metrics_persisted = bool(
+                not self._last_metric_persist
+                or now - self._last_metric_persist
+                >= self.config.metric_persist_interval_seconds
             )
-            self._record_systemsense_watch_samples(payload)
+            metric_write_ms = 0.0
+            if metrics_persisted:
+                metric_started = time.monotonic()
+                self.store.save_metrics(
+                    payload["captured_at"], self._metric_rows(payload)
+                )
+                metric_write_ms = round(
+                    (time.monotonic() - metric_started) * 1000.0, 2
+                )
+                self._last_metric_persist = now
+
+            # Re-use the active watch set resolved before passive process
+            # collection so storage/system watches can opt into process I/O
+            # without another database round trip.
+            watch_profiles = sorted(watch_profiles)
+            watch_started = time.monotonic()
+            self._record_systemsense_watch_samples(payload, watches=watches)
+            watch_ms = round((time.monotonic() - watch_started) * 1000.0, 2)
+
+            payload["collection"].update(
+                metric_write_ms=metric_write_ms,
+                watch_ms=watch_ms,
+                metrics_persisted=metrics_persisted,
+                active_watch_profiles=watch_profiles,
+            )
+            # Embed the previous bounded self-observation in the fast snapshot.
+            # The separately stored systemsense_self snapshot below is the
+            # authoritative latest overhead record.
+            if self._cached_self_observation:
+                payload["systemsense_self"] = dict(self._cached_self_observation)
+
+            snapshot_started = time.monotonic()
+            self.store.replace_latest_snapshot("dynamic", payload)
+            snapshot_write_ms = round(
+                (time.monotonic() - snapshot_started) * 1000.0, 2
+            )
+            payload["collection"].update(
+                snapshot_write_ms=snapshot_write_ms,
+                cycle_ms=round((time.monotonic() - cycle_started) * 1000.0, 2),
+            )
+            self._systemsense_self_observation(
+                cycle_started=cycle_started,
+                rich_refreshed=rich_refreshed,
+                metrics_persisted=metrics_persisted,
+                watch_profiles=watch_profiles,
+                snapshot_write_ms=snapshot_write_ms,
+            )
             return payload
 
     @staticmethod
@@ -1884,6 +2063,7 @@ class SystemSense:
                 "anomalies": [],
                 "probable_causes": [],
                 "background_resource_contention": [],
+                "systemsense_overhead": self.store.latest_snapshot("systemsense_self"),
                 "runtime": runtime,
             }
         metrics = {key: value for key, value, _unit, _source in self._metric_rows(dynamic)}
@@ -1978,6 +2158,10 @@ class SystemSense:
             "background_resource_contention": top_processes,
             "sensor_source": _path_get(dynamic, "sensors.source"),
             "sensor_source_available": bool(_path_get(dynamic, "sensors.available")),
+            "systemsense_overhead": (
+                dynamic.get("systemsense_self")
+                or self.store.latest_snapshot("systemsense_self")
+            ),
             "runtime": runtime,
         }
 
@@ -2413,9 +2597,18 @@ class SystemSense:
                 )
                 seen.pop(key, None)
 
-    def _record_systemsense_watch_samples(self, payload: dict[str, Any]) -> None:
+    def _record_systemsense_watch_samples(
+        self,
+        payload: dict[str, Any],
+        *,
+        watches: list[dict[str, Any]] | None = None,
+    ) -> None:
         captured_at = str(payload.get("captured_at") or utc_timestamp())
-        watches = self.store.active_watches(now=captured_at)
+        watches = (
+            list(watches)
+            if watches is not None
+            else self.store.active_watches(now=captured_at)
+        )
         active_ids = {int(item["watch_id"]) for item in watches}
         for watch_id in list(self._watch_seen_processes):
             if watch_id not in active_ids:
@@ -2431,13 +2624,24 @@ class SystemSense:
         ):
             return
 
-        try:
-            all_connections = self.psutil.collect_process_connections(None)
-        except (AttributeError, OSError):
+        profiles = {
+            str(item.get("profile") or "system").casefold() for item in watches
+        }
+        need_network_discovery = bool(profiles & {"network", "system"})
+        need_gpu_discovery = bool(profiles & {"gpu", "system"})
+        if need_network_discovery:
+            try:
+                all_connections = self.psutil.collect_process_connections(None)
+            except (AttributeError, OSError):
+                all_connections = []
+        else:
             all_connections = []
-        try:
-            all_gpu = self.performance.collect_process_gpu(None)
-        except (AttributeError, OSError):
+        if need_gpu_discovery:
+            try:
+                all_gpu = self.performance.collect_process_gpu(None)
+            except (AttributeError, OSError):
+                all_gpu = {}
+        else:
             all_gpu = {}
 
         system = {
@@ -2472,15 +2676,27 @@ class SystemSense:
                 by_pid = {int(row.get("pid") or 0): dict(row) for row in rows}
                 processes = [by_pid[pid] for pid in candidate_pids if pid in by_pid]
 
+            selected_pids = {int(row.get("pid") or 0) for row in processes}
+            if profile in {"gpu", "system"}:
+                bounded_gpu = all_gpu
+            else:
+                # Memory/CPU/storage watches should not pay for GPU Performance
+                # Counter enumeration. A later whole-system/GPU watch can add
+                # that evidence explicitly.
+                bounded_gpu = {}
             for process in processes:
-                gpu = all_gpu.get(int(process.get("pid") or 0), {})
+                gpu = bounded_gpu.get(int(process.get("pid") or 0), {})
                 process.update(gpu)
                 process["artifact_id"] = self._artifact_id_for_process(process)
 
-            selected_pids = {int(row.get("pid") or 0) for row in processes}
-            connections = [
-                row for row in all_connections if int(row.get("pid") or 0) in selected_pids
-            ]
+            if profile in {"network", "system"}:
+                connections = [
+                    row
+                    for row in all_connections
+                    if int(row.get("pid") or 0) in selected_pids
+                ]
+            else:
+                connections = []
             sample_id = self.store.save_watch_sample(
                 watch_id=int(watch["watch_id"]),
                 captured_at=captured_at,
@@ -2500,7 +2716,7 @@ class SystemSense:
         self._last_systemsense_watch_sample = now_mono
 
     def history(self, *, metric: str, hours: float = 1.0, limit: int = 120) -> dict[str, Any]:
-        if metric not in self._BASELINE_KEYS and metric not in {
+        if metric not in self._BASELINE_KEYS and metric not in self._SELF_HISTORY_KEYS and metric not in {
             "processor.performance_limit_percent",
             "processor.performance_percent",
         }:

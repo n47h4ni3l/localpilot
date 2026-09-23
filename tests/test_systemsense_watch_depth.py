@@ -232,8 +232,8 @@ def test_systemsense_watch_correlates_richer_process_gpu_network_lifecycle_and_f
         label="system test",
     )
 
-    monotonic = iter([100.0, 116.0, 132.0])
-    monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: next(monotonic))
+    monotonic_clock = [100.0]
+    monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: monotonic_clock[0])
 
     real_process = psutil.Process
 
@@ -243,8 +243,10 @@ def test_systemsense_watch_correlates_richer_process_gpu_network_lifecycle_and_f
         return real_process(pid)
 
     sense.collect_dynamic()
+    monotonic_clock[0] = 116.0
     sense.collect_dynamic()
     monkeypatch.setattr("localpilot.systemsense.psutil.Process", fake_process)
+    monotonic_clock[0] = 132.0
     sense.collect_dynamic()
 
     report = sense.watch_report(watch_id=watch["watch_id"])
@@ -423,3 +425,106 @@ def test_watch_report_flags_executable_replacement_for_same_process_instance(tmp
     assert row["artifact_versions"] == 2
     assert row["artifact_changed_during_watch"] is True
     assert set(row["artifact_sha256s"]) == {"AAA", "BBB"}
+
+
+
+def test_memory_watch_does_not_pay_for_network_or_gpu_discovery(tmp_path, monkeypatch):
+    executable = tmp_path / "worker.exe"
+    executable.write_bytes(b"worker")
+
+    class TrackingDynamic(WatchDynamicCollector):
+        def __init__(self, path):
+            super().__init__(path)
+            self.connection_calls = 0
+
+        def collect_process_connections(self, pids=None):
+            self.connection_calls += 1
+            return super().collect_process_connections(pids)
+
+    class TrackingPerformance(WatchPerformanceCollector):
+        def __init__(self):
+            self.gpu_calls = 0
+
+        def collect_process_gpu(self, pids=None):
+            self.gpu_calls += 1
+            return super().collect_process_gpu(pids)
+
+    config = SystemSenseConfig()
+    config.memory_watch_sample_interval_seconds = 15.0
+    dynamic = TrackingDynamic(executable)
+    performance = TrackingPerformance()
+    sense = SystemSense(
+        config,
+        tmp_path,
+        psutil_collector=dynamic,
+        performance_collector=performance,
+        sensor_collector=EmptySensors(),
+        inventory_collector=EmptyInventory(),
+    )
+    sense.start_watch(
+        profile="memory",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        label="memory",
+    )
+
+    clock = [100.0]
+    monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(sense, "_artifact_id_for_process", lambda process: None)
+
+    sense.collect_dynamic()
+
+    assert dynamic.connection_calls == 0
+    assert performance.gpu_calls == 0
+
+    report = sense.watch_report(profile="memory")
+    assert report["samples"] == 1
+    assert report["top_memory_consumers"][0]["name"] == "worker.exe"
+
+
+def test_system_watch_pays_for_cross_resource_discovery(tmp_path, monkeypatch):
+    executable = tmp_path / "worker.exe"
+    executable.write_bytes(b"worker")
+
+    class TrackingDynamic(WatchDynamicCollector):
+        def __init__(self, path):
+            super().__init__(path)
+            self.connection_calls = 0
+
+        def collect_process_connections(self, pids=None):
+            self.connection_calls += 1
+            return super().collect_process_connections(pids)
+
+    class TrackingPerformance(WatchPerformanceCollector):
+        def __init__(self):
+            self.gpu_calls = 0
+
+        def collect_process_gpu(self, pids=None):
+            self.gpu_calls += 1
+            return super().collect_process_gpu(pids)
+
+    config = SystemSenseConfig()
+    config.memory_watch_sample_interval_seconds = 15.0
+    dynamic = TrackingDynamic(executable)
+    performance = TrackingPerformance()
+    sense = SystemSense(
+        config,
+        tmp_path,
+        psutil_collector=dynamic,
+        performance_collector=performance,
+        sensor_collector=EmptySensors(),
+        inventory_collector=EmptyInventory(),
+    )
+    sense.start_watch(
+        profile="system",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        label="system",
+    )
+
+    clock = [100.0]
+    monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(sense, "_artifact_id_for_process", lambda process: None)
+
+    sense.collect_dynamic()
+
+    assert dynamic.connection_calls == 1
+    assert performance.gpu_calls == 1

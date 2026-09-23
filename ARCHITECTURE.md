@@ -47,11 +47,21 @@ The replaceable worker is a thin JSONL adapter around `LocalPilotAgent`. It does
 ## Passive SystemSense boundary
 
 The runtime worker owns one daemon sampler shared by all session agents in that
-process. Cheap dynamic counters run on the configured short cadence; slow
-hardware/firmware/PnP/driver inventory runs separately. Native COM/WMI/CIM,
-psutil, a fixed read-only PnPUtil argument vector, and an optional
-LibreHardwareMonitor/OpenHardwareMonitor WMI sensor namespace feed a private
-SQLite store. Collector failure is isolated from the operator lifecycle.
+process. Cheap psutil CPU/RAM/disk/network truth runs on the configured short
+cadence. Heavier Windows WMI GPU/processor/thermal/power and
+LibreHardwareMonitor/OpenHardwareMonitor sensor reads are cached on a slower
+rich-sample cadence, while normalized historical metrics persist less often than
+the latest snapshot. Slow hardware/firmware/PnP/driver inventory runs separately.
+Native COM/WMI/CIM, psutil, a fixed read-only PnPUtil argument vector, and the
+optional sensor namespace feed a private SQLite store. Collector failure is
+isolated from the operator lifecycle. A bounded self-observation snapshot records
+SystemSense's own RSS, CPU, SQLite size and collection/write timings so the
+operator can distinguish machine load from observation overhead.
+
+Owner-requested SystemSense watches are profile-aware: RAM/CPU/storage watches do
+not enumerate all network sockets or GPU process counters, while network, GPU and
+whole-system watches opt into the corresponding expensive attribution paths.
+Whole-system watches are intentionally the most expensive mode.
 
 The LLM normally receives only a transient compact derived state. Six bounded
 `READ_ONLY` tools expose summary, hardware inventory, conservative driver

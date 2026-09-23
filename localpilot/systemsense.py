@@ -1634,6 +1634,7 @@ class SystemSense:
         rich_refreshed: bool,
         metrics_persisted: bool,
         watch_profiles: list[str],
+        snapshot_write_ms: float,
     ) -> dict[str, Any]:
         now = time.monotonic()
         if (
@@ -1664,6 +1665,7 @@ class SystemSense:
             "threads": threads,
             "database_mb": database_mb,
             "cycle_ms": round((time.monotonic() - cycle_started) * 1000.0, 2),
+            "snapshot_write_ms": round(float(snapshot_write_ms), 2),
             "rich_refreshed": bool(rich_refreshed),
             "metrics_persisted": bool(metrics_persisted),
             "active_watch_profiles": list(watch_profiles),
@@ -1748,12 +1750,6 @@ class SystemSense:
                     "rich_age_seconds": round(max(0.0, now - self._last_rich_sample), 3),
                 },
             }
-            snapshot_started = time.monotonic()
-            self.store.replace_latest_snapshot("dynamic", payload)
-            snapshot_write_ms = round(
-                (time.monotonic() - snapshot_started) * 1000.0, 2
-            )
-
             metrics_persisted = bool(
                 not self._last_metric_persist
                 or now - self._last_metric_persist
@@ -1779,21 +1775,33 @@ class SystemSense:
             watch_ms = round((time.monotonic() - watch_started) * 1000.0, 2)
 
             payload["collection"].update(
-                snapshot_write_ms=snapshot_write_ms,
                 metric_write_ms=metric_write_ms,
                 watch_ms=watch_ms,
-                cycle_ms=round((time.monotonic() - cycle_started) * 1000.0, 2),
                 metrics_persisted=metrics_persisted,
                 active_watch_profiles=watch_profiles,
             )
-            payload["systemsense_self"] = self._systemsense_self_observation(
+            # Embed the previous bounded self-observation in the fast snapshot.
+            # The separately stored systemsense_self snapshot below is the
+            # authoritative latest overhead record.
+            if self._cached_self_observation:
+                payload["systemsense_self"] = dict(self._cached_self_observation)
+
+            snapshot_started = time.monotonic()
+            self.store.replace_latest_snapshot("dynamic", payload)
+            snapshot_write_ms = round(
+                (time.monotonic() - snapshot_started) * 1000.0, 2
+            )
+            payload["collection"].update(
+                snapshot_write_ms=snapshot_write_ms,
+                cycle_ms=round((time.monotonic() - cycle_started) * 1000.0, 2),
+            )
+            self._systemsense_self_observation(
                 cycle_started=cycle_started,
                 rich_refreshed=rich_refreshed,
                 metrics_persisted=metrics_persisted,
                 watch_profiles=watch_profiles,
+                snapshot_write_ms=snapshot_write_ms,
             )
-            # Refresh the latest snapshot once with the lightweight timing fields.
-            self.store.replace_latest_snapshot("dynamic", payload)
             return payload
 
     @staticmethod

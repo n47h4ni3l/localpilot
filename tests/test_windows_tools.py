@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import psutil
 
 from localpilot.process import hidden_process_creation_flags
+from localpilot.process_identity import sanitize_command_line
 from localpilot.tools import windows
 
 
@@ -279,3 +280,27 @@ def test_inspect_process_identity_returns_runtime_parent_services_and_file_prove
     assert result["parent"]["name"] == "launcher.exe"
     assert result["executable_metadata"]["company_name"] == "Example Corp"
     assert result["services"][0]["Name"] == "ExampleService"
+
+
+
+def test_process_command_line_redacts_common_secret_values():
+    rendered = sanitize_command_line(
+        [
+            "python.exe",
+            "worker.py",
+            "--token",
+            "super-secret-token",
+            "--api-key=abcdef",
+            "https://user:password@example.test/path",
+            "--mode",
+            "safe",
+        ]
+    )
+
+    assert "super-secret-token" not in rendered
+    assert "abcdef" not in rendered
+    assert "password@example" not in rendered
+    assert "--token <redacted>" in rendered
+    assert "--api-key=<redacted>" in rendered
+    assert "https://user:<redacted>@example.test/path" in rendered
+    assert "--mode safe" in rendered

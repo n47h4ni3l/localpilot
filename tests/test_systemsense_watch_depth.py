@@ -367,3 +367,59 @@ def test_watch_process_identity_refuses_ambiguous_recycled_pid(tmp_path):
     assert selected["available"] is True
     assert selected["name"] == "old.exe"
     assert selected["started_at_epoch"] == 1000.0
+
+
+
+def test_watch_report_flags_executable_replacement_for_same_process_instance(tmp_path):
+    store = SystemSenseStore(tmp_path / "artifact-change.db")
+    watch = store.start_watch(
+        profile="system",
+        expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        label="artifact change",
+    )
+    first_artifact = store.upsert_executable_artifact(
+        {
+            "available": True,
+            "path": r"C:\Apps\worker.exe",
+            "size_bytes": 100,
+            "modified_ns": 1,
+            "sha256": "AAA",
+            "signature_status": "Valid",
+        }
+    )
+    second_artifact = store.upsert_executable_artifact(
+        {
+            "available": True,
+            "path": r"C:\Apps\worker.exe",
+            "size_bytes": 101,
+            "modified_ns": 2,
+            "sha256": "BBB",
+            "signature_status": "Valid",
+        }
+    )
+    for index, artifact_id in enumerate((first_artifact, second_artifact), start=1):
+        sample_id = store.save_watch_sample(
+            watch_id=watch["watch_id"],
+            captured_at=f"2026-09-23T0{index}:00:00+00:00",
+            system={"memory_percent": 50.0},
+        )
+        store.save_watch_process_samples(
+            sample_id=sample_id,
+            processes=[
+                {
+                    "pid": 10,
+                    "started_at_epoch": 1000.0,
+                    "name": "worker.exe",
+                    "ram_mb": 500.0 + index,
+                    "cpu_percent": 1.0,
+                    "executable": r"C:\Apps\worker.exe",
+                    "artifact_id": artifact_id,
+                }
+            ],
+        )
+
+    report = store.watch_report(watch_id=watch["watch_id"])
+    row = report["top_processes"][0]
+    assert row["artifact_versions"] == 2
+    assert row["artifact_changed_during_watch"] is True
+    assert set(row["artifact_sha256s"]) == {"AAA", "BBB"}

@@ -102,6 +102,7 @@ class PsutilTelemetryCollector:
         self._last_at: float | None = None
         self._last_disk: Any = None
         self._last_network: Any = None
+        self._last_process_io: dict[tuple[int, float], tuple[int, int, float]] = {}
 
     @staticmethod
     def _pressure(percent: float | None) -> str:
@@ -114,6 +115,139 @@ class PsutilTelemetryCollector:
         if percent >= 65:
             return "moderate"
         return "low"
+
+    @staticmethod
+    def _endpoint(value: Any) -> str | None:
+        if not value:
+            return None
+        try:
+            host = getattr(value, "ip", None) or value[0]
+            port = getattr(value, "port", None) or value[1]
+            return f"{host}:{int(port)}"
+        except (TypeError, ValueError, IndexError, AttributeError):
+            return str(value)[:300]
+
+    def enrich_processes(self, pids: Iterable[int]) -> list[dict[str, Any]]:
+        """Collect bounded process evidence only for explicitly selected PIDs."""
+        now = time.monotonic()
+        output: list[dict[str, Any]] = []
+        live_keys: set[tuple[int, float]] = set()
+        for raw_pid in list(dict.fromkeys(int(pid) for pid in pids if int(pid) > 0))[:100]:
+            try:
+                process = psutil.Process(raw_pid)
+                with process.oneshot():
+                    started = float(process.create_time())
+                    key = (int(process.pid), started)
+                    live_keys.add(key)
+                    memory = process.memory_info()
+                    proc_io = process.io_counters()
+                    read_bytes = int(getattr(proc_io, "read_bytes", 0) or 0)
+                    write_bytes = int(getattr(proc_io, "write_bytes", 0) or 0)
+                    previous = self._last_process_io.get(key)
+                    read_delta_mb = None
+                    write_delta_mb = None
+                    if previous is not None:
+                        old_read, old_write, old_at = previous
+                        elapsed = max(0.001, now - old_at)
+                        read_delta_mb = round(max(0, read_bytes - old_read) / 1024**2 / elapsed, 3)
+                        write_delta_mb = round(max(0, write_bytes - old_write) / 1024**2 / elapsed, 3)
+                    self._last_process_io[key] = (read_bytes, write_bytes, now)
+
+                    row: dict[str, Any] = {
+                        "pid": int(process.pid),
+                        "name": str(process.name() or "unknown")[:200],
+                        "cpu_percent": round(float(process.cpu_percent(None) or 0.0), 2),
+                        "ram_mb": round(float(getattr(memory, "rss", 0) or 0) / 1024**2, 2),
+                        "vms_mb": round(float(getattr(memory, "vms", 0) or 0) / 1024**2, 2),
+                        "private_mb": (
+                            round(float(getattr(memory, "private", 0) or 0) / 1024**2, 2)
+                            if hasattr(memory, "private")
+                            else None
+                        ),
+                        "pagefile_mb": (
+                            round(float(getattr(memory, "pagefile", 0) or 0) / 1024**2, 2)
+                            if hasattr(memory, "pagefile")
+                            else None
+                        ),
+                        "page_faults": int(
+                            getattr(memory, "pagefaults", getattr(memory, "pfaults", 0)) or 0
+                        ),
+                        "threads": int(process.num_threads() or 0),
+                        "handles": (
+                            int(process.num_handles() or 0)
+                            if hasattr(process, "num_handles")
+                            else None
+                        ),
+                        "io_read_mb": round(read_bytes / 1024**2, 2),
+                        "io_write_mb": round(write_bytes / 1024**2, 2),
+                        "io_read_mb_s": read_delta_mb,
+                        "io_write_mb_s": write_delta_mb,
+                        "executable": str(process.exe() or "")[:1000],
+                        "command_line": sanitize_command_line(process.cmdline()),
+                        "parent_pid": int(process.ppid() or 0),
+                        "started_at_epoch": started,
+                        "username": str(process.username() or "")[:300],
+                    }
+
+                ancestry: list[dict[str, Any]] = []
+                try:
+                    parent = process.parent()
+                    depth = 0
+                    while parent is not None and depth < 6:
+                        with parent.oneshot():
+                            parent_row = {
+                                "pid": int(parent.pid),
+                                "name": str(parent.name() or "")[:200],
+                                "executable": str(parent.exe() or "")[:1000],
+                                "started_at_epoch": float(parent.create_time()),
+                            }
+                        ancestry.append(parent_row)
+                        if depth == 0:
+                            row["parent_name"] = parent_row["name"]
+                            row["parent_executable"] = parent_row["executable"]
+                        parent = parent.parent()
+                        depth += 1
+                except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
+                    pass
+                row["ancestry"] = ancestry
+                output.append(row)
+            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
+                continue
+
+        if len(self._last_process_io) > 1000:
+            self._last_process_io = {
+                key: value
+                for key, value in self._last_process_io.items()
+                if key in live_keys or now - value[2] < 3600
+            }
+        return output
+
+    def collect_process_connections(self, pids: Iterable[int]) -> list[dict[str, Any]]:
+        wanted = {int(pid) for pid in pids if int(pid) > 0}
+        if not wanted:
+            return []
+        rows: list[dict[str, Any]] = []
+        try:
+            connections = psutil.net_connections(kind="inet")
+        except (psutil.AccessDenied, OSError):
+            return rows
+        for connection in connections:
+            pid = int(getattr(connection, "pid", 0) or 0)
+            if pid not in wanted:
+                continue
+            rows.append(
+                {
+                    "pid": pid,
+                    "family": str(getattr(connection, "family", "")),
+                    "type": str(getattr(connection, "type", "")),
+                    "local_endpoint": self._endpoint(getattr(connection, "laddr", None)),
+                    "remote_endpoint": self._endpoint(getattr(connection, "raddr", None)),
+                    "status": str(getattr(connection, "status", "") or ""),
+                }
+            )
+            if len(rows) >= 500:
+                break
+        return rows
 
     def collect(self) -> dict[str, Any]:
         now = time.monotonic()
@@ -202,36 +336,14 @@ class PsutilTelemetryCollector:
             reverse=True,
         )
 
-        # Enrich only the bounded top-RAM set. Querying executable paths,
-        # command lines and parent identity for every process every five
-        # seconds would add unnecessary overhead to passive SystemSense.
-        enriched_memory_processes: list[dict[str, Any]] = []
-        for row in memory_processes[: self.max_processes]:
-            enriched = dict(row)
-            try:
-                process = psutil.Process(int(row["pid"]))
-                with process.oneshot():
-                    enriched["executable"] = str(process.exe() or "")[:1000]
-                    enriched["command_line"] = sanitize_command_line(process.cmdline())
-                    enriched["parent_pid"] = int(process.ppid() or 0)
-                    enriched["started_at_epoch"] = float(process.create_time())
-                    enriched["username"] = str(process.username() or "")[:300]
-                try:
-                    parent = process.parent()
-                    if parent is not None:
-                        with parent.oneshot():
-                            enriched["parent_name"] = str(parent.name() or "")[:200]
-                            try:
-                                enriched["parent_executable"] = str(parent.exe() or "")[:1000]
-                            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
-                                enriched["parent_executable"] = ""
-                except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
-                    pass
-            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
-                # Identity enrichment is best-effort. PID/name/RSS/CPU remain
-                # useful evidence even when Windows denies process metadata.
-                pass
-            enriched_memory_processes.append(enriched)
+        enriched_memory_processes = self.enrich_processes(
+            [row["pid"] for row in memory_processes[: self.max_processes]]
+        )
+        enriched_by_pid = {row["pid"]: row for row in enriched_memory_processes}
+        enriched_memory_processes = [
+            {**row, **enriched_by_pid.get(row["pid"], {})}
+            for row in memory_processes[: self.max_processes]
+        ]
 
         battery = None
         try:

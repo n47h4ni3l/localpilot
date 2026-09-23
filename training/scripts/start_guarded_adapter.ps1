@@ -286,6 +286,7 @@ $safetyStop = $false
 $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $lastDetailElapsed = -999.0
 $lastCheckpointElapsed = -999.0
+$lastMemoryWarning = $false
 
 while (-not $trainingProcess.HasExited) {
     try {
@@ -310,10 +311,13 @@ while (-not $trainingProcess.HasExited) {
         $stopReason = $decision.reason
         $monitorError = $null
 
-        # Detailed per-process/GPU attribution is intentionally slower than
-        # the 3-second headroom sample so the monitor itself stays lightweight.
+        # Detailed attribution is normally slower than the 3-second
+        # headroom sample so the monitor stays lightweight. Capture immediately
+        # on the transition into pressure, then return to the 15-second cadence.
+        $currentMemoryWarning = [bool]$decision.warning
         $needDetail = (
-            $clock.Elapsed.TotalSeconds - $lastDetailElapsed -ge 15.0
+            ($clock.Elapsed.TotalSeconds - $lastDetailElapsed -ge 15.0) -or
+            ($currentMemoryWarning -and -not $lastMemoryWarning)
         )
         if ($needDetail) {
             $topMemory = Get-TopMemoryProcesses
@@ -341,6 +345,7 @@ while (-not $trainingProcess.HasExited) {
         } | ConvertTo-Json -Compress -Depth 8 | Add-Content -LiteralPath $telemetryPath -Encoding utf8
 
         Write-GuardStatus -State 'running' -AvailableGiB $available -CommitHeadroomGiB $headroom -LatestCheckpoint $latestCheckpoint
+        $lastMemoryWarning = $currentMemoryWarning
     }
     catch {
         $monitorError = "$($_.Exception.GetType().Name): $($_.Exception.Message)"

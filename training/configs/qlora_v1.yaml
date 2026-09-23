@@ -1,13 +1,16 @@
 {
   "schema_version": 1,
   "name": "LocalPilot gpt-oss-20b QLoRA v1",
-  "status": "approved_after_dry_run",
-  "status_note": "Owner authorized training. The 20 GiB WSL two-step eager run passed both adapter-only checkpoint saves, separate-process resume was verified, the five-step early checkpoint is covered by tests, and this exact specification passed a fresh local dry-run.",
+  "status": "proposed",
+  "status_note": "Recovery specification: restore the embedding-to-CPU offload topology used by the earlier long-running adapter attempt, while retaining eager mode, adapter-only resumable checkpoints, and the v3 observational guard. The no-offload 20 GiB configuration repeatedly reached GPU OOM near the first few resumed optimizer steps despite healthy host-memory telemetry. This changed training identity requires a fresh target-machine dry-run and explicit approval before training.",
   "backend": {
     "name": "unsloth",
     "compile_mode": "eager",
     "environment": "WSL2 Ubuntu 24.04 stored on E:",
-    "python_version": [3, 12],
+    "python_version": [
+      3,
+      12
+    ],
     "rocm_version": "7.14.1",
     "pytorch_version": "2.12.0+rocm7.14.1",
     "triton_version": "bundled with the AMD PyTorch wheel; verify at dry-run",
@@ -22,7 +25,7 @@
       "trl": "0.22.2",
       "datasets": "4.3.0"
     },
-    "notes": "Use the current Unsloth AMD path. Do not install CUDA packages."
+    "notes": "Use the current Unsloth AMD eager path. Do not install CUDA packages or apply ad-hoc PyTorch allocator overrides."
   },
   "model": {
     "base_identity": "openai/gpt-oss-20b",
@@ -41,9 +44,17 @@
     "peft_type": "lora",
     "rank": 8,
     "alpha": 16,
-    "dropout": 0.0,
+    "dropout": 0,
     "bias": "none",
-    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
   },
   "data": {
     "corpus_path": "training/datasets/external_corpus_v1.jsonl",
@@ -83,20 +94,20 @@
     "seed": 3407
   },
   "resources": {
-    "minimum_vram_gib": 14.0,
+    "minimum_vram_gib": 14,
     "estimated_peak_vram_gib": 13.5,
-    "minimum_system_ram_gib": 19.0,
-    "minimum_storage_free_gib": 50.0,
+    "minimum_system_ram_gib": 23,
+    "minimum_storage_free_gib": 50,
     "estimated_peak_is_measured": false,
-    "offload_embeddings": false,
-    "cpu_offload": "none",
+    "offload_embeddings": true,
+    "cpu_offload": "embeddings_only",
     "gradient_checkpointing": "unsloth",
     "dataloader_workers": 0,
     "pin_memory": false,
-    "reserve_system_ram_gib": 4.0
+    "reserve_system_ram_gib": 4
   },
   "output": {
-    "directory": "training/outputs/adapter_v1_eager_20g_20260922",
+    "directory": "training/outputs/adapter_v1_offload_recovery_20260924",
     "save_adapter_only": true,
     "checkpoint_format": "safetensors",
     "deployment_path": "merge with the exact base in Unsloth, export GGUF, then import the merged GGUF into Ollama",

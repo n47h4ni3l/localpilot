@@ -394,6 +394,84 @@ class WindowsPerformanceCollector:
     def __init__(self, wmi: WmiClient | None = None) -> None:
         self.wmi = wmi or WmiClient()
 
+    def collect_process_gpu(self, pids: Iterable[int]) -> dict[int, dict[str, Any]]:
+        """Read Windows GPU and VRAM counters grouped by PID when available."""
+        wanted = {int(pid) for pid in pids if int(pid) > 0}
+        if not wanted or not bool(getattr(self.wmi, "available", os.name == "nt")):
+            return {}
+
+        output: dict[int, dict[str, Any]] = {
+            pid: {
+                "gpu_percent": 0.0,
+                "gpu_dedicated_mb": 0.0,
+                "gpu_shared_mb": 0.0,
+                "gpu_committed_mb": 0.0,
+            }
+            for pid in wanted
+        }
+        pid_pattern = re.compile(r"(?:^|_)pid_(\d+)(?:_|$)", re.IGNORECASE)
+
+        try:
+            engines = self.wmi.query(
+                r"root\cimv2",
+                "Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine",
+                ("Name", "UtilizationPercentage"),
+            )
+        except Exception:
+            engines = []
+        for row in engines:
+            match = pid_pattern.search(str(row.get("Name") or ""))
+            if not match:
+                continue
+            pid = int(match.group(1))
+            if pid not in wanted:
+                continue
+            try:
+                utilization = float(row.get("UtilizationPercentage") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            output[pid]["gpu_percent"] = min(
+                100.0,
+                float(output[pid]["gpu_percent"]) + max(0.0, utilization),
+            )
+
+        try:
+            memory_rows = self.wmi.query(
+                r"root\cimv2",
+                "Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory",
+                ("Name", "DedicatedUsage", "SharedUsage", "TotalCommitted"),
+            )
+        except Exception:
+            memory_rows = []
+        for row in memory_rows:
+            match = pid_pattern.search(str(row.get("Name") or ""))
+            if not match:
+                continue
+            pid = int(match.group(1))
+            if pid not in wanted:
+                continue
+            for source, target in (
+                ("DedicatedUsage", "gpu_dedicated_mb"),
+                ("SharedUsage", "gpu_shared_mb"),
+                ("TotalCommitted", "gpu_committed_mb"),
+            ):
+                try:
+                    value = max(0.0, float(row.get(source) or 0.0))
+                except (TypeError, ValueError):
+                    continue
+                output[pid][target] = round(
+                    float(output[pid][target]) + value / 1024**2,
+                    2,
+                )
+
+        return {
+            pid: {
+                key: round(float(value), 2) if isinstance(value, (int, float)) else value
+                for key, value in values.items()
+            }
+            for pid, values in output.items()
+        }
+
     def collect(self) -> dict[str, Any]:
         available = bool(getattr(self.wmi, "available", os.name == "nt"))
         if not available:

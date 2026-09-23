@@ -1697,12 +1697,12 @@ class SystemSense:
                 for item in watches
             }
             include_process_io = bool(watch_profiles & {"storage", "system"})
-            try:
+            if isinstance(self.psutil, PsutilTelemetryCollector):
                 base = self.psutil.collect(include_process_io=include_process_io)
-            except TypeError:
-                # Test/custom collectors may still expose the earlier no-arg
-                # surface. They remain compatible without forcing production
-                # psutil to collect process I/O continuously.
+            else:
+                # Test/custom adapters keep the intentionally small no-arg
+                # collector surface; do not mask a real TypeError raised by the
+                # production psutil collector.
                 base = self.psutil.collect()
             now = time.monotonic()
             rich_refreshed = bool(

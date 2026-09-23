@@ -88,7 +88,10 @@ def _tool_evidence_source(name: str) -> str | None:
         return "machine location"
     if name == "get_memory_watch_report":
         return "memory watch"
-    if name in {"inspect_memory_watch_process", "inspect_process_identity"}:
+    if name == "inspect_memory_watch_process":
+        # RAM-watch investigations must use the watch-bound inspector because
+        # it verifies the historical process instance and guards against PID
+        # reuse. Generic current-PID inspection remains ordinary PC evidence.
         return "process identity"
     if name in _REPOSITORY_TOOLS:
         return "trusted repository"

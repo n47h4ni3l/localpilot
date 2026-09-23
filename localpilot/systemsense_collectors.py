@@ -257,7 +257,7 @@ class PsutilTelemetryCollector:
                 break
         return rows
 
-    def collect(self) -> dict[str, Any]:
+    def collect(self, *, include_process_io: bool = False) -> dict[str, Any]:
         now = time.monotonic()
         elapsed = max(0.001, now - self._last_at) if self._last_at is not None else None
         vm = psutil.virtual_memory()
@@ -309,33 +309,41 @@ class PsutilTelemetryCollector:
             )
 
         processes: list[dict[str, Any]] = []
-        for process in psutil.process_iter(
-            ["pid", "name", "cpu_percent", "memory_info", "io_counters"]
-        ):
+        process_attrs = ["pid", "name", "cpu_percent", "memory_info"]
+        if include_process_io:
+            process_attrs.append("io_counters")
+        for process in psutil.process_iter(process_attrs):
             try:
                 info = process.info
                 if int(info.get("pid") or 0) == 0:
                     continue
                 memory = info.get("memory_info")
-                proc_io = info.get("io_counters")
                 pid = int(info.get("pid") or 0)
-                read_bytes = int(getattr(proc_io, "read_bytes", 0) or 0)
-                write_bytes = int(getattr(proc_io, "write_bytes", 0) or 0)
-                prior_io = self._last_process_io_simple.get(pid)
+                read_bytes = 0
+                write_bytes = 0
                 read_rate = None
                 write_rate = None
-                if prior_io is not None:
-                    old_read, old_write, old_at = prior_io
-                    proc_elapsed = max(0.001, now - old_at)
-                    read_rate = round(
-                        max(0, read_bytes - old_read) / proc_elapsed / 1024**2,
-                        3,
+                if include_process_io:
+                    proc_io = info.get("io_counters")
+                    read_bytes = int(getattr(proc_io, "read_bytes", 0) or 0)
+                    write_bytes = int(getattr(proc_io, "write_bytes", 0) or 0)
+                    prior_io = self._last_process_io_simple.get(pid)
+                    if prior_io is not None:
+                        old_read, old_write, old_at = prior_io
+                        proc_elapsed = max(0.001, now - old_at)
+                        read_rate = round(
+                            max(0, read_bytes - old_read) / proc_elapsed / 1024**2,
+                            3,
+                        )
+                        write_rate = round(
+                            max(0, write_bytes - old_write) / proc_elapsed / 1024**2,
+                            3,
+                        )
+                    self._last_process_io_simple[pid] = (
+                        read_bytes,
+                        write_bytes,
+                        now,
                     )
-                    write_rate = round(
-                        max(0, write_bytes - old_write) / proc_elapsed / 1024**2,
-                        3,
-                    )
-                self._last_process_io_simple[pid] = (read_bytes, write_bytes, now)
                 processes.append(
                     {
                         "pid": pid,
@@ -352,7 +360,7 @@ class PsutilTelemetryCollector:
                 )
             except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
                 continue
-        if len(self._last_process_io_simple) > 5000:
+        if include_process_io and len(self._last_process_io_simple) > 5000:
             active_pids = {int(row["pid"]) for row in processes}
             self._last_process_io_simple = {
                 pid: values
@@ -370,23 +378,25 @@ class PsutilTelemetryCollector:
             key=lambda row: (row["ram_mb"], row["cpu_percent"]),
             reverse=True,
         )
-        io_processes = sorted(
-            processes,
-            key=lambda row: (
-                float(row.get("io_read_mb_s") or 0.0)
-                + float(row.get("io_write_mb_s") or 0.0),
-                row.get("io_total_mb", 0.0),
-            ),
-            reverse=True,
+        io_processes = (
+            sorted(
+                processes,
+                key=lambda row: (
+                    float(row.get("io_read_mb_s") or 0.0)
+                    + float(row.get("io_write_mb_s") or 0.0),
+                    row.get("io_total_mb", 0.0),
+                ),
+                reverse=True,
+            )
+            if include_process_io
+            else []
         )
 
-        enriched_memory_processes = self.enrich_processes(
-            [row["pid"] for row in memory_processes[: self.max_processes]]
-        )
-        enriched_by_pid = {row["pid"]: row for row in enriched_memory_processes}
+        # Passive telemetry intentionally keeps process rows cheap. Executable,
+        # command-line, ancestry, handles and detailed per-process I/O are
+        # collected only by an explicit SystemSense watch.
         enriched_memory_processes = [
-            {**row, **enriched_by_pid.get(row["pid"], {})}
-            for row in memory_processes[: self.max_processes]
+            dict(row) for row in memory_processes[: self.max_processes]
         ]
 
         battery = None

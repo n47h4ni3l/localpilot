@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from localpilot.agent import LocalPilotAgent
 from localpilot.config import Config, SystemSenseConfig
 from localpilot.memory_watch import (
+    is_memory_watch_process_investigation_request,
     is_memory_watch_report_request,
     parse_memory_watch_request,
 )
@@ -46,8 +47,32 @@ class _DynamicCollector:
                 {"pid": 10, "name": "busy.exe", "cpu_percent": 40.0, "ram_mb": 120.0},
             ],
             "top_memory_processes": [
-                {"pid": 20, "name": "pythonw.exe", "cpu_percent": 2.0, "ram_mb": 4300.0},
-                {"pid": 30, "name": "browser.exe", "cpu_percent": 5.0, "ram_mb": 900.0},
+                {
+                    "pid": 20,
+                    "name": "pythonw.exe",
+                    "cpu_percent": 2.0,
+                    "ram_mb": 4300.0,
+                    "executable": r"C:\LocalPilot\.venv\Scripts\pythonw.exe",
+                    "command_line": r"C:\LocalPilot\.venv\Scripts\pythonw.exe -m localpilot.runtime_worker",
+                    "parent_pid": 8,
+                    "parent_name": "localpilot.exe",
+                    "parent_executable": r"C:\LocalPilot\.venv\Scripts\localpilot.exe",
+                    "started_at_epoch": 1000.0,
+                    "username": r"PC\owner",
+                },
+                {
+                    "pid": 30,
+                    "name": "browser.exe",
+                    "cpu_percent": 5.0,
+                    "ram_mb": 900.0,
+                    "executable": r"C:\Browser\browser.exe",
+                    "command_line": r"C:\Browser\browser.exe --profile default",
+                    "parent_pid": 4,
+                    "parent_name": "explorer.exe",
+                    "parent_executable": r"C:\Windows\explorer.exe",
+                    "started_at_epoch": 900.0,
+                    "username": r"PC\owner",
+                },
             ],
         }
 
@@ -114,6 +139,27 @@ def test_memory_watch_report_prompt_detection_is_conservative():
     assert not is_memory_watch_report_request("Monitor RAM today")
 
 
+def test_memory_watch_process_investigation_requires_identity_and_web_evidence():
+    prompt = "Can you investigate what that pythonw.exe process is and why it used so much RAM?"
+
+    assert is_memory_watch_process_investigation_request(prompt) is True
+    assert LocalPilotAgent._evidence_requirements(prompt) == {
+        "memory watch",
+        "process identity",
+        "public web discovery",
+        "public HTTPS",
+    }
+
+    no_web = (
+        "Investigate what that pythonw.exe process is and why it used so much RAM, "
+        "but don't use the web."
+    )
+    assert LocalPilotAgent._evidence_requirements(no_web) == {
+        "memory watch",
+        "process identity",
+    }
+
+
 def test_systemsense_memory_watch_persists_process_ram_history(tmp_path, monkeypatch):
     sense = _sense(tmp_path)
     expiry = datetime.now(timezone.utc) + timedelta(hours=2)
@@ -133,7 +179,12 @@ def test_systemsense_memory_watch_persists_process_ram_history(tmp_path, monkeyp
     assert report["peak_system_memory_percent"] == 84.0
     assert report["minimum_available_gb"] == 5.12
     assert report["top_memory_consumers"][0]["name"] == "pythonw.exe"
+    assert report["top_memory_consumers"][0]["pid"] == 20
     assert report["top_memory_consumers"][0]["peak_ram_mb"] == 4300.0
+    assert report["top_memory_consumers"][0]["executable"].endswith("pythonw.exe")
+    assert "-m localpilot.runtime_worker" in report["top_memory_consumers"][0]["command_line"]
+    assert report["top_memory_consumers"][0]["parent_name"] == "localpilot.exe"
+    assert report["top_memory_consumers"][0]["started_at_epoch"] == 1000.0
     assert report["top_memory_consumers"][1]["name"] == "browser.exe"
 
     # The watch/report lives in SQLite and survives a fresh SystemSense object.
@@ -270,12 +321,79 @@ def test_agent_memory_watch_ack_is_model_generated_but_bounded(tmp_path, monkeyp
     assert "authoritative application state" in context
 
 
+def test_memory_watch_process_identity_uses_historical_instance_and_provenance(
+    tmp_path, monkeypatch
+):
+    sense = _sense(tmp_path)
+    watch = sense.start_memory_watch(
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        label="1 hour",
+    )
+    monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: 100.0)
+    sense.collect_dynamic()
+
+    historical = sense.memory_watch_process_identity(
+        pid=20,
+        watch_id=watch["watch_id"],
+    )
+    assert historical["available"] is True
+    assert historical["pid"] == 20
+    assert historical["name"] == "pythonw.exe"
+    assert historical["executable"].endswith("pythonw.exe")
+    assert historical["parent_name"] == "localpilot.exe"
+    assert historical["peak_ram_mb"] == 4300.0
+
+    import localpilot.tools.systemsense as systemsense_tools
+
+    monkeypatch.setattr(
+        systemsense_tools,
+        "inspect_executable_metadata",
+        lambda path: {
+            "available": True,
+            "path": path,
+            "company_name": "Python Software Foundation",
+            "product_name": "Python",
+            "signature_status": "Valid",
+            "sha256": "ABC",
+        },
+    )
+    monkeypatch.setattr(
+        systemsense_tools,
+        "inspect_process_identity",
+        lambda pid: __import__("json").dumps(
+            {
+                "available": True,
+                "pid": pid,
+                "running": True,
+                "started_at_epoch": 1000.0,
+                "name": "pythonw.exe",
+                "executable": r"C:\LocalPilot\.venv\Scripts\pythonw.exe",
+            }
+        ),
+    )
+
+    tools = registry(tmp_path, config=Config(), systemsense=sense)
+    payload = __import__("json").loads(
+        tools["inspect_memory_watch_process"].fn(
+            pid=20,
+            watch_id=watch["watch_id"],
+        )
+    )
+
+    assert payload["available"] is True
+    assert payload["executable_metadata"]["company_name"] == "Python Software Foundation"
+    assert payload["current_process"]["available"] is True
+    assert "historical process instance" in payload["identity_note"]
+
+
 def test_registry_exposes_memory_watch_report_as_read_only_evidence(tmp_path):
     config = Config()
     sense = _sense(tmp_path / config.agent.data_dir)
     tools = registry(tmp_path, config=config, systemsense=sense)
 
     assert tools["get_memory_watch_report"].risk is RiskLevel.READ_ONLY
+    assert tools["inspect_memory_watch_process"].risk is RiskLevel.READ_ONLY
+    assert tools["inspect_process_identity"].risk is RiskLevel.READ_ONLY
     assert LocalPilotAgent._evidence_requirements(
         "What did the RAM monitor find?"
     ) == {"memory watch"}

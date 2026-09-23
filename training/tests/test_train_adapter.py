@@ -170,6 +170,17 @@ class TrainAdapterTests(unittest.TestCase):
         self.assertEqual(self.config["training"]["first_checkpoint_step"], 5)
         self.assertEqual(self.config["training"]["checkpoint_steps"], 50)
         self.assertLess(self.config["training"]["checkpoint_steps"], steps_per_epoch)
+        self.assertTrue(self.config["resources"]["offload_embeddings"])
+        self.assertEqual(self.config["resources"]["cpu_offload"], "embeddings_only")
+        self.assertGreaterEqual(self.config["resources"]["minimum_system_ram_gib"], 23.0)
+        self.assertIn("offload_recovery", self.config["output"]["directory"])
+
+    def test_recovery_spec_refuses_to_move_embeddings_back_to_vram(self) -> None:
+        self.config["resources"]["offload_embeddings"] = False
+        self.config["resources"]["cpu_offload"] = "none"
+        self.save_config()
+        with self.assertRaisesRegex(RuntimeError, "embedding offload"):
+            runner.dry_run(self.config_path, importer=self.importer)
 
     def checkpoint(self, step: int, identity: dict, *, mark_complete: bool = True) -> Path:
         output = self.root / self.config["output"]["directory"]

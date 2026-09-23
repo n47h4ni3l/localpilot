@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import psutil
@@ -160,3 +161,121 @@ def test_windows_powershell_tools_delegate_to_read_only_queries(monkeypatch):
     assert scripts[1] == "powercfg /GETACTIVESCHEME"
     assert "Get-MpComputerStatus" in scripts[2]
     assert "Get-PnpDevice" in scripts[3]
+
+
+
+def test_inspect_executable_metadata_reads_version_signature_and_hash(monkeypatch):
+    monkeypatch.setattr(windows.os, "name", "nt")
+    scripts = []
+
+    def fake_powershell(script, timeout=20):
+        scripts.append((script, timeout))
+        return json.dumps(
+            {
+                "available": True,
+                "path": r"C:\Apps\worker.exe",
+                "company_name": "Example Corp",
+                "product_name": "Example Worker",
+                "file_description": "Worker",
+                "file_version": "1.2.3",
+                "signature_status": "Valid",
+                "signer_subject": "CN=Example Corp",
+                "sha256": "ABC123",
+            }
+        )
+
+    monkeypatch.setattr(windows, "_powershell", fake_powershell)
+
+    result = windows.inspect_executable_metadata(r"C:\Apps\worker.exe")
+
+    assert result["available"] is True
+    assert result["company_name"] == "Example Corp"
+    assert result["signature_status"] == "Valid"
+    assert result["sha256"] == "ABC123"
+    assert "Get-AuthenticodeSignature" in scripts[0][0]
+    assert "Get-FileHash" in scripts[0][0]
+    assert scripts[0][1] == 20
+
+
+def test_inspect_process_identity_returns_runtime_parent_services_and_file_provenance(
+    monkeypatch,
+):
+    class IdentityProcess:
+        pid = 42
+
+        def oneshot(self):
+            return nullcontext()
+
+        def exe(self):
+            return r"C:\Apps\worker.exe"
+
+        def is_running(self):
+            return True
+
+        def name(self):
+            return "worker.exe"
+
+        def cmdline(self):
+            return [r"C:\Apps\worker.exe", "--serve"]
+
+        def ppid(self):
+            return 7
+
+        def create_time(self):
+            return 1234.5
+
+        def username(self):
+            return r"PC\owner"
+
+        def parent(self):
+            return ParentProcess()
+
+    class ParentProcess:
+        pid = 7
+
+        def oneshot(self):
+            return nullcontext()
+
+        def name(self):
+            return "launcher.exe"
+
+        def exe(self):
+            return r"C:\Apps\launcher.exe"
+
+    monkeypatch.setattr(windows.psutil, "Process", lambda pid: IdentityProcess())
+    monkeypatch.setattr(
+        windows,
+        "inspect_executable_metadata",
+        lambda path: {
+            "available": True,
+            "path": path,
+            "company_name": "Example Corp",
+            "signature_status": "Valid",
+        },
+    )
+    monkeypatch.setattr(windows.os, "name", "nt")
+    monkeypatch.setattr(
+        windows,
+        "_powershell",
+        lambda script, timeout=20: json.dumps(
+            {
+                "Name": "ExampleService",
+                "DisplayName": "Example Service",
+                "State": "Running",
+                "StartMode": "Auto",
+                "PathName": r"C:\Apps\worker.exe --service",
+            }
+        ),
+    )
+
+    result = json.loads(windows.inspect_process_identity(42))
+
+    assert result["available"] is True
+    assert result["running"] is True
+    assert result["name"] == "worker.exe"
+    assert result["executable"] == r"C:\Apps\worker.exe"
+    assert result["command_line"].endswith("--serve")
+    assert result["parent"]["pid"] == 7
+    assert result["parent"]["name"] == "launcher.exe"
+    assert result["executable_metadata"]["company_name"] == "Example Corp"
+    assert result["services"][0]["Name"] == "ExampleService"

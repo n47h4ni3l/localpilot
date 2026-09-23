@@ -1450,6 +1450,11 @@ class SystemSense:
         self._cached_performance: dict[str, Any] | None = None
         self._cached_raw_sensors: dict[str, Any] | None = None
         self._cached_self_observation: dict[str, Any] = {}
+        try:
+            self._self_process: psutil.Process | None = psutil.Process(os.getpid())
+            self._self_process.cpu_percent(None)
+        except psutil.Error:
+            self._self_process = None
         self._watch_seen_processes: dict[
             int, dict[tuple[int, float], dict[str, Any]]
         ] = {}
@@ -1638,7 +1643,7 @@ class SystemSense:
         ):
             return dict(self._cached_self_observation)
         try:
-            process = psutil.Process(os.getpid())
+            process = self._self_process or psutil.Process(os.getpid())
             with process.oneshot():
                 rss_mb = round(process.memory_info().rss / 1024**2, 2)
                 cpu_percent = round(float(process.cpu_percent(None) or 0.0), 2)

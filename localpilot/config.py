@@ -110,6 +110,12 @@ class SystemSenseConfig:
     baseline_window_hours: int = 24
     correlation_window_days: int = 14
     max_processes: int = 12
+    # Memory watches retain a lightweight process-RSS timeline only while an
+    # owner-requested watch is active. Fifteen seconds is frequent enough to
+    # catch intermittent consumers without multiplying the normal five-second
+    # telemetry store by every process.
+    memory_watch_sample_interval_seconds: float = 15.0
+    memory_watch_retention_days: int = 7
     compact_context_enabled: bool = True
 
 
@@ -494,6 +500,12 @@ def load_config(path: str | Path | None = None) -> Config:
         cfg.systemsense.correlation_window_days
     )
     cfg.systemsense.max_processes = int(cfg.systemsense.max_processes)
+    cfg.systemsense.memory_watch_sample_interval_seconds = float(
+        cfg.systemsense.memory_watch_sample_interval_seconds
+    )
+    cfg.systemsense.memory_watch_retention_days = int(
+        cfg.systemsense.memory_watch_retention_days
+    )
     if not 1 <= cfg.systemsense.sample_interval_seconds <= 300:
         raise ValueError("systemsense.sample_interval_seconds must be between 1 and 300")
     if not 60 <= cfg.systemsense.inventory_interval_seconds <= 86_400:
@@ -512,4 +524,12 @@ def load_config(path: str | Path | None = None) -> Config:
         )
     if not 1 <= cfg.systemsense.max_processes <= 50:
         raise ValueError("systemsense.max_processes must be between 1 and 50")
+    if not 5 <= cfg.systemsense.memory_watch_sample_interval_seconds <= 300:
+        raise ValueError(
+            "systemsense.memory_watch_sample_interval_seconds must be between 5 and 300"
+        )
+    if not 1 <= cfg.systemsense.memory_watch_retention_days <= 90:
+        raise ValueError(
+            "systemsense.memory_watch_retention_days must be between 1 and 90"
+        )
     return cfg

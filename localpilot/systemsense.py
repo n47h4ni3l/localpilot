@@ -1696,7 +1696,17 @@ class SystemSense:
                 str(item.get("profile") or "system").casefold()
                 for item in watches
             }
-            include_process_io = bool(watch_profiles & {"storage", "system"})
+            watch_sample_due = bool(
+                watches
+                and (
+                    not self._last_systemsense_watch_sample
+                    or cycle_started - self._last_systemsense_watch_sample
+                    >= self.config.memory_watch_sample_interval_seconds
+                )
+            )
+            include_process_io = bool(
+                watch_sample_due and watch_profiles & {"storage", "system"}
+            )
             if isinstance(self.psutil, PsutilTelemetryCollector):
                 base = self.psutil.collect(include_process_io=include_process_io)
             else:

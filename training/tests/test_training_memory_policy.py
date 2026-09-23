@@ -117,3 +117,31 @@ def test_training_launcher_defaults_to_observation_not_intervention() -> None:
     assert "wsl_memory" in text
     assert "Get-WslMemoryState" in text
     assert "latest_complete_checkpoint_step" in text
+
+
+
+def test_training_powershell_scripts_parse_cleanly() -> None:
+    for path in (POLICY, GUARD):
+        command = (
+            "$tokens=$null; $errors=$null; "
+            f"[void][System.Management.Automation.Language.Parser]::ParseFile('{path}', "
+            "[ref]$tokens, [ref]$errors); "
+            "if ($errors.Count -gt 0) { "
+            "$errors | ForEach-Object { Write-Error $_.Message }; exit 1 }"
+        )
+        subprocess.run(
+            [
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                command,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )

@@ -562,6 +562,15 @@ def test_systemsense_config_is_bounded_and_uses_separate_database(tmp_path):
     assert config.systemsense.retention_days == 90
 
     path.write_text(
+        "[systemsense]\nsample_interval_seconds=30\n",
+        encoding="utf-8",
+    )
+    migrated = load_config(path)
+    assert migrated.systemsense.sample_interval_seconds == 30.0
+    assert migrated.systemsense.rich_sample_interval_seconds == 30.0
+    assert migrated.systemsense.metric_persist_interval_seconds == 30.0
+
+    path.write_text(
         '[systemsense]\ndatabase="chat.sqlite3"\n', encoding="utf-8"
     )
     with pytest.raises(ValueError, match="remain separate"):

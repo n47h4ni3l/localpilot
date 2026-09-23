@@ -14,6 +14,8 @@ ask() and _continue_high_reasoning_answer() were not touched."""
 
 import re
 
+from localpilot.memory_watch import is_memory_watch_report_request
+
 
 def _is_live_local_information_prompt(prompt: str) -> bool:
     """Recognize local facts that inherently require fresh external evidence."""
@@ -53,6 +55,8 @@ def _evidence_requirements(prompt: str) -> set[str]:
     """Identify explicit evidence sources the owner asked LocalPilot to inspect."""
     text = " ".join(str(prompt).lower().split())
     requirements: set[str] = set()
+    if is_memory_watch_report_request(prompt):
+        requirements.add("memory watch")
 
     def mentions(*phrases: str) -> bool:
         return any(

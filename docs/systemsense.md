@@ -18,7 +18,9 @@ Windows / hardware
              │
              ▼
        SystemSense worker
-  dynamic sample every 5s by default
+  cheap base sample every 5s by default
+  WMI/sensor-rich sample every 15s by default
+  historical metric persistence every 15s by default
   inventory refresh every 15m by default
              │
              ▼
@@ -31,10 +33,26 @@ compact derived state bounded read-only drill-down tools
 ```
 
 The desktop runtime worker owns the sampler lifecycle. `localpilot chat` also
-starts it for the lifetime of the interactive process. Collection failures are
-recorded as type-only diagnostics and isolated from operator startup. Missing
-WMI classes, performance counters, PnPUtil features, or sensor providers reduce
-coverage; they do not make the agent unavailable.
+starts it for the lifetime of the interactive process. The five-second base
+cycle uses cheap psutil system and bounded process rows. Windows WMI GPU/
+processor/thermal/power queries and Libre/OpenHardwareMonitor sensor reads are
+cached on the slower rich cadence. The latest snapshot stays responsive while
+normalized long-term metrics are written less often, reducing WMI and SQLite
+work without discarding current state. Passive process rows no longer resolve
+executable paths, command lines, ancestry, handles, or per-process I/O unless an
+owner-requested watch needs that evidence.
+
+Owner-requested watches are profile-aware. Memory and CPU watches do not
+enumerate all network sockets or GPU-process counters; storage watches opt into
+per-process I/O; network and GPU watches opt into their specific attribution
+providers; a whole-system watch intentionally pays for all of them. SystemSense
+also keeps a bounded self-observation snapshot with its own RSS, process CPU,
+thread count, database size and collection/write timing so its observation cost
+can itself be inspected.
+
+Collection failures are recorded as type-only diagnostics and isolated from
+operator startup. Missing WMI classes, performance counters, PnPUtil features,
+or sensor providers reduce coverage; they do not make the agent unavailable.
 
 `pywin32` is installed only on Windows and gives the collectors native COM/WMI
 access without generating PowerShell scripts. PnPUtil is invoked with a fixed
@@ -121,9 +139,10 @@ write route or hardware-control action.
 
 ## Configuration and privacy
 
-The `[systemsense]` section controls the database name, sample/inventory
-intervals, retention, baseline/correlation windows, process row limit, and
-compact context injection. Every value is bounded during configuration loading;
+The `[systemsense]` section controls the database name, base/rich/history/
+self-observation/inventory intervals, retention, baseline/correlation windows,
+process row limit, watch cadence, and compact context injection. Every value is
+bounded during configuration loading;
 the database must be one local filename distinct from chat, learning and library
 databases.
 

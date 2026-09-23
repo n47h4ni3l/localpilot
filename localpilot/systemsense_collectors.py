@@ -352,6 +352,14 @@ class PsutilTelemetryCollector:
                 )
             except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
                 continue
+        if len(self._last_process_io_simple) > 5000:
+            active_pids = {int(row["pid"]) for row in processes}
+            self._last_process_io_simple = {
+                pid: values
+                for pid, values in self._last_process_io_simple.items()
+                if pid in active_pids or now - values[2] < 3600
+            }
+
         cpu_processes = sorted(
             processes,
             key=lambda row: (row["cpu_percent"], row["ram_mb"]),

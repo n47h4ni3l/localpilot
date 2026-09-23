@@ -1453,6 +1453,9 @@ class SystemSense:
                 memory_before = (
                     _utc_now() - timedelta(days=self.config.memory_watch_retention_days)
                 ).isoformat()
+                self.store.prune_watches(before=memory_before)
+                # Legacy PR160 tables are retained only for migration/backward
+                # compatibility and are pruned as well when present.
                 self.store.prune_memory_watch(before=memory_before)
                 self._last_prune = time.monotonic()
             remaining = max(0.1, self.config.sample_interval_seconds - (time.monotonic() - started))

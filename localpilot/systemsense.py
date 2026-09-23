@@ -909,7 +909,9 @@ class SystemSenseStore:
                 "MAX(p.gpu_dedicated_mb) AS peak_gpu_dedicated_mb, "
                 "MAX(p.gpu_shared_mb) AS peak_gpu_shared_mb, "
                 "MAX(p.gpu_committed_mb) AS peak_gpu_committed_mb, "
-                "MAX(a.sha256) AS sha256, MAX(a.signature_status) AS signature_status, "
+                "MAX(a.sha256) AS sha256, COUNT(DISTINCT a.sha256) AS artifact_versions, "
+                "GROUP_CONCAT(DISTINCT a.sha256) AS artifact_sha256s, "
+                "MAX(a.signature_status) AS signature_status, "
                 "MAX(a.signer_subject) AS signer_subject, MAX(a.company_name) AS company_name, "
                 "MAX(a.product_name) AS product_name "
                 "FROM systemsense_watch_process_samples p "
@@ -939,7 +941,15 @@ class SystemSenseStore:
                 (wid,),
             ).fetchall()
 
-        process_rows = [dict(row) for row in processes]
+        process_rows = []
+        for source in processes:
+            item = dict(source)
+            hashes = str(item.pop("artifact_sha256s") or "")
+            item["artifact_sha256s"] = [value for value in hashes.split(",") if value]
+            item["artifact_changed_during_watch"] = int(
+                item.get("artifact_versions") or 0
+            ) > 1
+            process_rows.append(item)
         result = {
             "available": True,
             "watch": watch,

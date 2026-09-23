@@ -105,6 +105,13 @@ class SystemSenseConfig:
     enabled: bool = True
     database: str = "systemsense.sqlite3"
     sample_interval_seconds: float = 5.0
+    # Cheap psutil truth can stay responsive without re-running the heavier
+    # Windows WMI/GPU/thermal and LibreHardwareMonitor collectors every cycle.
+    rich_sample_interval_seconds: float = 15.0
+    # The latest snapshot still updates at sample_interval_seconds; long-term
+    # metric history is persisted less often to reduce SQLite churn.
+    metric_persist_interval_seconds: float = 15.0
+    self_observation_interval_seconds: float = 60.0
     inventory_interval_seconds: float = 900.0
     retention_days: int = 30
     baseline_window_hours: int = 24
@@ -491,6 +498,15 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ValueError("systemsense.database must remain separate from other databases")
     cfg.systemsense.database = systemsense_database.name
     cfg.systemsense.sample_interval_seconds = float(cfg.systemsense.sample_interval_seconds)
+    cfg.systemsense.rich_sample_interval_seconds = float(
+        cfg.systemsense.rich_sample_interval_seconds
+    )
+    cfg.systemsense.metric_persist_interval_seconds = float(
+        cfg.systemsense.metric_persist_interval_seconds
+    )
+    cfg.systemsense.self_observation_interval_seconds = float(
+        cfg.systemsense.self_observation_interval_seconds
+    )
     cfg.systemsense.inventory_interval_seconds = float(
         cfg.systemsense.inventory_interval_seconds
     )
@@ -508,6 +524,18 @@ def load_config(path: str | Path | None = None) -> Config:
     )
     if not 1 <= cfg.systemsense.sample_interval_seconds <= 300:
         raise ValueError("systemsense.sample_interval_seconds must be between 1 and 300")
+    if not cfg.systemsense.sample_interval_seconds <= cfg.systemsense.rich_sample_interval_seconds <= 600:
+        raise ValueError(
+            "systemsense.rich_sample_interval_seconds must be between sample_interval_seconds and 600"
+        )
+    if not cfg.systemsense.sample_interval_seconds <= cfg.systemsense.metric_persist_interval_seconds <= 600:
+        raise ValueError(
+            "systemsense.metric_persist_interval_seconds must be between sample_interval_seconds and 600"
+        )
+    if not 10 <= cfg.systemsense.self_observation_interval_seconds <= 3600:
+        raise ValueError(
+            "systemsense.self_observation_interval_seconds must be between 10 and 3600"
+        )
     if not 60 <= cfg.systemsense.inventory_interval_seconds <= 86_400:
         raise ValueError(
             "systemsense.inventory_interval_seconds must be between 60 and 86400"

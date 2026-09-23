@@ -96,13 +96,69 @@ function Get-LatestCompleteCheckpoint {
 
 function Get-CheckpointActivity {
     if (-not (Test-Path -LiteralPath $checkpointRoot -PathType Container)) {
-        return $null
+        return [ordered]@{
+            latest_step = $null
+            latest_complete = $false
+            latest_path = $null
+            latest_write_utc = $null
+            latest_write_age_seconds = $null
+            verified_step = $null
+            next_regular_checkpoint_step = [int]$config.training.checkpoint_steps
+        }
     }
 
-    $latest = @(
+    $directories = @(
         Get-ChildItem -LiteralPath $checkpointRoot -Directory -ErrorAction SilentlyContinue |
         ForEach-Object {
-            $match = [regex]::Match($_.Name, '^checkpoint-([1-9][0-9]*)    return @(
+            $match = [regex]::Match($_.Name, '^checkpoint-([1-9][0-9]*)$')
+            if (-not $match.Success) { return }
+            [pscustomobject]@{
+                step = [int]$match.Groups[1].Value
+                path = $_.FullName
+                last_write_utc = $_.LastWriteTimeUtc
+                marker = Join-Path $_.FullName 'localpilot_checkpoint_complete.json'
+            }
+        } |
+        Sort-Object step -Descending
+    )
+
+    if ($directories.Count -eq 0) {
+        return [ordered]@{
+            latest_step = $null
+            latest_complete = $false
+            latest_path = $null
+            latest_write_utc = $null
+            latest_write_age_seconds = $null
+            verified_step = $null
+            next_regular_checkpoint_step = [int]$config.training.checkpoint_steps
+        }
+    }
+
+    $latest = $directories[0]
+    $verified = @(
+        $directories |
+        Where-Object { Test-Path -LiteralPath $_.marker -PathType Leaf } |
+        Select-Object -First 1
+    )
+    $regular = [int]$config.training.checkpoint_steps
+    $nextRegular = ([math]::Floor([double]$latest.step / $regular) + 1) * $regular
+
+    return [ordered]@{
+        latest_step = $latest.step
+        latest_complete = (Test-Path -LiteralPath $latest.marker -PathType Leaf)
+        latest_path = $latest.path
+        latest_write_utc = $latest.last_write_utc.ToString('o')
+        latest_write_age_seconds = [math]::Round(
+            ((Get-Date).ToUniversalTime() - $latest.last_write_utc).TotalSeconds,
+            1
+        )
+        verified_step = if ($verified.Count -gt 0) { $verified[0].step } else { $null }
+        next_regular_checkpoint_step = [int]$nextRegular
+    }
+}
+
+function Get-TopMemoryProcesses {
+    return @(
         Get-Process -ErrorAction SilentlyContinue |
         Sort-Object WorkingSet64 -Descending |
         Select-Object -First 15 |

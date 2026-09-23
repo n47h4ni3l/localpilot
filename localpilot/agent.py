@@ -287,6 +287,84 @@ class LocalPilotAgent:
         )
         return content
 
+    def acknowledge_memory_watch(
+        self,
+        owner_prompt: str,
+        watch: dict[str, Any],
+    ) -> str:
+        """Acknowledge a real registered RAM watch without the heavy reasoning loop."""
+        fallback = (
+            "RAM monitoring is active. SystemSense will sample the top memory "
+            f"consumers every {watch.get('sample_interval_seconds', 15):g} seconds "
+            f"until {watch.get('expires_at')}. Ask me later what the memory watch found."
+        )
+        try:
+            from ollama import chat
+        except ImportError:
+            content = fallback
+        else:
+            recent = [
+                {
+                    "role": str(message.get("role") or ""),
+                    "content": str(message.get("content") or ""),
+                }
+                for message in self.messages
+                if message.get("role") in {"user", "assistant"}
+                and str(message.get("content") or "").strip()
+            ][-6:]
+            messages = [dict(self.messages[0]), *recent]
+            messages.extend(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "MEMORY WATCH ACKNOWLEDGEMENT: The application has already "
+                            "registered the owner-requested SystemSense RAM watch. This is "
+                            "authoritative application state, not a proposal. Give a short, "
+                            "natural acknowledgement in LocalPilot's normal voice. Mention "
+                            "that per-process RAM is being sampled and when the watch ends. "
+                            "Do not claim you will actively think in the background, do not "
+                            "invent findings before samples exist, and do not expose internal "
+                            "routing. Watch state:\n"
+                            + json.dumps(watch, ensure_ascii=False, sort_keys=True, default=str)
+                        ),
+                    },
+                    {"role": "user", "content": owner_prompt},
+                ]
+            )
+            response = self._stream_chat_message(
+                chat,
+                think=False,
+                tools=None,
+                options={"num_predict": 192},
+                messages=messages,
+                phase="memory_watch_ack",
+                turn_no=0,
+            )
+            runtime = dict(self._last_stream_runtime)
+            draft = str(response.get("content") or "").strip()
+            calls = response.get("tool_calls") or []
+            if (
+                draft
+                and not calls
+                and runtime.get("runtime_classification") != "generation_limit"
+                and not self._looks_like_generic_reset(draft)
+            ):
+                content = draft
+            else:
+                content = fallback
+
+        self.messages.append({"role": "user", "content": owner_prompt})
+        self.messages.append({"role": "assistant", "content": content})
+        self.audit.write(
+            "memory_watch_acknowledged",
+            watch_id=watch.get("watch_id"),
+            expires_at=watch.get("expires_at"),
+            sample_interval_seconds=watch.get("sample_interval_seconds"),
+            content_chars=len(content),
+        )
+        return content
+
     def teach(self, lesson: str, *, topic: str = "general") -> HumanLesson:
         record = self.memory.record_human_lesson(
             lesson,

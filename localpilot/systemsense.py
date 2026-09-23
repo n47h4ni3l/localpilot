@@ -154,6 +154,13 @@ class SystemSenseStore:
                     name TEXT NOT NULL,
                     ram_mb REAL NOT NULL,
                     cpu_percent REAL NOT NULL,
+                    executable TEXT,
+                    command_line TEXT,
+                    parent_pid INTEGER,
+                    parent_name TEXT,
+                    parent_executable TEXT,
+                    started_at_epoch REAL,
+                    username TEXT,
                     FOREIGN KEY(sample_id) REFERENCES memory_watch_samples(id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_watch_process_name
@@ -335,6 +342,17 @@ class SystemSenseStore:
                             str(process.get("name") or "unknown")[:200],
                             float(process.get("ram_mb") or 0.0),
                             float(process.get("cpu_percent") or 0.0),
+                            str(process.get("executable") or "")[:1000],
+                            str(process.get("command_line") or "")[:4000],
+                            int(process.get("parent_pid") or 0),
+                            str(process.get("parent_name") or "")[:200],
+                            str(process.get("parent_executable") or "")[:1000],
+                            (
+                                float(process.get("started_at_epoch"))
+                                if process.get("started_at_epoch") is not None
+                                else None
+                            ),
+                            str(process.get("username") or "")[:300],
                         )
                     )
                 except (TypeError, ValueError):
@@ -342,8 +360,10 @@ class SystemSenseStore:
             if rows:
                 connection.executemany(
                     "INSERT INTO memory_watch_process_samples("
-                    "sample_id, pid, name, ram_mb, cpu_percent"
-                    ") VALUES (?, ?, ?, ?, ?)",
+                    "sample_id, pid, name, ram_mb, cpu_percent, executable, "
+                    "command_line, parent_pid, parent_name, parent_executable, "
+                    "started_at_epoch, username"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     rows,
                 )
         return sample_id
@@ -388,13 +408,18 @@ class SystemSenseStore:
                 (wid,),
             ).fetchone()
             processes = connection.execute(
-                "SELECT p.name, COUNT(*) AS observations, "
-                "MAX(p.ram_mb) AS peak_ram_mb, AVG(p.ram_mb) AS average_observed_ram_mb, "
+                "SELECT p.pid, p.name, p.executable, p.command_line, p.parent_pid, "
+                "p.parent_name, p.parent_executable, p.started_at_epoch, p.username, "
+                "COUNT(*) AS observations, MAX(p.ram_mb) AS peak_ram_mb, "
+                "AVG(p.ram_mb) AS average_observed_ram_mb, "
                 "MAX(p.cpu_percent) AS peak_cpu_percent "
                 "FROM memory_watch_process_samples p "
                 "JOIN memory_watch_samples s ON s.id=p.sample_id "
-                "WHERE s.watch_id=? GROUP BY p.name "
-                "ORDER BY peak_ram_mb DESC LIMIT 12",
+                "WHERE s.watch_id=? "
+                "GROUP BY p.pid, p.name, p.executable, p.command_line, "
+                "p.parent_pid, p.parent_name, p.parent_executable, "
+                "p.started_at_epoch, p.username "
+                "ORDER BY peak_ram_mb DESC LIMIT 20",
                 (wid,),
             ).fetchall()
 
@@ -428,7 +453,19 @@ class SystemSenseStore:
             "peak_system_sample": dict(peak) if peak is not None else None,
             "top_memory_consumers": [
                 {
+                    "pid": int(row["pid"]),
                     "name": row["name"],
+                    "executable": row["executable"] or None,
+                    "command_line": row["command_line"] or None,
+                    "parent_pid": int(row["parent_pid"] or 0) or None,
+                    "parent_name": row["parent_name"] or None,
+                    "parent_executable": row["parent_executable"] or None,
+                    "started_at_epoch": (
+                        float(row["started_at_epoch"])
+                        if row["started_at_epoch"] is not None
+                        else None
+                    ),
+                    "username": row["username"] or None,
                     "observations": int(row["observations"]),
                     "peak_ram_mb": round(float(row["peak_ram_mb"]), 2),
                     "average_observed_ram_mb": round(
@@ -444,6 +481,71 @@ class SystemSenseStore:
                 "bounded top-memory set, not necessarily that it was not running."
             ),
         }
+
+    def memory_watch_process_identity(
+        self,
+        *,
+        pid: int,
+        watch_id: int | None = None,
+    ) -> dict[str, Any]:
+        pid = int(pid)
+        if pid <= 0:
+            raise ValueError("pid must be a positive integer")
+        now = utc_timestamp()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE memory_watches SET status='completed' "
+                "WHERE status='active' AND expires_at<=?",
+                (now,),
+            )
+            if watch_id is None:
+                watch = connection.execute(
+                    "SELECT id, created_at, expires_at, status, label "
+                    "FROM memory_watches ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+            else:
+                watch = connection.execute(
+                    "SELECT id, created_at, expires_at, status, label "
+                    "FROM memory_watches WHERE id=?",
+                    (int(watch_id),),
+                ).fetchone()
+            if watch is None:
+                return {"available": False, "reason": "no_memory_watch"}
+            wid = int(watch["id"])
+            peak = connection.execute(
+                "SELECT s.captured_at, p.pid, p.name, p.ram_mb, p.cpu_percent, "
+                "p.executable, p.command_line, p.parent_pid, p.parent_name, "
+                "p.parent_executable, p.started_at_epoch, p.username "
+                "FROM memory_watch_process_samples p "
+                "JOIN memory_watch_samples s ON s.id=p.sample_id "
+                "WHERE s.watch_id=? AND p.pid=? "
+                "ORDER BY p.ram_mb DESC, s.captured_at DESC LIMIT 1",
+                (wid, pid),
+            ).fetchone()
+            observations = connection.execute(
+                "SELECT COUNT(*) AS count FROM memory_watch_process_samples p "
+                "JOIN memory_watch_samples s ON s.id=p.sample_id "
+                "WHERE s.watch_id=? AND p.pid=?",
+                (wid, pid),
+            ).fetchone()
+        if peak is None:
+            return {
+                "available": False,
+                "reason": "pid_not_observed_in_watch",
+                "watch_id": wid,
+                "pid": pid,
+            }
+        row = dict(peak)
+        row["observations"] = int(observations["count"] or 0)
+        row["watch_id"] = wid
+        row["available"] = True
+        row["executable"] = row.get("executable") or None
+        row["command_line"] = row.get("command_line") or None
+        row["parent_pid"] = int(row.get("parent_pid") or 0) or None
+        row["parent_name"] = row.get("parent_name") or None
+        row["parent_executable"] = row.get("parent_executable") or None
+        row["username"] = row.get("username") or None
+        return row
 
     def prune_memory_watch(self, *, before: str) -> None:
         with self._lock, self._connect() as connection:
@@ -1310,6 +1412,14 @@ class SystemSense:
     def stop_memory_watch(self) -> dict[str, Any]:
         watch = self.store.stop_memory_watch()
         return watch or {"status": "inactive", "available": False}
+
+    def memory_watch_process_identity(
+        self,
+        *,
+        pid: int,
+        watch_id: int | None = None,
+    ) -> dict[str, Any]:
+        return self.store.memory_watch_process_identity(pid=pid, watch_id=watch_id)
 
     def memory_watch_report(self, *, watch_id: int | None = None) -> dict[str, Any]:
         report = self.store.memory_watch_report(watch_id=watch_id)

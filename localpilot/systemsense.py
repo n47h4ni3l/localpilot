@@ -1660,6 +1660,11 @@ class SystemSense:
         payload = {
             "captured_at": utc_timestamp(),
             "pid": os.getpid(),
+            "scope": "runtime_process_including_systemsense",
+            "measurement_note": (
+                "RSS/CPU/thread values describe the shared LocalPilot runtime process; "
+                "cycle/write timings describe SystemSense collection work specifically."
+            ),
             "rss_mb": rss_mb,
             "cpu_percent": cpu_percent,
             "threads": threads,

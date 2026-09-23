@@ -1403,6 +1403,13 @@ class SystemSenseStore:
 class SystemSense:
     """Always-available environmental state engine beneath the LLM."""
 
+    _SELF_HISTORY_KEYS = (
+        "systemsense.cpu_percent",
+        "systemsense.rss_mb",
+        "systemsense.cycle_ms",
+        "systemsense.database_mb",
+    )
+
     _BASELINE_KEYS = (
         "cpu.percent",
         "cpu.frequency_mhz",
@@ -1682,6 +1689,15 @@ class SystemSense:
             },
         }
         self.store.replace_latest_snapshot("systemsense_self", payload)
+        self.store.save_metrics(
+            payload["captured_at"],
+            [
+                ("systemsense.cpu_percent", _finite(cpu_percent), "%", "systemsense_self"),
+                ("systemsense.rss_mb", _finite(rss_mb), "MiB", "systemsense_self"),
+                ("systemsense.cycle_ms", _finite(payload["cycle_ms"]), "ms", "systemsense_self"),
+                ("systemsense.database_mb", _finite(database_mb), "MiB", "systemsense_self"),
+            ],
+        )
         self._last_self_observation = now
         self._cached_self_observation = dict(payload)
         return payload
@@ -2695,7 +2711,7 @@ class SystemSense:
         self._last_systemsense_watch_sample = now_mono
 
     def history(self, *, metric: str, hours: float = 1.0, limit: int = 120) -> dict[str, Any]:
-        if metric not in self._BASELINE_KEYS and metric not in {
+        if metric not in self._BASELINE_KEYS and metric not in self._SELF_HISTORY_KEYS and metric not in {
             "processor.performance_limit_percent",
             "processor.performance_percent",
         }:

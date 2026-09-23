@@ -136,10 +136,12 @@ class SystemSenseReader:
             }
 
         identity["identity_note"] = (
-            "Executable hash/signature/version fields are the artifact fingerprint "
-            "captured during the watch. Current PID evidence is included only when "
-            "process start time confirms the same instance. Launch context is "
-            "best-effort configuration/crash evidence; it is not proof of causation."
+            "Executable hash/signature/version fields fingerprint the executable file "
+            "on disk at watch observation time; they do not prove the in-memory image "
+            "was reloaded if that file changed while the process stayed alive. Current "
+            "PID evidence is included only when process start time confirms the same "
+            "instance. Launch context is best-effort configuration/crash evidence; it "
+            "is not proof of causation."
         )
         return self._render(identity)
 

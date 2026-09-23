@@ -10,7 +10,7 @@ import time
 import psutil
 
 from localpilot.process import hidden_process_creation_flags
-from localpilot.process_identity import sanitize_command_line
+from localpilot.process_identity import inspect_executable_artifact, sanitize_command_line
 
 
 def _powershell(script: str, timeout: int = 20) -> str:
@@ -104,65 +104,8 @@ def _powershell_literal(value: str) -> str:
 
 
 def inspect_executable_metadata(path: str) -> dict:
-    """Inspect one executable path without executing it."""
-    executable = str(path or "").strip()
-    if not executable:
-        return {"available": False, "reason": "missing_executable_path"}
-    if os.name != "nt":
-        return {
-            "available": False,
-            "reason": "executable_metadata_currently_requires_windows",
-            "path": executable,
-        }
-    quoted = _powershell_literal(executable)
-    script = f"""
-$ErrorActionPreference = 'Stop'
-$path = {quoted}
-if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {{
-    [ordered]@{{ available = $false; reason = 'file_not_found'; path = $path }} |
-        ConvertTo-Json -Compress
-    exit 0
-}}
-$item = Get-Item -LiteralPath $path -ErrorAction Stop
-$version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($path)
-$signature = Get-AuthenticodeSignature -LiteralPath $path -ErrorAction SilentlyContinue
-$hash = Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction SilentlyContinue
-[ordered]@{{
-    available = $true
-    path = $item.FullName
-    size_bytes = [Int64]$item.Length
-    modified_at = $item.LastWriteTimeUtc.ToString('o')
-    company_name = $version.CompanyName
-    product_name = $version.ProductName
-    file_description = $version.FileDescription
-    file_version = $version.FileVersion
-    product_version = $version.ProductVersion
-    original_filename = $version.OriginalFilename
-    signature_status = if ($signature) {{ [string]$signature.Status }} else {{ $null }}
-    signer_subject = if ($signature -and $signature.SignerCertificate) {{
-        [string]$signature.SignerCertificate.Subject
-    }} else {{ $null }}
-    signer_issuer = if ($signature -and $signature.SignerCertificate) {{
-        [string]$signature.SignerCertificate.Issuer
-    }} else {{ $null }}
-    sha256 = if ($hash) {{ [string]$hash.Hash }} else {{ $null }}
-}} | ConvertTo-Json -Compress -Depth 4
-"""
-    raw = _powershell(script, timeout=20)
-    try:
-        payload = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return {
-            "available": False,
-            "reason": "metadata_query_failed",
-            "path": executable,
-            "detail": str(raw)[:500],
-        }
-    return payload if isinstance(payload, dict) else {
-        "available": False,
-        "reason": "metadata_query_invalid",
-        "path": executable,
-    }
+    """Compatibility surface for read-only historical file provenance."""
+    return inspect_executable_artifact(path)
 
 
 def inspect_process_identity(pid: int) -> str:
@@ -228,6 +171,107 @@ def inspect_process_identity(pid: int) -> str:
         result["services"] = services if isinstance(services, list) else []
 
     return json.dumps(result, indent=2)
+
+
+def inspect_process_launch_context(
+    executable: str,
+    *,
+    process_name: str = "",
+    pid: int = 0,
+    observed_at: str = "",
+) -> str:
+    """Best-effort read-only evidence about what can launch an executable.
+
+    Matches Windows services, StartupCommand entries and Scheduled Tasks against
+    the recorded executable/name, and returns nearby application crash events.
+    Event-log process creation is not assumed to be enabled; absence of an event
+    is explicitly non-evidence.
+    """
+    path = str(executable or "").strip()
+    name = str(process_name or "").strip()
+    if os.name != "nt":
+        return json.dumps(
+            {
+                "available": False,
+                "reason": "launch_context_currently_requires_windows",
+                "executable": path or None,
+                "process_name": name or None,
+            },
+            indent=2,
+        )
+
+    path_literal = _powershell_literal(path)
+    name_literal = _powershell_literal(name)
+    observed_literal = _powershell_literal(str(observed_at or ""))
+    script = f"""
+$ErrorActionPreference = 'SilentlyContinue'
+$path = {path_literal}
+$name = {name_literal}
+$observed = {observed_literal}
+$leaf = if ($path) {{ [IO.Path]::GetFileName($path) }} else {{ $name }}
+function Match-Text([string]$value) {{
+    if (-not $value) {{ return $false }}
+    if ($path -and $value.IndexOf($path, [StringComparison]::OrdinalIgnoreCase) -ge 0) {{ return $true }}
+    if ($leaf -and $value.IndexOf($leaf, [StringComparison]::OrdinalIgnoreCase) -ge 0) {{ return $true }}
+    return $false
+}}
+$services = @(Get-CimInstance Win32_Service | Where-Object {{ Match-Text $_.PathName }} |
+    Select-Object Name,DisplayName,State,StartMode,StartName,PathName)
+$startup = @(Get-CimInstance Win32_StartupCommand | Where-Object {{ Match-Text $_.Command }} |
+    Select-Object Name,Command,Location,User)
+$tasks = @()
+Get-ScheduledTask | ForEach-Object {{
+    $task = $_
+    foreach ($action in @($task.Actions)) {{
+        $joined = [string]$action.Execute + ' ' + [string]$action.Arguments
+        if (Match-Text $joined) {{
+            $tasks += [pscustomobject]@{{
+                TaskName = $task.TaskName
+                TaskPath = $task.TaskPath
+                State = [string]$task.State
+                Execute = [string]$action.Execute
+                Arguments = [string]$action.Arguments
+            }}
+            break
+        }}
+    }}
+}}
+$since = (Get-Date).AddDays(-7)
+if ($observed) {{
+    try {{ $since = ([DateTimeOffset]::Parse($observed)).LocalDateTime.AddHours(-6) }} catch {{}}
+}}
+$events = @(
+    Get-WinEvent -FilterHashtable @{{LogName='Application'; StartTime=$since}} -MaxEvents 300 |
+    Where-Object {{
+        ($_.Id -in 1000,1001,1026) -and
+        (($leaf -and $_.Message -like ('*' + $leaf + '*')) -or
+         ($name -and $_.Message -like ('*' + $name + '*')))
+    }} |
+    Select-Object -First 20 TimeCreated,Id,ProviderName,LevelDisplayName,Message
+)
+[ordered]@{{
+    available = $true
+    executable = $path
+    process_name = $name
+    pid = {int(pid)}
+    services = $services
+    startup_items = $startup
+    scheduled_tasks = $tasks
+    recent_application_events = $events
+    event_note = 'Windows process-creation auditing is not assumed enabled; this is launch-configuration and crash evidence, not a complete creation log.'
+}} | ConvertTo-Json -Compress -Depth 7
+"""
+    raw = _powershell(script, timeout=30)
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        payload = {
+            "available": False,
+            "reason": "launch_context_query_failed",
+            "detail": str(raw)[:1000],
+        }
+    return json.dumps(payload, indent=2)
+
 
 
 def get_startup_items() -> str:

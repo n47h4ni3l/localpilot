@@ -189,7 +189,16 @@ class PsutilTelemetryCollector:
                 )
             except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
                 continue
-        processes.sort(key=lambda row: (row["cpu_percent"], row["ram_mb"]), reverse=True)
+        cpu_processes = sorted(
+            processes,
+            key=lambda row: (row["cpu_percent"], row["ram_mb"]),
+            reverse=True,
+        )
+        memory_processes = sorted(
+            processes,
+            key=lambda row: (row["ram_mb"], row["cpu_percent"]),
+            reverse=True,
+        )
 
         battery = None
         try:
@@ -225,7 +234,12 @@ class PsutilTelemetryCollector:
             "storage": {"io": io, "volumes": volumes},
             "network": net,
             "battery": battery,
-            "top_processes": processes[: self.max_processes],
+            # Preserve the existing CPU-oriented contention view while also
+            # retaining an independent memory ranking. A low-CPU process can be
+            # the dominant RAM consumer and must not disappear from a memory
+            # investigation merely because it is idle.
+            "top_processes": cpu_processes[: self.max_processes],
+            "top_memory_processes": memory_processes[: self.max_processes],
         }
 
 

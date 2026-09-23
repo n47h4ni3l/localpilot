@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import subprocess
 from collections.abc import Iterable
 from pathlib import Path
@@ -54,6 +55,18 @@ def sanitize_command_line(parts: Iterable[object]) -> str:
         output.append(arg)
 
     return " ".join(output)[:4000]
+
+
+def sanitize_command_text(value: str) -> str:
+    """Redact likely credential values from a stored command string."""
+    text = str(value or "")
+    if not text:
+        return ""
+    try:
+        parts = shlex.split(text, posix=False)
+    except ValueError:
+        parts = text.split()
+    return sanitize_command_line(parts)
 
 
 def _powershell_literal(value: str) -> str:

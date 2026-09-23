@@ -224,6 +224,12 @@ def registry(
                         reader.get_system_sense_history,
                     ),
                     ToolSpec(
+                        "get_memory_watch_report",
+                        "Read the latest owner-requested RAM watch report, including sample count, system-memory peaks and independently ranked per-process RAM consumers. Use watch_id=0 for the latest watch.",
+                        RiskLevel.READ_ONLY,
+                        reader.get_memory_watch_report,
+                    ),
+                    ToolSpec(
                         "get_workload_correlations",
                         "Read bounded observational correlations between model inference speed and environmental metrics; correlations do not prove causality.",
                         RiskLevel.READ_ONLY,

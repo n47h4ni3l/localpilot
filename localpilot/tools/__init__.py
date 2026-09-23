@@ -231,14 +231,26 @@ def registry(
                         reader.get_system_sense_history,
                     ),
                     ToolSpec(
+                        "get_systemsense_watch_report",
+                        "Read the latest or a specific owner-requested SystemSense watch. Supports memory, CPU, storage, network, GPU/VRAM and whole-system profiles with system peaks, richer per-process metrics, lifecycle and network-attribution summaries.",
+                        RiskLevel.READ_ONLY,
+                        reader.get_systemsense_watch_report,
+                    ),
+                    ToolSpec(
+                        "inspect_systemsense_watch_process",
+                        "Inspect one PID observed by a SystemSense watch. Uses the watch-time executable fingerprint, redacted command line, ancestry, lifecycle, network endpoints and resource evidence; adds live PID data only when start time proves it is the same process instance, plus best-effort launch/crash context.",
+                        RiskLevel.READ_ONLY,
+                        reader.inspect_systemsense_watch_process,
+                    ),
+                    ToolSpec(
                         "get_memory_watch_report",
-                        "Read the latest owner-requested RAM watch report, including sample count, system-memory peaks and independently ranked per-process RAM consumers. Use watch_id=0 for the latest watch.",
+                        "Compatibility alias for the latest RAM-focused SystemSense watch report.",
                         RiskLevel.READ_ONLY,
                         reader.get_memory_watch_report,
                     ),
                     ToolSpec(
                         "inspect_memory_watch_process",
-                        "Inspect one PID observed by the latest or a specified RAM watch. Returns watch-captured executable, command line, parent/start identity plus executable version/signature/hash; current PID data is attached only if start time proves it is the same process instance.",
+                        "Compatibility alias for inspecting a PID observed by a RAM-focused SystemSense watch.",
                         RiskLevel.READ_ONLY,
                         reader.inspect_memory_watch_process,
                     ),

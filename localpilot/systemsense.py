@@ -825,14 +825,24 @@ class SystemSenseStore:
                 + " ORDER BY event_at ASC LIMIT 50",
                 tuple(lifecycle_params),
             ).fetchall()
+            network_params: list[Any] = [wid, int(pid)]
+            network_instance_clause = ""
+            if params[2:]:
+                network_instance_clause = (
+                    " AND ABS(COALESCE(p.started_at_epoch,-1) - ?) <= 2.0"
+                )
+                network_params.append(params[2])
             network = connection.execute(
                 "SELECT n.local_endpoint, n.remote_endpoint, n.status, n.family, n.socket_type "
                 "FROM systemsense_watch_network_samples n "
                 "JOIN systemsense_watch_samples s ON s.id=n.sample_id "
+                "JOIN systemsense_watch_process_samples p "
+                "ON p.sample_id=n.sample_id AND p.pid=n.pid "
                 "WHERE s.watch_id=? AND n.pid=? "
-                "GROUP BY n.local_endpoint, n.remote_endpoint, n.status, n.family, n.socket_type "
+                + network_instance_clause
+                + " GROUP BY n.local_endpoint, n.remote_endpoint, n.status, n.family, n.socket_type "
                 "ORDER BY MAX(s.captured_at) DESC LIMIT 100",
-                (wid, int(pid)),
+                tuple(network_params),
             ).fetchall()
 
         if row is None:

@@ -14,6 +14,11 @@ ask() and _continue_high_reasoning_answer() were not touched."""
 
 import re
 
+from localpilot.systemsense_watch import (
+    is_systemsense_process_investigation_request,
+    is_systemsense_watch_report_request,
+)
+
 
 def _is_live_local_information_prompt(prompt: str) -> bool:
     """Recognize local facts that inherently require fresh external evidence."""
@@ -53,6 +58,11 @@ def _evidence_requirements(prompt: str) -> set[str]:
     """Identify explicit evidence sources the owner asked LocalPilot to inspect."""
     text = " ".join(str(prompt).lower().split())
     requirements: set[str] = set()
+    watch_process_investigation = is_systemsense_process_investigation_request(prompt)
+    if is_systemsense_watch_report_request(prompt) or watch_process_investigation:
+        requirements.add("SystemSense watch")
+    if watch_process_investigation:
+        requirements.add("process identity")
 
     def mentions(*phrases: str) -> bool:
         return any(
@@ -67,6 +77,9 @@ def _evidence_requirements(prompt: str) -> set[str]:
             text,
         )
     )
+
+    if watch_process_investigation and not forbids_public_web:
+        requirements.update({"public web discovery", "public HTTPS"})
 
     if re.search(r"https://\S+", text) and not forbids_public_web:
         requirements.add("public HTTPS")
@@ -127,7 +140,10 @@ def _evidence_requirements(prompt: str) -> set[str]:
         "power plan", "health check", "system health", "my pc", "this pc", "your pc",
         "my computer", "this computer", "your computer",
     )
-    if asks_for_evidence and pc_specific:
+    if asks_for_evidence and pc_specific and not watch_process_investigation:
+        # A historical watch-bound process investigation already requires the
+        # stronger instance-aware process identity source. Generic current-PC
+        # evidence must not satisfy or duplicate that requirement.
         requirements.add("Windows/PC state")
     return requirements
 

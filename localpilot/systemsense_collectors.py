@@ -12,6 +12,8 @@ from typing import Any, Iterable
 
 import psutil
 
+from localpilot.process_identity import sanitize_command_line
+
 from localpilot.process import hidden_process_creation_flags
 
 
@@ -100,6 +102,8 @@ class PsutilTelemetryCollector:
         self._last_at: float | None = None
         self._last_disk: Any = None
         self._last_network: Any = None
+        self._last_process_io: dict[tuple[int, float], tuple[int, int, float]] = {}
+        self._last_process_io_simple: dict[int, tuple[int, int, float]] = {}
 
     @staticmethod
     def _pressure(percent: float | None) -> str:
@@ -112,6 +116,146 @@ class PsutilTelemetryCollector:
         if percent >= 65:
             return "moderate"
         return "low"
+
+    @staticmethod
+    def _endpoint(value: Any) -> str | None:
+        if not value:
+            return None
+        try:
+            host = getattr(value, "ip", None) or value[0]
+            port = getattr(value, "port", None) or value[1]
+            return f"{host}:{int(port)}"
+        except (TypeError, ValueError, IndexError, AttributeError):
+            return str(value)[:300]
+
+    def enrich_processes(self, pids: Iterable[int]) -> list[dict[str, Any]]:
+        """Collect bounded process evidence only for explicitly selected PIDs."""
+        now = time.monotonic()
+        output: list[dict[str, Any]] = []
+        live_keys: set[tuple[int, float]] = set()
+        for raw_pid in list(dict.fromkeys(int(pid) for pid in pids if int(pid) > 0))[:100]:
+            try:
+                process = psutil.Process(raw_pid)
+                with process.oneshot():
+                    started = float(process.create_time())
+                    key = (int(process.pid), started)
+                    live_keys.add(key)
+                    memory = process.memory_info()
+                    proc_io = process.io_counters()
+                    read_bytes = int(getattr(proc_io, "read_bytes", 0) or 0)
+                    write_bytes = int(getattr(proc_io, "write_bytes", 0) or 0)
+                    previous = self._last_process_io.get(key)
+                    read_delta_mb = None
+                    write_delta_mb = None
+                    if previous is not None:
+                        old_read, old_write, old_at = previous
+                        elapsed = max(0.001, now - old_at)
+                        read_delta_mb = round(max(0, read_bytes - old_read) / 1024**2 / elapsed, 3)
+                        write_delta_mb = round(max(0, write_bytes - old_write) / 1024**2 / elapsed, 3)
+                    self._last_process_io[key] = (read_bytes, write_bytes, now)
+
+                    row: dict[str, Any] = {
+                        "pid": int(process.pid),
+                        "name": str(process.name() or "unknown")[:200],
+                        "cpu_percent": round(float(process.cpu_percent(None) or 0.0), 2),
+                        "ram_mb": round(float(getattr(memory, "rss", 0) or 0) / 1024**2, 2),
+                        "vms_mb": round(float(getattr(memory, "vms", 0) or 0) / 1024**2, 2),
+                        "private_mb": (
+                            round(float(getattr(memory, "private", 0) or 0) / 1024**2, 2)
+                            if hasattr(memory, "private")
+                            else None
+                        ),
+                        "pagefile_mb": (
+                            round(float(getattr(memory, "pagefile", 0) or 0) / 1024**2, 2)
+                            if hasattr(memory, "pagefile")
+                            else None
+                        ),
+                        "page_faults": int(
+                            getattr(memory, "pagefaults", getattr(memory, "pfaults", 0)) or 0
+                        ),
+                        "threads": int(process.num_threads() or 0),
+                        "handles": (
+                            int(process.num_handles() or 0)
+                            if hasattr(process, "num_handles")
+                            else None
+                        ),
+                        "io_read_mb": round(read_bytes / 1024**2, 2),
+                        "io_write_mb": round(write_bytes / 1024**2, 2),
+                        "io_read_mb_s": read_delta_mb,
+                        "io_write_mb_s": write_delta_mb,
+                        "executable": str(process.exe() or "")[:1000],
+                        "command_line": sanitize_command_line(process.cmdline()),
+                        "parent_pid": int(process.ppid() or 0),
+                        "started_at_epoch": started,
+                        "username": str(process.username() or "")[:300],
+                    }
+
+                ancestry: list[dict[str, Any]] = []
+                try:
+                    parent = process.parent()
+                    depth = 0
+                    while parent is not None and depth < 6:
+                        with parent.oneshot():
+                            parent_row = {
+                                "pid": int(parent.pid),
+                                "name": str(parent.name() or "")[:200],
+                                "executable": str(parent.exe() or "")[:1000],
+                                "started_at_epoch": float(parent.create_time()),
+                            }
+                        ancestry.append(parent_row)
+                        if depth == 0:
+                            row["parent_name"] = parent_row["name"]
+                            row["parent_executable"] = parent_row["executable"]
+                        parent = parent.parent()
+                        depth += 1
+                except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
+                    pass
+                row["ancestry"] = ancestry
+                output.append(row)
+            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
+                continue
+
+        if len(self._last_process_io) > 1000:
+            self._last_process_io = {
+                key: value
+                for key, value in self._last_process_io.items()
+                if key in live_keys or now - value[2] < 3600
+            }
+        return output
+
+    def collect_process_connections(
+        self,
+        pids: Iterable[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        wanted = (
+            {int(pid) for pid in pids if int(pid) > 0}
+            if pids is not None
+            else None
+        )
+        if wanted == set():
+            return []
+        rows: list[dict[str, Any]] = []
+        try:
+            connections = psutil.net_connections(kind="inet")
+        except (psutil.AccessDenied, OSError):
+            return rows
+        for connection in connections:
+            pid = int(getattr(connection, "pid", 0) or 0)
+            if wanted is not None and pid not in wanted:
+                continue
+            rows.append(
+                {
+                    "pid": pid,
+                    "family": str(getattr(connection, "family", "")),
+                    "type": str(getattr(connection, "type", "")),
+                    "local_endpoint": self._endpoint(getattr(connection, "laddr", None)),
+                    "remote_endpoint": self._endpoint(getattr(connection, "raddr", None)),
+                    "status": str(getattr(connection, "status", "") or ""),
+                }
+            )
+            if len(rows) >= 500:
+                break
+        return rows
 
     def collect(self) -> dict[str, Any]:
         now = time.monotonic()
@@ -174,22 +318,76 @@ class PsutilTelemetryCollector:
                     continue
                 memory = info.get("memory_info")
                 proc_io = info.get("io_counters")
+                pid = int(info.get("pid") or 0)
+                read_bytes = int(getattr(proc_io, "read_bytes", 0) or 0)
+                write_bytes = int(getattr(proc_io, "write_bytes", 0) or 0)
+                prior_io = self._last_process_io_simple.get(pid)
+                read_rate = None
+                write_rate = None
+                if prior_io is not None:
+                    old_read, old_write, old_at = prior_io
+                    proc_elapsed = max(0.001, now - old_at)
+                    read_rate = round(
+                        max(0, read_bytes - old_read) / proc_elapsed / 1024**2,
+                        3,
+                    )
+                    write_rate = round(
+                        max(0, write_bytes - old_write) / proc_elapsed / 1024**2,
+                        3,
+                    )
+                self._last_process_io_simple[pid] = (read_bytes, write_bytes, now)
                 processes.append(
                     {
-                        "pid": int(info.get("pid") or 0),
+                        "pid": pid,
                         "name": str(info.get("name") or "unknown")[:200],
                         "cpu_percent": round(float(info.get("cpu_percent") or 0.0), 2),
                         "ram_mb": round(float(memory.rss if memory else 0) / 1024**2, 2),
                         "io_total_mb": round(
-                            float((proc_io.read_bytes + proc_io.write_bytes) if proc_io else 0)
-                            / 1024**2,
+                            float(read_bytes + write_bytes) / 1024**2,
                             2,
                         ),
+                        "io_read_mb_s": read_rate,
+                        "io_write_mb_s": write_rate,
                     }
                 )
             except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
                 continue
-        processes.sort(key=lambda row: (row["cpu_percent"], row["ram_mb"]), reverse=True)
+        if len(self._last_process_io_simple) > 5000:
+            active_pids = {int(row["pid"]) for row in processes}
+            self._last_process_io_simple = {
+                pid: values
+                for pid, values in self._last_process_io_simple.items()
+                if pid in active_pids or now - values[2] < 3600
+            }
+
+        cpu_processes = sorted(
+            processes,
+            key=lambda row: (row["cpu_percent"], row["ram_mb"]),
+            reverse=True,
+        )
+        memory_processes = sorted(
+            processes,
+            key=lambda row: (row["ram_mb"], row["cpu_percent"]),
+            reverse=True,
+        )
+        io_processes = sorted(
+            processes,
+            key=lambda row: (
+                float(row.get("io_read_mb_s") or 0.0)
+                + float(row.get("io_write_mb_s") or 0.0),
+                row.get("io_total_mb", 0.0),
+            ),
+            reverse=True,
+        )
+
+        enriched_memory_processes = self.enrich_processes(
+            [row["pid"] for row in memory_processes[: self.max_processes]]
+        )
+        enriched_by_pid = {row["pid"]: row for row in enriched_memory_processes}
+        enriched_memory_processes = [
+            {**row, **enriched_by_pid.get(row["pid"], {})}
+            for row in memory_processes[: self.max_processes]
+        ]
 
         battery = None
         try:
@@ -225,7 +423,13 @@ class PsutilTelemetryCollector:
             "storage": {"io": io, "volumes": volumes},
             "network": net,
             "battery": battery,
-            "top_processes": processes[: self.max_processes],
+            # Preserve the existing CPU-oriented contention view while also
+            # retaining an independent memory ranking. A low-CPU process can be
+            # the dominant RAM consumer and must not disappear from a memory
+            # investigation merely because it is idle.
+            "top_processes": cpu_processes[: self.max_processes],
+            "top_memory_processes": enriched_memory_processes,
+            "top_io_processes": io_processes[: self.max_processes],
         }
 
 
@@ -234,6 +438,95 @@ class WindowsPerformanceCollector:
 
     def __init__(self, wmi: WmiClient | None = None) -> None:
         self.wmi = wmi or WmiClient()
+
+    def collect_process_gpu(
+        self,
+        pids: Iterable[int] | None = None,
+    ) -> dict[int, dict[str, Any]]:
+        """Read Windows GPU and VRAM counters grouped by PID when available."""
+        wanted = (
+            {int(pid) for pid in pids if int(pid) > 0}
+            if pids is not None
+            else None
+        )
+        if wanted == set() or not bool(getattr(self.wmi, "available", os.name == "nt")):
+            return {}
+
+        output: dict[int, dict[str, Any]] = {}
+        def ensure(pid: int) -> dict[str, Any]:
+            return output.setdefault(
+                pid,
+                {
+                    "gpu_percent": 0.0,
+                    "gpu_dedicated_mb": 0.0,
+                    "gpu_shared_mb": 0.0,
+                    "gpu_committed_mb": 0.0,
+                },
+            )
+        pid_pattern = re.compile(r"(?:^|_)pid_(\d+)(?:_|$)", re.IGNORECASE)
+
+        try:
+            engines = self.wmi.query(
+                r"root\cimv2",
+                "Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine",
+                ("Name", "UtilizationPercentage"),
+            )
+        except Exception:
+            engines = []
+        for row in engines:
+            match = pid_pattern.search(str(row.get("Name") or ""))
+            if not match:
+                continue
+            pid = int(match.group(1))
+            if wanted is not None and pid not in wanted:
+                continue
+            values = ensure(pid)
+            try:
+                utilization = float(row.get("UtilizationPercentage") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            values["gpu_percent"] = min(
+                100.0,
+                float(values["gpu_percent"]) + max(0.0, utilization),
+            )
+
+        try:
+            memory_rows = self.wmi.query(
+                r"root\cimv2",
+                "Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory",
+                ("Name", "DedicatedUsage", "SharedUsage", "TotalCommitted"),
+            )
+        except Exception:
+            memory_rows = []
+        for row in memory_rows:
+            match = pid_pattern.search(str(row.get("Name") or ""))
+            if not match:
+                continue
+            pid = int(match.group(1))
+            if wanted is not None and pid not in wanted:
+                continue
+            values = ensure(pid)
+            for source, target in (
+                ("DedicatedUsage", "gpu_dedicated_mb"),
+                ("SharedUsage", "gpu_shared_mb"),
+                ("TotalCommitted", "gpu_committed_mb"),
+            ):
+                try:
+                    value = max(0.0, float(row.get(source) or 0.0))
+                except (TypeError, ValueError):
+                    continue
+                values[target] = round(
+                    float(values[target]) + value / 1024**2,
+                    2,
+                )
+
+        return {
+            pid: {
+                key: round(float(value), 2) if isinstance(value, (int, float)) else value
+                for key, value in values.items()
+            }
+            for pid, values in output.items()
+        }
 
     def collect(self) -> dict[str, Any]:
         available = bool(getattr(self.wmi, "available", os.name == "nt"))

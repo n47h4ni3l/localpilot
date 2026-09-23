@@ -33,6 +33,7 @@ _PC_TOOLS = {
     "get_system_summary",
     "get_storage_summary",
     "get_top_processes",
+    "inspect_process_identity",
     "get_startup_items",
     "get_active_power_plan",
     "get_defender_summary",
@@ -42,6 +43,10 @@ _PC_TOOLS = {
     "inspect_hardware_inventory",
     "inspect_driver_inventory",
     "get_system_sense_history",
+    "get_systemsense_watch_report",
+    "inspect_systemsense_watch_process",
+    "get_memory_watch_report",
+    "inspect_memory_watch_process",
     "get_workload_correlations",
     "inspect_raw_system_sense",
 }
@@ -83,6 +88,13 @@ def _forbidden_tools(prompt: str) -> frozenset[str]:
 def _tool_evidence_source(name: str) -> str | None:
     if name == "get_machine_location":
         return "machine location"
+    if name in {"get_systemsense_watch_report", "get_memory_watch_report"}:
+        return "SystemSense watch"
+    if name in {"inspect_systemsense_watch_process", "inspect_memory_watch_process"}:
+        # Historical watch investigations must use the watch-bound inspector
+        # because it verifies process instance identity and preserves the
+        # observation-time executable fingerprint.
+        return "process identity"
     if name in _REPOSITORY_TOOLS:
         return "trusted repository"
     if name in _GITHUB_TOOLS:

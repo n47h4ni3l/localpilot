@@ -21,6 +21,7 @@ from localpilot.tools.windows import (
     get_storage_summary,
     get_system_summary,
     get_top_processes,
+    inspect_process_identity,
 )
 from localpilot.tools.windows_actions import WindowsActions
 from localpilot.systemsense import SystemSense, get_system_sense
@@ -40,6 +41,12 @@ def registry(
         ToolSpec("get_system_summary", "Read Windows, CPU and RAM summary.", RiskLevel.READ_ONLY, get_system_summary),
         ToolSpec("get_storage_summary", "Read local disk capacity and free space.", RiskLevel.READ_ONLY, get_storage_summary),
         ToolSpec("get_top_processes", "Read top processes by CPU and memory.", RiskLevel.READ_ONLY, get_top_processes),
+        ToolSpec(
+            "inspect_process_identity",
+            "Inspect one currently running PID: executable path, command line, parent process, start time, user, Windows service associations, file version, Authenticode signer and SHA-256. Read-only; never starts or modifies the process.",
+            RiskLevel.READ_ONLY,
+            inspect_process_identity,
+        ),
         ToolSpec("get_startup_items", "Read Windows startup entries.", RiskLevel.READ_ONLY, get_startup_items),
         ToolSpec("get_active_power_plan", "Read the active Windows power plan.", RiskLevel.READ_ONLY, get_active_power_plan),
         ToolSpec("get_defender_summary", "Read basic Microsoft Defender protection state.", RiskLevel.READ_ONLY, get_defender_summary),
@@ -222,6 +229,30 @@ def registry(
                         "Read bounded history for one allow-listed SystemSense metric without raw SQL access.",
                         RiskLevel.READ_ONLY,
                         reader.get_system_sense_history,
+                    ),
+                    ToolSpec(
+                        "get_systemsense_watch_report",
+                        "Read the latest or a specific owner-requested SystemSense watch. Supports memory, CPU, storage, network, GPU/VRAM and whole-system profiles with system peaks, richer per-process metrics, lifecycle and network-attribution summaries.",
+                        RiskLevel.READ_ONLY,
+                        reader.get_systemsense_watch_report,
+                    ),
+                    ToolSpec(
+                        "inspect_systemsense_watch_process",
+                        "Inspect one PID observed by a SystemSense watch. Uses the watch-time executable fingerprint, redacted command line, ancestry, lifecycle, network endpoints and resource evidence; adds live PID data only when start time proves it is the same process instance, plus best-effort launch/crash context.",
+                        RiskLevel.READ_ONLY,
+                        reader.inspect_systemsense_watch_process,
+                    ),
+                    ToolSpec(
+                        "get_memory_watch_report",
+                        "Compatibility alias for the latest RAM-focused SystemSense watch report.",
+                        RiskLevel.READ_ONLY,
+                        reader.get_memory_watch_report,
+                    ),
+                    ToolSpec(
+                        "inspect_memory_watch_process",
+                        "Compatibility alias for inspecting a PID observed by a RAM-focused SystemSense watch.",
+                        RiskLevel.READ_ONLY,
+                        reader.inspect_memory_watch_process,
                     ),
                     ToolSpec(
                         "get_workload_correlations",

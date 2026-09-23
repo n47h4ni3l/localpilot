@@ -287,6 +287,105 @@ class LocalPilotAgent:
         )
         return content
 
+    def acknowledge_systemsense_watch(
+        self,
+        owner_prompt: str,
+        watch: dict[str, Any],
+    ) -> str:
+        """Acknowledge a real registered SystemSense watch with a tiny model turn."""
+        profile = str(watch.get("profile") or "system")
+        profile_label = {
+            "memory": "RAM/memory",
+            "cpu": "CPU",
+            "storage": "disk/storage",
+            "network": "network",
+            "gpu": "GPU/VRAM",
+            "system": "whole-system",
+        }.get(profile, profile)
+        fallback = (
+            f"SystemSense {profile_label} monitoring is active. I’ll sample the relevant "
+            f"system and per-process evidence every "
+            f"{watch.get('sample_interval_seconds', 15):g} seconds until "
+            f"{watch.get('expires_at')}. Ask me later what the watch found."
+        )
+        try:
+            from ollama import chat
+        except ImportError:
+            content = fallback
+        else:
+            recent = [
+                {
+                    "role": str(message.get("role") or ""),
+                    "content": str(message.get("content") or ""),
+                }
+                for message in self.messages
+                if message.get("role") in {"user", "assistant"}
+                and str(message.get("content") or "").strip()
+            ][-6:]
+            messages = [dict(self.messages[0]), *recent]
+            messages.extend(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "SYSTEMSENSE WATCH ACKNOWLEDGEMENT: The application has already "
+                            "registered the owner-requested SystemSense watch. This is "
+                            "authoritative application state, not a proposal. Give a short, "
+                            "natural acknowledgement in LocalPilot's normal voice. State the "
+                            f"watch focus ({profile_label}), that relevant per-process evidence "
+                            "will be sampled, and when the watch ends. Do not claim you will "
+                            "actively think in the background, do not invent findings before "
+                            "samples exist, and do not expose internal routing. Watch state:\n"
+                            + json.dumps(watch, ensure_ascii=False, sort_keys=True, default=str)
+                        ),
+                    },
+                    {"role": "user", "content": owner_prompt},
+                ]
+            )
+            response = self._stream_chat_message(
+                chat,
+                think=False,
+                tools=None,
+                options={"num_predict": 192},
+                messages=messages,
+                phase="systemsense_watch_ack",
+                turn_no=0,
+            )
+            runtime = dict(self._last_stream_runtime)
+            draft = str(response.get("content") or "").strip()
+            calls = response.get("tool_calls") or []
+            if (
+                draft
+                and not calls
+                and runtime.get("runtime_classification") != "generation_limit"
+                and not self._looks_like_generic_reset(draft)
+            ):
+                content = draft
+            else:
+                content = fallback
+
+        self.messages.append({"role": "user", "content": owner_prompt})
+        self.messages.append({"role": "assistant", "content": content})
+        self.audit.write(
+            "systemsense_watch_acknowledged",
+            watch_id=watch.get("watch_id"),
+            profile=profile,
+            expires_at=watch.get("expires_at"),
+            sample_interval_seconds=watch.get("sample_interval_seconds"),
+            content_chars=len(content),
+        )
+        return content
+
+    def acknowledge_memory_watch(
+        self,
+        owner_prompt: str,
+        watch: dict[str, Any],
+    ) -> str:
+        """Compatibility wrapper for the original RAM-watch route."""
+        watch = dict(watch)
+        watch.setdefault("profile", "memory")
+        return self.acknowledge_systemsense_watch(owner_prompt, watch)
+
     def teach(self, lesson: str, *, topic: str = "general") -> HumanLesson:
         record = self.memory.record_human_lesson(
             lesson,

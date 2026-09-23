@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import psutil
 
 from localpilot.process import hidden_process_creation_flags
+from localpilot.process_identity import sanitize_command_line
 from localpilot.tools import windows
 
 
@@ -160,3 +162,189 @@ def test_windows_powershell_tools_delegate_to_read_only_queries(monkeypatch):
     assert scripts[1] == "powercfg /GETACTIVESCHEME"
     assert "Get-MpComputerStatus" in scripts[2]
     assert "Get-PnpDevice" in scripts[3]
+
+
+
+def test_inspect_executable_metadata_delegates_to_observation_time_fingerprint(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        windows,
+        "inspect_executable_artifact",
+        lambda path: (
+            calls.append(path)
+            or {
+                "available": True,
+                "path": path,
+                "company_name": "Example Corp",
+                "product_name": "Example Worker",
+                "file_version": "1.2.3",
+                "signature_status": "Valid",
+                "signer_subject": "CN=Example Corp",
+                "sha256": "ABC123",
+            }
+        ),
+    )
+
+    result = windows.inspect_executable_metadata(r"C:\Apps\worker.exe")
+
+    assert calls == [r"C:\Apps\worker.exe"]
+    assert result["company_name"] == "Example Corp"
+    assert result["signature_status"] == "Valid"
+    assert result["sha256"] == "ABC123"
+
+
+def test_inspect_process_identity_returns_runtime_parent_services_and_file_provenance(
+    monkeypatch,
+):
+    class IdentityProcess:
+        pid = 42
+
+        def oneshot(self):
+            return nullcontext()
+
+        def exe(self):
+            return r"C:\Apps\worker.exe"
+
+        def is_running(self):
+            return True
+
+        def name(self):
+            return "worker.exe"
+
+        def cmdline(self):
+            return [r"C:\Apps\worker.exe", "--serve"]
+
+        def ppid(self):
+            return 7
+
+        def create_time(self):
+            return 1234.5
+
+        def username(self):
+            return r"PC\owner"
+
+        def parent(self):
+            return ParentProcess()
+
+    class ParentProcess:
+        pid = 7
+
+        def oneshot(self):
+            return nullcontext()
+
+        def name(self):
+            return "launcher.exe"
+
+        def exe(self):
+            return r"C:\Apps\launcher.exe"
+
+    monkeypatch.setattr(windows.psutil, "Process", lambda pid: IdentityProcess())
+    monkeypatch.setattr(
+        windows,
+        "inspect_executable_metadata",
+        lambda path: {
+            "available": True,
+            "path": path,
+            "company_name": "Example Corp",
+            "signature_status": "Valid",
+        },
+    )
+    monkeypatch.setattr(windows.os, "name", "nt")
+    monkeypatch.setattr(
+        windows,
+        "_powershell",
+        lambda script, timeout=20: json.dumps(
+            {
+                "Name": "ExampleService",
+                "DisplayName": "Example Service",
+                "State": "Running",
+                "StartMode": "Auto",
+                "PathName": r"C:\Apps\worker.exe --service",
+            }
+        ),
+    )
+
+    result = json.loads(windows.inspect_process_identity(42))
+
+    assert result["available"] is True
+    assert result["running"] is True
+    assert result["name"] == "worker.exe"
+    assert result["executable"] == r"C:\Apps\worker.exe"
+    assert result["command_line"].endswith("--serve")
+    assert result["parent"]["pid"] == 7
+    assert result["parent"]["name"] == "launcher.exe"
+    assert result["executable_metadata"]["company_name"] == "Example Corp"
+    assert result["services"][0]["Name"] == "ExampleService"
+
+
+
+def test_process_command_line_redacts_common_secret_values():
+    rendered = sanitize_command_line(
+        [
+            "python.exe",
+            "worker.py",
+            "--token",
+            "super-secret-token",
+            "--api-key=abcdef",
+            "https://user:password@example.test/path",
+            "--mode",
+            "safe",
+        ]
+    )
+
+    assert "super-secret-token" not in rendered
+    assert "abcdef" not in rendered
+    assert "password@example" not in rendered
+    assert "--token <redacted>" in rendered
+    assert "--api-key=<redacted>" in rendered
+    assert "https://user:<redacted>@example.test/path" in rendered
+    assert "--mode safe" in rendered
+
+
+
+def test_launch_context_redacts_task_and_startup_secrets(monkeypatch):
+    monkeypatch.setattr(windows.os, "name", "nt")
+    monkeypatch.setattr(
+        windows,
+        "_powershell",
+        lambda script, timeout=30: json.dumps(
+            {
+                "available": True,
+                "services": [
+                    {
+                        "Name": "Worker",
+                        "PathName": r"C:\Apps\worker.exe --token service-secret",
+                    }
+                ],
+                "startup_items": [
+                    {
+                        "Name": "Worker",
+                        "Command": r"C:\Apps\worker.exe --api-key=startup-secret",
+                    }
+                ],
+                "scheduled_tasks": [
+                    {
+                        "TaskName": "Worker",
+                        "Execute": r"C:\Apps\worker.exe",
+                        "Arguments": "--password task-secret --mode safe",
+                    }
+                ],
+                "recent_application_events": [],
+            }
+        ),
+    )
+
+    payload = json.loads(
+        windows.inspect_process_launch_context(
+            r"C:\Apps\worker.exe",
+            process_name="worker.exe",
+            pid=42,
+        )
+    )
+
+    rendered = json.dumps(payload)
+    assert "service-secret" not in rendered
+    assert "startup-secret" not in rendered
+    assert "task-secret" not in rendered
+    assert "<redacted>" in rendered

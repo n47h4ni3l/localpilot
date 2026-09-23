@@ -8,12 +8,15 @@ import sqlite3
 import statistics
 import threading
 import time
+
+import psutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
 from localpilot.config import SystemSenseConfig
 from localpilot.runtime_evidence import RuntimeEvidence
+from localpilot.process_identity import inspect_executable_artifact
 from localpilot.systemsense_collectors import (
     LibreHardwareMonitorCollector,
     PsutilTelemetryCollector,
@@ -129,8 +132,236 @@ class SystemSenseStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_inference_time
                     ON inference_metrics(captured_at DESC);
+                CREATE TABLE IF NOT EXISTS memory_watches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    label TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_watches_status_time
+                    ON memory_watches(status, created_at DESC);
+                CREATE TABLE IF NOT EXISTS memory_watch_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    watch_id INTEGER NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    system_memory_percent REAL NOT NULL,
+                    system_available_gb REAL,
+                    FOREIGN KEY(watch_id) REFERENCES memory_watches(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_watch_samples_watch_time
+                    ON memory_watch_samples(watch_id, captured_at DESC);
+                CREATE TABLE IF NOT EXISTS memory_watch_process_samples (
+                    sample_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    ram_mb REAL NOT NULL,
+                    cpu_percent REAL NOT NULL,
+                    executable TEXT,
+                    command_line TEXT,
+                    parent_pid INTEGER,
+                    parent_name TEXT,
+                    parent_executable TEXT,
+                    started_at_epoch REAL,
+                    username TEXT,
+                    FOREIGN KEY(sample_id) REFERENCES memory_watch_samples(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_watch_process_name
+                    ON memory_watch_process_samples(name, ram_mb DESC);
+
+                CREATE TABLE IF NOT EXISTS systemsense_watches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    profile TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_systemsense_watches_status_time
+                    ON systemsense_watches(status, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS systemsense_watch_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    watch_id INTEGER NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    cpu_percent REAL,
+                    memory_percent REAL,
+                    system_available_gb REAL,
+                    storage_read_mb_s REAL,
+                    storage_write_mb_s REAL,
+                    network_send_mbps REAL,
+                    network_receive_mbps REAL,
+                    gpu_percent REAL,
+                    vram_used_mb REAL,
+                    FOREIGN KEY(watch_id) REFERENCES systemsense_watches(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_systemsense_watch_samples_time
+                    ON systemsense_watch_samples(watch_id, captured_at DESC);
+
+                CREATE TABLE IF NOT EXISTS systemsense_executable_artifacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    captured_at TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    size_bytes INTEGER,
+                    modified_ns INTEGER,
+                    sha256 TEXT,
+                    company_name TEXT,
+                    product_name TEXT,
+                    file_description TEXT,
+                    file_version TEXT,
+                    product_version TEXT,
+                    original_filename TEXT,
+                    signature_status TEXT,
+                    signer_subject TEXT,
+                    signer_issuer TEXT,
+                    UNIQUE(path, size_bytes, modified_ns)
+                );
+
+                CREATE TABLE IF NOT EXISTS systemsense_watch_process_samples (
+                    sample_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    started_at_epoch REAL,
+                    name TEXT NOT NULL,
+                    cpu_percent REAL,
+                    rss_mb REAL,
+                    vms_mb REAL,
+                    private_mb REAL,
+                    pagefile_mb REAL,
+                    threads INTEGER,
+                    handles INTEGER,
+                    page_faults INTEGER,
+                    io_read_mb REAL,
+                    io_write_mb REAL,
+                    io_read_mb_s REAL,
+                    io_write_mb_s REAL,
+                    gpu_percent REAL,
+                    gpu_dedicated_mb REAL,
+                    gpu_shared_mb REAL,
+                    gpu_committed_mb REAL,
+                    executable TEXT,
+                    command_line TEXT,
+                    parent_pid INTEGER,
+                    parent_name TEXT,
+                    parent_executable TEXT,
+                    ancestry_json TEXT,
+                    username TEXT,
+                    artifact_id INTEGER,
+                    FOREIGN KEY(sample_id) REFERENCES systemsense_watch_samples(id),
+                    FOREIGN KEY(artifact_id) REFERENCES systemsense_executable_artifacts(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_systemsense_watch_process_ram
+                    ON systemsense_watch_process_samples(rss_mb DESC);
+                CREATE INDEX IF NOT EXISTS idx_systemsense_watch_process_pid
+                    ON systemsense_watch_process_samples(pid, started_at_epoch);
+
+                CREATE TABLE IF NOT EXISTS systemsense_watch_network_samples (
+                    sample_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    family TEXT,
+                    socket_type TEXT,
+                    local_endpoint TEXT,
+                    remote_endpoint TEXT,
+                    status TEXT,
+                    FOREIGN KEY(sample_id) REFERENCES systemsense_watch_samples(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_systemsense_watch_network_pid
+                    ON systemsense_watch_network_samples(pid, sample_id);
+
+                CREATE TABLE IF NOT EXISTS systemsense_watch_lifecycle (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    watch_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    started_at_epoch REAL,
+                    event TEXT NOT NULL,
+                    event_at TEXT NOT NULL,
+                    name TEXT,
+                    parent_pid INTEGER,
+                    details_json TEXT,
+                    FOREIGN KEY(watch_id) REFERENCES systemsense_watches(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_systemsense_watch_lifecycle_time
+                    ON systemsense_watch_lifecycle(watch_id, event_at DESC);
                 """
             )
+            self._migrate_schema(connection)
+
+    @staticmethod
+    def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
+        if not SystemSenseStore._table_exists(connection, table):
+            return set()
+        return {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+
+    def _migrate_schema(self, connection: sqlite3.Connection) -> None:
+        """Versioned, idempotent migrations for SystemSense's private database."""
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
+
+        if version < 1:
+            # Older PR160 builds used memory-specific tables. Preserve any
+            # samples already collected by copying their stable core fields into
+            # the generic SystemSense watch schema once.
+            if (
+                self._table_exists(connection, "memory_watches")
+                and connection.execute(
+                    "SELECT COUNT(*) FROM systemsense_watches"
+                ).fetchone()[0] == 0
+            ):
+                connection.execute(
+                    "INSERT INTO systemsense_watches("
+                    "id, created_at, expires_at, status, label, profile"
+                    ") SELECT id, created_at, expires_at, status, label, 'memory' "
+                    "FROM memory_watches"
+                )
+                if self._table_exists(connection, "memory_watch_samples"):
+                    connection.execute(
+                        "INSERT INTO systemsense_watch_samples("
+                        "id, watch_id, captured_at, memory_percent, system_available_gb"
+                        ") SELECT id, watch_id, captured_at, system_memory_percent, "
+                        "system_available_gb FROM memory_watch_samples"
+                    )
+                if self._table_exists(connection, "memory_watch_process_samples"):
+                    columns = self._columns(connection, "memory_watch_process_samples")
+                    def expression(name: str, fallback: str = "NULL") -> str:
+                        return name if name in columns else fallback
+                    connection.execute(
+                        "INSERT INTO systemsense_watch_process_samples("
+                        "sample_id, pid, started_at_epoch, name, cpu_percent, rss_mb, "
+                        "executable, command_line, parent_pid, parent_name, "
+                        "parent_executable, username"
+                        ") SELECT sample_id, pid, "
+                        + expression("started_at_epoch")
+                        + ", name, cpu_percent, ram_mb, "
+                        + expression("executable")
+                        + ", "
+                        + expression("command_line")
+                        + ", "
+                        + expression("parent_pid")
+                        + ", "
+                        + expression("parent_name")
+                        + ", "
+                        + expression("parent_executable")
+                        + ", "
+                        + expression("username")
+                        + " FROM memory_watch_process_samples"
+                    )
+            connection.execute("PRAGMA user_version=1")
+            version = 1
+
+        if version < 2:
+            # v2 establishes the explicit migration boundary for the generic
+            # watch/process/network/artifact schema. CREATE TABLE IF NOT EXISTS
+            # above makes this safe for both new and existing databases.
+            connection.execute("PRAGMA user_version=2")
 
     def save_snapshot(
         self, kind: str, payload: dict[str, Any], captured_at: str | None = None
@@ -223,6 +454,914 @@ class SystemSenseStore:
             ).fetchall()
         return [float(row["value"]) for row in rows]
 
+    def start_watch(
+        self,
+        *,
+        profile: str,
+        expires_at: str,
+        label: str,
+    ) -> dict[str, Any]:
+        profile = str(profile).strip().casefold()
+        if profile not in {"memory", "cpu", "storage", "network", "gpu", "system"}:
+            raise ValueError("unsupported SystemSense watch profile")
+        created_at = utc_timestamp()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE systemsense_watches SET status='replaced' "
+                "WHERE status='active' AND profile=?",
+                (profile,),
+            )
+            cursor = connection.execute(
+                "INSERT INTO systemsense_watches("
+                "created_at, expires_at, status, label, profile"
+                ") VALUES (?, ?, 'active', ?, ?)",
+                (created_at, expires_at, str(label)[:80], profile),
+            )
+            watch_id = int(cursor.lastrowid)
+        return {
+            "watch_id": watch_id,
+            "created_at": created_at,
+            "expires_at": expires_at,
+            "status": "active",
+            "label": str(label)[:80],
+            "profile": profile,
+        }
+
+    def active_watches(self, *, now: str | None = None) -> list[dict[str, Any]]:
+        current = now or utc_timestamp()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE systemsense_watches SET status='completed' "
+                "WHERE status='active' AND expires_at<=?",
+                (current,),
+            )
+            rows = connection.execute(
+                "SELECT id, created_at, expires_at, status, label, profile "
+                "FROM systemsense_watches WHERE status='active' "
+                "ORDER BY created_at ASC"
+            ).fetchall()
+        output = []
+        for row in rows:
+            item = dict(row)
+            item["watch_id"] = int(item.pop("id"))
+            output.append(item)
+        return output
+
+    def latest_watch(
+        self,
+        *,
+        watch_id: int | None = None,
+        profile: str | None = None,
+    ) -> dict[str, Any] | None:
+        self.active_watches()
+        clauses = []
+        params: list[Any] = []
+        if watch_id is not None:
+            clauses.append("id=?")
+            params.append(int(watch_id))
+        if profile:
+            clauses.append("profile=?")
+            params.append(str(profile).casefold())
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id, created_at, expires_at, status, label, profile "
+                "FROM systemsense_watches"
+                + where
+                + " ORDER BY created_at DESC LIMIT 1",
+                params,
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["watch_id"] = int(item.pop("id"))
+        return item
+
+    def stop_watch(
+        self,
+        *,
+        watch_id: int | None = None,
+        profile: str | None = None,
+    ) -> dict[str, Any] | None:
+        watch = self.latest_watch(watch_id=watch_id, profile=profile)
+        if watch is None or watch.get("status") != "active":
+            return None
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE systemsense_watches SET status='stopped' WHERE id=?",
+                (int(watch["watch_id"]),),
+            )
+        watch["status"] = "stopped"
+        return watch
+
+    def save_watch_sample(
+        self,
+        *,
+        watch_id: int,
+        captured_at: str,
+        system: dict[str, Any],
+    ) -> int:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO systemsense_watch_samples("
+                "watch_id, captured_at, cpu_percent, memory_percent, "
+                "system_available_gb, storage_read_mb_s, storage_write_mb_s, "
+                "network_send_mbps, network_receive_mbps, gpu_percent, vram_used_mb"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    int(watch_id),
+                    captured_at,
+                    _finite(system.get("cpu_percent")),
+                    _finite(system.get("memory_percent")),
+                    _finite(system.get("system_available_gb")),
+                    _finite(system.get("storage_read_mb_s")),
+                    _finite(system.get("storage_write_mb_s")),
+                    _finite(system.get("network_send_mbps")),
+                    _finite(system.get("network_receive_mbps")),
+                    _finite(system.get("gpu_percent")),
+                    _finite(system.get("vram_used_mb")),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def upsert_executable_artifact(self, payload: dict[str, Any]) -> int | None:
+        if not payload.get("available") or not payload.get("path"):
+            return None
+        path = str(payload["path"])[:2000]
+        size = payload.get("size_bytes")
+        modified = payload.get("modified_ns")
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO systemsense_executable_artifacts("
+                "captured_at, path, size_bytes, modified_ns, sha256, company_name, "
+                "product_name, file_description, file_version, product_version, "
+                "original_filename, signature_status, signer_subject, signer_issuer"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    utc_timestamp(),
+                    path,
+                    size,
+                    modified,
+                    payload.get("sha256"),
+                    payload.get("company_name"),
+                    payload.get("product_name"),
+                    payload.get("file_description"),
+                    payload.get("file_version"),
+                    payload.get("product_version"),
+                    payload.get("original_filename"),
+                    payload.get("signature_status"),
+                    payload.get("signer_subject"),
+                    payload.get("signer_issuer"),
+                ),
+            )
+            row = connection.execute(
+                "SELECT id FROM systemsense_executable_artifacts "
+                "WHERE path=? AND size_bytes IS ? AND modified_ns IS ? "
+                "ORDER BY id DESC LIMIT 1",
+                (path, size, modified),
+            ).fetchone()
+        return int(row["id"]) if row else None
+
+    def save_watch_process_samples(
+        self,
+        *,
+        sample_id: int,
+        processes: list[dict[str, Any]],
+    ) -> None:
+        rows = []
+        for process in processes:
+            try:
+                rows.append(
+                    (
+                        int(sample_id),
+                        int(process.get("pid") or 0),
+                        _finite(process.get("started_at_epoch")),
+                        str(process.get("name") or "unknown")[:200],
+                        _finite(process.get("cpu_percent")),
+                        _finite(process.get("ram_mb")),
+                        _finite(process.get("vms_mb")),
+                        _finite(process.get("private_mb")),
+                        _finite(process.get("pagefile_mb")),
+                        int(process.get("threads") or 0),
+                        (
+                            int(process["handles"])
+                            if process.get("handles") is not None
+                            else None
+                        ),
+                        int(process.get("page_faults") or 0),
+                        _finite(process.get("io_read_mb")),
+                        _finite(process.get("io_write_mb")),
+                        _finite(process.get("io_read_mb_s")),
+                        _finite(process.get("io_write_mb_s")),
+                        _finite(process.get("gpu_percent")),
+                        _finite(process.get("gpu_dedicated_mb")),
+                        _finite(process.get("gpu_shared_mb")),
+                        _finite(process.get("gpu_committed_mb")),
+                        str(process.get("executable") or "")[:1000],
+                        str(process.get("command_line") or "")[:4000],
+                        int(process.get("parent_pid") or 0),
+                        str(process.get("parent_name") or "")[:200],
+                        str(process.get("parent_executable") or "")[:1000],
+                        _json(process.get("ancestry") or []),
+                        str(process.get("username") or "")[:300],
+                        (
+                            int(process["artifact_id"])
+                            if process.get("artifact_id") is not None
+                            else None
+                        ),
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+        if not rows:
+            return
+        with self._lock, self._connect() as connection:
+            connection.executemany(
+                "INSERT INTO systemsense_watch_process_samples("
+                "sample_id, pid, started_at_epoch, name, cpu_percent, rss_mb, "
+                "vms_mb, private_mb, pagefile_mb, threads, handles, page_faults, "
+                "io_read_mb, io_write_mb, io_read_mb_s, io_write_mb_s, "
+                "gpu_percent, gpu_dedicated_mb, gpu_shared_mb, gpu_committed_mb, "
+                "executable, command_line, parent_pid, parent_name, "
+                "parent_executable, ancestry_json, username, artifact_id"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def save_watch_network_samples(
+        self,
+        *,
+        sample_id: int,
+        connections: list[dict[str, Any]],
+    ) -> None:
+        rows = [
+            (
+                int(sample_id),
+                int(item.get("pid") or 0),
+                str(item.get("family") or "")[:100],
+                str(item.get("type") or "")[:100],
+                str(item.get("local_endpoint") or "")[:500],
+                str(item.get("remote_endpoint") or "")[:500],
+                str(item.get("status") or "")[:100],
+            )
+            for item in connections
+            if int(item.get("pid") or 0) > 0
+        ]
+        if rows:
+            with self._lock, self._connect() as connection:
+                connection.executemany(
+                    "INSERT INTO systemsense_watch_network_samples("
+                    "sample_id, pid, family, socket_type, local_endpoint, "
+                    "remote_endpoint, status"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+
+    def save_watch_lifecycle(
+        self,
+        *,
+        watch_id: int,
+        pid: int,
+        started_at_epoch: float | None,
+        event: str,
+        event_at: str,
+        name: str,
+        parent_pid: int | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "INSERT INTO systemsense_watch_lifecycle("
+                "watch_id, pid, started_at_epoch, event, event_at, name, "
+                "parent_pid, details_json"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    int(watch_id),
+                    int(pid),
+                    started_at_epoch,
+                    str(event)[:40],
+                    event_at,
+                    str(name)[:200],
+                    parent_pid,
+                    _json(details or {}),
+                ),
+            )
+
+    def watch_process_identity(
+        self,
+        *,
+        pid: int,
+        watch_id: int | None = None,
+        started_at_epoch: float | None = None,
+    ) -> dict[str, Any]:
+        watch = self.latest_watch(watch_id=watch_id)
+        if watch is None:
+            return {"available": False, "reason": "no_systemsense_watch"}
+        wid = int(watch["watch_id"])
+        with self._connect() as connection:
+            instances = connection.execute(
+                "SELECT p.started_at_epoch, p.name, MAX(COALESCE(p.rss_mb,0)) AS peak_ram_mb "
+                "FROM systemsense_watch_process_samples p "
+                "JOIN systemsense_watch_samples s ON s.id=p.sample_id "
+                "WHERE s.watch_id=? AND p.pid=? "
+                "GROUP BY p.started_at_epoch, p.name ORDER BY peak_ram_mb DESC",
+                (wid, int(pid)),
+            ).fetchall()
+            distinct_instances = [
+                dict(item) for item in instances if item["started_at_epoch"] is not None
+            ]
+            if started_at_epoch is None and len(distinct_instances) > 1:
+                return {
+                    "available": False,
+                    "reason": "pid_reused_multiple_process_instances",
+                    "watch_id": wid,
+                    "pid": int(pid),
+                    "instances": distinct_instances,
+                    "instruction": (
+                        "Select the intended started_at_epoch from the watch report "
+                        "and inspect that specific process instance."
+                    ),
+                }
+
+            params: list[Any] = [wid, int(pid)]
+            instance_clause = ""
+            if started_at_epoch is not None:
+                instance_clause = " AND ABS(COALESCE(p.started_at_epoch,-1) - ?) <= 2.0"
+                params.append(float(started_at_epoch))
+            elif distinct_instances:
+                instance_clause = " AND ABS(COALESCE(p.started_at_epoch,-1) - ?) <= 2.0"
+                params.append(float(distinct_instances[0]["started_at_epoch"]))
+
+            row = connection.execute(
+                "SELECT s.captured_at, p.*, a.sha256, a.size_bytes, a.modified_ns, "
+                "a.company_name, a.product_name, a.file_description, a.file_version, "
+                "a.product_version, a.original_filename, a.signature_status, "
+                "a.signer_subject, a.signer_issuer "
+                "FROM systemsense_watch_process_samples p "
+                "JOIN systemsense_watch_samples s ON s.id=p.sample_id "
+                "LEFT JOIN systemsense_executable_artifacts a ON a.id=p.artifact_id "
+                "WHERE s.watch_id=? AND p.pid=? "
+                + instance_clause
+                + " ORDER BY COALESCE(p.rss_mb,0) DESC, s.captured_at DESC LIMIT 1",
+                tuple(params),
+            ).fetchone()
+            count = connection.execute(
+                "SELECT COUNT(*) AS count FROM systemsense_watch_process_samples p "
+                "JOIN systemsense_watch_samples s ON s.id=p.sample_id "
+                "WHERE s.watch_id=? AND p.pid=?"
+                + instance_clause,
+                tuple(params),
+            ).fetchone()
+            lifecycle_params: list[Any] = [wid, int(pid)]
+            lifecycle_clause = ""
+            if params[2:]:
+                lifecycle_clause = " AND ABS(COALESCE(started_at_epoch,-1) - ?) <= 2.0"
+                lifecycle_params.append(params[2])
+            lifecycle = connection.execute(
+                "SELECT event, event_at, name, parent_pid, details_json "
+                "FROM systemsense_watch_lifecycle WHERE watch_id=? AND pid=?"
+                + lifecycle_clause
+                + " ORDER BY event_at ASC LIMIT 50",
+                tuple(lifecycle_params),
+            ).fetchall()
+            network_params: list[Any] = [wid, int(pid)]
+            network_instance_clause = ""
+            if params[2:]:
+                network_instance_clause = (
+                    " AND ABS(COALESCE(p.started_at_epoch,-1) - ?) <= 2.0"
+                )
+                network_params.append(params[2])
+            network = connection.execute(
+                "SELECT n.local_endpoint, n.remote_endpoint, n.status, n.family, n.socket_type "
+                "FROM systemsense_watch_network_samples n "
+                "JOIN systemsense_watch_samples s ON s.id=n.sample_id "
+                "JOIN systemsense_watch_process_samples p "
+                "ON p.sample_id=n.sample_id AND p.pid=n.pid "
+                "WHERE s.watch_id=? AND n.pid=? "
+                + network_instance_clause
+                + " GROUP BY n.local_endpoint, n.remote_endpoint, n.status, n.family, n.socket_type "
+                "ORDER BY MAX(s.captured_at) DESC LIMIT 100",
+                tuple(network_params),
+            ).fetchall()
+
+        if row is None:
+            return {
+                "available": False,
+                "reason": "process_instance_not_observed_in_watch",
+                "watch_id": wid,
+                "pid": int(pid),
+                "requested_started_at_epoch": started_at_epoch,
+            }
+
+        output = dict(row)
+        output["available"] = True
+        output["watch_id"] = wid
+        output["watch_profile"] = watch["profile"]
+        output["observations"] = int(count["count"] or 0)
+        output["peak_ram_mb"] = _finite(output.get("rss_mb"))
+        output["cpu_percent_at_peak"] = _finite(output.get("cpu_percent"))
+        try:
+            output["ancestry"] = json.loads(output.pop("ancestry_json") or "[]")
+        except json.JSONDecodeError:
+            output["ancestry"] = []
+        output["lifecycle"] = [
+            {
+                **{key: item[key] for key in ("event", "event_at", "name", "parent_pid")},
+                "details": json.loads(item["details_json"] or "{}"),
+            }
+            for item in lifecycle
+        ]
+        output["network_connections"] = [dict(item) for item in network]
+        return output
+
+    def watch_report(
+        self,
+        *,
+        watch_id: int | None = None,
+        profile: str | None = None,
+    ) -> dict[str, Any]:
+        watch = self.latest_watch(watch_id=watch_id, profile=profile)
+        if watch is None:
+            return {"available": False, "reason": "no_systemsense_watch"}
+        wid = int(watch["watch_id"])
+        with self._connect() as connection:
+            stats = connection.execute(
+                "SELECT COUNT(*) AS samples, MIN(captured_at) AS first_sample_at, "
+                "MAX(captured_at) AS last_sample_at, AVG(cpu_percent) AS avg_cpu, "
+                "MAX(cpu_percent) AS peak_cpu, AVG(memory_percent) AS avg_memory, "
+                "MAX(memory_percent) AS peak_memory, MIN(system_available_gb) AS min_available, "
+                "MAX(storage_read_mb_s) AS peak_read, MAX(storage_write_mb_s) AS peak_write, "
+                "MAX(network_send_mbps) AS peak_send, MAX(network_receive_mbps) AS peak_receive, "
+                "MAX(gpu_percent) AS peak_gpu, MAX(vram_used_mb) AS peak_vram "
+                "FROM systemsense_watch_samples WHERE watch_id=?",
+                (wid,),
+            ).fetchone()
+            processes = connection.execute(
+                "SELECT p.pid, p.started_at_epoch, p.name, p.executable, p.command_line, "
+                "p.parent_pid, p.parent_name, p.parent_executable, p.username, "
+                "COUNT(*) AS observations, MAX(p.rss_mb) AS peak_ram_mb, "
+                "AVG(p.rss_mb) AS average_observed_ram_mb, MAX(p.private_mb) AS peak_private_mb, "
+                "MAX(p.pagefile_mb) AS peak_pagefile_mb, MAX(p.cpu_percent) AS peak_cpu_percent, "
+                "MAX(p.io_read_mb_s) AS peak_read_mb_s, MAX(p.io_write_mb_s) AS peak_write_mb_s, "
+                "MAX(p.handles) AS peak_handles, MAX(p.threads) AS peak_threads, "
+                "MAX(p.page_faults) AS peak_page_faults, MAX(p.gpu_percent) AS peak_gpu_percent, "
+                "MAX(p.gpu_dedicated_mb) AS peak_gpu_dedicated_mb, "
+                "MAX(p.gpu_shared_mb) AS peak_gpu_shared_mb, "
+                "MAX(p.gpu_committed_mb) AS peak_gpu_committed_mb, "
+                "MAX(a.sha256) AS sha256, COUNT(DISTINCT a.sha256) AS artifact_versions, "
+                "GROUP_CONCAT(DISTINCT a.sha256) AS artifact_sha256s, "
+                "MAX(a.signature_status) AS signature_status, "
+                "MAX(a.signer_subject) AS signer_subject, MAX(a.company_name) AS company_name, "
+                "MAX(a.product_name) AS product_name "
+                "FROM systemsense_watch_process_samples p "
+                "JOIN systemsense_watch_samples s ON s.id=p.sample_id "
+                "LEFT JOIN systemsense_executable_artifacts a ON a.id=p.artifact_id "
+                "WHERE s.watch_id=? "
+                "GROUP BY p.pid, p.started_at_epoch, p.name, p.executable, p.command_line, "
+                "p.parent_pid, p.parent_name, p.parent_executable, p.username "
+                "ORDER BY MAX(COALESCE(p.rss_mb,0)) DESC LIMIT 40",
+                (wid,),
+            ).fetchall()
+            lifecycle = connection.execute(
+                "SELECT pid, started_at_epoch, event, event_at, name, parent_pid "
+                "FROM systemsense_watch_lifecycle WHERE watch_id=? "
+                "ORDER BY event_at ASC LIMIT 500",
+                (wid,),
+            ).fetchall()
+            network = connection.execute(
+                "SELECT n.pid, p.started_at_epoch, COUNT(*) AS observations, "
+                "COUNT(DISTINCT COALESCE(n.remote_endpoint,'')) AS remote_endpoint_count "
+                "FROM systemsense_watch_network_samples n "
+                "JOIN systemsense_watch_samples s ON s.id=n.sample_id "
+                "JOIN systemsense_watch_process_samples p "
+                "ON p.sample_id=n.sample_id AND p.pid=n.pid "
+                "WHERE s.watch_id=? GROUP BY n.pid, p.started_at_epoch "
+                "ORDER BY observations DESC LIMIT 40",
+                (wid,),
+            ).fetchall()
+
+        process_rows = []
+        for source in processes:
+            item = dict(source)
+            hashes = str(item.pop("artifact_sha256s") or "")
+            item["artifact_sha256s"] = [value for value in hashes.split(",") if value]
+            item["artifact_changed_during_watch"] = int(
+                item.get("artifact_versions") or 0
+            ) > 1
+            process_rows.append(item)
+        result = {
+            "available": True,
+            "watch": watch,
+            "samples": int(stats["samples"] or 0),
+            "first_sample_at": stats["first_sample_at"],
+            "last_sample_at": stats["last_sample_at"],
+            "system": {
+                "average_cpu_percent": _finite(stats["avg_cpu"]),
+                "peak_cpu_percent": _finite(stats["peak_cpu"]),
+                "average_memory_percent": _finite(stats["avg_memory"]),
+                "peak_memory_percent": _finite(stats["peak_memory"]),
+                "minimum_available_gb": _finite(stats["min_available"]),
+                "peak_storage_read_mb_s": _finite(stats["peak_read"]),
+                "peak_storage_write_mb_s": _finite(stats["peak_write"]),
+                "peak_network_send_mbps": _finite(stats["peak_send"]),
+                "peak_network_receive_mbps": _finite(stats["peak_receive"]),
+                "peak_gpu_percent": _finite(stats["peak_gpu"]),
+                "peak_vram_used_mb": _finite(stats["peak_vram"]),
+            },
+            "top_processes": process_rows,
+            "process_lifecycle": [dict(row) for row in lifecycle],
+            "process_network_summary": [dict(row) for row in network],
+            "limitations": [
+                "Network attribution records PID-to-endpoint/socket ownership, not per-process byte counts.",
+                "A process absent from the bounded sampled process set may still have been running.",
+                "GPU process counters depend on Windows exposing GPU Performance Counters for that workload.",
+            ],
+        }
+        if watch["profile"] == "memory":
+            result.update(
+                average_system_memory_percent=_finite(stats["avg_memory"]),
+                peak_system_memory_percent=_finite(stats["peak_memory"]),
+                minimum_available_gb=_finite(stats["min_available"]),
+                top_memory_consumers=process_rows,
+            )
+        return result
+
+    def prune_watches(self, *, before: str) -> None:
+        with self._lock, self._connect() as connection:
+            old_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM systemsense_watches "
+                    "WHERE created_at<? AND status!='active'",
+                    (before,),
+                ).fetchall()
+            ]
+            if not old_ids:
+                return
+            placeholders = ",".join("?" for _ in old_ids)
+            sample_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    f"SELECT id FROM systemsense_watch_samples "
+                    f"WHERE watch_id IN ({placeholders})",
+                    old_ids,
+                ).fetchall()
+            ]
+            if sample_ids:
+                sample_placeholders = ",".join("?" for _ in sample_ids)
+                for table in (
+                    "systemsense_watch_process_samples",
+                    "systemsense_watch_network_samples",
+                ):
+                    connection.execute(
+                        f"DELETE FROM {table} WHERE sample_id IN ({sample_placeholders})",
+                        sample_ids,
+                    )
+            connection.execute(
+                f"DELETE FROM systemsense_watch_lifecycle WHERE watch_id IN ({placeholders})",
+                old_ids,
+            )
+            connection.execute(
+                f"DELETE FROM systemsense_watch_samples WHERE watch_id IN ({placeholders})",
+                old_ids,
+            )
+            connection.execute(
+                f"DELETE FROM systemsense_watches WHERE id IN ({placeholders})",
+                old_ids,
+            )
+            connection.execute(
+                "DELETE FROM systemsense_executable_artifacts WHERE id NOT IN ("
+                "SELECT DISTINCT artifact_id FROM systemsense_watch_process_samples "
+                "WHERE artifact_id IS NOT NULL)"
+            )
+
+    def start_memory_watch(self, *, expires_at: str, label: str) -> dict[str, Any]:
+        created_at = utc_timestamp()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE memory_watches SET status='replaced' WHERE status='active'"
+            )
+            cursor = connection.execute(
+                "INSERT INTO memory_watches(created_at, expires_at, status, label) "
+                "VALUES (?, ?, 'active', ?)",
+                (created_at, expires_at, str(label)[:80]),
+            )
+            watch_id = int(cursor.lastrowid)
+        return {
+            "watch_id": watch_id,
+            "created_at": created_at,
+            "expires_at": expires_at,
+            "status": "active",
+            "label": str(label)[:80],
+        }
+
+    def active_memory_watch(self, *, now: str | None = None) -> dict[str, Any] | None:
+        current = now or utc_timestamp()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE memory_watches SET status='completed' "
+                "WHERE status='active' AND expires_at<=?",
+                (current,),
+            )
+            row = connection.execute(
+                "SELECT id, created_at, expires_at, status, label "
+                "FROM memory_watches WHERE status='active' "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["watch_id"] = int(result.pop("id"))
+        return result
+
+    def stop_memory_watch(self) -> dict[str, Any] | None:
+        watch = self.active_memory_watch()
+        if watch is None:
+            return None
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE memory_watches SET status='stopped' WHERE id=?",
+                (int(watch["watch_id"]),),
+            )
+        watch["status"] = "stopped"
+        return watch
+
+    def save_memory_watch_sample(
+        self,
+        *,
+        watch_id: int,
+        captured_at: str,
+        system_memory_percent: float,
+        system_available_gb: float | None,
+        processes: list[dict[str, Any]],
+    ) -> int:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO memory_watch_samples("
+                "watch_id, captured_at, system_memory_percent, system_available_gb"
+                ") VALUES (?, ?, ?, ?)",
+                (
+                    int(watch_id),
+                    captured_at,
+                    float(system_memory_percent),
+                    system_available_gb,
+                ),
+            )
+            sample_id = int(cursor.lastrowid)
+            rows = []
+            for process in processes:
+                try:
+                    rows.append(
+                        (
+                            sample_id,
+                            int(process.get("pid") or 0),
+                            str(process.get("name") or "unknown")[:200],
+                            float(process.get("ram_mb") or 0.0),
+                            float(process.get("cpu_percent") or 0.0),
+                            str(process.get("executable") or "")[:1000],
+                            str(process.get("command_line") or "")[:4000],
+                            int(process.get("parent_pid") or 0),
+                            str(process.get("parent_name") or "")[:200],
+                            str(process.get("parent_executable") or "")[:1000],
+                            (
+                                float(process.get("started_at_epoch"))
+                                if process.get("started_at_epoch") is not None
+                                else None
+                            ),
+                            str(process.get("username") or "")[:300],
+                        )
+                    )
+                except (TypeError, ValueError):
+                    continue
+            if rows:
+                connection.executemany(
+                    "INSERT INTO memory_watch_process_samples("
+                    "sample_id, pid, name, ram_mb, cpu_percent, executable, "
+                    "command_line, parent_pid, parent_name, parent_executable, "
+                    "started_at_epoch, username"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+        return sample_id
+
+    def memory_watch_report(self, *, watch_id: int | None = None) -> dict[str, Any]:
+        now = utc_timestamp()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE memory_watches SET status='completed' "
+                "WHERE status='active' AND expires_at<=?",
+                (now,),
+            )
+            if watch_id is None:
+                watch = connection.execute(
+                    "SELECT id, created_at, expires_at, status, label "
+                    "FROM memory_watches ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+            else:
+                watch = connection.execute(
+                    "SELECT id, created_at, expires_at, status, label "
+                    "FROM memory_watches WHERE id=?",
+                    (int(watch_id),),
+                ).fetchone()
+            if watch is None:
+                return {"available": False, "reason": "no_memory_watch"}
+
+            wid = int(watch["id"])
+            stats = connection.execute(
+                "SELECT COUNT(*) AS samples, "
+                "AVG(system_memory_percent) AS avg_memory_percent, "
+                "MAX(system_memory_percent) AS peak_memory_percent, "
+                "MIN(system_available_gb) AS minimum_available_gb, "
+                "MIN(captured_at) AS first_sample_at, "
+                "MAX(captured_at) AS last_sample_at "
+                "FROM memory_watch_samples WHERE watch_id=?",
+                (wid,),
+            ).fetchone()
+            peak = connection.execute(
+                "SELECT captured_at, system_memory_percent, system_available_gb "
+                "FROM memory_watch_samples WHERE watch_id=? "
+                "ORDER BY system_memory_percent DESC, captured_at DESC LIMIT 1",
+                (wid,),
+            ).fetchone()
+            processes = connection.execute(
+                "SELECT p.pid, p.name, p.executable, p.command_line, p.parent_pid, "
+                "p.parent_name, p.parent_executable, p.started_at_epoch, p.username, "
+                "COUNT(*) AS observations, MAX(p.ram_mb) AS peak_ram_mb, "
+                "AVG(p.ram_mb) AS average_observed_ram_mb, "
+                "MAX(p.cpu_percent) AS peak_cpu_percent "
+                "FROM memory_watch_process_samples p "
+                "JOIN memory_watch_samples s ON s.id=p.sample_id "
+                "WHERE s.watch_id=? "
+                "GROUP BY p.pid, p.name, p.executable, p.command_line, "
+                "p.parent_pid, p.parent_name, p.parent_executable, "
+                "p.started_at_epoch, p.username "
+                "ORDER BY peak_ram_mb DESC LIMIT 20",
+                (wid,),
+            ).fetchall()
+
+        return {
+            "available": True,
+            "watch": {
+                "watch_id": wid,
+                "created_at": watch["created_at"],
+                "expires_at": watch["expires_at"],
+                "status": watch["status"],
+                "label": watch["label"],
+            },
+            "samples": int(stats["samples"] or 0),
+            "first_sample_at": stats["first_sample_at"],
+            "last_sample_at": stats["last_sample_at"],
+            "average_system_memory_percent": (
+                round(float(stats["avg_memory_percent"]), 2)
+                if stats["avg_memory_percent"] is not None
+                else None
+            ),
+            "peak_system_memory_percent": (
+                round(float(stats["peak_memory_percent"]), 2)
+                if stats["peak_memory_percent"] is not None
+                else None
+            ),
+            "minimum_available_gb": (
+                round(float(stats["minimum_available_gb"]), 2)
+                if stats["minimum_available_gb"] is not None
+                else None
+            ),
+            "peak_system_sample": dict(peak) if peak is not None else None,
+            "top_memory_consumers": [
+                {
+                    "pid": int(row["pid"]),
+                    "name": row["name"],
+                    "executable": row["executable"] or None,
+                    "command_line": row["command_line"] or None,
+                    "parent_pid": int(row["parent_pid"] or 0) or None,
+                    "parent_name": row["parent_name"] or None,
+                    "parent_executable": row["parent_executable"] or None,
+                    "started_at_epoch": (
+                        float(row["started_at_epoch"])
+                        if row["started_at_epoch"] is not None
+                        else None
+                    ),
+                    "username": row["username"] or None,
+                    "observations": int(row["observations"]),
+                    "peak_ram_mb": round(float(row["peak_ram_mb"]), 2),
+                    "average_observed_ram_mb": round(
+                        float(row["average_observed_ram_mb"]), 2
+                    ),
+                    "peak_cpu_percent": round(float(row["peak_cpu_percent"]), 2),
+                }
+                for row in processes
+            ],
+            "note": (
+                "Process rows are the independently ranked top RAM consumers at each "
+                "watch sample. Absence from a sample means the process was outside that "
+                "bounded top-memory set, not necessarily that it was not running."
+            ),
+        }
+
+    def memory_watch_process_identity(
+        self,
+        *,
+        pid: int,
+        watch_id: int | None = None,
+    ) -> dict[str, Any]:
+        pid = int(pid)
+        if pid <= 0:
+            raise ValueError("pid must be a positive integer")
+        now = utc_timestamp()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE memory_watches SET status='completed' "
+                "WHERE status='active' AND expires_at<=?",
+                (now,),
+            )
+            if watch_id is None:
+                watch = connection.execute(
+                    "SELECT id, created_at, expires_at, status, label "
+                    "FROM memory_watches ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+            else:
+                watch = connection.execute(
+                    "SELECT id, created_at, expires_at, status, label "
+                    "FROM memory_watches WHERE id=?",
+                    (int(watch_id),),
+                ).fetchone()
+            if watch is None:
+                return {"available": False, "reason": "no_memory_watch"}
+            wid = int(watch["id"])
+            peak = connection.execute(
+                "SELECT s.captured_at, p.pid, p.name, p.ram_mb, p.cpu_percent, "
+                "p.executable, p.command_line, p.parent_pid, p.parent_name, "
+                "p.parent_executable, p.started_at_epoch, p.username "
+                "FROM memory_watch_process_samples p "
+                "JOIN memory_watch_samples s ON s.id=p.sample_id "
+                "WHERE s.watch_id=? AND p.pid=? "
+                "ORDER BY p.ram_mb DESC, s.captured_at DESC LIMIT 1",
+                (wid, pid),
+            ).fetchone()
+            observations = connection.execute(
+                "SELECT COUNT(*) AS count FROM memory_watch_process_samples p "
+                "JOIN memory_watch_samples s ON s.id=p.sample_id "
+                "WHERE s.watch_id=? AND p.pid=?",
+                (wid, pid),
+            ).fetchone()
+        if peak is None:
+            return {
+                "available": False,
+                "reason": "pid_not_observed_in_watch",
+                "watch_id": wid,
+                "pid": pid,
+            }
+        row = dict(peak)
+        row["observations"] = int(observations["count"] or 0)
+        row["watch_id"] = wid
+        row["available"] = True
+        row["peak_ram_mb"] = round(float(row.pop("ram_mb")), 2)
+        row["cpu_percent_at_peak"] = round(float(row.pop("cpu_percent")), 2)
+        row["executable"] = row.get("executable") or None
+        row["command_line"] = row.get("command_line") or None
+        row["parent_pid"] = int(row.get("parent_pid") or 0) or None
+        row["parent_name"] = row.get("parent_name") or None
+        row["parent_executable"] = row.get("parent_executable") or None
+        row["username"] = row.get("username") or None
+        return row
+
+    def prune_memory_watch(self, *, before: str) -> None:
+        with self._lock, self._connect() as connection:
+            old_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM memory_watches "
+                    "WHERE created_at<? AND status!='active'",
+                    (before,),
+                ).fetchall()
+            ]
+            if not old_ids:
+                return
+            placeholders = ",".join("?" for _ in old_ids)
+            sample_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    f"SELECT id FROM memory_watch_samples WHERE watch_id IN ({placeholders})",
+                    old_ids,
+                ).fetchall()
+            ]
+            if sample_ids:
+                sample_placeholders = ",".join("?" for _ in sample_ids)
+                connection.execute(
+                    f"DELETE FROM memory_watch_process_samples "
+                    f"WHERE sample_id IN ({sample_placeholders})",
+                    sample_ids,
+                )
+            connection.execute(
+                f"DELETE FROM memory_watch_samples WHERE watch_id IN ({placeholders})",
+                old_ids,
+            )
+            connection.execute(
+                f"DELETE FROM memory_watches WHERE id IN ({placeholders})",
+                old_ids,
+            )
+
     def save_inference(self, payload: dict[str, Any]) -> None:
         with self._lock, self._connect() as connection:
             connection.execute(
@@ -303,6 +1442,12 @@ class SystemSense:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_prune = 0.0
+        self._last_memory_watch_sample = 0.0
+        self._last_systemsense_watch_sample = 0.0
+        self._watch_seen_processes: dict[
+            int, dict[tuple[int, float], dict[str, Any]]
+        ] = {}
+        self._artifact_cache: dict[tuple[str, int, int], int | None] = {}
         self._runtime_evidence = (
             RuntimeEvidence(
                 project_root,
@@ -374,6 +1519,13 @@ class SystemSense:
             if time.monotonic() - self._last_prune >= 3600:
                 before = (_utc_now() - timedelta(days=self.config.retention_days)).isoformat()
                 self.store.prune(before=before)
+                memory_before = (
+                    _utc_now() - timedelta(days=self.config.memory_watch_retention_days)
+                ).isoformat()
+                self.store.prune_watches(before=memory_before)
+                # Legacy PR160 tables are retained only for migration/backward
+                # compatibility and are pruned as well when present.
+                self.store.prune_memory_watch(before=memory_before)
                 self._last_prune = time.monotonic()
             remaining = max(0.1, self.config.sample_interval_seconds - (time.monotonic() - started))
             self._stop.wait(remaining)
@@ -506,6 +1658,7 @@ class SystemSense:
             self.store.save_metrics(
                 payload["captured_at"], self._metric_rows(payload)
             )
+            self._record_systemsense_watch_samples(payload)
             return payload
 
     @staticmethod
@@ -1016,6 +2169,335 @@ class SystemSense:
             "items": rows[:limit],
             "warning": (payload.get("summary") or {}).get("classification_warning"),
         }
+
+    def start_watch(
+        self,
+        *,
+        profile: str,
+        expires_at: datetime,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        """Start one bounded owner-requested SystemSense watch profile."""
+        if not self.enabled:
+            raise RuntimeError("SystemSense is disabled.")
+        profile = str(profile).strip().casefold()
+        if profile not in {"memory", "cpu", "storage", "network", "gpu", "system"}:
+            raise ValueError("profile must be memory, cpu, storage, network, gpu, or system")
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.astimezone()
+        now = datetime.now(UTC)
+        expiry = expires_at.astimezone(UTC)
+        if expiry <= now + timedelta(minutes=1):
+            raise ValueError("SystemSense watch must run for at least one minute.")
+        if expiry > now + timedelta(hours=24):
+            expiry = now + timedelta(hours=24)
+            label = "24 hours"
+        watch = self.store.start_watch(
+            profile=profile,
+            expires_at=expiry.isoformat(),
+            label=label or f"{profile} watch",
+        )
+        self._last_systemsense_watch_sample = 0.0
+        self._watch_seen_processes[int(watch["watch_id"])] = {}
+        watch["sample_interval_seconds"] = self.config.memory_watch_sample_interval_seconds
+        watch["retention_days"] = self.config.memory_watch_retention_days
+        return watch
+
+    def stop_watch(
+        self,
+        *,
+        watch_id: int | None = None,
+        profile: str | None = None,
+    ) -> dict[str, Any]:
+        watch = self.store.stop_watch(watch_id=watch_id, profile=profile)
+        if watch is None:
+            return {"status": "inactive", "available": False}
+        self._watch_seen_processes.pop(int(watch["watch_id"]), None)
+        return watch
+
+    def watch_report(
+        self,
+        *,
+        watch_id: int | None = None,
+        profile: str | None = None,
+    ) -> dict[str, Any]:
+        report = self.store.watch_report(watch_id=watch_id, profile=profile)
+        report["sample_interval_seconds"] = self.config.memory_watch_sample_interval_seconds
+        report["retention_days"] = self.config.memory_watch_retention_days
+        return report
+
+    def watch_process_identity(
+        self,
+        *,
+        pid: int,
+        watch_id: int | None = None,
+        started_at_epoch: float | None = None,
+    ) -> dict[str, Any]:
+        return self.store.watch_process_identity(
+            pid=pid,
+            watch_id=watch_id,
+            started_at_epoch=started_at_epoch,
+        )
+
+    # Compatibility names retained for callers/tests from the first RAM-watch
+    # implementation. RAM is now one SystemSense watch profile, not a separate
+    # subsystem or product name.
+    def start_memory_watch(
+        self,
+        *,
+        expires_at: datetime,
+        label: str = "memory watch",
+    ) -> dict[str, Any]:
+        return self.start_watch(profile="memory", expires_at=expires_at, label=label)
+
+    def stop_memory_watch(self) -> dict[str, Any]:
+        return self.stop_watch(profile="memory")
+
+    def memory_watch_process_identity(
+        self,
+        *,
+        pid: int,
+        watch_id: int | None = None,
+        started_at_epoch: float | None = None,
+    ) -> dict[str, Any]:
+        return self.watch_process_identity(
+            pid=pid,
+            watch_id=watch_id,
+            started_at_epoch=started_at_epoch,
+        )
+
+    def memory_watch_report(self, *, watch_id: int | None = None) -> dict[str, Any]:
+        return self.watch_report(watch_id=watch_id, profile=None if watch_id else "memory")
+
+    def _artifact_id_for_process(self, process: dict[str, Any]) -> int | None:
+        path = str(process.get("executable") or "").strip()
+        if not path:
+            return None
+        try:
+            stat = Path(path).stat()
+        except OSError:
+            return None
+        key = (str(Path(path).resolve()), int(stat.st_size), int(stat.st_mtime_ns))
+        if key in self._artifact_cache:
+            return self._artifact_cache[key]
+        artifact = inspect_executable_artifact(path)
+        artifact_id = self.store.upsert_executable_artifact(artifact)
+        self._artifact_cache[key] = artifact_id
+        if len(self._artifact_cache) > 512:
+            self._artifact_cache = dict(list(self._artifact_cache.items())[-256:])
+        return artifact_id
+
+    @staticmethod
+    def _rank_connection_pids(connections: list[dict[str, Any]], limit: int) -> list[int]:
+        counts: dict[int, int] = {}
+        for row in connections:
+            pid = int(row.get("pid") or 0)
+            if pid > 0:
+                counts[pid] = counts.get(pid, 0) + 1
+        return [
+            pid
+            for pid, _count in sorted(
+                counts.items(), key=lambda item: (item[1], item[0]), reverse=True
+            )[:limit]
+        ]
+
+    def _watch_candidate_pids(
+        self,
+        payload: dict[str, Any],
+        profile: str,
+        *,
+        all_connections: list[dict[str, Any]],
+        all_gpu: dict[int, dict[str, Any]],
+    ) -> list[int]:
+        base = payload.get("base") or {}
+        memory_rows = list(base.get("top_memory_processes") or [])
+        cpu_rows = list(base.get("top_processes") or [])
+        io_rows = list(base.get("top_io_processes") or [])
+        limit = max(1, int(self.config.max_processes))
+
+        def pids(rows: list[dict[str, Any]]) -> list[int]:
+            return [int(row.get("pid") or 0) for row in rows if int(row.get("pid") or 0) > 0]
+
+        if profile == "memory":
+            candidates = pids(memory_rows)
+        elif profile == "cpu":
+            candidates = pids(cpu_rows)
+        elif profile == "storage":
+            candidates = pids(io_rows)
+        elif profile == "network":
+            candidates = self._rank_connection_pids(all_connections, limit)
+        elif profile == "gpu":
+            candidates = [
+                pid
+                for pid, _values in sorted(
+                    all_gpu.items(),
+                    key=lambda item: (
+                        float(item[1].get("gpu_percent") or 0.0),
+                        float(item[1].get("gpu_committed_mb") or 0.0),
+                    ),
+                    reverse=True,
+                )[:limit]
+            ]
+        else:
+            candidates = (
+                pids(memory_rows)
+                + pids(cpu_rows)
+                + pids(io_rows)
+                + self._rank_connection_pids(all_connections, limit)
+                + list(all_gpu)
+            )
+
+        return list(dict.fromkeys(pid for pid in candidates if pid > 0))[: limit * 2]
+
+    def _record_process_lifecycle(
+        self,
+        *,
+        watch: dict[str, Any],
+        processes: list[dict[str, Any]],
+        captured_at: str,
+    ) -> None:
+        watch_id = int(watch["watch_id"])
+        seen = self._watch_seen_processes.setdefault(watch_id, {})
+        current_keys: set[tuple[int, float]] = set()
+        for process in processes:
+            pid = int(process.get("pid") or 0)
+            started = _finite(process.get("started_at_epoch"))
+            if pid <= 0 or started is None:
+                continue
+            key = (pid, float(started))
+            current_keys.add(key)
+            if key not in seen:
+                seen[key] = {
+                    "pid": pid,
+                    "started_at_epoch": started,
+                    "name": process.get("name"),
+                }
+                self.store.save_watch_lifecycle(
+                    watch_id=watch_id,
+                    pid=pid,
+                    started_at_epoch=started,
+                    event="first_observed",
+                    event_at=captured_at,
+                    name=str(process.get("name") or "unknown"),
+                    parent_pid=int(process.get("parent_pid") or 0) or None,
+                    details={"ancestry": process.get("ancestry") or []},
+                )
+
+        for key, prior in list(seen.items()):
+            if key in current_keys:
+                continue
+            pid, started = key
+            ended = False
+            reason = ""
+            try:
+                live = psutil.Process(pid)
+                current_started = float(live.create_time())
+                if abs(current_started - started) > 2.0:
+                    ended = True
+                    reason = "pid_reused"
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                ended = True
+                reason = "process_exited"
+            except (psutil.AccessDenied, OSError):
+                # Lack of permission is not evidence that the process ended.
+                continue
+            if ended:
+                self.store.save_watch_lifecycle(
+                    watch_id=watch_id,
+                    pid=pid,
+                    started_at_epoch=started,
+                    event=reason,
+                    event_at=captured_at,
+                    name=str(prior.get("name") or "unknown"),
+                    details={},
+                )
+                seen.pop(key, None)
+
+    def _record_systemsense_watch_samples(self, payload: dict[str, Any]) -> None:
+        captured_at = str(payload.get("captured_at") or utc_timestamp())
+        watches = self.store.active_watches(now=captured_at)
+        active_ids = {int(item["watch_id"]) for item in watches}
+        for watch_id in list(self._watch_seen_processes):
+            if watch_id not in active_ids:
+                self._watch_seen_processes.pop(watch_id, None)
+        if not watches:
+            return
+
+        now_mono = time.monotonic()
+        if (
+            self._last_systemsense_watch_sample
+            and now_mono - self._last_systemsense_watch_sample
+            < self.config.memory_watch_sample_interval_seconds
+        ):
+            return
+
+        try:
+            all_connections = self.psutil.collect_process_connections(None)
+        except (AttributeError, OSError):
+            all_connections = []
+        try:
+            all_gpu = self.performance.collect_process_gpu(None)
+        except (AttributeError, OSError):
+            all_gpu = {}
+
+        system = {
+            "cpu_percent": _path_get(payload, "base.cpu.percent"),
+            "memory_percent": _path_get(payload, "base.memory.percent"),
+            "system_available_gb": _path_get(payload, "base.memory.available_gb"),
+            "storage_read_mb_s": _path_get(payload, "base.storage.io.read_mb_s"),
+            "storage_write_mb_s": _path_get(payload, "base.storage.io.write_mb_s"),
+            "network_send_mbps": _path_get(payload, "base.network.send_mbps"),
+            "network_receive_mbps": _path_get(payload, "base.network.receive_mbps"),
+            "gpu_percent": _path_get(payload, "derived.gpu_utilization_percent"),
+            "vram_used_mb": _path_get(payload, "derived.vram_used_mb"),
+        }
+
+        for watch in watches:
+            profile = str(watch.get("profile") or "system")
+            candidate_pids = self._watch_candidate_pids(
+                payload,
+                profile,
+                all_connections=all_connections,
+                all_gpu=all_gpu,
+            )
+            try:
+                processes = self.psutil.enrich_processes(candidate_pids)
+            except AttributeError:
+                base = payload.get("base") or {}
+                rows = (
+                    list(base.get("top_memory_processes") or [])
+                    + list(base.get("top_processes") or [])
+                    + list(base.get("top_io_processes") or [])
+                )
+                by_pid = {int(row.get("pid") or 0): dict(row) for row in rows}
+                processes = [by_pid[pid] for pid in candidate_pids if pid in by_pid]
+
+            for process in processes:
+                gpu = all_gpu.get(int(process.get("pid") or 0), {})
+                process.update(gpu)
+                process["artifact_id"] = self._artifact_id_for_process(process)
+
+            selected_pids = {int(row.get("pid") or 0) for row in processes}
+            connections = [
+                row for row in all_connections if int(row.get("pid") or 0) in selected_pids
+            ]
+            sample_id = self.store.save_watch_sample(
+                watch_id=int(watch["watch_id"]),
+                captured_at=captured_at,
+                system=system,
+            )
+            self.store.save_watch_process_samples(sample_id=sample_id, processes=processes)
+            self.store.save_watch_network_samples(
+                sample_id=sample_id,
+                connections=connections,
+            )
+            self._record_process_lifecycle(
+                watch=watch,
+                processes=processes,
+                captured_at=captured_at,
+            )
+
+        self._last_systemsense_watch_sample = now_mono
 
     def history(self, *, metric: str, hours: float = 1.0, limit: int = 120) -> dict[str, Any]:
         if metric not in self._BASELINE_KEYS and metric not in {

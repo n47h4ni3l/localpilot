@@ -84,11 +84,15 @@ def parse_systemsense_watch_request(
     if not text or not _START_VERBS.search(text):
         return None
 
-    profile = None
-    for name, pattern in _PROFILE_PATTERNS:
-        if pattern.search(text):
-            profile = name
-            break
+    matched_profiles = [
+        name for name, pattern in _PROFILE_PATTERNS if pattern.search(text)
+    ]
+    if len(matched_profiles) > 1:
+        profile = "system"
+    elif matched_profiles:
+        profile = matched_profiles[0]
+    else:
+        profile = None
     if profile is None and _SYSTEM_TERMS.search(text):
         profile = "system"
     if profile is None:

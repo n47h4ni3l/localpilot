@@ -12,14 +12,14 @@ POLICY = Path(__file__).resolve().parents[1] / "scripts/training_memory_policy.p
 pytestmark = pytest.mark.skipif(PWSH is None, reason="PowerShell 7 required")
 
 
-def decisions(samples):
+def decisions(samples, mode="MonitorOnly"):
     script = """
     $ErrorActionPreference = 'Stop'
     . $env:LOCALPILOT_TEST_POLICY
     $history = @{}
     $samples = [Console]::In.ReadToEnd() | ConvertFrom-Json -NoEnumerate
     $results = @(foreach ($sample in $samples) {
-        Get-TrainingMemoryDecision -AvailableGiB $sample[0] -CommitHeadroomGiB $sample[1] -ElapsedSeconds $sample[2] -History $history
+        Get-TrainingMemoryDecision -AvailableGiB $sample[0] -CommitHeadroomGiB $sample[1] -ElapsedSeconds $sample[2] -History $history -Mode $env:LOCALPILOT_TEST_MODE
     })
     ConvertTo-Json -InputObject $results -Compress
     """
@@ -27,7 +27,11 @@ def decisions(samples):
     result = subprocess.run(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         input=json.dumps(samples), text=True, capture_output=True, timeout=20,
-        env={**os.environ, "LOCALPILOT_TEST_POLICY": str(POLICY)},
+        env={
+            **os.environ,
+            "LOCALPILOT_TEST_POLICY": str(POLICY),
+            "LOCALPILOT_TEST_MODE": mode,
+        },
     )
     if result.returncode:
         raise RuntimeError(result.stderr)
@@ -46,17 +50,17 @@ def test_previous_stop_can_recover_without_interrupting():
     ([[5, 2, 0], [5, 2, 14], [5, 2, 15]], "sustained_low_commit"),
 ])
 def test_sustained_pressure_uses_elapsed_time(samples, reason):
-    result = decisions(samples)
+    result = decisions(samples, mode="Protective")
     assert not any(item["stop"] for item in result[:-1])
     assert result[-1]["stop"] and result[-1]["reason"] == reason
 
 
 @pytest.mark.parametrize("ram,commit,reason", [
-    (0.24, 6, "emergency_ram"), (5, 0.99, "emergency_commit"),
-    (5, -0.1, "emergency_commit"),
+    (0.24, 6, "critical_ram"), (5, 0.99, "critical_commit"),
+    (5, -0.1, "critical_commit"),
 ])
 def test_emergency_stops_immediately(ram, commit, reason):
-    result = decisions([[ram, commit, 0]])[0]
+    result = decisions([[ram, commit, 0]], mode="Protective")[0]
     assert result["stop"] and result["reason"] == reason
 
 

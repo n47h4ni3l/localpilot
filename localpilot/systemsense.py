@@ -928,11 +928,13 @@ class SystemSenseStore:
                 (wid,),
             ).fetchall()
             network = connection.execute(
-                "SELECT n.pid, COUNT(*) AS observations, "
+                "SELECT n.pid, p.started_at_epoch, COUNT(*) AS observations, "
                 "COUNT(DISTINCT COALESCE(n.remote_endpoint,'')) AS remote_endpoint_count "
                 "FROM systemsense_watch_network_samples n "
                 "JOIN systemsense_watch_samples s ON s.id=n.sample_id "
-                "WHERE s.watch_id=? GROUP BY n.pid "
+                "JOIN systemsense_watch_process_samples p "
+                "ON p.sample_id=n.sample_id AND p.pid=n.pid "
+                "WHERE s.watch_id=? GROUP BY n.pid, p.started_at_epoch "
                 "ORDER BY observations DESC LIMIT 40",
                 (wid,),
             ).fetchall()

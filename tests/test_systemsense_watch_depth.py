@@ -309,3 +309,61 @@ def test_watch_followup_detection_does_not_hijack_current_state_questions():
     assert is_systemsense_process_investigation_request(
         "Investigate what that pythonw.exe process was during the memory spike"
     )
+
+
+
+def test_watch_process_identity_refuses_ambiguous_recycled_pid(tmp_path):
+    store = SystemSenseStore(tmp_path / "reuse.db")
+    watch = store.start_watch(
+        profile="memory",
+        expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        label="reuse",
+    )
+    first_sample = store.save_watch_sample(
+        watch_id=watch["watch_id"],
+        captured_at="2026-09-23T01:00:00+00:00",
+        system={"memory_percent": 50.0},
+    )
+    second_sample = store.save_watch_sample(
+        watch_id=watch["watch_id"],
+        captured_at="2026-09-23T02:00:00+00:00",
+        system={"memory_percent": 55.0},
+    )
+    store.save_watch_process_samples(
+        sample_id=first_sample,
+        processes=[
+            {
+                "pid": 99,
+                "started_at_epoch": 1000.0,
+                "name": "old.exe",
+                "ram_mb": 900.0,
+                "cpu_percent": 1.0,
+            }
+        ],
+    )
+    store.save_watch_process_samples(
+        sample_id=second_sample,
+        processes=[
+            {
+                "pid": 99,
+                "started_at_epoch": 2000.0,
+                "name": "new.exe",
+                "ram_mb": 1200.0,
+                "cpu_percent": 2.0,
+            }
+        ],
+    )
+
+    ambiguous = store.watch_process_identity(pid=99, watch_id=watch["watch_id"])
+    assert ambiguous["available"] is False
+    assert ambiguous["reason"] == "pid_reused_multiple_process_instances"
+    assert len(ambiguous["instances"]) == 2
+
+    selected = store.watch_process_identity(
+        pid=99,
+        watch_id=watch["watch_id"],
+        started_at_epoch=1000.0,
+    )
+    assert selected["available"] is True
+    assert selected["name"] == "old.exe"
+    assert selected["started_at_epoch"] == 1000.0

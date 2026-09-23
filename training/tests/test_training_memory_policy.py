@@ -11,6 +11,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 POLICY = ROOT / "training" / "scripts" / "training_memory_policy.ps1"
 GUARD = ROOT / "training" / "scripts" / "start_guarded_adapter.ps1"
+LAUNCH = ROOT / "training" / "scripts" / "launch_adapter_v1.sh"
+MONITOR = ROOT / "training" / "scripts" / "show_adapter_training.ps1"
 
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell policy")
@@ -131,11 +133,25 @@ def test_training_launcher_defaults_to_observation_not_intervention() -> None:
     assert "checkpoint_activity" in text
     assert "Get-CheckpointActivity" in text
     assert "latest_complete_checkpoint_step" in text
+    assert "$minimumWslMemoryGiB = 24.0" in text
+    assert "$minimumWslSwapGiB = 24.0" in text
+    assert "offload_embeddings" in text
+    assert "embeddings_only" in text
+    assert "$dryRunPath" in text
+
+    launch = LAUNCH.read_text(encoding="utf-8")
+    assert "unset PYTORCH_CUDA_ALLOC_CONF" in launch
+    assert "unset PYTORCH_ALLOC_CONF" in launch
+    assert 'run_name="$(python -c' in launch
+
+    monitor = MONITOR.read_text(encoding="utf-8")
+    assert "config.output.directory" in monitor
+    assert "estimated_optimizer_steps" in monitor
 
 
 
 def test_training_powershell_scripts_parse_cleanly() -> None:
-    for path in (POLICY, GUARD):
+    for path in (POLICY, GUARD, MONITOR):
         command = (
             "$tokens=$null; $errors=$null; "
             f"[void][System.Management.Automation.Language.Parser]::ParseFile('{path}', "

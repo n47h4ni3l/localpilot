@@ -645,6 +645,8 @@ def _validate_config(config: dict[str, Any]) -> None:
         raise RuntimeError("A frozen corpus manifest is required")
     for key in ("minimum_vram_gib", "estimated_peak_vram_gib", "minimum_system_ram_gib", "minimum_storage_free_gib"):
         number(resources, key, 1, 10000)
+    if resources.get("offload_embeddings") is not True or resources.get("cpu_offload") != "embeddings_only":
+        raise RuntimeError("The recovery training specification requires embedding offload to CPU")
     promotion = config["promotion"]
     if promotion.get("requires_eval_v1") is not True or promotion.get("requires_evolution_execution") is not True or promotion.get("training_loss_is_sufficient") is not False:
         raise RuntimeError("Held-out and execution promotion gates must remain enabled")

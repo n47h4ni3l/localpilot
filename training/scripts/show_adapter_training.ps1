@@ -7,8 +7,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $statusPath = Join-Path $repoRoot 'training\reports\adapter_v1_guard_status.json'
-$checkpointRoot = Join-Path $repoRoot 'training\outputs\adapter_v1_eager_20g_20260922\checkpoints'
-$totalSteps = 11112
+$configPath = Join-Path $repoRoot 'training\configs\qlora_v1.yaml'
+$config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+$outputPath = Join-Path $repoRoot ([string]$config.output.directory)
+$checkpointRoot = Join-Path $outputPath 'checkpoints'
+$totalSteps = [int]$config.training.estimated_optimizer_steps
 $Host.UI.RawUI.WindowTitle = 'LocalPilot training monitor'
 
 function Show-TrainingStatus {
@@ -39,7 +42,8 @@ function Show-TrainingStatus {
     $step = 0
     if ($status.stderr_log -and (Test-Path -LiteralPath $status.stderr_log)) {
         $progressTail = (Get-Content -LiteralPath $status.stderr_log -Tail 30 -ErrorAction SilentlyContinue) -join "`n"
-        foreach ($match in [regex]::Matches($progressTail, '(\d+)/11112')) {
+        $progressPattern = "(\d+)/$totalSteps"
+        foreach ($match in [regex]::Matches($progressTail, $progressPattern)) {
             $step = [math]::Max($step, [int]$match.Groups[1].Value)
         }
     }
@@ -74,12 +78,15 @@ function Show-TrainingStatus {
         $commitHeadroom = [math]::Round(($limit - $committed) / 1GB, 2)
         Write-Host "Windows available RAM: $freeRam GiB"
         Write-Host "Commit headroom: $commitHeadroom GiB"
-        if ($status.memory_policy.version -eq 2) {
+        if ($status.memory_policy.version -ge 3) {
+            $policy = $status.memory_policy
+            Write-Host "Memory policy: $($status.memory_policy_mode). Warning below $($policy.warning_gib) GiB; MonitorOnly records pressure without stopping training."
+        } elseif ($status.memory_policy.version -eq 2) {
             $policy = $status.memory_policy
             Write-Host "RAM guard: below $($policy.sustained_ram_gib) GiB for $($policy.sustained_ram_seconds)s; emergency below $($policy.emergency_ram_gib) GiB."
             Write-Host "Commit guard: below $($policy.sustained_commit_gib) GiB for $($policy.sustained_commit_seconds)s; emergency below $($policy.emergency_commit_gib) GiB."
         } else {
-            Write-Host 'Previous guard policy: immediate stop below 2.5 GiB RAM or commit headroom.'
+            Write-Host 'Legacy training memory policy is active.'
         }
     } catch {
         Write-Host 'Windows memory reading temporarily unavailable.' -ForegroundColor Yellow

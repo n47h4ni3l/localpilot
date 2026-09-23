@@ -17,32 +17,44 @@ $monitorError = $null
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $reportDir = Join-Path $repoRoot 'training\reports'
-$pidPath = Join-Path $reportDir 'adapter_v1_eager_20g_20260922.pid'
 $statusPath = Join-Path $reportDir 'adapter_v1_guard_status.json'
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$stdoutPath = Join-Path $reportDir "adapter_v1_$stamp.stdout.log"
-$stderrPath = Join-Path $reportDir "adapter_v1_$stamp.stderr.log"
-$telemetryPath = Join-Path $reportDir "adapter_v1_$stamp.memory.jsonl"
 $wslConfig = Join-Path $env:USERPROFILE '.wslconfig'
 $configPath = Join-Path $repoRoot 'training\configs\qlora_v1.yaml'
 $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
 $outputPath = Join-Path $repoRoot ([string]$config.output.directory)
 $checkpointRoot = Join-Path $outputPath 'checkpoints'
+$runName = Split-Path -Leaf $outputPath
+$pidPath = Join-Path $reportDir "$runName.pid"
+$dryRunPath = Join-Path $reportDir "$($runName)_dry_run.json"
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$stdoutPath = Join-Path $reportDir "$runName-$stamp.stdout.log"
+$stderrPath = Join-Path $reportDir "$runName-$stamp.stderr.log"
+$telemetryPath = Join-Path $reportDir "$runName-$stamp.memory.jsonl"
+
+if ($config.resources.offload_embeddings -ne $true -or [string]$config.resources.cpu_offload -ne 'embeddings_only') {
+    throw 'The recovery run requires embedding offload to CPU; refusing a configuration that puts the embeddings back on VRAM.'
+}
 
 if (-not (Test-Path -LiteralPath $wslConfig)) {
-    throw 'The measured WSL memory configuration is missing.'
+    throw 'The WSL memory configuration is missing.'
 }
 
 $wslSettings = Get-Content -LiteralPath $wslConfig -Raw
-if (
-    $wslSettings -notmatch '(?m)^\s*memory=20GB\s*$' -or
-    $wslSettings -notmatch '(?m)^\s*swap=16GB\s*$'
-) {
-    throw 'This run requires the measured WSL memory=20GB and swap=16GB settings.'
+$memoryMatch = [regex]::Match($wslSettings, '(?mi)^\s*memory\s*=\s*([0-9]+(?:\.[0-9]+)?)GB\s*$')
+$swapMatch = [regex]::Match($wslSettings, '(?mi)^\s*swap\s*=\s*([0-9]+(?:\.[0-9]+)?)GB\s*$')
+$minimumWslMemoryGiB = 24.0
+$minimumWslSwapGiB = 24.0
+if (-not $memoryMatch.Success -or -not $swapMatch.Success) {
+    throw 'Set explicit WSL memory and swap sizes in %USERPROFILE%\.wslconfig before adapter training.'
+}
+$configuredWslMemoryGiB = [double]$memoryMatch.Groups[1].Value
+$configuredWslSwapGiB = [double]$swapMatch.Groups[1].Value
+if ($configuredWslMemoryGiB -lt $minimumWslMemoryGiB -or $configuredWslSwapGiB -lt $minimumWslSwapGiB) {
+    throw "This recovery run requires WSL memory >= $minimumWslMemoryGiB GiB and swap >= $minimumWslSwapGiB GiB. Current values: memory=$configuredWslMemoryGiB GiB, swap=$configuredWslSwapGiB GiB."
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $reportDir 'adapter_v1_eager_20g_20260922_dry_run.json'))) {
-    throw 'The passing target-machine dry-run report is missing.'
+if (-not (Test-Path -LiteralPath $dryRunPath)) {
+    throw "The passing target-machine dry-run report is missing: $dryRunPath"
 }
 
 $worker = Get-ScheduledTask -TaskName 'LocalPilot Background Worker' -TaskPath '\' -ErrorAction Stop

@@ -103,6 +103,7 @@ class PsutilTelemetryCollector:
         self._last_disk: Any = None
         self._last_network: Any = None
         self._last_process_io: dict[tuple[int, float], tuple[int, int, float]] = {}
+        self._last_process_io_simple: dict[int, tuple[int, int, float]] = {}
 
     @staticmethod
     def _pressure(percent: float | None) -> str:
@@ -317,17 +318,36 @@ class PsutilTelemetryCollector:
                     continue
                 memory = info.get("memory_info")
                 proc_io = info.get("io_counters")
+                pid = int(info.get("pid") or 0)
+                read_bytes = int(getattr(proc_io, "read_bytes", 0) or 0)
+                write_bytes = int(getattr(proc_io, "write_bytes", 0) or 0)
+                prior_io = self._last_process_io_simple.get(pid)
+                read_rate = None
+                write_rate = None
+                if prior_io is not None:
+                    old_read, old_write, old_at = prior_io
+                    proc_elapsed = max(0.001, now - old_at)
+                    read_rate = round(
+                        max(0, read_bytes - old_read) / proc_elapsed / 1024**2,
+                        3,
+                    )
+                    write_rate = round(
+                        max(0, write_bytes - old_write) / proc_elapsed / 1024**2,
+                        3,
+                    )
+                self._last_process_io_simple[pid] = (read_bytes, write_bytes, now)
                 processes.append(
                     {
-                        "pid": int(info.get("pid") or 0),
+                        "pid": pid,
                         "name": str(info.get("name") or "unknown")[:200],
                         "cpu_percent": round(float(info.get("cpu_percent") or 0.0), 2),
                         "ram_mb": round(float(memory.rss if memory else 0) / 1024**2, 2),
                         "io_total_mb": round(
-                            float((proc_io.read_bytes + proc_io.write_bytes) if proc_io else 0)
-                            / 1024**2,
+                            float(read_bytes + write_bytes) / 1024**2,
                             2,
                         ),
+                        "io_read_mb_s": read_rate,
+                        "io_write_mb_s": write_rate,
                     }
                 )
             except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
@@ -344,7 +364,11 @@ class PsutilTelemetryCollector:
         )
         io_processes = sorted(
             processes,
-            key=lambda row: (row.get("io_total_mb", 0.0), row["cpu_percent"]),
+            key=lambda row: (
+                float(row.get("io_read_mb_s") or 0.0)
+                + float(row.get("io_write_mb_s") or 0.0),
+                row.get("io_total_mb", 0.0),
+            ),
             reverse=True,
         )
 

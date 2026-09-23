@@ -205,6 +205,76 @@ def test_dynamic_collection_derives_compact_health_and_raw_sensor_state(tmp_path
     assert count == 1
 
 
+def test_passive_collection_uses_fast_base_and_slower_rich_persistence_cadences(
+    tmp_path, monkeypatch
+):
+    class CountingDynamic(FakeDynamicCollector):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def collect(self):
+            self.calls += 1
+            return super().collect()
+
+    class CountingPerformance(FakePerformanceCollector):
+        def __init__(self):
+            self.calls = 0
+
+        def collect(self):
+            self.calls += 1
+            return super().collect()
+
+    class CountingSensors(FakeSensorCollector):
+        def __init__(self):
+            self.calls = 0
+
+        def collect(self):
+            self.calls += 1
+            return super().collect()
+
+    config = SystemSenseConfig()
+    config.sample_interval_seconds = 5.0
+    config.rich_sample_interval_seconds = 15.0
+    config.metric_persist_interval_seconds = 15.0
+    config.self_observation_interval_seconds = 60.0
+    dynamic = CountingDynamic()
+    performance = CountingPerformance()
+    sensors = CountingSensors()
+    sense = SystemSense(
+        config,
+        tmp_path,
+        psutil_collector=dynamic,
+        performance_collector=performance,
+        sensor_collector=sensors,
+        inventory_collector=FakeInventoryCollector(),
+    )
+
+    clock = iter([100.0, 100.1, 100.2, 100.3, 105.0, 105.1, 105.2, 105.3, 116.0, 116.1, 116.2, 116.3])
+    monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: next(clock))
+
+    sense.collect_dynamic()
+    sense.collect_dynamic()
+    sense.collect_dynamic()
+
+    assert dynamic.calls == 3
+    assert performance.calls == 2
+    assert sensors.calls == 2
+
+    with sense.store._connect() as connection:
+        cpu_metric_rows = connection.execute(
+            "SELECT COUNT(*) FROM metrics WHERE key='cpu.percent'"
+        ).fetchone()[0]
+    assert cpu_metric_rows == 2
+
+    summary = sense.summary(collect_if_missing=False)
+    overhead = summary["systemsense_overhead"]
+    assert overhead["cadence_seconds"]["base"] == 5.0
+    assert overhead["cadence_seconds"]["rich"] == 15.0
+    assert overhead["cadence_seconds"]["metrics"] == 15.0
+    assert overhead["rss_mb"] is not None
+
+
 def test_passive_summary_never_collects_when_the_runtime_has_not_sampled(tmp_path):
     dynamic = FakeDynamicCollector()
     calls = []
@@ -484,6 +554,9 @@ def test_systemsense_config_is_bounded_and_uses_separate_database(tmp_path):
     config = load_config(path)
     assert config.systemsense.enabled is True
     assert config.systemsense.sample_interval_seconds == 10
+    assert config.systemsense.rich_sample_interval_seconds == 15.0
+    assert config.systemsense.metric_persist_interval_seconds == 15.0
+    assert config.systemsense.self_observation_interval_seconds == 60.0
     assert config.systemsense.retention_days == 90
 
     path.write_text(

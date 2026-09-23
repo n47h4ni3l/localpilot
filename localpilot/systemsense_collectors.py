@@ -335,6 +335,11 @@ class PsutilTelemetryCollector:
             key=lambda row: (row["ram_mb"], row["cpu_percent"]),
             reverse=True,
         )
+        io_processes = sorted(
+            processes,
+            key=lambda row: (row.get("io_total_mb", 0.0), row["cpu_percent"]),
+            reverse=True,
+        )
 
         enriched_memory_processes = self.enrich_processes(
             [row["pid"] for row in memory_processes[: self.max_processes]]
@@ -385,6 +390,7 @@ class PsutilTelemetryCollector:
             # investigation merely because it is idle.
             "top_processes": cpu_processes[: self.max_processes],
             "top_memory_processes": enriched_memory_processes,
+            "top_io_processes": io_processes[: self.max_processes],
         }
 
 

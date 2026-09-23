@@ -69,7 +69,12 @@ class SystemSenseReader:
             )
         )
 
-    def inspect_systemsense_watch_process(self, pid: int, watch_id: int = 0) -> str:
+    def inspect_systemsense_watch_process(
+        self,
+        pid: int,
+        watch_id: int = 0,
+        started_at_epoch: float = 0.0,
+    ) -> str:
         """Inspect a process instance observed by a SystemSense watch.
 
         The historical fingerprint, command line, ancestry, lifecycle, network
@@ -82,6 +87,9 @@ class SystemSenseReader:
         identity = self.systemsense.watch_process_identity(
             pid=int(pid),
             watch_id=selected if selected > 0 else None,
+            started_at_epoch=(
+                float(started_at_epoch) if float(started_at_epoch) > 0 else None
+            ),
         )
         if not identity.get("available"):
             return self._render(identity)
@@ -139,8 +147,17 @@ class SystemSenseReader:
     def get_memory_watch_report(self, watch_id: int = 0) -> str:
         return self.get_systemsense_watch_report(watch_id=watch_id, profile="memory")
 
-    def inspect_memory_watch_process(self, pid: int, watch_id: int = 0) -> str:
-        return self.inspect_systemsense_watch_process(pid=pid, watch_id=watch_id)
+    def inspect_memory_watch_process(
+        self,
+        pid: int,
+        watch_id: int = 0,
+        started_at_epoch: float = 0.0,
+    ) -> str:
+        return self.inspect_systemsense_watch_process(
+            pid=pid,
+            watch_id=watch_id,
+            started_at_epoch=started_at_epoch,
+        )
 
     def get_workload_correlations(self, limit: int = 10) -> str:
         """Read observational correlations between inference speed and resources."""

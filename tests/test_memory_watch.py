@@ -13,6 +13,11 @@ from localpilot.memory_watch import (
     is_memory_watch_report_request,
     parse_memory_watch_request,
 )
+from localpilot.systemsense_watch import (
+    is_systemsense_process_investigation_request,
+    is_systemsense_watch_report_request,
+    parse_systemsense_watch_request,
+)
 from localpilot.runtime_worker import RuntimeWorker
 from localpilot.safety import RiskLevel
 from localpilot.systemsense import SystemSense
@@ -144,7 +149,7 @@ def test_memory_watch_process_investigation_requires_identity_and_web_evidence()
 
     assert is_memory_watch_process_investigation_request(prompt) is True
     assert LocalPilotAgent._evidence_requirements(prompt) == {
-        "memory watch",
+        "SystemSense watch",
         "process identity",
         "public web discovery",
         "public HTTPS",
@@ -155,7 +160,7 @@ def test_memory_watch_process_investigation_requires_identity_and_web_evidence()
         "but don't use the web."
     )
     assert LocalPilotAgent._evidence_requirements(no_web) == {
-        "memory watch",
+        "SystemSense watch",
         "process identity",
     }
 
@@ -219,23 +224,24 @@ class _FakeAgent:
         self.ask_calls.append((prompt, interface))
         return "heavy model answer"
 
-    def acknowledge_memory_watch(self, prompt, watch):
+    def acknowledge_systemsense_watch(self, prompt, watch):
         self.ack_calls.append((prompt, dict(watch)))
-        return "I’ll keep a real RAM watch running today and record the top memory consumers."
+        return "I’ll keep a real SystemSense RAM watch running today and record the top memory consumers."
 
 
 class _FakeSense:
     def __init__(self):
         self.calls = []
 
-    def start_memory_watch(self, *, expires_at, label):
-        self.calls.append((expires_at, label))
+    def start_watch(self, *, profile, expires_at, label):
+        self.calls.append((profile, expires_at, label))
         return {
             "watch_id": 4,
             "created_at": "2026-09-23T00:00:00+00:00",
             "expires_at": expires_at.isoformat(),
             "status": "active",
             "label": label,
+            "profile": profile,
             "sample_interval_seconds": 15.0,
             "retention_days": 7,
         }
@@ -270,6 +276,7 @@ def test_runtime_worker_registers_memory_watch_without_heavy_reasoning(tmp_path)
     )
 
     assert len(worker.systemsense.calls) == 1
+    assert worker.systemsense.calls[0][0] == "memory"
     assert agent.ask_calls == []
     assert agent.ack_calls and agent.ack_calls[0][0] == prompt
     result = next(message for message in messages if message.get("kind") == "result")
@@ -309,7 +316,8 @@ def test_agent_memory_watch_ack_is_model_generated_but_bounded(tmp_path, monkeyp
         "sample_interval_seconds": 15.0,
     }
 
-    answer = agent.acknowledge_memory_watch("Please monitor RAM today", watch)
+    watch["profile"] = "memory"
+    answer = agent.acknowledge_systemsense_watch("Please monitor RAM today", watch)
 
     assert "record the top memory consumers" in answer
     assert len(calls) == 1
@@ -317,7 +325,7 @@ def test_agent_memory_watch_ack_is_model_generated_but_bounded(tmp_path, monkeyp
     assert "tools" not in calls[0]
     assert calls[0]["options"]["num_predict"] == 192
     context = "\n".join(str(message.get("content") or "") for message in calls[0]["messages"])
-    assert "application has already registered" in context
+    assert "application has already" in context
     assert "authoritative application state" in context
 
 
@@ -391,9 +399,32 @@ def test_registry_exposes_memory_watch_report_as_read_only_evidence(tmp_path):
     sense = _sense(tmp_path / config.agent.data_dir)
     tools = registry(tmp_path, config=config, systemsense=sense)
 
+    assert tools["get_systemsense_watch_report"].risk is RiskLevel.READ_ONLY
+    assert tools["inspect_systemsense_watch_process"].risk is RiskLevel.READ_ONLY
     assert tools["get_memory_watch_report"].risk is RiskLevel.READ_ONLY
     assert tools["inspect_memory_watch_process"].risk is RiskLevel.READ_ONLY
     assert tools["inspect_process_identity"].risk is RiskLevel.READ_ONLY
     assert LocalPilotAgent._evidence_requirements(
         "What did the RAM monitor find?"
-    ) == {"memory watch"}
+    ) == {"SystemSense watch"}
+
+
+
+def test_generic_systemsense_watch_parser_covers_major_resource_profiles():
+    now = datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc)
+    cases = {
+        "Please monitor CPU for 2 hours": "cpu",
+        "Watch the GPU and VRAM today": "gpu",
+        "Track disk activity for 30 minutes": "storage",
+        "Monitor network traffic today": "network",
+        "Watch the computer for freezes today": "system",
+    }
+    for prompt, profile in cases.items():
+        intent = parse_systemsense_watch_request(prompt, now=now)
+        assert intent is not None
+        assert intent.profile == profile
+
+    assert is_systemsense_watch_report_request("What did the SystemSense watch find?")
+    assert is_systemsense_process_investigation_request(
+        "Investigate what that worker.exe process was doing during the GPU watch"
+    )

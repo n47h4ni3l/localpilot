@@ -2610,16 +2610,13 @@ class SystemSense:
                 processes = [by_pid[pid] for pid in candidate_pids if pid in by_pid]
 
             selected_pids = {int(row.get("pid") or 0) for row in processes}
-            if profile not in {"gpu", "system"} and selected_pids:
-                # A RAM/CPU/storage watch does not need system-wide GPU
-                # enumeration. Query only the already-selected processes if GPU
-                # context is useful and the provider supports the bounded call.
-                try:
-                    bounded_gpu = self.performance.collect_process_gpu(selected_pids)
-                except (AttributeError, OSError):
-                    bounded_gpu = {}
-            else:
+            if profile in {"gpu", "system"}:
                 bounded_gpu = all_gpu
+            else:
+                # Memory/CPU/storage watches should not pay for GPU Performance
+                # Counter enumeration. A later whole-system/GPU watch can add
+                # that evidence explicitly.
+                bounded_gpu = {}
             for process in processes:
                 gpu = bounded_gpu.get(int(process.get("pid") or 0), {})
                 process.update(gpu)

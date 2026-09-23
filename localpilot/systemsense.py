@@ -8,12 +8,15 @@ import sqlite3
 import statistics
 import threading
 import time
+
+import psutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
 from localpilot.config import SystemSenseConfig
 from localpilot.runtime_evidence import RuntimeEvidence
+from localpilot.process_identity import inspect_executable_artifact
 from localpilot.systemsense_collectors import (
     LibreHardwareMonitorCollector,
     PsutilTelemetryCollector,
@@ -1371,6 +1374,11 @@ class SystemSense:
         self._thread: threading.Thread | None = None
         self._last_prune = 0.0
         self._last_memory_watch_sample = 0.0
+        self._last_systemsense_watch_sample = 0.0
+        self._watch_seen_processes: dict[
+            int, dict[tuple[int, float], dict[str, Any]]
+        ] = {}
+        self._artifact_cache: dict[tuple[str, int, int], int | None] = {}
         self._runtime_evidence = (
             RuntimeEvidence(
                 project_root,

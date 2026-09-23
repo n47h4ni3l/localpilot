@@ -148,6 +148,36 @@ function Get-GpuProcessMemory {
     }
 }
 
+function Get-WindowsMemoryBreakdown {
+    try {
+        $memory = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory -ErrorAction Stop
+        function GiB($value) {
+            if ($null -eq $value) { return $null }
+            return [math]::Round(([double]$value) / 1GB, 3)
+        }
+        return [ordered]@{
+            available_gib = if ($null -ne $memory.AvailableMBytes) {
+                [math]::Round(([double]$memory.AvailableMBytes) / 1024.0, 3)
+            } else { $null }
+            cache_gib = GiB $memory.CacheBytes
+            system_cache_resident_gib = GiB $memory.SystemCacheResidentBytes
+            paged_pool_gib = GiB $memory.PoolPagedBytes
+            nonpaged_pool_gib = GiB $memory.PoolNonpagedBytes
+            modified_page_list_gib = GiB $memory.ModifiedPageListBytes
+            standby_core_gib = GiB $memory.StandbyCacheCoreBytes
+            standby_normal_gib = GiB $memory.StandbyCacheNormalPriorityBytes
+            standby_reserve_gib = GiB $memory.StandbyCacheReserveBytes
+            committed_gib = GiB $memory.CommittedBytes
+            commit_limit_gib = GiB $memory.CommitLimit
+        }
+    }
+    catch {
+        return [ordered]@{
+            error = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+        }
+    }
+}
+
 function Get-WslMemoryState {
     try {
         $meminfo = @(wsl.exe -d LocalPilot-Training -- cat /proc/meminfo 2>$null)
@@ -248,6 +278,7 @@ $headroom = 0.0
 $latestCheckpoint = Get-LatestCompleteCheckpoint
 $topMemory = @()
 $gpuMemory = @()
+$windowsMemoryBreakdown = $null
 $wslMemory = $null
 $trainingProcess = Start-Process -FilePath 'wsl.exe' -ArgumentList $wslArguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 
@@ -287,6 +318,7 @@ while (-not $trainingProcess.HasExited) {
         if ($needDetail) {
             $topMemory = Get-TopMemoryProcesses
             $gpuMemory = Get-GpuProcessMemory
+            $windowsMemoryBreakdown = Get-WindowsMemoryBreakdown
             $wslMemory = Get-WslMemoryState
             $lastDetailElapsed = $clock.Elapsed.TotalSeconds
         }
@@ -303,6 +335,7 @@ while (-not $trainingProcess.HasExited) {
             decision = $decision
             top_memory_processes = if ($needDetail) { $topMemory } else { $null }
             gpu_process_memory = if ($needDetail) { $gpuMemory } else { $null }
+            windows_memory_breakdown = if ($needDetail) { $windowsMemoryBreakdown } else { $null }
             wsl_memory = if ($needDetail) { $wslMemory } else { $null }
             latest_complete_checkpoint_step = if ($null -ne $latestCheckpoint) { $latestCheckpoint.step } else { $null }
         } | ConvertTo-Json -Compress -Depth 8 | Add-Content -LiteralPath $telemetryPath -Encoding utf8

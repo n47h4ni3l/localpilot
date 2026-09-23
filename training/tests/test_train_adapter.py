@@ -179,8 +179,11 @@ class TrainAdapterTests(unittest.TestCase):
         self.config["resources"]["offload_embeddings"] = False
         self.config["resources"]["cpu_offload"] = "none"
         self.save_config()
-        with self.assertRaisesRegex(RuntimeError, "embedding offload"):
-            runner.dry_run(self.config_path, importer=self.importer)
+        report = runner.dry_run(self.config_path, importer=self.importer)
+        self.assertFalse(report["passed"])
+        config_check = next(item for item in report["checks"] if item["name"] == "config_resolution")
+        self.assertFalse(config_check["passed"])
+        self.assertIn("embedding offload", str(config_check["detail"]))
 
     def checkpoint(self, step: int, identity: dict, *, mark_complete: bool = True) -> Path:
         output = self.root / self.config["output"]["directory"]

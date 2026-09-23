@@ -2002,6 +2002,7 @@ class SystemSense:
                 "anomalies": [],
                 "probable_causes": [],
                 "background_resource_contention": [],
+                "systemsense_overhead": self.store.latest_snapshot("systemsense_self"),
                 "runtime": runtime,
             }
         metrics = {key: value for key, value, _unit, _source in self._metric_rows(dynamic)}
@@ -2096,6 +2097,10 @@ class SystemSense:
             "background_resource_contention": top_processes,
             "sensor_source": _path_get(dynamic, "sensors.source"),
             "sensor_source_available": bool(_path_get(dynamic, "sensors.available")),
+            "systemsense_overhead": (
+                dynamic.get("systemsense_self")
+                or self.store.latest_snapshot("systemsense_self")
+            ),
             "runtime": runtime,
         }
 

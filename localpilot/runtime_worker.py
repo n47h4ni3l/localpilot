@@ -15,7 +15,7 @@ from localpilot.chat_commands import (
     parse_chat_command,
 )
 from localpilot.systemsense_diagnosis import normalize_diagnosis_scope
-from localpilot.memory_watch import parse_memory_watch_request
+from localpilot.systemsense_watch import parse_systemsense_watch_request
 from localpilot.config import load_config
 from localpilot.systemsense import get_system_sense
 
@@ -208,15 +208,16 @@ class RuntimeWorker:
                 self._write_answer(request_id, session_id, result.text)
                 return
 
-            memory_watch_intent = parse_memory_watch_request(prompt)
-            if memory_watch_intent is not None:
+            watch_intent = parse_systemsense_watch_request(prompt)
+            if watch_intent is not None:
                 self._write_state(request_id, session_id, "working")
-                watch = self.systemsense.start_memory_watch(
-                    expires_at=memory_watch_intent.expires_at,
-                    label=memory_watch_intent.label,
+                watch = self.systemsense.start_watch(
+                    profile=watch_intent.profile,
+                    expires_at=watch_intent.expires_at,
+                    label=watch_intent.label,
                 )
                 agent = self._agent(session_id, list(command.get("history") or []))
-                answer = agent.acknowledge_memory_watch(prompt, watch)
+                answer = agent.acknowledge_systemsense_watch(prompt, watch)
                 self._write_answer(request_id, session_id, answer)
                 return
 

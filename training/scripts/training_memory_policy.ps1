@@ -13,7 +13,7 @@ function Get-TrainingMemoryPolicy {
         # Extreme thresholds used only by CriticalOnly/Protective. MonitorOnly
         # records these states but never stops training automatically.
         critical_ram_gib = 0.25
-        critical_commit_gib = 0.75
+        critical_commit_gib = 1.0
 
         # Legacy v2 sustained protection, retained behind -MemoryPolicy Protective.
         protective_ram_gib = 1.0

@@ -148,6 +148,63 @@ function Get-GpuProcessMemory {
     }
 }
 
+function Get-WslMemoryState {
+    try {
+        $meminfo = @(wsl.exe -d LocalPilot-Training -- cat /proc/meminfo 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $meminfo.Count -eq 0) {
+            return $null
+        }
+        $values = @{}
+        foreach ($line in $meminfo) {
+            if ($line -match '^([A-Za-z_()]+):\s+([0-9]+)\s+kB') {
+                $values[$Matches[1]] = [double]$Matches[2] * 1KB
+            }
+        }
+        $top = @()
+        $processLines = @(
+            wsl.exe -d LocalPilot-Training -- ps -eo pid=,ppid=,comm=,rss=,vsz=,pcpu= --sort=-rss 2>$null |
+            Select-Object -First 15
+        )
+        foreach ($line in $processLines) {
+            $parts = @($line.Trim() -split '\s+')
+            if ($parts.Count -lt 6) { continue }
+            $rssKiB = 0.0
+            $vszKiB = 0.0
+            $cpu = 0.0
+            if (-not [double]::TryParse($parts[3], [ref]$rssKiB)) { continue }
+            [void][double]::TryParse($parts[4], [ref]$vszKiB)
+            [void][double]::TryParse($parts[5], [ref]$cpu)
+            $top += [ordered]@{
+                pid = [int]$parts[0]
+                ppid = [int]$parts[1]
+                name = $parts[2]
+                rss_gib = [math]::Round(($rssKiB * 1KB) / 1GB, 3)
+                vsz_gib = [math]::Round(($vszKiB * 1KB) / 1GB, 3)
+                cpu_percent = [math]::Round($cpu, 2)
+            }
+        }
+        $swapTotal = if ($values.ContainsKey('SwapTotal')) { $values.SwapTotal } else { 0.0 }
+        $swapFree = if ($values.ContainsKey('SwapFree')) { $values.SwapFree } else { 0.0 }
+        return [ordered]@{
+            mem_total_gib = if ($values.ContainsKey('MemTotal')) {
+                [math]::Round($values.MemTotal / 1GB, 3)
+            } else { $null }
+            mem_available_gib = if ($values.ContainsKey('MemAvailable')) {
+                [math]::Round($values.MemAvailable / 1GB, 3)
+            } else { $null }
+            swap_total_gib = [math]::Round($swapTotal / 1GB, 3)
+            swap_used_gib = [math]::Round([math]::Max(0.0, $swapTotal - $swapFree) / 1GB, 3)
+            top_processes = $top
+        }
+    }
+    catch {
+        return [ordered]@{
+            error = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+            top_processes = @()
+        }
+    }
+}
+
 function Write-GuardStatus {
     param(
         [string]$State,
@@ -191,6 +248,7 @@ $headroom = 0.0
 $latestCheckpoint = Get-LatestCompleteCheckpoint
 $topMemory = @()
 $gpuMemory = @()
+$wslMemory = $null
 $trainingProcess = Start-Process -FilePath 'wsl.exe' -ArgumentList $wslArguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 
 $safetyStop = $false
@@ -229,6 +287,7 @@ while (-not $trainingProcess.HasExited) {
         if ($needDetail) {
             $topMemory = Get-TopMemoryProcesses
             $gpuMemory = Get-GpuProcessMemory
+            $wslMemory = Get-WslMemoryState
             $lastDetailElapsed = $clock.Elapsed.TotalSeconds
         }
         if ($clock.Elapsed.TotalSeconds - $lastCheckpointElapsed -ge 15.0) {
@@ -244,6 +303,7 @@ while (-not $trainingProcess.HasExited) {
             decision = $decision
             top_memory_processes = if ($needDetail) { $topMemory } else { $null }
             gpu_process_memory = if ($needDetail) { $gpuMemory } else { $null }
+            wsl_memory = if ($needDetail) { $wslMemory } else { $null }
             latest_complete_checkpoint_step = if ($null -ne $latestCheckpoint) { $latestCheckpoint.step } else { $null }
         } | ConvertTo-Json -Compress -Depth 8 | Add-Content -LiteralPath $telemetryPath -Encoding utf8
 

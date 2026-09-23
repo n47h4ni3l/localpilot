@@ -353,15 +353,17 @@ $lastMemoryWarning = $false
 
 while (-not $trainingProcess.HasExited) {
     try {
-        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
-        $available = ([double]$os.FreePhysicalMemory * 1KB) / 1GB
-
         $memoryCounterNames = @(
+            '\Memory\Available MBytes',
             '\Memory\Committed Bytes',
             '\Memory\Commit Limit'
         )
         $counters = Get-Counter -Counter $memoryCounterNames -ErrorAction Stop
 
+        $availableSample = @(
+            $counters.CounterSamples |
+            Where-Object Path -Like '*available mbytes'
+        )
         $committed = @(
             $counters.CounterSamples |
             Where-Object Path -Like '*committed bytes'
@@ -372,9 +374,10 @@ while (-not $trainingProcess.HasExited) {
         )
 
         if (
-            $null -eq $os.FreePhysicalMemory -or
+            $availableSample.Count -ne 1 -or
             $committed.Count -ne 1 -or
             $limit.Count -ne 1 -or
+            $availableSample[0].Status -ne 0 -or
             $committed[0].Status -ne 0 -or
             $limit[0].Status -ne 0 -or
             $limit[0].CookedValue -le 0
@@ -382,6 +385,7 @@ while (-not $trainingProcess.HasExited) {
             throw 'Memory counters unavailable or invalid.'
         }
 
+        $available = [double]$availableSample[0].CookedValue / 1024.0
         $headroom = ($limit[0].CookedValue - $committed[0].CookedValue) / 1GB
 
         $decision = Get-TrainingMemoryDecision -AvailableGiB $available -CommitHeadroomGiB $headroom -ElapsedSeconds $clock.Elapsed.TotalSeconds -History $history -Mode $MemoryPolicy -Policy $policy

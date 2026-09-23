@@ -62,13 +62,22 @@ function Get-LatestCompleteCheckpoint {
     if (-not (Test-Path -LiteralPath $checkpointRoot -PathType Container)) {
         return $null
     }
+
     $candidates = @(
         Get-ChildItem -LiteralPath $checkpointRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^checkpoint-([1-9][0-9]*)$' } |
         ForEach-Object {
-            $match = [regex]::Match($_.Name, '^checkpoint-([1-9][0-9]*)        Where-Object { Test-Path -LiteralPath $_.marker -PathType Leaf } |
+            $match = [regex]::Match($_.Name, '^checkpoint-([1-9][0-9]*)$')
+            if (-not $match.Success) { return }
+            [pscustomobject]@{
+                step = [int]$match.Groups[1].Value
+                path = $_.FullName
+                marker = Join-Path $_.FullName 'localpilot_checkpoint_complete.json'
+            }
+        } |
+        Where-Object { Test-Path -LiteralPath $_.marker -PathType Leaf } |
         Sort-Object step -Descending
     )
+
     if ($candidates.Count -eq 0) { return $null }
     return $candidates[0]
 }

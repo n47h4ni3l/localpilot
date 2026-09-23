@@ -5,6 +5,7 @@ import json
 from localpilot.systemsense import SystemSense
 from localpilot.systemsense_backend import BackendTelemetryCollector
 from localpilot.systemsense_views import build_agent_truth
+from localpilot.tools.windows import inspect_executable_metadata, inspect_process_identity
 
 
 class SystemSenseReader:
@@ -62,6 +63,58 @@ class SystemSenseReader:
                 watch_id=selected if selected > 0 else None
             )
         )
+
+    def inspect_memory_watch_process(self, pid: int, watch_id: int = 0) -> str:
+        """Inspect one process instance observed by a RAM watch.
+
+        Historical executable/command-line/parent evidence comes from the watch
+        sample itself. File metadata/signature is inspected from that recorded
+        executable path. Current PID evidence is attached only when Windows still
+        reports the same process start time, avoiding PID-reuse confusion.
+        """
+        selected = int(watch_id)
+        identity = self.systemsense.memory_watch_process_identity(
+            pid=int(pid),
+            watch_id=selected if selected > 0 else None,
+        )
+        if not identity.get("available"):
+            return self._render(identity)
+
+        executable = str(identity.get("executable") or "")
+        if executable:
+            identity["executable_metadata"] = inspect_executable_metadata(executable)
+
+        try:
+            current = json.loads(inspect_process_identity(int(pid)))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            current = {"available": False, "reason": "current_process_query_failed"}
+
+        historical_start = identity.get("started_at_epoch")
+        current_start = current.get("started_at_epoch") if isinstance(current, dict) else None
+        same_instance = bool(
+            isinstance(current, dict)
+            and current.get("available")
+            and historical_start is not None
+            and current_start is not None
+            and abs(float(historical_start) - float(current_start)) <= 2.0
+        )
+        if same_instance:
+            identity["current_process"] = current
+        else:
+            identity["current_process"] = {
+                "available": False,
+                "reason": (
+                    "process_no_longer_running"
+                    if not isinstance(current, dict) or not current.get("available")
+                    else "pid_now_refers_to_different_process_instance"
+                ),
+            }
+        identity["identity_note"] = (
+            "Watch-captured executable/command-line/parent fields identify the historical "
+            "process instance. Current PID evidence is included only when process start "
+            "time confirms that the PID still refers to the same instance."
+        )
+        return self._render(identity)
 
     def get_workload_correlations(self, limit: int = 10) -> str:
         """Read observational correlations between inference speed and resources."""

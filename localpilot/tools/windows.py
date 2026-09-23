@@ -10,6 +10,7 @@ import time
 import psutil
 
 from localpilot.process import hidden_process_creation_flags
+from localpilot.process_identity import sanitize_command_line
 
 
 def _powershell(script: str, timeout: int = 20) -> str:
@@ -183,7 +184,7 @@ def inspect_process_identity(pid: int) -> str:
                 running=process.is_running(),
                 name=process.name(),
                 executable=executable or None,
-                command_line=" ".join(process.cmdline()) or None,
+                command_line=sanitize_command_line(process.cmdline()) or None,
                 parent_pid=int(process.ppid() or 0) or None,
                 started_at_epoch=float(process.create_time()),
                 username=process.username() or None,

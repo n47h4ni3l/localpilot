@@ -77,12 +77,24 @@ def _sustained_decision(*, mode: str) -> dict:
 
 def test_monitor_only_records_pressure_without_stopping_training() -> None:
     result = _sustained_decision(mode="MonitorOnly")
+    critical = _decision(
+        available=0.1,
+        commit=0.5,
+        elapsed=40.0,
+        mode="MonitorOnly",
+    )
 
     assert result["warning"] is True
     assert result["pressure_reason"] in {"sustained_low_ram", "sustained_low_commit"}
     assert result["stop"] is False
     assert result["reason"] is None
     assert result["mode"] == "MonitorOnly"
+
+    # MonitorOnly is deliberately observational even at critical pressure.
+    assert critical["severity"] == "critical"
+    assert critical["warning"] is True
+    assert critical["stop"] is False
+    assert critical["reason"] is None
 
 
 def test_protective_mode_preserves_the_old_sustained_stop_option() -> None:

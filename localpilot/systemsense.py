@@ -1684,7 +1684,19 @@ class SystemSense:
             return {"enabled": False, "captured_at": utc_timestamp()}
         with self._collect_lock:
             cycle_started = time.monotonic()
-            base = self.psutil.collect()
+            watches = self.store.active_watches()
+            watch_profiles = {
+                str(item.get("profile") or "system").casefold()
+                for item in watches
+            }
+            include_process_io = bool(watch_profiles & {"storage", "system"})
+            try:
+                base = self.psutil.collect(include_process_io=include_process_io)
+            except TypeError:
+                # Test/custom collectors may still expose the earlier no-arg
+                # surface. They remain compatible without forcing production
+                # psutil to collect process I/O continuously.
+                base = self.psutil.collect()
             now = time.monotonic()
             rich_refreshed = bool(
                 self._cached_performance is None
@@ -1758,10 +1770,10 @@ class SystemSense:
                 )
                 self._last_metric_persist = now
 
-            watches = self.store.active_watches(now=payload["captured_at"])
-            watch_profiles = sorted(
-                {str(item.get("profile") or "system") for item in watches}
-            )
+            # Re-use the active watch set resolved before passive process
+            # collection so storage/system watches can opt into process I/O
+            # without another database round trip.
+            watch_profiles = sorted(watch_profiles)
             watch_started = time.monotonic()
             self._record_systemsense_watch_samples(payload, watches=watches)
             watch_ms = round((time.monotonic() - watch_started) * 1000.0, 2)

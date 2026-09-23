@@ -10,7 +10,11 @@ import time
 import psutil
 
 from localpilot.process import hidden_process_creation_flags
-from localpilot.process_identity import inspect_executable_artifact, sanitize_command_line
+from localpilot.process_identity import (
+    inspect_executable_artifact,
+    sanitize_command_line,
+    sanitize_command_text,
+)
 
 
 def _powershell(script: str, timeout: int = 20) -> str:
@@ -270,6 +274,19 @@ $events = @(
             "reason": "launch_context_query_failed",
             "detail": str(raw)[:1000],
         }
+    if isinstance(payload, dict):
+        for service in payload.get("services") or []:
+            if isinstance(service, dict) and service.get("PathName"):
+                service["PathName"] = sanitize_command_text(service["PathName"])
+        for item in payload.get("startup_items") or []:
+            if isinstance(item, dict) and item.get("Command"):
+                item["Command"] = sanitize_command_text(item["Command"])
+        for task in payload.get("scheduled_tasks") or []:
+            if isinstance(task, dict):
+                if task.get("Execute"):
+                    task["Execute"] = sanitize_command_text(task["Execute"])
+                if task.get("Arguments"):
+                    task["Arguments"] = sanitize_command_text(task["Arguments"])
     return json.dumps(payload, indent=2)
 
 

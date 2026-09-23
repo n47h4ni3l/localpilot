@@ -128,6 +128,8 @@ def test_training_launcher_defaults_to_observation_not_intervention() -> None:
     assert "Get-WindowsMemoryBreakdown" in text
     assert "wsl_memory" in text
     assert "Get-WslMemoryState" in text
+    assert "checkpoint_activity" in text
+    assert "Get-CheckpointActivity" in text
     assert "latest_complete_checkpoint_step" in text
 
 

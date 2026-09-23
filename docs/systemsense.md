@@ -48,7 +48,9 @@ per-process I/O; network and GPU watches opt into their specific attribution
 providers; a whole-system watch intentionally pays for all of them. SystemSense
 also keeps a bounded self-observation snapshot with its own RSS, process CPU,
 thread count, database size and collection/write timing so its observation cost
-can itself be inspected.
+can itself be inspected. Four low-rate self metrics (CPU, RSS, cycle latency and
+database size) are retained at the self-observation cadence for historical
+comparison without adding them to every five-second sample.
 
 Collection failures are recorded as type-only diagnostics and isolated from
 operator startup. Missing WMI classes, performance counters, PnPUtil features,

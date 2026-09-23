@@ -200,6 +200,37 @@ class PsutilTelemetryCollector:
             reverse=True,
         )
 
+        # Enrich only the bounded top-RAM set. Querying executable paths,
+        # command lines and parent identity for every process every five
+        # seconds would add unnecessary overhead to passive SystemSense.
+        enriched_memory_processes: list[dict[str, Any]] = []
+        for row in memory_processes[: self.max_processes]:
+            enriched = dict(row)
+            try:
+                process = psutil.Process(int(row["pid"]))
+                with process.oneshot():
+                    enriched["executable"] = str(process.exe() or "")[:1000]
+                    enriched["command_line"] = " ".join(process.cmdline())[:4000]
+                    enriched["parent_pid"] = int(process.ppid() or 0)
+                    enriched["started_at_epoch"] = float(process.create_time())
+                    enriched["username"] = str(process.username() or "")[:300]
+                try:
+                    parent = process.parent()
+                    if parent is not None:
+                        with parent.oneshot():
+                            enriched["parent_name"] = str(parent.name() or "")[:200]
+                            try:
+                                enriched["parent_executable"] = str(parent.exe() or "")[:1000]
+                            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
+                                enriched["parent_executable"] = ""
+                except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
+                    pass
+            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
+                # Identity enrichment is best-effort. PID/name/RSS/CPU remain
+                # useful evidence even when Windows denies process metadata.
+                pass
+            enriched_memory_processes.append(enriched)
+
         battery = None
         try:
             value = psutil.sensors_battery()
@@ -239,7 +270,7 @@ class PsutilTelemetryCollector:
             # the dominant RAM consumer and must not disappear from a memory
             # investigation merely because it is idle.
             "top_processes": cpu_processes[: self.max_processes],
-            "top_memory_processes": memory_processes[: self.max_processes],
+            "top_memory_processes": enriched_memory_processes,
         }
 
 

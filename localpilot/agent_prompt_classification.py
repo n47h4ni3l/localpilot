@@ -14,7 +14,10 @@ ask() and _continue_high_reasoning_answer() were not touched."""
 
 import re
 
-from localpilot.memory_watch import is_memory_watch_report_request
+from localpilot.memory_watch import (
+    is_memory_watch_process_investigation_request,
+    is_memory_watch_report_request,
+)
 
 
 def _is_live_local_information_prompt(prompt: str) -> bool:
@@ -55,8 +58,11 @@ def _evidence_requirements(prompt: str) -> set[str]:
     """Identify explicit evidence sources the owner asked LocalPilot to inspect."""
     text = " ".join(str(prompt).lower().split())
     requirements: set[str] = set()
-    if is_memory_watch_report_request(prompt):
+    memory_process_investigation = is_memory_watch_process_investigation_request(prompt)
+    if is_memory_watch_report_request(prompt) or memory_process_investigation:
         requirements.add("memory watch")
+    if memory_process_investigation:
+        requirements.add("process identity")
 
     def mentions(*phrases: str) -> bool:
         return any(
@@ -71,6 +77,9 @@ def _evidence_requirements(prompt: str) -> set[str]:
             text,
         )
     )
+
+    if memory_process_investigation and not forbids_public_web:
+        requirements.update({"public web discovery", "public HTTPS"})
 
     if re.search(r"https://\S+", text) and not forbids_public_web:
         requirements.add("public HTTPS")

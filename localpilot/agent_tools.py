@@ -33,6 +33,7 @@ _PC_TOOLS = {
     "get_system_summary",
     "get_storage_summary",
     "get_top_processes",
+    "inspect_process_identity",
     "get_startup_items",
     "get_active_power_plan",
     "get_defender_summary",
@@ -43,6 +44,7 @@ _PC_TOOLS = {
     "inspect_driver_inventory",
     "get_system_sense_history",
     "get_memory_watch_report",
+    "inspect_memory_watch_process",
     "get_workload_correlations",
     "inspect_raw_system_sense",
 }
@@ -86,6 +88,8 @@ def _tool_evidence_source(name: str) -> str | None:
         return "machine location"
     if name == "get_memory_watch_report":
         return "memory watch"
+    if name in {"inspect_memory_watch_process", "inspect_process_identity"}:
+        return "process identity"
     if name in _REPOSITORY_TOOLS:
         return "trusted repository"
     if name in _GITHUB_TOOLS:

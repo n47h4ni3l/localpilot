@@ -250,11 +250,13 @@ def test_passive_collection_uses_fast_base_and_slower_rich_persistence_cadences(
         inventory_collector=FakeInventoryCollector(),
     )
 
-    clock = iter([100.0, 100.1, 100.2, 100.3, 105.0, 105.1, 105.2, 105.3, 116.0, 116.1, 116.2, 116.3])
-    monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: next(clock))
+    clock = [100.0]
+    monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: clock[0])
 
     sense.collect_dynamic()
+    clock[0] = 105.0
     sense.collect_dynamic()
+    clock[0] = 116.0
     sense.collect_dynamic()
 
     assert dynamic.calls == 3

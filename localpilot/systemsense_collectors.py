@@ -222,9 +222,16 @@ class PsutilTelemetryCollector:
             }
         return output
 
-    def collect_process_connections(self, pids: Iterable[int]) -> list[dict[str, Any]]:
-        wanted = {int(pid) for pid in pids if int(pid) > 0}
-        if not wanted:
+    def collect_process_connections(
+        self,
+        pids: Iterable[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        wanted = (
+            {int(pid) for pid in pids if int(pid) > 0}
+            if pids is not None
+            else None
+        )
+        if wanted == set():
             return []
         rows: list[dict[str, Any]] = []
         try:
@@ -233,7 +240,7 @@ class PsutilTelemetryCollector:
             return rows
         for connection in connections:
             pid = int(getattr(connection, "pid", 0) or 0)
-            if pid not in wanted:
+            if wanted is not None and pid not in wanted:
                 continue
             rows.append(
                 {

@@ -165,8 +165,200 @@ class SystemSenseStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_watch_process_name
                     ON memory_watch_process_samples(name, ram_mb DESC);
+
+                CREATE TABLE IF NOT EXISTS systemsense_watches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    profile TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_systemsense_watches_status_time
+                    ON systemsense_watches(status, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS systemsense_watch_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    watch_id INTEGER NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    cpu_percent REAL,
+                    memory_percent REAL,
+                    system_available_gb REAL,
+                    storage_read_mb_s REAL,
+                    storage_write_mb_s REAL,
+                    network_send_mbps REAL,
+                    network_receive_mbps REAL,
+                    gpu_percent REAL,
+                    vram_used_mb REAL,
+                    FOREIGN KEY(watch_id) REFERENCES systemsense_watches(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_systemsense_watch_samples_time
+                    ON systemsense_watch_samples(watch_id, captured_at DESC);
+
+                CREATE TABLE IF NOT EXISTS systemsense_executable_artifacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    captured_at TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    size_bytes INTEGER,
+                    modified_ns INTEGER,
+                    sha256 TEXT,
+                    company_name TEXT,
+                    product_name TEXT,
+                    file_description TEXT,
+                    file_version TEXT,
+                    product_version TEXT,
+                    original_filename TEXT,
+                    signature_status TEXT,
+                    signer_subject TEXT,
+                    signer_issuer TEXT,
+                    UNIQUE(path, size_bytes, modified_ns)
+                );
+
+                CREATE TABLE IF NOT EXISTS systemsense_watch_process_samples (
+                    sample_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    started_at_epoch REAL,
+                    name TEXT NOT NULL,
+                    cpu_percent REAL,
+                    rss_mb REAL,
+                    vms_mb REAL,
+                    private_mb REAL,
+                    pagefile_mb REAL,
+                    threads INTEGER,
+                    handles INTEGER,
+                    page_faults INTEGER,
+                    io_read_mb REAL,
+                    io_write_mb REAL,
+                    io_read_mb_s REAL,
+                    io_write_mb_s REAL,
+                    gpu_percent REAL,
+                    gpu_dedicated_mb REAL,
+                    gpu_shared_mb REAL,
+                    gpu_committed_mb REAL,
+                    executable TEXT,
+                    command_line TEXT,
+                    parent_pid INTEGER,
+                    parent_name TEXT,
+                    parent_executable TEXT,
+                    ancestry_json TEXT,
+                    username TEXT,
+                    artifact_id INTEGER,
+                    FOREIGN KEY(sample_id) REFERENCES systemsense_watch_samples(id),
+                    FOREIGN KEY(artifact_id) REFERENCES systemsense_executable_artifacts(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_systemsense_watch_process_ram
+                    ON systemsense_watch_process_samples(rss_mb DESC);
+                CREATE INDEX IF NOT EXISTS idx_systemsense_watch_process_pid
+                    ON systemsense_watch_process_samples(pid, started_at_epoch);
+
+                CREATE TABLE IF NOT EXISTS systemsense_watch_network_samples (
+                    sample_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    family TEXT,
+                    socket_type TEXT,
+                    local_endpoint TEXT,
+                    remote_endpoint TEXT,
+                    status TEXT,
+                    FOREIGN KEY(sample_id) REFERENCES systemsense_watch_samples(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_systemsense_watch_network_pid
+                    ON systemsense_watch_network_samples(pid, sample_id);
+
+                CREATE TABLE IF NOT EXISTS systemsense_watch_lifecycle (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    watch_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    started_at_epoch REAL,
+                    event TEXT NOT NULL,
+                    event_at TEXT NOT NULL,
+                    name TEXT,
+                    parent_pid INTEGER,
+                    details_json TEXT,
+                    FOREIGN KEY(watch_id) REFERENCES systemsense_watches(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_systemsense_watch_lifecycle_time
+                    ON systemsense_watch_lifecycle(watch_id, event_at DESC);
                 """
             )
+            self._migrate_schema(connection)
+
+    @staticmethod
+    def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
+        if not SystemSenseStore._table_exists(connection, table):
+            return set()
+        return {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+
+    def _migrate_schema(self, connection: sqlite3.Connection) -> None:
+        """Versioned, idempotent migrations for SystemSense's private database."""
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
+
+        if version < 1:
+            # Older PR160 builds used memory-specific tables. Preserve any
+            # samples already collected by copying their stable core fields into
+            # the generic SystemSense watch schema once.
+            if (
+                self._table_exists(connection, "memory_watches")
+                and connection.execute(
+                    "SELECT COUNT(*) FROM systemsense_watches"
+                ).fetchone()[0] == 0
+            ):
+                connection.execute(
+                    "INSERT INTO systemsense_watches("
+                    "id, created_at, expires_at, status, label, profile"
+                    ") SELECT id, created_at, expires_at, status, label, 'memory' "
+                    "FROM memory_watches"
+                )
+                if self._table_exists(connection, "memory_watch_samples"):
+                    connection.execute(
+                        "INSERT INTO systemsense_watch_samples("
+                        "id, watch_id, captured_at, memory_percent, system_available_gb"
+                        ") SELECT id, watch_id, captured_at, system_memory_percent, "
+                        "system_available_gb FROM memory_watch_samples"
+                    )
+                if self._table_exists(connection, "memory_watch_process_samples"):
+                    columns = self._columns(connection, "memory_watch_process_samples")
+                    def expression(name: str, fallback: str = "NULL") -> str:
+                        return name if name in columns else fallback
+                    connection.execute(
+                        "INSERT INTO systemsense_watch_process_samples("
+                        "sample_id, pid, started_at_epoch, name, cpu_percent, rss_mb, "
+                        "executable, command_line, parent_pid, parent_name, "
+                        "parent_executable, username"
+                        ") SELECT sample_id, pid, "
+                        + expression("started_at_epoch")
+                        + ", name, cpu_percent, ram_mb, "
+                        + expression("executable")
+                        + ", "
+                        + expression("command_line")
+                        + ", "
+                        + expression("parent_pid")
+                        + ", "
+                        + expression("parent_name")
+                        + ", "
+                        + expression("parent_executable")
+                        + ", "
+                        + expression("username")
+                        + " FROM memory_watch_process_samples"
+                    )
+            connection.execute("PRAGMA user_version=1")
+            version = 1
+
+        if version < 2:
+            # v2 establishes the explicit migration boundary for the generic
+            # watch/process/network/artifact schema. CREATE TABLE IF NOT EXISTS
+            # above makes this safe for both new and existing databases.
+            connection.execute("PRAGMA user_version=2")
 
     def save_snapshot(
         self, kind: str, payload: dict[str, Any], captured_at: str | None = None

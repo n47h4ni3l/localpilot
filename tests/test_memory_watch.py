@@ -437,6 +437,13 @@ def test_generic_systemsense_watch_parser_covers_major_resource_profiles():
         assert intent is not None
         assert intent.profile == profile
 
+    combined = parse_systemsense_watch_request(
+        "Monitor GPU and RAM today",
+        now=now,
+    )
+    assert combined is not None
+    assert combined.profile == "system"
+
     assert is_systemsense_watch_report_request("What did the SystemSense watch find?")
     assert is_systemsense_process_investigation_request(
         "Investigate what that worker.exe process was doing during the GPU watch"

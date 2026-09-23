@@ -54,6 +54,15 @@ class SystemSenseReader:
             self.systemsense.history(metric=metric, hours=hours, limit=limit)
         )
 
+    def get_memory_watch_report(self, watch_id: int = 0) -> str:
+        """Read the latest or a specific owner-requested RAM watch report."""
+        selected = int(watch_id)
+        return self._render(
+            self.systemsense.memory_watch_report(
+                watch_id=selected if selected > 0 else None
+            )
+        )
+
     def get_workload_correlations(self, limit: int = 10) -> str:
         """Read observational correlations between inference speed and resources."""
         return self._render(self.systemsense.correlations(limit=limit))

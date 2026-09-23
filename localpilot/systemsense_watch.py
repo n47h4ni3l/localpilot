@@ -103,12 +103,23 @@ def parse_systemsense_watch_request(
 
 def is_systemsense_watch_report_request(prompt: str) -> bool:
     text = " ".join(str(prompt or "").strip().split())
-    if not text or not _REPORT_TERMS.search(text):
+    if not text:
         return False
-    if _WATCH_TERMS.search(text):
+    if _WATCH_TERMS.search(text) and _REPORT_TERMS.search(text):
         return True
-    # Follow-ups often name only the resource after a watch was established.
-    return any(pattern.search(text) for _, pattern in _PROFILE_PATTERNS)
+    # Follow-ups can omit the word "watch", but require clearly retrospective
+    # wording so a normal "what is my RAM usage?" current-state question is not
+    # accidentally forced onto historical watch evidence.
+    historical = re.search(
+        r"\b(?:what did|what has|results?|findings?|what happened|found|"
+        r"spikes?|spiked|culprit|consumer|used|during the watch)\b",
+        text,
+        re.IGNORECASE,
+    )
+    return bool(
+        historical
+        and any(pattern.search(text) for _, pattern in _PROFILE_PATTERNS)
+    )
 
 
 def is_systemsense_process_investigation_request(prompt: str) -> bool:
@@ -127,7 +138,13 @@ def is_systemsense_process_investigation_request(prompt: str) -> bool:
         text,
         re.IGNORECASE,
     )
-    watch_context = _WATCH_TERMS.search(text) or any(
-        pattern.search(text) for _, pattern in _PROFILE_PATTERNS
+    resource_context = any(pattern.search(text) for _, pattern in _PROFILE_PATTERNS)
+    historical_context = re.search(
+        r"\b(?:that|those|used|spiked|during|watch|monitor|culprit|consumer)\b",
+        text,
+        re.IGNORECASE,
+    )
+    watch_context = _WATCH_TERMS.search(text) or (
+        resource_context and historical_context
     )
     return bool(investigation and process_subject and watch_context)

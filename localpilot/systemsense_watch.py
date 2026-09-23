@@ -21,7 +21,7 @@ _PROFILE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("memory", re.compile(r"\b(?:ram|memory|memory usage|memory use|memory pressure)\b", re.I)),
     ("gpu", re.compile(r"\b(?:gpu|vram|graphics(?: card)?|video memory)\b", re.I)),
     ("network", re.compile(r"\b(?:network|internet|upload|download|bandwidth|connection traffic)\b", re.I)),
-    ("storage", re.compile(r"\b(?:disk|storage|ssd|drive|read(?:ing)?|writ(?:e|ing)|i/o|io)\b", re.I)),
+    ("storage", re.compile(r"\b(?:disk|storage|ssd|drive activity|disk reads?|disk writes?|i/o|io)\b", re.I)),
     ("cpu", re.compile(r"\b(?:cpu|processor|core usage|cpu usage)\b", re.I)),
 )
 

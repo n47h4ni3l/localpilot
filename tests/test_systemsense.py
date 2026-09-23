@@ -276,6 +276,9 @@ def test_passive_collection_uses_fast_base_and_slower_rich_persistence_cadences(
     assert overhead["cadence_seconds"]["metrics"] == 15.0
     assert overhead["rss_mb"] is not None
 
+    self_history = sense.history(metric="systemsense.cycle_ms", limit=10)
+    assert self_history["samples"] >= 1
+
 
 def test_passive_summary_never_collects_when_the_runtime_has_not_sampled(tmp_path):
     dynamic = FakeDynamicCollector()

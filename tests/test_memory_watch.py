@@ -338,6 +338,22 @@ def test_memory_watch_process_identity_uses_historical_instance_and_provenance(
         label="1 hour",
     )
     monkeypatch.setattr("localpilot.systemsense.time.monotonic", lambda: 100.0)
+
+    def fake_artifact_id(process):
+        return sense.store.upsert_executable_artifact(
+            {
+                "available": True,
+                "path": process["executable"],
+                "size_bytes": 123,
+                "modified_ns": 456,
+                "company_name": "Python Software Foundation",
+                "product_name": "Python",
+                "signature_status": "Valid",
+                "sha256": "ABC",
+            }
+        )
+
+    monkeypatch.setattr(sense, "_artifact_id_for_process", fake_artifact_id)
     sense.collect_dynamic()
 
     historical = sense.memory_watch_process_identity(
@@ -355,18 +371,6 @@ def test_memory_watch_process_identity_uses_historical_instance_and_provenance(
 
     monkeypatch.setattr(
         systemsense_tools,
-        "inspect_executable_metadata",
-        lambda path: {
-            "available": True,
-            "path": path,
-            "company_name": "Python Software Foundation",
-            "product_name": "Python",
-            "signature_status": "Valid",
-            "sha256": "ABC",
-        },
-    )
-    monkeypatch.setattr(
-        systemsense_tools,
         "inspect_process_identity",
         lambda pid: __import__("json").dumps(
             {
@@ -379,6 +383,13 @@ def test_memory_watch_process_identity_uses_historical_instance_and_provenance(
             }
         ),
     )
+    monkeypatch.setattr(
+        systemsense_tools,
+        "inspect_process_launch_context",
+        lambda *args, **kwargs: __import__("json").dumps(
+            {"available": True, "services": [], "scheduled_tasks": [], "startup_items": []}
+        ),
+    )
 
     tools = registry(tmp_path, config=Config(), systemsense=sense)
     payload = __import__("json").loads(
@@ -389,9 +400,11 @@ def test_memory_watch_process_identity_uses_historical_instance_and_provenance(
     )
 
     assert payload["available"] is True
-    assert payload["executable_metadata"]["company_name"] == "Python Software Foundation"
+    assert payload["company_name"] == "Python Software Foundation"
+    assert payload["signature_status"] == "Valid"
+    assert payload["sha256"] == "ABC"
     assert payload["current_process"]["available"] is True
-    assert "historical process instance" in payload["identity_note"]
+    assert "observation time" in payload["identity_note"]
 
 
 def test_registry_exposes_memory_watch_report_as_read_only_evidence(tmp_path):

@@ -49,15 +49,15 @@ New-Item -ItemType Directory -Force E:\LLM_HOME\wsl\LocalPilot-Training | Out-Nu
 wsl --install Ubuntu-24.04 --name LocalPilot-Training --location E:\LLM_HOME\wsl\LocalPilot-Training --version 2
 ```
 
-Finish the Ubuntu first-run user setup. In **WSL Settings**, set the memory limit to 28 GB and swap to 8 GB under `E:\LLM_HOME\wsl\swap.vhdx`, preserving other existing settings. Alternatively, edit the existing `%UserProfile%\.wslconfig` to set these keys under its existing `[wsl2]` section (do not replace unrelated settings):
+Finish the Ubuntu first-run user setup. For the current recovery run, use a **24 GB WSL memory cap and 24 GB E:-backed swap**. This leaves materially more physical RAM for Windows than the earlier 28 GB cap while restoring enough Linux-side headroom for embedding offload. Preserve other existing WSL settings. In **WSL Settings**, or under the existing `[wsl2]` section of `%UserProfile%\.wslconfig`, use:
 
 ```ini
-memory=28GB
-swap=8GB
+memory=24GB
+swap=24GB
 swapFile=E:\\LLM_HOME\\wsl\\swap.vhdx
 ```
 
-These settings affect all WSL2 distributions. Save any work in running WSL sessions before `wsl --shutdown`, then restart the training distro. Swap is contingency space, not a substitute for training RAM.
+These settings affect all WSL2 distributions. Save any work in running WSL sessions before `wsl --shutdown`, then restart the training distro. The swap file is contingency space for transient host/guest pressure, not a substitute for training RAM; the trainer still requires the configured 23 GiB guest-RAM preflight and the Windows guard remains observational by default.
 
 Run the remaining commands from Windows PowerShell. Set `$localPilotRepo` to the merged checkout; the example keeps repo-relative outputs on `E:`. The setup downloads software and later the pinned model weights, but performs no training. The ROCm SDK prerequisite is explicitly installed into the E-backed virtual environment. [AMD ROCm 7.14.1 installation](https://rocm.docs.amd.com/en/docs-7.14.1/install/rocm.html), [ROCDXG 1.2.1 release](https://github.com/ROCm/librocdxg/releases/tag/v1.2.1)
 

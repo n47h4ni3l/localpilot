@@ -1014,6 +1014,10 @@ def execute_training(
         if diagnostic_enabled else None
     )
     stop_after_step = int(diagnostics["stop_after_step"]) if diagnostic_enabled else None
+    if diagnostic_enabled and resume_checkpoint is None and not restart:
+        for path in (memory_log_path, exit_report_path):
+            if path is not None and path.exists():
+                raise RuntimeError(f"Diagnostic evidence already exists and will not be overwritten: {path}")
 
     class CheckpointIntegrityCallback(TrainerCallback):
         def on_step_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
@@ -1036,7 +1040,7 @@ def execute_training(
                 "event": event,
                 "global_step": int(state.global_step),
                 "epoch": float(state.epoch) if state.epoch is not None else None,
-                "microbatch_lengths": list(getattr(trainer, "_diagnostic_microbatch_lengths", [])) if "trainer" in locals() else [],
+                "microbatch_lengths": list(getattr(trainer, "_diagnostic_microbatch_lengths", [])),
                 "cuda": _cuda_memory_snapshot(torch),
                 **extra,
             }
@@ -1176,7 +1180,7 @@ def execute_training(
                 "torch_compile_disable": os.environ.get("TORCH_COMPILE_DISABLE"),
                 "unsloth_compile_disable": os.environ.get("UNSLOTH_COMPILE_DISABLE"),
                 "embedding_devices": embedding_devices,
-                "cuda": _cuda_memory_snapshot(torch),
+                "cuda": {"capture_status": "pending"},
                 "memory_log_path": str(memory_log_path) if memory_log_path is not None else None,
                 "exception": None,
             }
@@ -1186,6 +1190,8 @@ def execute_training(
                     "message": str(caught),
                     "traceback": "".join(traceback.format_exception(type(caught), caught, caught.__traceback__)),
                 }
+            _atomic_json(exit_report_path, report)
+            report["cuda"] = _cuda_memory_snapshot(torch)
             _atomic_json(exit_report_path, report)
             print(f"LocalPilot diagnostic exit report: {exit_report_path}", flush=True)
 

@@ -79,6 +79,46 @@ def _adapter_only_state_dict(model: Any) -> dict[str, Any]:
     return {name: parameter.detach().cpu() for name, parameter in trainable}
 
 
+def _validate_embedding_offload(resources: dict[str, Any]) -> None:
+    # These specifications target Unsloth on WSL, where embedding offload is
+    # explicitly disabled by the backend. A request is not runtime evidence.
+    if resources.get("offload_embeddings") is not False or resources.get("cpu_offload") != "none":
+        raise RuntimeError("Unsloth disables embedding offload on WSL; require offload_embeddings=false and cpu_offload=none")
+
+
+def _training_runtime_settings(trainer: Any, resources: dict[str, Any]) -> dict[str, Any]:
+    """Read the trainer and tensor devices after backend initialization."""
+    placement: dict[str, Any] = {
+        "offload_requested": resources.get("offload_embeddings"),
+        "cpu_offload_requested": resources.get("cpu_offload"),
+    }
+    for name in ("input", "output"):
+        try:
+            embedding = getattr(trainer.model, f"get_{name}_embeddings")()
+            placement[name] = str(embedding.weight.device) if embedding is not None else None
+        except Exception as exc:
+            placement[name] = None
+            placement[f"{name}_error"] = f"{type(exc).__name__}: {exc}"
+    placement["offload_active"] = placement["input"] == placement["output"] == "cpu"
+    return {
+        # Missing evidence must not look like an effective None.
+        "torch_empty_cache_steps": getattr(trainer.args, "torch_empty_cache_steps", "unavailable"),
+        "embedding_devices": placement,
+    }
+
+
+def _verify_training_runtime(settings: dict[str, Any]) -> None:
+    if settings["torch_empty_cache_steps"] is not None:
+        raise RuntimeError("Effective trainer.args.torch_empty_cache_steps must be None; refusing periodic cache purges")
+    placement = settings["embedding_devices"]
+    _validate_embedding_offload({
+        "offload_embeddings": placement["offload_requested"],
+        "cpu_offload": placement["cpu_offload_requested"],
+    })
+    if placement["input"] != "cuda:0" or placement["output"] != "cuda:0":
+        raise RuntimeError(f"Effective embedding placement must be cuda:0 for both input and output on WSL: {placement}")
+
+
 def _native_tool(tool: Any, *, record_id: str) -> dict[str, Any]:
     """Return one tool in the OpenAI shape expected by the gpt-oss template."""
     if not isinstance(tool, dict):
@@ -686,8 +726,7 @@ def _validate_config(config: dict[str, Any]) -> None:
         raise RuntimeError("A frozen corpus manifest is required")
     for key in ("minimum_vram_gib", "estimated_peak_vram_gib", "minimum_system_ram_gib", "minimum_storage_free_gib"):
         number(resources, key, 1, 10000)
-    if resources.get("offload_embeddings") is not True or resources.get("cpu_offload") != "embeddings_only":
-        raise RuntimeError("The recovery training specification requires embedding offload to CPU")
+    _validate_embedding_offload(resources)
     diagnostics = config.get("diagnostics")
     if diagnostics is not None:
         if not isinstance(diagnostics, dict):
@@ -989,6 +1028,7 @@ def execute_training(
     if resume_checkpoint is not None and restart:
         raise RuntimeError("Resume and restart are mutually exclusive")
     adapter, training, data, resources = (config[key] for key in ("adapter", "training", "data", "resources"))
+    _validate_embedding_offload(resources)
     output = (ROOT / config["output"]["directory"]).resolve()
     safe, detail = _safe_output(output, resume=resume_checkpoint is not None or restart)
     if not safe:
@@ -1029,6 +1069,11 @@ def execute_training(
                 raise RuntimeError(f"Diagnostic evidence already exists and will not be overwritten: {path}")
 
     class CheckpointIntegrityCallback(TrainerCallback):
+        def on_train_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+            # Unsloth's train wrapper can change placement after construction.
+            verify_runtime("train_begin_runtime")
+            return control
+
         def on_step_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
             if state.global_step == training["first_checkpoint_step"]:
                 control.should_save = True
@@ -1129,36 +1174,37 @@ def execute_training(
             eval_steps=training["validation_steps"], save_steps=training["checkpoint_steps"],
             save_total_limit=training["save_total_limit"], save_only_model=False,
             save_safetensors=True, logging_steps=training["logging_steps"],
+            # Unsloth's generated SFTConfig defaults to 250. Preserve the warm
+            # allocator cache throughout the native-compile endurance run.
+            torch_empty_cache_steps=None,
             dataloader_num_workers=resources["dataloader_workers"], dataloader_pin_memory=resources["pin_memory"],
             seed=training["seed"], data_seed=training["seed"], report_to="none", push_to_hub=False,
         ),
     )
-    embedding_devices = {}
-    if diagnostic_enabled:
-        try:
-            input_embeddings = model.get_input_embeddings()
-            output_embeddings = model.get_output_embeddings()
-            embedding_devices = {
-                "input": str(input_embeddings.weight.device) if input_embeddings is not None else None,
-                "output": str(output_embeddings.weight.device) if output_embeddings is not None else None,
-                "offload_requested": bool(resources.get("offload_embeddings")),
-                "cpu_offload_requested": resources.get("cpu_offload"),
-            }
-        except Exception as exc:
-            embedding_devices = {"error": f"{type(exc).__name__}: {exc}"}
-        _append_jsonl(memory_log_path, {
+    runtime_settings: dict[str, Any] = {}
+
+    def verify_runtime(event: str) -> None:
+        nonlocal runtime_settings
+        runtime_settings = _training_runtime_settings(trainer, resources)
+        record = {
             "timestamp_utc": datetime.now(UTC).isoformat(),
-            "event": "runtime_ready",
-            "global_step": 0,
+            "event": event,
+            "global_step": int(getattr(trainer.state, "global_step", 0)),
             "compile_mode": config["backend"].get("compile_mode"),
             "torch_compile_disable": os.environ.get("TORCH_COMPILE_DISABLE"),
             "unsloth_compile_disable": os.environ.get("UNSLOTH_COMPILE_DISABLE"),
-            "embedding_devices": embedding_devices,
-            "cuda": _cuda_memory_snapshot(torch),
-        })
+            **runtime_settings,
+        }
+        # Always report actual settings, including on a refused startup and
+        # when per-step diagnostics are disabled.
+        print(f"LocalPilot training runtime: {json.dumps(record, sort_keys=True)}", flush=True)
+        if memory_log_path is not None:
+            _append_jsonl(memory_log_path, {**record, "cuda": _cuda_memory_snapshot(torch)})
+        _verify_training_runtime(runtime_settings)
 
     caught: BaseException | None = None
     try:
+        verify_runtime("runtime_ready")
         if resume_checkpoint is None:
             _atomic_json(output / RUN_IDENTITY_FILE, run_identity)
             trainer.train()
@@ -1188,7 +1234,7 @@ def execute_training(
                 "compile_mode": config["backend"].get("compile_mode"),
                 "torch_compile_disable": os.environ.get("TORCH_COMPILE_DISABLE"),
                 "unsloth_compile_disable": os.environ.get("UNSLOTH_COMPILE_DISABLE"),
-                "embedding_devices": embedding_devices,
+                **runtime_settings,
                 "cuda": {"capture_status": "pending"},
                 "memory_log_path": str(memory_log_path) if memory_log_path is not None else None,
                 "exception": None,

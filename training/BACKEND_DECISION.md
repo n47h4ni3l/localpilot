@@ -1,11 +1,11 @@
 # Adapter backend decision: AMD Radeon RX 9070
 
-Status: **proposed; local non-training dry-run passed; training not authorized**
-Reviewed: 2026-09-20
+Status: **corrected WSL specification proposed; fresh target-machine dry-run required**
+Reviewed: 2026-09-27 (WSL placement correction; original backend research 2026-09-20)
 
 ## Decision
 
-Propose Unsloth QLoRA for `gpt-oss-20b` in a dedicated Ubuntu 24.04 WSL2 distribution whose virtual disk lives under `E:\LLM_HOME\wsl\LocalPilot-Training`. Select Python 3.12, AMD's published multi-architecture ROCm 7.14.1 wheels for `gfx1201`, PyTorch 2.12, bitsandbytes 0.50.2, and Unsloth 2026.9.7. Start with rank 8, 1,040-token sequences, micro-batch 1, gradient accumulation 4, BF16 compute, Unsloth checkpointing, and requested embedding offload. The 1,040-token limit is the smallest 16-token-aligned window above the exact 1,036-token maximum of the fully rendered corpus, including native tool schemas; no example is truncated. This exact combination passed the non-training dry-run on this machine on 2026-09-20. Model loading and forward/backward peak memory remain deliberately unmeasured until the separately authorized, watched first batch.
+Propose Unsloth QLoRA for `gpt-oss-20b` in a dedicated Ubuntu 24.04 WSL2 distribution whose virtual disk lives under `E:\LLM_HOME\wsl\LocalPilot-Training`. Select Python 3.12, AMD's published multi-architecture ROCm 7.14.1 wheels for `gfx1201`, PyTorch 2.12, bitsandbytes 0.50.2, and Unsloth 2026.9.7. Start with rank 8, 1,040-token sequences, micro-batch 1, gradient accumulation 4, BF16 compute, Unsloth checkpointing, and GPU-resident embeddings (`offload_embeddings=false`, `cpu_offload=none`): Unsloth disables embedding offload on WSL. The 1,040-token limit is the smallest 16-token-aligned window above the exact 1,036-token maximum of the fully rendered corpus, including native tool schemas; no example is truncated. The earlier specification passed the non-training dry-run on this machine on 2026-09-20, but it only requested CPU embedding offload; that dry-run did not measure placement. Later diagnostics confirmed both embeddings remained on `cuda:0`. The corrected specification needs fresh dry-run evidence and a new endurance run; see `README.md` for the step-2004 OOM evidence and the explicit periodic-cache-purge fix.
 
 This is a plausible first adapter path with a narrow memory margin. The RX 9070 is a 16 GB-class RDNA4 card and the machine has 31.93 GiB system RAM. Unsloth reports a 14 GB VRAM QLoRA requirement, compared with 44 GB for LoRA over unquantized BF16 base weights. Those are upstream figures, not an RX 9070 measurement. A local dry-run must establish package, GPU, data, model-cache, tokenizer, and adapter readiness. It cannot prove peak training memory without a later, separately authorized training smoke run.
 
@@ -30,7 +30,7 @@ bitsandbytes publishes AMD ROCm builds for `gfx1201`; use 0.50.2. The released U
 ## Resource and deployment expectations
 
 - VRAM: declared minimum 14 GiB; 13.5 GiB in the config is an **unmeasured planning estimate**, not a measured peak. Leave headroom for the Windows desktop and stop if the free-memory check fails. A local GPU operation check does not measure the model's forward/backward peak.
-- RAM: allocate 28 GB to WSL and require at least 27.0 GiB visible after guest overhead. On this machine the 28 GB WSL cap exposes about 27.4 GiB inside the guest; the readiness floor accounts for that virtualization overhead while preserving the intended roughly 4 GiB host reserve. Close memory-heavy applications first. Default WSL allocation is only half the host RAM. Embedding offload is requested, but actual placement must be inspected after loading; do not assume heavy CPU offload makes a larger model fit. [Microsoft WSL memory settings](https://learn.microsoft.com/en-us/windows/wsl/wsl-config)
+- RAM: allocate 28 GB to WSL and require at least 27.0 GiB visible after guest overhead. On this machine the 28 GB WSL cap exposes about 27.4 GiB inside the guest; the readiness floor accounts for that virtualization overhead while preserving the intended roughly 4 GiB host reserve. Close memory-heavy applications first. Default WSL allocation is only half the host RAM. Unsloth disables embedding offload on WSL. Use `offload_embeddings=false` / `cpu_offload=none` and verify both embedding weight devices are `cuda:0` after trainer initialization and at training start; a requested offload flag is not evidence of CPU placement. [Microsoft WSL memory settings](https://learn.microsoft.com/en-us/windows/wsl/wsl-config)
 - Storage: the dedicated distro places PyTorch, its environment, and the Hugging Face cache on `E:`. Put the merged checkout on `E:` too if its ignored `training/outputs/` and `training/reports/` should live there. A checkout on `C:` keeps those repo-relative outputs on `C:`. Allow at least 100 GiB free for the environment, model cache, and potential exports. A 20.9B BF16 export alone is roughly 42 GB before temporary copies; merge/export may require a larger-memory machine even when QLoRA fits locally.
 - Deployment: save the adapter first; only after evaluation should a separately named merged GGUF be imported into Ollama. Never overwrite `gpt-oss:20b`.
 
@@ -49,7 +49,7 @@ New-Item -ItemType Directory -Force E:\LLM_HOME\wsl\LocalPilot-Training | Out-Nu
 wsl --install Ubuntu-24.04 --name LocalPilot-Training --location E:\LLM_HOME\wsl\LocalPilot-Training --version 2
 ```
 
-Finish the Ubuntu first-run user setup. For the current recovery run, use a **24 GB WSL memory cap and 24 GB E:-backed swap**. This leaves materially more physical RAM for Windows than the earlier 28 GB cap while restoring enough Linux-side headroom for embedding offload. Preserve other existing WSL settings. In **WSL Settings**, or under the existing `[wsl2]` section of `%UserProfile%\.wslconfig`, use:
+Finish the Ubuntu first-run user setup. For the current recovery run, use a **24 GB WSL memory cap and 24 GB E:-backed swap**. This leaves materially more physical RAM for Windows than the earlier 28 GB cap while preserving Linux-side host-memory headroom; it does not enable CPU embedding offload on WSL. Preserve other existing WSL settings. In **WSL Settings**, or under the existing `[wsl2]` section of `%UserProfile%\.wslconfig`, use:
 
 ```ini
 memory=24GB

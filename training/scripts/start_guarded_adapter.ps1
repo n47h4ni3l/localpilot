@@ -31,8 +31,8 @@ $stdoutPath = Join-Path $reportDir "$runName-$stamp.stdout.log"
 $stderrPath = Join-Path $reportDir "$runName-$stamp.stderr.log"
 $telemetryPath = Join-Path $reportDir "$runName-$stamp.memory.jsonl"
 
-if ($config.resources.offload_embeddings -ne $true -or [string]$config.resources.cpu_offload -ne 'embeddings_only') {
-    throw 'The recovery run requires embedding offload to CPU; refusing a configuration that puts the embeddings back on VRAM.'
+if ($config.resources.offload_embeddings -isnot [bool] -or $config.resources.offload_embeddings -ne $false -or [string]$config.resources.cpu_offload -ne 'none') {
+    throw 'Unsloth disables embedding offload on WSL; require offload_embeddings=false and cpu_offload=none. The trainer verifies actual embedding placement after loading.'
 }
 
 if (-not (Test-Path -LiteralPath $wslConfig)) {
@@ -402,6 +402,26 @@ $topMemory = @()
 $gpuMemory = @()
 $windowsMemoryBreakdown = $null
 $wslMemory = $null
+
+# Prevent automatic idle sleep while this guard owns the training process.
+# Sleep can suspend WSL and this polling loop without a trainer exception.
+# The request is released when this PowerShell process exits; explicit user
+# sleep is still possible. This does not identify what stopped an earlier run.
+try {
+    Add-Type -Name PowerManagement -Namespace LocalPilot -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError = true)]
+public static extern uint SetThreadExecutionState(uint esFlags);
+'@ -ErrorAction Stop
+    # PowerShell treats the hex literal 0x80000000 as a negative Int32.
+    $ES_CONTINUOUS = [uint32]2147483648
+    $ES_SYSTEM_REQUIRED = [uint32]0x00000001
+    if ([LocalPilot.PowerManagement]::SetThreadExecutionState($ES_CONTINUOUS -bor $ES_SYSTEM_REQUIRED) -eq 0) {
+        Write-Warning 'Windows refused the sleep-prevention request; the machine may sleep mid-training.'
+    }
+}
+catch {
+    Write-Warning "Could not request sleep prevention: $($_.Exception.Message). The machine may sleep mid-training."
+}
 
 $startProcessArgs = @{
     FilePath = 'wsl.exe'

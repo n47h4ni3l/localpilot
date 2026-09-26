@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "LocalPilot gpt-oss-20b native-compile endurance",
   "status": "proposed",
-  "status_note": "Endurance continuation of the successful 320-step native-compile diagnostic. Preserve the production 11,112-step schedule, validate/save at steps 3,704/7,408/11,112, continue until natural completion or failure, emit per-step allocator telemetry and an exit report, and save the final adapter only after successful completion. A matching passing target-machine dry-run is required before training.",
+  "status_note": "Native-compile endurance correction after the step-2004 OOM: disable periodic trainer cache purges and verify cuda:0 embedding placement; Unsloth disables CPU embedding offload on WSL. Preserve the 11,112-step schedule, validation/checkpoints at 3,704/7,408/11,112, per-step telemetry, natural completion and final adapter save. Earlier approval applied to the previous specification; a fresh matching target-machine dry-run and approval are required.",
   "backend": {
     "name": "unsloth",
     "compile_mode": "native",
@@ -99,15 +99,15 @@
     "minimum_system_ram_gib": 23,
     "minimum_storage_free_gib": 50,
     "estimated_peak_is_measured": false,
-    "offload_embeddings": true,
-    "cpu_offload": "embeddings_only",
+    "offload_embeddings": false,
+    "cpu_offload": "none",
     "gradient_checkpointing": "unsloth",
     "dataloader_workers": 0,
     "pin_memory": false,
     "reserve_system_ram_gib": 4
   },
   "output": {
-    "directory": "training/outputs/adapter_v1_native_compile_endurance_20260926",
+    "directory": "training/outputs/adapter_v1_native_compile_endurance_no_purge_20260927",
     "save_adapter_only": true,
     "checkpoint_format": "safetensors",
     "deployment_path": "merge with the exact base in Unsloth, export GGUF, then import the merged GGUF into Ollama",
@@ -123,8 +123,8 @@
   "diagnostics": {
     "enabled": true,
     "stop_after_step": null,
-    "memory_log_path": "training/reports/adapter_v1_native_compile_endurance_20260926.torch_memory.jsonl",
-    "exit_report_path": "training/reports/adapter_v1_native_compile_endurance_20260926.exit.json",
+    "memory_log_path": "training/reports/adapter_v1_native_compile_endurance_no_purge_20260927.torch_memory.jsonl",
+    "exit_report_path": "training/reports/adapter_v1_native_compile_endurance_no_purge_20260927.exit.json",
     "skip_final_adapter_save": false
   }
 }

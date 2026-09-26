@@ -695,8 +695,16 @@ def _validate_config(config: dict[str, Any]) -> None:
         if diagnostics.get("enabled") is not True:
             raise RuntimeError("A diagnostics section must set enabled=true")
         stop_after = diagnostics.get("stop_after_step")
-        if isinstance(stop_after, bool) or not isinstance(stop_after, int) or not 1 <= stop_after <= 10000:
-            raise RuntimeError("diagnostics.stop_after_step must be an integer from 1 to 10000")
+        if stop_after is not None:
+            if (
+                isinstance(stop_after, bool)
+                or not isinstance(stop_after, int)
+                or not 1 <= stop_after <= training["estimated_optimizer_steps"]
+            ):
+                raise RuntimeError(
+                    "diagnostics.stop_after_step must be null or an integer from 1 "
+                    "through training.estimated_optimizer_steps"
+                )
         if training.get("max_steps") is not None:
             raise RuntimeError("Diagnostic stop must use a callback, not training.max_steps, so the production LR schedule is preserved")
         for key in ("memory_log_path", "exit_report_path"):
@@ -704,8 +712,8 @@ def _validate_config(config: dict[str, Any]) -> None:
             if not isinstance(value, str) or not value:
                 raise RuntimeError(f"diagnostics.{key} must be a nonempty path")
             _under(ROOT / value, ROOT / "training/reports")
-        if diagnostics.get("skip_final_adapter_save") is not True:
-            raise RuntimeError("Diagnostics must skip the final adapter save so the stop result is not confounded by checkpoint I/O")
+        if not isinstance(diagnostics.get("skip_final_adapter_save"), bool):
+            raise RuntimeError("diagnostics.skip_final_adapter_save must be a boolean")
 
     promotion = config["promotion"]
     if promotion.get("requires_eval_v1") is not True or promotion.get("requires_evolution_execution") is not True or promotion.get("training_loss_is_sufficient") is not False:
@@ -1013,7 +1021,8 @@ def execute_training(
         _under(ROOT / diagnostics["exit_report_path"], ROOT / "training/reports")
         if diagnostic_enabled else None
     )
-    stop_after_step = int(diagnostics["stop_after_step"]) if diagnostic_enabled else None
+    raw_stop_after_step = diagnostics.get("stop_after_step") if diagnostic_enabled else None
+    stop_after_step = int(raw_stop_after_step) if raw_stop_after_step is not None else None
     if diagnostic_enabled and resume_checkpoint is None and not restart:
         for path in (memory_log_path, exit_report_path):
             if path is not None and path.exists():

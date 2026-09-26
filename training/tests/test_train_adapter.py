@@ -444,6 +444,19 @@ class TrainAdapterTests(unittest.TestCase):
         self.assertEqual(config["diagnostics"]["stop_after_step"], 320)
         self.assertTrue(config["diagnostics"]["skip_final_adapter_save"])
 
+    def test_native_endurance_allows_no_artificial_stop_and_final_adapter_save(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "configs/qlora_v1_native_compile_endurance.yaml"
+        config = runner.load_config(path)
+        runner._validate_config(config)
+        self.assertEqual(config["backend"]["compile_mode"], "native")
+        self.assertIsNone(config["training"]["max_steps"])
+        self.assertEqual(config["training"]["estimated_optimizer_steps"], 11112)
+        self.assertEqual(config["training"]["validation_steps"], 3704)
+        self.assertEqual(config["training"]["first_checkpoint_step"], 3704)
+        self.assertEqual(config["training"]["checkpoint_steps"], 3704)
+        self.assertIsNone(config["diagnostics"]["stop_after_step"])
+        self.assertFalse(config["diagnostics"]["skip_final_adapter_save"])
+
     def test_training_requires_approval_and_rejects_changed_spec(self) -> None:
         result = self.dry_run()
         self.config["status"] = "proposed"

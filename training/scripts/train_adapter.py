@@ -21,6 +21,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -55,11 +56,19 @@ TARGET_MODULES = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj"
 
 
 def _configure_compile_mode(config: dict[str, Any]) -> None:
-    """Apply the pinned eager mode before Torch and Unsloth are imported."""
-    if config["backend"].get("compile_mode") != "eager":
-        raise RuntimeError("This machine requires the measured eager training path")
-    os.environ["TORCH_COMPILE_DISABLE"] = "1"
-    os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+    """Apply the selected compile mode before Torch and Unsloth are imported."""
+    mode = config["backend"].get("compile_mode")
+    if mode == "eager":
+        os.environ["TORCH_COMPILE_DISABLE"] = "1"
+        os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+        return
+    if mode == "native":
+        # Reproduce the pre-PR-157 execution path: do not force eager and do
+        # not inherit compile-disable flags from a parent shell.
+        os.environ.pop("TORCH_COMPILE_DISABLE", None)
+        os.environ.pop("UNSLOTH_COMPILE_DISABLE", None)
+        return
+    raise RuntimeError(f"Unsupported compile mode: {mode!r}")
 
 
 def _adapter_only_state_dict(model: Any) -> dict[str, Any]:
@@ -465,6 +474,38 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
             temporary.unlink()
 
 
+def _cuda_memory_snapshot(torch: Any) -> dict[str, Any]:
+    """Return allocator and device-memory counters without synchronizing the GPU."""
+    if not torch.cuda.is_available():
+        return {"available": False}
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+        return {
+            "available": True,
+            "device": 0,
+            "allocated_bytes": int(torch.cuda.memory_allocated(0)),
+            "reserved_bytes": int(torch.cuda.memory_reserved(0)),
+            "max_allocated_bytes": int(torch.cuda.max_memory_allocated(0)),
+            "max_reserved_bytes": int(torch.cuda.max_memory_reserved(0)),
+            "free_bytes": int(free_bytes),
+            "total_bytes": int(total_bytes),
+        }
+    except Exception as exc:
+        return {
+            "available": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _append_jsonl(path: Path, value: dict[str, Any]) -> None:
+    """Append one flushed diagnostic record so a later OOM still leaves evidence."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(value, sort_keys=True, ensure_ascii=True))
+        handle.write("\n")
+        handle.flush()
+
+
 def _checkpoint_inventory(checkpoint: Path, step: int, output: Path) -> dict[str, dict[str, Any]]:
     _under(checkpoint, output / "checkpoints")
     trainer_state = checkpoint / "trainer_state.json"
@@ -601,8 +642,8 @@ def _validate_config(config: dict[str, Any]) -> None:
     data, quant, training, resources = (config[key] for key in ("data", "quantization", "training", "resources"))
     if backend.get("name") != "unsloth" or not isinstance(backend.get("package_versions"), dict):
         raise RuntimeError("Unsloth backend and explicit package pins are required")
-    if backend.get("compile_mode") != "eager":
-        raise RuntimeError("The measured training path requires eager mode")
+    if backend.get("compile_mode") not in {"eager", "native"}:
+        raise RuntimeError("Compile mode must be eager or native")
     if model.get("base_identity") != "openai/gpt-oss-20b" or model.get("use_exact_model_name") is not True:
         raise RuntimeError("Require the gpt-oss-20b base and disable implicit model remapping")
     for key in ("revision", "base_revision"):
@@ -647,6 +688,25 @@ def _validate_config(config: dict[str, Any]) -> None:
         number(resources, key, 1, 10000)
     if resources.get("offload_embeddings") is not True or resources.get("cpu_offload") != "embeddings_only":
         raise RuntimeError("The recovery training specification requires embedding offload to CPU")
+    diagnostics = config.get("diagnostics")
+    if diagnostics is not None:
+        if not isinstance(diagnostics, dict):
+            raise RuntimeError("diagnostics must be an object")
+        if diagnostics.get("enabled") is not True:
+            raise RuntimeError("A diagnostics section must set enabled=true")
+        stop_after = diagnostics.get("stop_after_step")
+        if isinstance(stop_after, bool) or not isinstance(stop_after, int) or not 1 <= stop_after <= 10000:
+            raise RuntimeError("diagnostics.stop_after_step must be an integer from 1 to 10000")
+        if training.get("max_steps") is not None:
+            raise RuntimeError("Diagnostic stop must use a callback, not training.max_steps, so the production LR schedule is preserved")
+        for key in ("memory_log_path", "exit_report_path"):
+            value = diagnostics.get(key)
+            if not isinstance(value, str) or not value:
+                raise RuntimeError(f"diagnostics.{key} must be a nonempty path")
+            _under(ROOT / value, ROOT / "training/reports")
+        if diagnostics.get("skip_final_adapter_save") is not True:
+            raise RuntimeError("Diagnostics must skip the final adapter save so the stop result is not confounded by checkpoint I/O")
+
     promotion = config["promotion"]
     if promotion.get("requires_eval_v1") is not True or promotion.get("requires_evolution_execution") is not True or promotion.get("training_loss_is_sufficient") is not False:
         raise RuntimeError("Held-out and execution promotion gates must remain enabled")
@@ -770,7 +830,7 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = 
     environment = {"platform": platform.platform(), "machine": platform.node(), "python": sys.executable, "prefix": sys.prefix, "distro": release, "versions": versions}
     _add_check(checks, "environment", _is_wsl() and release.get("ID") == "ubuntu" and release.get("VERSION_ID") == "24.04", environment)
     if checks[0]["passed"]:
-        check("eager_compile_mode", lambda: _configure_compile_mode(config))
+        check("compile_mode", lambda: _configure_compile_mode(config))
         environment["compile_mode"] = config["backend"]["compile_mode"]
         environment["torch_compile_disable"] = os.environ.get("TORCH_COMPILE_DISABLE")
         environment["unsloth_compile_disable"] = os.environ.get("UNSLOTH_COMPILE_DISABLE")
@@ -943,6 +1003,22 @@ def execute_training(
     from trl import SFTConfig, SFTTrainer
     from transformers import TrainerCallback
 
+    diagnostics = config.get("diagnostics") if isinstance(config.get("diagnostics"), dict) else None
+    diagnostic_enabled = diagnostics is not None and diagnostics.get("enabled") is True
+    memory_log_path = (
+        _under(ROOT / diagnostics["memory_log_path"], ROOT / "training/reports")
+        if diagnostic_enabled else None
+    )
+    exit_report_path = (
+        _under(ROOT / diagnostics["exit_report_path"], ROOT / "training/reports")
+        if diagnostic_enabled else None
+    )
+    stop_after_step = int(diagnostics["stop_after_step"]) if diagnostic_enabled else None
+    if diagnostic_enabled and resume_checkpoint is None and not restart:
+        for path in (memory_log_path, exit_report_path):
+            if path is not None and path.exists():
+                raise RuntimeError(f"Diagnostic evidence already exists and will not be overwritten: {path}")
+
     class CheckpointIntegrityCallback(TrainerCallback):
         def on_step_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
             if state.global_step == training["first_checkpoint_step"]:
@@ -955,7 +1031,55 @@ def execute_training(
             _mark_checkpoint_complete(checkpoint, step, output, run_identity)
             return control
 
+    class DiagnosticMemoryCallback(TrainerCallback):
+        def _record(self, event: str, state: Any, **extra: Any) -> None:
+            if memory_log_path is None:
+                return
+            value = {
+                "timestamp_utc": datetime.now(UTC).isoformat(),
+                "event": event,
+                "global_step": int(state.global_step),
+                "epoch": float(state.epoch) if state.epoch is not None else None,
+                "microbatch_lengths": list(getattr(trainer, "_diagnostic_microbatch_lengths", [])),
+                "cuda": _cuda_memory_snapshot(torch),
+                **extra,
+            }
+            _append_jsonl(memory_log_path, value)
+
+        def on_train_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+            torch.cuda.reset_peak_memory_stats(0)
+            self._record("train_begin", state)
+            return control
+
+        def on_step_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+            if hasattr(trainer, "_diagnostic_microbatch_lengths"):
+                trainer._diagnostic_microbatch_lengths.clear()
+            self._record("step_begin", state)
+            return control
+
+        def on_step_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+            self._record("step_end", state)
+            if stop_after_step is not None and state.global_step >= stop_after_step:
+                control.should_training_stop = True
+            return control
+
+        def on_log(self, args: Any, state: Any, control: Any, logs: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+            self._record("trainer_log", state, trainer_log=dict(logs or {}))
+            return control
+
     class AdapterOnlySFTTrainer(SFTTrainer):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self._diagnostic_microbatch_lengths: list[int] = []
+            super().__init__(*args, **kwargs)
+
+        def training_step(self, model: Any, inputs: dict[str, Any], num_items_in_batch: Any = None) -> Any:
+            if diagnostic_enabled:
+                input_ids = inputs.get("input_ids")
+                shape = getattr(input_ids, "shape", None)
+                if shape is not None and len(shape) >= 2:
+                    self._diagnostic_microbatch_lengths.append(int(shape[-1]))
+            return super().training_step(model, inputs, num_items_in_batch)
+
         def _save(self, output_dir: str | None = None, state_dict: Any = None) -> None:
             if state_dict is not None:
                 raise RuntimeError("Unexpected full state dict during adapter checkpoint")
@@ -984,7 +1108,7 @@ def execute_training(
 
     trainer = AdapterOnlySFTTrainer(
         model=model, processing_class=tokenizer, train_dataset=prepared("train"), eval_dataset=prepared("validation"),
-        callbacks=[CheckpointIntegrityCallback()],
+        callbacks=[CheckpointIntegrityCallback()] + ([DiagnosticMemoryCallback()] if diagnostic_enabled else []),
         args=SFTConfig(
             output_dir=str(output / "checkpoints"), max_length=data["max_sequence_length"], packing=False,
             completion_only_loss=True, per_device_train_batch_size=training["micro_batch_size"],
@@ -1000,14 +1124,76 @@ def execute_training(
             seed=training["seed"], data_seed=training["seed"], report_to="none", push_to_hub=False,
         ),
     )
-    if resume_checkpoint is None:
-        _atomic_json(output / RUN_IDENTITY_FILE, run_identity)
-        trainer.train()
-    else:
-        trainer.train(resume_from_checkpoint=str(resume_checkpoint))
-    model.save_pretrained(str(output / "adapter"), state_dict=_adapter_only_state_dict(model), safe_serialization=True)
-    tokenizer.save_pretrained(str(output / "adapter"))
-    write_json(output / "training_config.json", config)
+    embedding_devices = {}
+    if diagnostic_enabled:
+        try:
+            input_embeddings = model.get_input_embeddings()
+            output_embeddings = model.get_output_embeddings()
+            embedding_devices = {
+                "input": str(input_embeddings.weight.device) if input_embeddings is not None else None,
+                "output": str(output_embeddings.weight.device) if output_embeddings is not None else None,
+                "offload_requested": bool(resources.get("offload_embeddings")),
+                "cpu_offload_requested": resources.get("cpu_offload"),
+            }
+        except Exception as exc:
+            embedding_devices = {"error": f"{type(exc).__name__}: {exc}"}
+        _append_jsonl(memory_log_path, {
+            "timestamp_utc": datetime.now(UTC).isoformat(),
+            "event": "runtime_ready",
+            "global_step": 0,
+            "compile_mode": config["backend"].get("compile_mode"),
+            "torch_compile_disable": os.environ.get("TORCH_COMPILE_DISABLE"),
+            "unsloth_compile_disable": os.environ.get("UNSLOTH_COMPILE_DISABLE"),
+            "embedding_devices": embedding_devices,
+            "cuda": _cuda_memory_snapshot(torch),
+        })
+
+    caught: BaseException | None = None
+    try:
+        if resume_checkpoint is None:
+            _atomic_json(output / RUN_IDENTITY_FILE, run_identity)
+            trainer.train()
+        else:
+            trainer.train(resume_from_checkpoint=str(resume_checkpoint))
+
+        if not (diagnostic_enabled and diagnostics.get("skip_final_adapter_save") is True):
+            model.save_pretrained(str(output / "adapter"), state_dict=_adapter_only_state_dict(model), safe_serialization=True)
+            tokenizer.save_pretrained(str(output / "adapter"))
+        write_json(output / "training_config.json", config)
+    except BaseException as exc:
+        caught = exc
+        raise
+    finally:
+        if diagnostic_enabled and exit_report_path is not None:
+            step = int(getattr(trainer.state, "global_step", 0))
+            target_reached = stop_after_step is not None and step >= stop_after_step
+            status = "diagnostic_stop_reached" if caught is None and target_reached else ("completed" if caught is None else "error")
+            report = {
+                "schema_version": 1,
+                "artifact_type": "adapter_training_diagnostic_exit",
+                "created_at": datetime.now(UTC).isoformat(),
+                "status": status,
+                "global_step": step,
+                "target_stop_after_step": stop_after_step,
+                "target_reached": bool(target_reached),
+                "compile_mode": config["backend"].get("compile_mode"),
+                "torch_compile_disable": os.environ.get("TORCH_COMPILE_DISABLE"),
+                "unsloth_compile_disable": os.environ.get("UNSLOTH_COMPILE_DISABLE"),
+                "embedding_devices": embedding_devices,
+                "cuda": {"capture_status": "pending"},
+                "memory_log_path": str(memory_log_path) if memory_log_path is not None else None,
+                "exception": None,
+            }
+            if caught is not None:
+                report["exception"] = {
+                    "type": type(caught).__name__,
+                    "message": str(caught),
+                    "traceback": "".join(traceback.format_exception(type(caught), caught, caught.__traceback__)),
+                }
+            _atomic_json(exit_report_path, report)
+            report["cuda"] = _cuda_memory_snapshot(torch)
+            _atomic_json(exit_report_path, report)
+            print(f"LocalPilot diagnostic exit report: {exit_report_path}", flush=True)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import struct
 import sys
 import tempfile
@@ -417,6 +418,31 @@ class TrainAdapterTests(unittest.TestCase):
             config[section][key] = value
             with self.assertRaises(RuntimeError):
                 runner._validate_config(config)
+
+    def test_native_compile_mode_restores_unforced_environment(self) -> None:
+        config = copy.deepcopy(self.config)
+        config["backend"]["compile_mode"] = "native"
+        runner._validate_config(config)
+        with mock.patch.dict(
+            os.environ,
+            {"TORCH_COMPILE_DISABLE": "1", "UNSLOTH_COMPILE_DISABLE": "1"},
+            clear=False,
+        ):
+            runner._configure_compile_mode(config)
+            self.assertNotIn("TORCH_COMPILE_DISABLE", os.environ)
+            self.assertNotIn("UNSLOTH_COMPILE_DISABLE", os.environ)
+
+    def test_native_diagnostic_preserves_full_lr_schedule_and_delays_saves(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "configs/qlora_v1_native_compile_diag_320.yaml"
+        config = runner.load_config(path)
+        runner._validate_config(config)
+        self.assertEqual(config["backend"]["compile_mode"], "native")
+        self.assertIsNone(config["training"]["max_steps"])
+        self.assertEqual(config["training"]["estimated_optimizer_steps"], 11112)
+        self.assertEqual(config["training"]["first_checkpoint_step"], 3704)
+        self.assertEqual(config["training"]["checkpoint_steps"], 3704)
+        self.assertEqual(config["diagnostics"]["stop_after_step"], 320)
+        self.assertTrue(config["diagnostics"]["skip_final_adapter_save"])
 
     def test_training_requires_approval_and_rejects_changed_spec(self) -> None:
         result = self.dry_run()

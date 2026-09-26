@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "LocalPilot gpt-oss-20b native-compile diagnostic 320",
   "status": "proposed",
-  "status_note": "Controlled A/B diagnostic approved by the owner for investigation only. Reproduce the pre-PR-157 native compile path, preserve the production 11,112-step LR schedule, write no checkpoint before step 3,704, stop cleanly after optimizer step 320, and emit per-step allocator telemetry plus an exit report. A matching passing target-machine dry-run is still required before training.",
+  "status_note": "Repeat the native-compile 320-step diagnostic with periodic trainer cache purges disabled and verified cuda:0 embeddings; Unsloth disables CPU embedding offload on WSL. Preserve the production 11,112-step LR schedule, first checkpoint at 3,704, callback stop at 320 and no final adapter save. Earlier approval applied to the previous specification; a fresh matching target-machine dry-run and approval are required.",
   "backend": {
     "name": "unsloth",
     "compile_mode": "native",
@@ -99,15 +99,15 @@
     "minimum_system_ram_gib": 23,
     "minimum_storage_free_gib": 50,
     "estimated_peak_is_measured": false,
-    "offload_embeddings": true,
-    "cpu_offload": "embeddings_only",
+    "offload_embeddings": false,
+    "cpu_offload": "none",
     "gradient_checkpointing": "unsloth",
     "dataloader_workers": 0,
     "pin_memory": false,
     "reserve_system_ram_gib": 4
   },
   "output": {
-    "directory": "training/outputs/adapter_v1_native_compile_diag_320_20260926",
+    "directory": "training/outputs/adapter_v1_native_compile_diag_320_no_purge_20260927",
     "save_adapter_only": true,
     "checkpoint_format": "safetensors",
     "deployment_path": "merge with the exact base in Unsloth, export GGUF, then import the merged GGUF into Ollama",
@@ -123,8 +123,8 @@
   "diagnostics": {
     "enabled": true,
     "stop_after_step": 320,
-    "memory_log_path": "training/reports/adapter_v1_native_compile_diag_320_20260926.torch_memory.jsonl",
-    "exit_report_path": "training/reports/adapter_v1_native_compile_diag_320_20260926.exit.json",
+    "memory_log_path": "training/reports/adapter_v1_native_compile_diag_320_no_purge_20260927.torch_memory.jsonl",
+    "exit_report_path": "training/reports/adapter_v1_native_compile_diag_320_no_purge_20260927.exit.json",
     "skip_final_adapter_save": true
   }
 }

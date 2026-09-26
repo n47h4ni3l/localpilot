@@ -31,8 +31,8 @@ $stdoutPath = Join-Path $reportDir "$runName-$stamp.stdout.log"
 $stderrPath = Join-Path $reportDir "$runName-$stamp.stderr.log"
 $telemetryPath = Join-Path $reportDir "$runName-$stamp.memory.jsonl"
 
-if ($config.resources.offload_embeddings -ne $true -or [string]$config.resources.cpu_offload -ne 'embeddings_only') {
-    throw 'The recovery run requires embedding offload to CPU; refusing a configuration that puts the embeddings back on VRAM.'
+if ($config.resources.offload_embeddings -isnot [bool] -or $config.resources.offload_embeddings -ne $false -or [string]$config.resources.cpu_offload -ne 'none') {
+    throw 'Unsloth disables embedding offload on WSL; require offload_embeddings=false and cpu_offload=none. The trainer verifies actual embedding placement after loading.'
 }
 
 if (-not (Test-Path -LiteralPath $wslConfig)) {

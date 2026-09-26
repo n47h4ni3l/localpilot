@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "LocalPilot gpt-oss-20b QLoRA v1",
   "status": "proposed",
-  "status_note": "Recovery specification: restore the embedding-to-CPU offload topology used by the earlier long-running adapter attempt, while retaining eager mode, adapter-only resumable checkpoints, and the v3 observational guard. The no-offload 20 GiB configuration repeatedly reached GPU OOM near the first few resumed optimizer steps despite healthy host-memory telemetry. This changed training identity requires a fresh target-machine dry-run and explicit approval before training.",
+  "status_note": "WSL placement correction: earlier recovery runs requested CPU embedding offload, but Unsloth disables it on WSL and measured embeddings remained on cuda:0. Explicitly disable periodic trainer cache purges and verify effective runtime settings. Preserve this legacy eager profile and checkpoint schedule. Requires a fresh target-machine dry-run and approval of this changed specification.",
   "backend": {
     "name": "unsloth",
     "compile_mode": "eager",
@@ -99,15 +99,15 @@
     "minimum_system_ram_gib": 23,
     "minimum_storage_free_gib": 50,
     "estimated_peak_is_measured": false,
-    "offload_embeddings": true,
-    "cpu_offload": "embeddings_only",
+    "offload_embeddings": false,
+    "cpu_offload": "none",
     "gradient_checkpointing": "unsloth",
     "dataloader_workers": 0,
     "pin_memory": false,
     "reserve_system_ram_gib": 4
   },
   "output": {
-    "directory": "training/outputs/adapter_v1_offload_recovery_20260924",
+    "directory": "training/outputs/adapter_v1_wsl_no_purge_20260927",
     "save_adapter_only": true,
     "checkpoint_format": "safetensors",
     "deployment_path": "merge with the exact base in Unsloth, export GGUF, then import the merged GGUF into Ollama",

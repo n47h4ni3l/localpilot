@@ -136,7 +136,7 @@ def test_training_launcher_defaults_to_observation_not_intervention() -> None:
     assert "$minimumWslMemoryGiB = 24.0" in text
     assert "$minimumWslSwapGiB = 24.0" in text
     assert "offload_embeddings" in text
-    assert "embeddings_only" in text
+    assert "Unsloth disables embedding offload on WSL" in text
     assert "$dryRunPath" in text
 
     launch = LAUNCH.read_text(encoding="utf-8")
@@ -147,6 +147,41 @@ def test_training_launcher_defaults_to_observation_not_intervention() -> None:
     monitor = MONITOR.read_text(encoding="utf-8")
     assert "config.output.directory" in monitor
     assert "estimated_optimizer_steps" in monitor
+
+
+@pytest.mark.parametrize("resources,accepted", [
+    ({"offload_embeddings": False, "cpu_offload": "none"}, True),
+    ({"offload_embeddings": True, "cpu_offload": "embeddings_only"}, False),
+    ({"offload_embeddings": False, "cpu_offload": "embeddings_only"}, False),
+    ({"offload_embeddings": True, "cpu_offload": "none"}, False),
+    ({"offload_embeddings": "false", "cpu_offload": "none"}, False),
+    ({"offload_embeddings": 0, "cpu_offload": "none"}, False),
+    ({"cpu_offload": "none"}, False),
+    ({"offload_embeddings": False}, False),
+])
+def test_guard_validates_wsl_offload_request_without_claiming_runtime_placement(resources, accepted) -> None:
+    # Execute only the real launcher's config gate, without touching WSL,
+    # scheduled tasks, processes, or training outputs.
+    command = (
+        "$ErrorActionPreference='Stop'; "
+        "$tokens=$null; $errors=$null; "
+        f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{GUARD}', [ref]$tokens, [ref]$errors); "
+        "$gate=$ast.Find({param($node) "
+        "$node -is [System.Management.Automation.Language.IfStatementAst] "
+        "-and $node.Extent.Text -match '^if \\(\\$config\\.resources\\.offload_embeddings'}, $true); "
+        "if ($null -eq $gate) { throw 'Missing offload validation gate' }; "
+        "$config=@{resources=([Console]::In.ReadToEnd() | ConvertFrom-Json)}; "
+        "& ([scriptblock]::Create($gate.Extent.Text))"
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+        input=json.dumps(resources), capture_output=True, text=True, timeout=20,
+    )
+    if accepted:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0
+        assert "Unsloth disables embedding offload on WSL" in result.stderr
 
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import os
 import struct
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import types
 import unittest
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -61,13 +63,40 @@ def native_trace(identifier: str = "native-trace", split: str = "train") -> dict
     return row
 
 
+def embedding_model(input_device="cuda:0", output_device="cuda:0"):
+    def embedding(device):
+        return types.SimpleNamespace(weight=types.SimpleNamespace(device=device)) if device is not None else None
+
+    return types.SimpleNamespace(
+        save_pretrained=mock.Mock(),
+        get_input_embeddings=mock.Mock(return_value=embedding(input_device)),
+        get_output_embeddings=mock.Mock(return_value=embedding(output_device)),
+    )
+
+
+def stub_sft_config(**kwargs):
+    # Model the locally confirmed generated Unsloth default. Omitting the
+    # explicit None in the runner must fail the execution regression tests.
+    return {"torch_empty_cache_steps": 250, **kwargs}
+
+
 def stub_sft_trainer(factory: mock.Mock) -> type:
     class StubSFTTrainer:
         def __init__(self, **kwargs):
             self.model = kwargs["model"]
+            self.args = types.SimpleNamespace(**kwargs["args"])
+            self.state = types.SimpleNamespace(global_step=0, epoch=0)
+            self.callbacks = kwargs["callbacks"]
+            factory.return_value.instance = self
             factory(**kwargs)
 
         def train(self, **kwargs):
+            before_train = getattr(factory.return_value, "before_train", None)
+            if before_train is not None:
+                before_train(self)
+            for callback in self.callbacks:
+                if hasattr(callback, "on_train_begin"):
+                    callback.on_train_begin(self.args, self.state, types.SimpleNamespace())
             self._save(output_dir="checkpoint-fixture")
             return factory.return_value.train(**kwargs)
 
@@ -75,6 +104,29 @@ def stub_sft_trainer(factory: mock.Mock) -> type:
             factory.return_value.saved_state_dict = state_dict
 
     return StubSFTTrainer
+
+
+@contextmanager
+def stub_training_runtime(model=None, *, before_train=None, config_factory=stub_sft_config):
+    model = model if model is not None else embedding_model()
+    tokenizer = types.SimpleNamespace(
+        save_pretrained=mock.Mock(),
+        apply_chat_template=lambda messages, **kwargs: list(range(5 if kwargs["add_generation_prompt"] else 8)),
+    )
+    backend = types.SimpleNamespace(
+        from_pretrained=mock.Mock(return_value=(model, tokenizer)),
+        get_peft_model=mock.Mock(return_value=model),
+    )
+    factory = mock.Mock(return_value=types.SimpleNamespace(train=mock.Mock(), before_train=before_train))
+    modules = {
+        "unsloth": types.SimpleNamespace(FastLanguageModel=backend),
+        "torch": types.SimpleNamespace(bfloat16=object(), cuda=mock.Mock()),
+        "datasets": types.SimpleNamespace(Dataset=types.SimpleNamespace(from_list=lambda rows: rows)),
+        "trl": types.SimpleNamespace(SFTConfig=config_factory, SFTTrainer=stub_sft_trainer(factory)),
+        "transformers": types.SimpleNamespace(TrainerCallback=type("TrainerCallback", (), {})),
+    }
+    with mock.patch.dict(sys.modules, modules), mock.patch.object(runner, "_adapter_only_state_dict", return_value={}), mock.patch.object(runner, "_cuda_memory_snapshot", return_value={"available": True}):
+        yield factory, backend
 
 
 class TrainAdapterTests(unittest.TestCase):
@@ -171,20 +223,135 @@ class TrainAdapterTests(unittest.TestCase):
         self.assertEqual(self.config["training"]["first_checkpoint_step"], 5)
         self.assertEqual(self.config["training"]["checkpoint_steps"], 50)
         self.assertLess(self.config["training"]["checkpoint_steps"], steps_per_epoch)
-        self.assertTrue(self.config["resources"]["offload_embeddings"])
-        self.assertEqual(self.config["resources"]["cpu_offload"], "embeddings_only")
+        self.assertFalse(self.config["resources"]["offload_embeddings"])
+        self.assertEqual(self.config["resources"]["cpu_offload"], "none")
         self.assertGreaterEqual(self.config["resources"]["minimum_system_ram_gib"], 23.0)
-        self.assertIn("offload_recovery", self.config["output"]["directory"])
+        self.assertIn("wsl_no_purge", self.config["output"]["directory"])
 
-    def test_recovery_spec_refuses_to_move_embeddings_back_to_vram(self) -> None:
-        self.config["resources"]["offload_embeddings"] = False
-        self.config["resources"]["cpu_offload"] = "none"
+    def test_wsl_spec_refuses_unsupported_cpu_embedding_offload_request(self) -> None:
+        self.config["resources"]["offload_embeddings"] = True
+        self.config["resources"]["cpu_offload"] = "embeddings_only"
         self.save_config()
         report = runner.dry_run(self.config_path, importer=self.importer)
         self.assertFalse(report["passed"])
         config_check = next(item for item in report["checks"] if item["name"] == "config_resolution")
         self.assertFalse(config_check["passed"])
-        self.assertIn("embedding offload", str(config_check["detail"]))
+        self.assertIn("Unsloth disables embedding offload on WSL", str(config_check["detail"]))
+
+    def test_wsl_spec_rejects_missing_mixed_or_nonboolean_offload_settings(self) -> None:
+        for flag, policy in ((None, "none"), ("false", "none"), (0, "none"), (False, None), (False, "embeddings_only"), (True, "none")):
+            with self.subTest(flag=flag, policy=policy):
+                self.config["resources"].update(offload_embeddings=flag, cpu_offload=policy)
+                with self.assertRaisesRegex(RuntimeError, "Unsloth disables embedding offload on WSL"):
+                    runner._validate_config(self.config)
+
+    def test_old_runs_requested_offload_but_measured_cuda_embeddings_are_not_cpu_offload(self) -> None:
+        trainer = types.SimpleNamespace(model=embedding_model(), args=types.SimpleNamespace(torch_empty_cache_steps=None))
+        settings = runner._training_runtime_settings(trainer, {"offload_embeddings": True, "cpu_offload": "embeddings_only"})
+        self.assertTrue(settings["embedding_devices"]["offload_requested"])
+        self.assertEqual(settings["embedding_devices"]["input"], "cuda:0")
+        self.assertEqual(settings["embedding_devices"]["output"], "cuda:0")
+        self.assertFalse(settings["embedding_devices"]["offload_active"])
+        with self.assertRaisesRegex(RuntimeError, "Unsloth disables embedding offload on WSL"):
+            runner._verify_training_runtime(settings)
+
+    def test_runtime_rejects_missing_or_mismatched_embedding_placement(self) -> None:
+        for input_device, output_device in (("cpu", "cpu"), ("cpu", "cuda:0"), ("cuda:0", "cpu"), (None, "cuda:0"), ("cuda:0", None), ("meta", "meta"), ("cuda:1", "cuda:1")):
+            with self.subTest(input=input_device, output=output_device):
+                trainer = types.SimpleNamespace(model=embedding_model(input_device, output_device), args=types.SimpleNamespace(torch_empty_cache_steps=None))
+                settings = runner._training_runtime_settings(trainer, self.config["resources"])
+                with self.assertRaisesRegex(RuntimeError, "Effective embedding placement"):
+                    runner._verify_training_runtime(settings)
+
+    def test_runtime_rejects_unreadable_embedding_devices(self) -> None:
+        model = embedding_model()
+        model.get_input_embeddings.side_effect = RuntimeError("placement unavailable")
+        trainer = types.SimpleNamespace(model=model, args=types.SimpleNamespace(torch_empty_cache_steps=None))
+        settings = runner._training_runtime_settings(trainer, self.config["resources"])
+        self.assertIn("placement unavailable", settings["embedding_devices"]["input_error"])
+        self.assertFalse(settings["embedding_devices"]["offload_active"])
+        with self.assertRaisesRegex(RuntimeError, "Effective embedding placement"):
+            runner._verify_training_runtime(settings)
+
+    def test_execute_training_logs_and_checks_effective_settings_without_diagnostics(self) -> None:
+        output = io.StringIO()
+        self.config["backend"]["compile_mode"] = "native"
+        with stub_training_runtime() as (factory, backend), redirect_stdout(output):
+            runner.execute_training(self.config, str(self.snapshot), run_identity={"test": "runtime"})
+        self.assertIsNone(factory.return_value.instance.args.torch_empty_cache_steps)
+        self.assertIsNone(factory.call_args.kwargs["args"]["torch_empty_cache_steps"])
+        self.assertIs(backend.from_pretrained.call_args.kwargs["offload_embedding"], False)
+        records = [json.loads(line.split(": ", 1)[1]) for line in output.getvalue().splitlines()]
+        self.assertEqual([item["event"] for item in records], ["runtime_ready", "train_begin_runtime"])
+        for item in records:
+            self.assertIsNone(item["torch_empty_cache_steps"])
+            self.assertFalse(item["embedding_devices"]["offload_active"])
+            self.assertEqual(item["compile_mode"], "native")
+            self.assertIsNone(item["torch_compile_disable"])
+            self.assertIsNone(item["unsloth_compile_disable"])
+        factory.return_value.train.assert_called_once()
+
+    def test_execute_training_refuses_changed_or_missing_effective_cache_setting(self) -> None:
+        for value in (250, 0, "missing"):
+            with self.subTest(value=value):
+                def rewritten_config(**kwargs):
+                    result = stub_sft_config(**kwargs)
+                    if value == "missing":
+                        result.pop("torch_empty_cache_steps")
+                    else:
+                        result["torch_empty_cache_steps"] = value
+                    return result
+
+                with stub_training_runtime(config_factory=rewritten_config) as (factory, _), redirect_stdout(io.StringIO()) as log:
+                    with self.assertRaisesRegex(RuntimeError, "torch_empty_cache_steps must be None"):
+                        runner.execute_training(self.config, str(self.snapshot), run_identity={})
+                factory.return_value.train.assert_not_called()
+                self.assertIn('"torch_empty_cache_steps":', log.getvalue())
+
+    def test_execute_training_rechecks_runtime_after_train_wrapper_changes(self) -> None:
+        for setting in ("cache", "placement"):
+            with self.subTest(setting=setting):
+                self.config["output"]["directory"] += f"_{setting}"
+
+                def change_runtime(trainer):
+                    if setting == "cache":
+                        trainer.args.torch_empty_cache_steps = 250
+                    else:
+                        trainer.model = embedding_model("cpu", "cpu")
+
+                with stub_training_runtime(before_train=change_runtime) as (factory, _), redirect_stdout(io.StringIO()) as log:
+                    with self.assertRaisesRegex(RuntimeError, "Effective"):
+                        runner.execute_training(self.config, str(self.snapshot), run_identity={})
+                factory.return_value.train.assert_not_called()
+                self.assertIn("train_begin_runtime", log.getvalue())
+
+    def test_diagnostic_reports_preserve_effective_settings_and_startup_failures(self) -> None:
+        for valid in (True, False):
+            with self.subTest(valid=valid):
+                self.config["output"]["directory"] += f"_{valid}"
+                self.config["diagnostics"] = {
+                    "enabled": True, "stop_after_step": None, "skip_final_adapter_save": False,
+                    "memory_log_path": f"training/reports/runtime_{valid}.jsonl",
+                    "exit_report_path": f"training/reports/runtime_{valid}.exit.json",
+                }
+                model = embedding_model() if valid else embedding_model("cpu", "cuda:0")
+                with stub_training_runtime(model) as (factory, _), redirect_stdout(io.StringIO()):
+                    if valid:
+                        runner.execute_training(self.config, str(self.snapshot), run_identity={})
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "Effective embedding placement"):
+                            runner.execute_training(self.config, str(self.snapshot), run_identity={})
+                        factory.return_value.train.assert_not_called()
+                report = json.loads((self.root / self.config["diagnostics"]["exit_report_path"]).read_text(encoding="utf-8"))
+                records = [json.loads(line) for line in (self.root / self.config["diagnostics"]["memory_log_path"]).read_text(encoding="utf-8").splitlines()]
+                for item in (report, records[0]):
+                    self.assertIn("torch_empty_cache_steps", item)
+                    self.assertIsNone(item["torch_empty_cache_steps"])
+                    self.assertFalse(item["embedding_devices"]["offload_active"])
+                self.assertEqual(report["status"], "completed" if valid else "error")
+                self.assertEqual(report["embedding_devices"]["input"], "cuda:0" if valid else "cpu")
+                if not valid:
+                    self.assertIn("Effective embedding placement", report["exception"]["message"])
 
     def checkpoint(self, step: int, identity: dict, *, mark_complete: bool = True) -> Path:
         output = self.root / self.config["output"]["directory"]
@@ -624,7 +791,7 @@ class TrainAdapterTests(unittest.TestCase):
 
     def test_execute_training_uses_expanded_native_examples(self) -> None:
         rows = [native_trace("trace-train", "train"), record("plain-validation", "Check it.", "validation")]
-        saved_model = types.SimpleNamespace(save_pretrained=mock.Mock())
+        saved_model = embedding_model()
         rendered_tools: list[list[dict]] = []
 
         def render(messages: list[dict], **kwargs) -> list[int]:
@@ -643,7 +810,7 @@ class TrainAdapterTests(unittest.TestCase):
             "unsloth": types.SimpleNamespace(FastLanguageModel=fast_language_model),
             "torch": types.SimpleNamespace(bfloat16=object()),
             "datasets": types.SimpleNamespace(Dataset=types.SimpleNamespace(from_list=dataset_from_list)),
-            "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=stub_sft_trainer(trainer_factory)),
+            "trl": types.SimpleNamespace(SFTConfig=stub_sft_config, SFTTrainer=stub_sft_trainer(trainer_factory)),
             "transformers": types.SimpleNamespace(TrainerCallback=type("TrainerCallback", (), {})),
         }
         identity = {"test_run": "mocked-fresh"}
@@ -685,7 +852,7 @@ class TrainAdapterTests(unittest.TestCase):
         write_json(output / runner.RUN_IDENTITY_FILE, identity)
         checkpoint = self.checkpoint(200, identity)
         saved_identity_bytes = (output / runner.RUN_IDENTITY_FILE).read_bytes()
-        model = types.SimpleNamespace(save_pretrained=mock.Mock())
+        model = embedding_model()
         tokenizer = types.SimpleNamespace(
             save_pretrained=mock.Mock(),
             apply_chat_template=lambda messages, **kwargs: list(range(5 if kwargs["add_generation_prompt"] else 8)),
@@ -699,7 +866,7 @@ class TrainAdapterTests(unittest.TestCase):
             )),
             "torch": types.SimpleNamespace(bfloat16=object()),
             "datasets": types.SimpleNamespace(Dataset=types.SimpleNamespace(from_list=lambda values: values)),
-            "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=stub_sft_trainer(trainer_factory)),
+            "trl": types.SimpleNamespace(SFTConfig=stub_sft_config, SFTTrainer=stub_sft_trainer(trainer_factory)),
             "transformers": types.SimpleNamespace(TrainerCallback=type("TrainerCallback", (), {})),
         }
         rows = [record("train", "Fix it.", "train"), record("validation", "Check it.", "validation")]
@@ -716,7 +883,7 @@ class TrainAdapterTests(unittest.TestCase):
         write_json(output / runner.RUN_IDENTITY_FILE, identity)
         (output / "checkpoints").mkdir()
         saved_identity_bytes = (output / runner.RUN_IDENTITY_FILE).read_bytes()
-        model = types.SimpleNamespace(save_pretrained=mock.Mock())
+        model = embedding_model()
         tokenizer = types.SimpleNamespace(
             save_pretrained=mock.Mock(),
             apply_chat_template=lambda messages, **kwargs: list(range(5 if kwargs["add_generation_prompt"] else 8)),
@@ -730,7 +897,7 @@ class TrainAdapterTests(unittest.TestCase):
             )),
             "torch": types.SimpleNamespace(bfloat16=object()),
             "datasets": types.SimpleNamespace(Dataset=types.SimpleNamespace(from_list=lambda values: values)),
-            "trl": types.SimpleNamespace(SFTConfig=lambda **kwargs: kwargs, SFTTrainer=stub_sft_trainer(trainer_factory)),
+            "trl": types.SimpleNamespace(SFTConfig=stub_sft_config, SFTTrainer=stub_sft_trainer(trainer_factory)),
             "transformers": types.SimpleNamespace(TrainerCallback=type("TrainerCallback", (), {})),
         }
         rows = [record("train", "Fix it.", "train"), record("validation", "Check it.", "validation")]

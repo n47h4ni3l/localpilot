@@ -1,9 +1,12 @@
 param(
-    [ValidateSet('Fresh', 'Resume', 'Restart')]
+    [ValidateSet('Fresh', 'Resume', 'Restart', 'Recover')]
     [string]$Mode = 'Fresh',
 
     [ValidateSet('MonitorOnly', 'CriticalOnly', 'Protective')]
-    [string]$MemoryPolicy = 'MonitorOnly'
+    [string]$MemoryPolicy = 'MonitorOnly',
+
+    [ValidateSet('qlora_v1.yaml', 'qlora_v1_native_compile_endurance.yaml', 'qlora_v1_native_compile_recovery.yaml')]
+    [string]$ConfigName = 'qlora_v1.yaml'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,7 +22,7 @@ $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $reportDir = Join-Path $repoRoot 'training\reports'
 $statusPath = Join-Path $reportDir 'adapter_v1_guard_status.json'
 $wslConfig = Join-Path $env:USERPROFILE '.wslconfig'
-$configPath = Join-Path $repoRoot 'training\configs\qlora_v1.yaml'
+$configPath = Join-Path $repoRoot "training\configs\$ConfigName"
 $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
 $outputPath = Join-Path $repoRoot ([string]$config.output.directory)
 $checkpointRoot = Join-Path $outputPath 'checkpoints'
@@ -76,10 +79,11 @@ if (
 $wslArguments = @(
     '-d', 'LocalPilot-Training',
     '--cd', '/mnt/e/LLM_HOME/src/localpilot',
-    '--', 'bash', 'training/scripts/launch_adapter_v1.sh'
+    '--', 'bash', 'training/scripts/launch_adapter_v1.sh', '--config', "training/configs/$ConfigName"
 )
 if ($Mode -eq 'Resume') { $wslArguments += '--resume' }
 if ($Mode -eq 'Restart') { $wslArguments += '--restart' }
+if ($Mode -eq 'Recover') { $wslArguments += '--recover' }
 
 function Get-LatestCompleteCheckpoint {
     if (-not (Test-Path -LiteralPath $checkpointRoot -PathType Container)) {

@@ -163,6 +163,23 @@ class EvolutionExecutionScorerTests(unittest.TestCase):
         self.assertEqual(summary["perfect_task_count"], 4)
         self.assertEqual(summary["hard_failure_count"], 0)
 
+    def test_runtime_error_can_overlap_with_perfect_criteria_score(self) -> None:
+        report = self._perfect_report()
+        report["tasks"][0]["runtime_error"] = {
+            "type": "TimeoutError",
+            "message": "repair attempt exceeded its bounded timeout",
+        }
+        summary = scorer.score_report(report)
+        first = next(
+            item for item in summary["tasks"]
+            if item["task_id"] == report["tasks"][0]["task_id"]
+        )
+        self.assertEqual(summary["overall_mean"], 4.0)
+        self.assertEqual(summary["perfect_task_count"], 4)
+        self.assertEqual(summary["hard_failure_count"], 1)
+        self.assertEqual(first["score"], 4)
+        self.assertTrue(first["hard_failure"])
+
     def test_evaluator_bytecode_is_ignored_by_scope_scoring(self) -> None:
         report = self._perfect_report()
         report["tasks"][0]["changed_paths"].extend(

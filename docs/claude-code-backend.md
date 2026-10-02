@@ -1,6 +1,6 @@
 # Claude Code implementation backend
 
-LocalPilot has one operational model, `gpt-oss:20b`. LocalPilot remains responsible for capability discovery, repository research, the acceptance contract, repository grounding, independent diff/test review, candidate delivery, and outcome learning. Claude Code performs only implementation work in the isolated candidate workspace and calls the same model through local Ollama.
+LocalPilot uses one configured everyday model for operator work plus planning/research/independent review. Claude Code performs only implementation work in the isolated candidate workspace and may remain pinned to the preserved baseline implementation model. This separation allows a retained trained candidate such as `nestra:20b-p1` to be deployed reversibly as LocalPilot's everyday/review model while `gpt-oss:20b` remains available as the Claude Code implementation model and rollback baseline. Operational deployment is distinct from benchmark promotion.
 
 ## Windows install and configuration
 
@@ -15,8 +15,11 @@ winget install --id Anthropic.ClaudeCode --exact --location E:\Tools\ClaudeCode 
 Configure LocalPilot:
 
 ```toml
+[model]
+name = "nestra:20b-p1"
+
 [selfdev]
-developer_model = "gpt-oss:20b"
+developer_model = "nestra:20b-p1"
 developer_model_fallbacks = []
 implementation_backend = "claude_code"
 implementation_model = "gpt-oss:20b"
@@ -29,6 +32,8 @@ implementation_max_output_chars = 120000
 implementation_executable = "E:\\Tools\\ClaudeCode\\claude.exe"
 implementation_base_url = "http://localhost:11434"
 ```
+LocalPilot's `model.name` and `selfdev.developer_model` must match: the same operational model performs everyday answers and LocalPilot's planning/research/review. `selfdev.implementation_model` remains pinned to `gpt-oss:20b` for the current Claude Code contract. To roll back P1, set both operational fields back to `gpt-oss:20b`; do not delete either Ollama model.
+
 
 LocalPilot independently reviews Claude Code's candidate after each implementation attempt. If review or static checks reject the candidate, it can send the concrete failure evidence back to Claude Code for another bounded repair pass. The default allowance is twelve repair passes, with configuration accepted up to twenty; whole-cycle wall-clock, resource, and foreground-preemption guards still bound the run.
 

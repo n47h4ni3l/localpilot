@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 if ($Model -ne "gpt-oss:20b") {
-    throw "LocalPilot's one-model contract requires gpt-oss:20b."
+    throw "LocalPilot's current Claude Code implementation-model contract requires gpt-oss:20b."
 }
 if ($RequiredContext -lt 65536) {
     throw "Claude Code with Ollama requires at least 65536 context tokens."

@@ -202,7 +202,7 @@ class EnduranceRecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "fresh process"):
                 evaluation.completed_run(self.config, report)
             with mock.patch.object(evaluation.os, "getpid", return_value=os.getpid() + 1), mock.patch.object(evaluation, "_training_process_running", return_value=False):
-                self.assertEqual(evaluation.completed_run(self.config, report)[0], output / "adapter")
+                self.assertTrue(os.path.samefile(evaluation.completed_run(self.config, report)[0], output / "adapter"))
                 (output / "adapter/adapter_model.safetensors").write_bytes(b"altered")
                 with self.assertRaisesRegex(RuntimeError, "adapter files changed"):
                     evaluation.completed_run(self.config, report)
@@ -241,7 +241,7 @@ class EnduranceRecoveryTests(unittest.TestCase):
         with mock.patch.object(evaluation, "training", runner), mock.patch.object(evaluation.os, "getpid", return_value=os.getpid() + 1), mock.patch.object(evaluation, "_training_process_running", return_value=False), mock.patch.dict("sys.modules", modules):
             result = evaluation.evaluate(self.config, report)
         self.assertFalse(peft.call_args.kwargs["is_trainable"])
-        self.assertEqual(peft.call_args.args[1], str(output / "adapter"))
+        self.assertTrue(os.path.samefile(peft.call_args.args[1], output / "adapter"))
         self.assertNotIn("train_dataset", trainer.call_args.kwargs)
         self.assertTrue(evaluated.args.prediction_loss_only)
         self.assertIsNone(evaluated.args.torch_empty_cache_steps)

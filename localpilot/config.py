@@ -129,9 +129,10 @@ class SystemSenseConfig:
 @dataclass(slots=True)
 class SelfDevConfig:
     enabled: bool = True
-    # Planning, research, and independent review stay on the everyday model.
+    # Planning, research, and independent review stay on the configured
+    # everyday operational model. Claude Code implementation can remain pinned
+    # separately so a retained trained candidate can be deployed reversibly.
     developer_model: str = "gpt-oss:20b"
-    # The one-model design has no alternate implementation or review model.
     developer_model_fallbacks: list[str] = field(default_factory=list)
     # Give repository/tool loops a deliberate context allocation instead of
     # inheriting Ollama's runtime default. This remains separate from the
@@ -310,10 +311,15 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ValueError("selfdev.implementation_backend must be claude_code or local_tools")
     if cfg.selfdev.implementation_model != "gpt-oss:20b":
         raise ValueError("selfdev.implementation_model must remain gpt-oss:20b")
-    if cfg.selfdev.developer_model != "gpt-oss:20b" or cfg.selfdev.developer_model_fallbacks:
+    cfg.selfdev.developer_model = str(cfg.selfdev.developer_model).strip()
+    if not cfg.selfdev.developer_model:
+        raise ValueError("selfdev.developer_model must be a non-empty Ollama model name")
+    if cfg.selfdev.developer_model != cfg.model.name:
         raise ValueError(
-            "selfdev planning/research/review must use only gpt-oss:20b; remove developer fallbacks"
+            "selfdev.developer_model must match model.name so planning/research/review use the everyday operational model"
         )
+    if cfg.selfdev.developer_model_fallbacks:
+        raise ValueError("selfdev.developer_model_fallbacks must remain empty")
     if cfg.selfdev.implementation_context_tokens < 65536:
         raise ValueError(
             "selfdev.implementation_context_tokens must be at least 65536 for Claude Code with Ollama"

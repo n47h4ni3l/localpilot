@@ -273,6 +273,11 @@ def load_config(path: str | Path | None = None) -> Config:
         _apply(cfg.systemsense, raw.get("systemsense", {}))
         selfdev_raw = raw.get("selfdev", {})
         _apply(cfg.selfdev, selfdev_raw)
+        # When the owner changes only the everyday model, keep planning/research/
+        # review on that same model automatically. An explicit mismatch still
+        # fails validation below.
+        if "developer_model" not in selfdev_raw:
+            cfg.selfdev.developer_model = cfg.model.name
         # Migrate the former shipped Qwen defaults to the one-model contract.
         # Custom model choices still fail validation below instead of silently
         # changing owner intent.

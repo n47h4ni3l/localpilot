@@ -8,7 +8,8 @@ research_soft_tool_rounds = 12
 # observations reuse the current-turn cache and do not consume another round.
 research_hard_tool_rounds = 24
 
-# Everyday PC requests use this model.
+# Everyday PC requests use this model. A retained installed candidate can
+# be selected here; selfdev.developer_model must use the same model name.
 [model]
 provider = "ollama"
 name = "gpt-oss:20b"

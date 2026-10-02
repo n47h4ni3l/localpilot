@@ -586,18 +586,42 @@ class TrainAdapterTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 runner._validate_config(config)
 
-    def test_native_compile_mode_restores_unforced_environment(self) -> None:
+    def test_native_compile_mode_uses_proven_single_worker_environment(self) -> None:
         config = copy.deepcopy(self.config)
         config["backend"]["compile_mode"] = "native"
         runner._validate_config(config)
         with mock.patch.dict(
             os.environ,
-            {"TORCH_COMPILE_DISABLE": "1", "UNSLOTH_COMPILE_DISABLE": "1"},
+            {
+                "TORCH_COMPILE_DISABLE": "1",
+                "UNSLOTH_COMPILE_DISABLE": "1",
+                "TORCHINDUCTOR_COMPILE_THREADS": "16",
+            },
             clear=False,
         ):
             runner._configure_compile_mode(config)
             self.assertNotIn("TORCH_COMPILE_DISABLE", os.environ)
             self.assertNotIn("UNSLOTH_COMPILE_DISABLE", os.environ)
+            self.assertEqual(os.environ["TORCHINDUCTOR_COMPILE_THREADS"], "1")
+            self.assertEqual(os.environ["UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"], "1")
+
+    def test_eager_compile_mode_clears_native_worker_controls(self) -> None:
+        config = copy.deepcopy(self.config)
+        config["backend"]["compile_mode"] = "eager"
+        runner._validate_config(config)
+        with mock.patch.dict(
+            os.environ,
+            {
+                "TORCHINDUCTOR_COMPILE_THREADS": "1",
+                "UNSLOTH_FORCE_SINGLE_COMPILE_WORKER": "1",
+            },
+            clear=False,
+        ):
+            runner._configure_compile_mode(config)
+            self.assertEqual(os.environ["TORCH_COMPILE_DISABLE"], "1")
+            self.assertEqual(os.environ["UNSLOTH_COMPILE_DISABLE"], "1")
+            self.assertNotIn("TORCHINDUCTOR_COMPILE_THREADS", os.environ)
+            self.assertNotIn("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", os.environ)
 
     def test_native_diagnostic_preserves_full_lr_schedule_and_delays_saves(self) -> None:
         path = Path(__file__).resolve().parents[1] / "configs/qlora_v1_native_compile_diag_320.yaml"

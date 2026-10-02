@@ -6,7 +6,11 @@ source /home/natha/.venvs/localpilot-training/bin/activate
 source /etc/profile.d/rocdxg-amd-smi-lib.sh
 
 config_path="training/configs/qlora_v1.yaml"
-run_name="$(python -c 'import json, pathlib; c=json.load(open("training/configs/qlora_v1.yaml", encoding="utf-8")); print(pathlib.Path(c["output"]["directory"]).name)')"
+if [[ "${1:-}" == "--config" ]]; then
+  config_path="${2:?--config requires a path}"
+  shift 2
+fi
+run_name="$(python -c 'import json, pathlib, sys; c=json.load(open(sys.argv[1], encoding="utf-8")); print(pathlib.Path(c["output"]["directory"]).name)' "$config_path")"
 
 # Do not inherit allocator experiments from an interactive shell or an earlier
 # troubleshooting attempt. The approved ROCm/Unsloth path uses PyTorch defaults.

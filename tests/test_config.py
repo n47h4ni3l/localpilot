@@ -14,7 +14,7 @@ def test_toml_config_is_real(tmp_path: Path):
     assert cfg.source_path == path.resolve()
 
 
-def test_one_model_is_used_across_operator_planning_review_and_implementation():
+def test_default_models_preserve_baseline_operator_review_and_implementation():
     cfg = Config()
     assert cfg.model.name == "gpt-oss:20b"
     assert cfg.model.think == "high"
@@ -39,14 +39,44 @@ def test_one_model_is_used_across_operator_planning_review_and_implementation():
     assert cfg.selfdev.opportunity_similarity_threshold == 0.82
 
 
-def test_toml_loads_developer_model(tmp_path: Path):
+def test_toml_custom_everyday_model_also_becomes_review_model_by_default(tmp_path: Path):
     path = tmp_path / "localpilot.toml"
-    path.write_text('[selfdev]\ndeveloper_model = "dev"\n', encoding="utf-8")
-    with pytest.raises(ValueError, match="must use only gpt-oss:20b"):
+    path.write_text('[model]\nname = "nestra:20b-p1"\n', encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.model.name == "nestra:20b-p1"
+    assert cfg.selfdev.developer_model == "nestra:20b-p1"
+    assert cfg.selfdev.implementation_model == "gpt-oss:20b"
+
+
+def test_nestra_alias_uses_explicit_gpt_oss_thinking_levels(tmp_path: Path):
+    path = tmp_path / "localpilot.toml"
+    path.write_text('[model]\nname = "nestra:20b-p1"\nthink = true\n', encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.model.think == "high"
+
+
+def test_toml_allows_operational_candidate_for_everyday_and_review(tmp_path: Path):
+    path = tmp_path / "localpilot.toml"
+    path.write_text(
+        '[model]\nname = "nestra:20b-p1"\n'
+        '[selfdev]\ndeveloper_model = "nestra:20b-p1"\n'
+        'implementation_model = "gpt-oss:20b"\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    assert cfg.model.name == "nestra:20b-p1"
+    assert cfg.selfdev.developer_model == "nestra:20b-p1"
+    assert cfg.selfdev.implementation_model == "gpt-oss:20b"
+
+
+def test_toml_rejects_review_model_that_differs_from_everyday_model(tmp_path: Path):
+    path = tmp_path / "localpilot.toml"
+    path.write_text('[selfdev]\ndeveloper_model = "nestra:20b-p1"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="must match model.name"):
         load_config(path)
 
 
-def test_previous_shipped_qwen_defaults_migrate_to_one_model(tmp_path: Path):
+def test_previous_shipped_qwen_defaults_migrate_to_baseline_model(tmp_path: Path):
     path = tmp_path / "localpilot.toml"
     path.write_text(
         '[selfdev]\ndeveloper_model = "qwen2.5:32b"\n'

@@ -8,7 +8,8 @@ research_soft_tool_rounds = 12
 # observations reuse the current-turn cache and do not consume another round.
 research_hard_tool_rounds = 24
 
-# Everyday PC requests use this model.
+# Everyday PC requests use this model. A retained installed candidate can
+# be selected here; selfdev.developer_model must use the same model name.
 [model]
 provider = "ollama"
 name = "gpt-oss:20b"
@@ -86,12 +87,13 @@ compact_context_enabled = true
 
 [selfdev]
 enabled = true
-# LocalPilot keeps planning, repository research, and independent acceptance
-# review on the same local model used by the everyday operator.
+# Planning, repository research and independent acceptance review use the
+# same model as [model].name. Fallback review models remain disabled.
 developer_model = "gpt-oss:20b"
 developer_model_fallbacks = []
-# Claude Code is the default implementation harness. Set implementation_backend
-# to "local_tools" only for an explicit rollback to the previous editor loop.
+# Claude Code remains a separate implementation harness. Its current model is
+# pinned to the preserved gpt-oss baseline even if the everyday/review model
+# is changed to a retained trained candidate.
 implementation_backend = "claude_code"
 implementation_model = "gpt-oss:20b"
 implementation_context_tokens = 65536

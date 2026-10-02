@@ -367,12 +367,12 @@ This section is the working checklist for training. It is deliberately ordered s
 - [x] ~~Freeze pre- and post-Claude-Code aggregate benchmarks.~~
 - [x] ~~Build the first verified project-owned Corpus v1 seed and held-out hash manifest.~~
 - [x] ~~Build and validate the external-corpus acquisition/build/leakage pipeline.~~
-- [ ] Validate the pinned WSL2/ROCm/Unsloth environment on the target machine.
-- [ ] Verify GPU visibility, supported precision/quantization behavior, RAM/VRAM headroom, and required filesystem/data access.
-- [ ] Verify model, tokenizer, corpus, configuration, and source-data digests against the frozen training contract.
-- [ ] Run the exact supported QLoRA dry-run.
-- [ ] Repeat the dry-run until the report is reproducible and internally consistent.
-- [ ] Freeze the successful target-machine training-runtime report as the starting environment baseline.
+- [x] ~~Validate the pinned WSL2/ROCm/Unsloth environment on the target machine.~~
+- [x] ~~Verify GPU visibility, supported precision/quantization behavior, RAM/VRAM headroom, and required filesystem/data access.~~
+- [x] ~~Verify model, tokenizer, corpus, configuration, and source-data digests against the frozen training contract.~~
+- [x] ~~Run the exact supported QLoRA dry-run.~~
+- [x] ~~Repeat the dry-run until the report is reproducible and internally consistent.~~
+- [x] ~~Freeze the successful target-machine training-runtime report as the starting environment baseline.~~
 
 **Exit condition:** the exact adapter configuration can start, perform a bounded training step, save/reload its output, and produce the expected report on the actual target machine without unexplained warnings, digest mismatches, OOMs, or unsupported fallbacks.
 
@@ -396,16 +396,18 @@ Checklist:
 
 - [x] ~~Prepare the initial project-owned software-engineering training seed and supporting external corpus pipeline.~~
 - [x] ~~Freeze the existing Eval v1 and Evolution Execution baseline evidence.~~
-- [ ] Train the first authorized coding/software-engineering adapter.
-- [ ] Save the adapter checkpoint, training manifest, exact config/digests, runtime metrics, and lineage metadata.
-- [ ] Run the unchanged held-out Eval v1 suite.
-- [ ] Run the unchanged Evolution Execution suite.
-- [ ] Compare software-engineering gains and all cross-capability regressions against the pre-training baseline.
+- [x] ~~Train the first authorized coding/software-engineering adapter.~~
+- [x] ~~Save the adapter checkpoint, training manifest, exact config/digests, runtime metrics, and lineage metadata.~~
+- [x] ~~Run the unchanged held-out Eval v1 suite.~~
+- [x] ~~Run the unchanged Evolution Execution suite.~~
+- [ ] Compare software-engineering gains and all cross-capability regressions against the pre-training baseline with the corrected comparison tooling and record the incomplete historical-metadata gates.
 - [ ] Build and train focused remediation package(s) for any material regression.
 - [ ] Repeat full evaluation after each remediation package.
 - [ ] Mark Package 1 complete when coding/software-engineering gains are durable and remaining weaknesses are either recovered or explicitly carried into the next checkpoint lineage.
 
 **Exit condition:** a retained checkpoint shows measurable software-engineering improvement while preserving the safety, scope-control, epistemic, and tool-discipline behaviours required to continue autonomous development.
+
+**Package 1 retained evidence (3 October 2026):** the first adapter completed naturally at optimizer step 11112 and was exported as `nestra:20b-p1`. Eval v1 improved from 1.88/4 to 2.04/4 and its critical aggregate from 1.6875/4 to 1.875/4, while hard failures increased from 1 to 3. Evolution Execution improved from 3.75/4 to 4.0/4 with zero scope violations, while recording one bounded implementation-backend timeout as a hard failure. The checkpoint is therefore retained as useful lineage, but Package 1 still requires targeted remediation and a full re-evaluation before benchmark promotion. Operational deployment of a retained candidate is a separate, reversible owner decision and does not change these evidence gates.
 
 ### Package 2 — machine stewardship
 

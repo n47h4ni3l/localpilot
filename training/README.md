@@ -1,6 +1,6 @@
 # LocalPilot Training
 
-This workspace exists to improve the single operational LocalPilot model. It is not a parallel "developer model" project. A candidate model or adapter is temporary until evaluation proves it better; if promoted, it becomes LocalPilot and the previous checkpoint remains only as rollback.
+This workspace exists to improve LocalPilot's operational model lineage. It is not a parallel "developer model" project. A trained candidate remains a retained checkpoint with its evaluation evidence. The owner may deploy such a candidate operationally with an explicit rollback while remediation continues, but benchmark promotion remains a separate evidence gate; a promoted checkpoint becomes the new validated reference while the prior model remains available for rollback.
 
 ## Current sequence
 

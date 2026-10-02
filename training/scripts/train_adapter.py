@@ -62,12 +62,19 @@ def _configure_compile_mode(config: dict[str, Any]) -> None:
     if mode == "eager":
         os.environ["TORCH_COMPILE_DISABLE"] = "1"
         os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+        os.environ.pop("TORCHINDUCTOR_COMPILE_THREADS", None)
+        os.environ.pop("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", None)
         return
     if mode == "native":
-        # Reproduce the pre-PR-157 execution path: do not force eager and do
-        # not inherit compile-disable flags from a parent shell.
+        # Preserve native compilation, but keep it synchronous. The completed P1
+        # lineage observed a 16-worker Inductor pool wedge after step 10902.
+        # TORCHINDUCTOR_COMPILE_THREADS alone is insufficient with Unsloth because
+        # its torch.compile option dictionaries can override the PyTorch env var;
+        # the Unsloth sentinel makes the one-worker setting effective there too.
         os.environ.pop("TORCH_COMPILE_DISABLE", None)
         os.environ.pop("UNSLOTH_COMPILE_DISABLE", None)
+        os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+        os.environ["UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"] = "1"
         return
     raise RuntimeError(f"Unsupported compile mode: {mode!r}")
 
@@ -979,6 +986,8 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = 
         environment["compile_mode"] = config["backend"]["compile_mode"]
         environment["torch_compile_disable"] = os.environ.get("TORCH_COMPILE_DISABLE")
         environment["unsloth_compile_disable"] = os.environ.get("UNSLOTH_COMPILE_DISABLE")
+        environment["torchinductor_compile_threads"] = os.environ.get("TORCHINDUCTOR_COMPILE_THREADS")
+        environment["unsloth_force_single_compile_worker"] = os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER")
         backend, data, resources = config["backend"], config["data"], config["resources"]
         _add_check(checks, "python_version", list(sys.version_info[:2]) == backend["python_version"], list(sys.version_info[:2]))
         ram = _system_ram_gib()
@@ -1314,6 +1323,8 @@ def execute_training(
             "compile_mode": config["backend"].get("compile_mode"),
             "torch_compile_disable": os.environ.get("TORCH_COMPILE_DISABLE"),
             "unsloth_compile_disable": os.environ.get("UNSLOTH_COMPILE_DISABLE"),
+            "torchinductor_compile_threads": os.environ.get("TORCHINDUCTOR_COMPILE_THREADS"),
+            "unsloth_force_single_compile_worker": os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"),
             **runtime_settings,
         }
         # Always report actual settings, including on a refused startup and
@@ -1322,6 +1333,11 @@ def execute_training(
         if memory_log_path is not None:
             _append_jsonl(memory_log_path, {**record, "cuda": _cuda_memory_snapshot(torch)})
         _verify_training_runtime(runtime_settings)
+        if config["backend"].get("compile_mode") == "native" and (
+            os.environ.get("TORCHINDUCTOR_COMPILE_THREADS") != "1"
+            or os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER") != "1"
+        ):
+            raise RuntimeError("Native compile requires the proven single-worker Inductor/Unsloth runtime")
         if not evaluation_enabled and (
             runtime_settings["eval_strategy"] != "no" or getattr(trainer.args, "do_eval", True)
             or getattr(trainer.args, "eval_on_start", True) or getattr(trainer.args, "load_best_model_at_end", True)

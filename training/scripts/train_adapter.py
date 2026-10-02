@@ -39,6 +39,7 @@ DEFAULT_REPORT = ROOT / "training/reports/adapter_v1_dry_run.json"
 TRAINING_OUTPUT_ROOT = ROOT / "training/outputs"
 RUN_IDENTITY_FILE = "run_identity.json"
 CHECKPOINT_MARKER_FILE = "localpilot_checkpoint_complete.json"
+TRAINING_COMPLETE_FILE = "localpilot_training_complete.json"
 CHECKPOINT_REQUIRED_FILES = (
     "adapter_model.safetensors", "adapter_config.json", "trainer_state.json",
     "optimizer.pt", "scheduler.pt", "rng_state.pth",
@@ -61,12 +62,19 @@ def _configure_compile_mode(config: dict[str, Any]) -> None:
     if mode == "eager":
         os.environ["TORCH_COMPILE_DISABLE"] = "1"
         os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+        os.environ.pop("TORCHINDUCTOR_COMPILE_THREADS", None)
+        os.environ.pop("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", None)
         return
     if mode == "native":
-        # Reproduce the pre-PR-157 execution path: do not force eager and do
-        # not inherit compile-disable flags from a parent shell.
+        # Preserve native compilation, but keep it synchronous. The completed P1
+        # lineage observed a 16-worker Inductor pool wedge after step 10902.
+        # TORCHINDUCTOR_COMPILE_THREADS alone is insufficient with Unsloth because
+        # its torch.compile option dictionaries can override the PyTorch env var;
+        # the Unsloth sentinel makes the one-worker setting effective there too.
         os.environ.pop("TORCH_COMPILE_DISABLE", None)
         os.environ.pop("UNSLOTH_COMPILE_DISABLE", None)
+        os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+        os.environ["UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"] = "1"
         return
     raise RuntimeError(f"Unsupported compile mode: {mode!r}")
 
@@ -640,6 +648,92 @@ def _select_resume_checkpoint(output: Path, identity: dict[str, Any]) -> Path:
     raise RuntimeError("Resume refused: no complete matching checkpoint was found")
 
 
+def _validate_recovery_mode(config: dict[str, Any], *, resume: bool, restart: bool, recover: bool) -> None:
+    if sum((resume, restart, recover)) > 1:
+        raise RuntimeError("Resume, restart and recovery are mutually exclusive")
+    if recover and not config.get("recovery"):
+        raise RuntimeError("--recover requires an explicit pinned recovery source")
+    if config.get("recovery") and (restart or not (resume or recover)):
+        raise RuntimeError("Recovery config requires --recover for the source checkpoint or --resume for its own checkpoints")
+
+
+def _recovery_checkpoint(config: dict[str, Any], identity: dict[str, Any]) -> Path:
+    """Permit only the reviewed evaluation change across two distinct run identities.
+
+    Never rewrite source identities/markers or relax ordinary same-run resume.
+    Pins cover the original report, identity and checkpoint completion inventory.
+    """
+    recovery = config["recovery"]
+    report_path = _under(ROOT / recovery["source_report"], ROOT / "training/reports")
+    if _sha256_file(report_path) != recovery["source_report_sha256"]:
+        raise RuntimeError("Recovery source report changed")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if report.get("passed") is not True or report.get("artifact_type") != "adapter_training_dry_run":
+        raise RuntimeError("Recovery requires the original passing dry-run evidence")
+    source_config = report["resolved_config"]
+    if report["training_spec_sha256"] != training_spec_digest(source_config):
+        raise RuntimeError("Recovery source specification mismatch")
+    expected = copy.deepcopy(source_config)
+    for key in ("name", "status", "status_note", "recovery"):
+        expected[key] = config[key]
+    expected["training"]["eval_strategy"] = "no"
+    expected["output"]["directory"] = config["output"]["directory"]
+    for key in ("memory_log_path", "exit_report_path"):
+        expected["diagnostics"][key] = config["diagnostics"][key]
+        if expected["diagnostics"][key] == source_config["diagnostics"][key]:
+            raise RuntimeError("Recovery requires fresh diagnostic paths")
+    if config != expected:
+        raise RuntimeError("Recovery may only disable evaluation and use fresh output/evidence paths; stable settings changed")
+    source_output = _under(ROOT / source_config["output"]["directory"], TRAINING_OUTPUT_ROOT)
+    output = _under(ROOT / config["output"]["directory"], TRAINING_OUTPUT_ROOT)
+    if output == source_output or source_output in output.parents or output in source_output.parents:
+        raise RuntimeError("Recovery output must be separate from the source run")
+    source_identity = json.loads(_under(source_output / RUN_IDENTITY_FILE, source_output).read_text(encoding="utf-8"))
+    if sha256_json(source_identity) != recovery["source_identity_sha256"]:
+        raise RuntimeError("Recovery source run identity changed")
+    expected_source = _run_identity(source_config, report)
+    # The old implementation is pinned by source_identity_sha256; the new script
+    # receives a new identity. All model/data/environment evidence must match.
+    expected_source["trainer_script_sha256"] = source_identity["trainer_script_sha256"]
+    if source_identity != expected_source:
+        raise RuntimeError("Recovery source identity does not match its original evidence")
+    for key in ("dataset_sha256", "corpus_manifest_sha256", "eval_manifest_sha256", "model_evidence_sha256", "environment_sha256"):
+        if identity[key] != source_identity[key]:
+            raise RuntimeError(f"Recovery changed source evidence: {key}")
+    checkpoint = _select_resume_checkpoint(source_output, source_identity)
+    if checkpoint.name != f"checkpoint-{recovery['checkpoint_step']}":
+        raise RuntimeError("Recovery requires the explicitly pinned latest verified checkpoint")
+    marker = _under(checkpoint / CHECKPOINT_MARKER_FILE, checkpoint)
+    if _sha256_file(marker) != recovery["checkpoint_marker_sha256"]:
+        raise RuntimeError("Recovery checkpoint completion marker changed")
+    return checkpoint
+
+
+def _artifact_inventory(directory: Path, names: Sequence[str]) -> dict[str, Any]:
+    result = {}
+    for name in names:
+        path = _under(directory / name, directory)
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f"Missing completed artifact: {name}")
+        result[name] = {"bytes": path.stat().st_size, "sha256": _sha256_file(path)}
+    return result
+
+
+def _mark_training_complete(output: Path, config: dict[str, Any], identity: dict[str, Any], step: int) -> None:
+    target = config["training"]["estimated_optimizer_steps"]
+    if step != target:
+        raise RuntimeError(f"Recovery stopped at {step}, before natural completion at {target}")
+    checkpoint = _select_resume_checkpoint(output, identity)
+    if checkpoint.name != f"checkpoint-{step}":
+        raise RuntimeError("Natural completion requires its verified final checkpoint")
+    _atomic_json(output / TRAINING_COMPLETE_FILE, {
+        "schema_version": 1, "global_step": step, "training_pid": os.getpid(),
+        "run_identity_sha256": sha256_json(identity),
+        "training_config_sha256": training_spec_digest(config),
+        "adapter_files": _artifact_inventory(output / "adapter", ("adapter_model.safetensors", "adapter_config.json")),
+    })
+
+
 def _is_wsl() -> bool:
     try:
         return platform.system() == "Linux" and "microsoft" in Path("/proc/version").read_text().casefold()
@@ -707,6 +801,18 @@ def _validate_config(config: dict[str, Any]) -> None:
         number(training, key, 1, 10000, integer=True)
     if training["first_checkpoint_step"] > training["checkpoint_steps"]:
         raise RuntimeError("The first checkpoint must not come after the regular checkpoint cadence")
+    if training.get("eval_strategy", "steps") not in {"steps", "no"}:
+        raise RuntimeError("training.eval_strategy must be steps or no")
+    if config.get("recovery"):
+        recovery = config["recovery"]
+        if not isinstance(recovery, dict) or training.get("eval_strategy") != "no":
+            raise RuntimeError("Recovery requires disabled in-process evaluation")
+        if type(recovery.get("checkpoint_step")) is not int or recovery["checkpoint_step"] != 3704:
+            raise RuntimeError("Endurance recovery is pinned to verified checkpoint-3704")
+        for key in ("source_report_sha256", "source_identity_sha256", "checkpoint_marker_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", str(recovery.get(key, ""))):
+                raise RuntimeError(f"Recovery requires a SHA256 pin: {key}")
+        _under(ROOT / recovery["source_report"], ROOT / "training/reports")
     number(training, "learning_rate", 1e-7, 1e-2)
     number(training, "epochs", 0.01, 100)
     number(training, "warmup_ratio", 0, 1)
@@ -849,11 +955,10 @@ def _gpu_preflight(torch: Any, triton: Any, config: dict[str, Any]) -> dict[str,
     return {"name": props.name, "architecture": arch, "hip": hip, "torch": str(torch.__version__), "triton": str(triton.__version__), "free_vram_gib": round(free / 1024**3, 3), "total_vram_gib": round(total / 1024**3, 3)}
 
 
-def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = False, restart: bool = False, report_path: Path = DEFAULT_REPORT, importer: Callable[[str], Any] = importlib.import_module) -> dict[str, Any]:
-    if resume and restart:
-        raise RuntimeError("--resume and --restart are mutually exclusive")
+def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = False, restart: bool = False, recover: bool = False, report_path: Path = DEFAULT_REPORT, importer: Callable[[str], Any] = importlib.import_module) -> dict[str, Any]:
     config_path = config_path.resolve()
     config = load_config(config_path)
+    _validate_recovery_mode(config, resume=resume, restart=restart, recover=recover)
     checks: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     manifest: dict[str, Any] | None = None
@@ -881,6 +986,8 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = 
         environment["compile_mode"] = config["backend"]["compile_mode"]
         environment["torch_compile_disable"] = os.environ.get("TORCH_COMPILE_DISABLE")
         environment["unsloth_compile_disable"] = os.environ.get("UNSLOTH_COMPILE_DISABLE")
+        environment["torchinductor_compile_threads"] = os.environ.get("TORCHINDUCTOR_COMPILE_THREADS")
+        environment["unsloth_force_single_compile_worker"] = os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER")
         backend, data, resources = config["backend"], config["data"], config["resources"]
         _add_check(checks, "python_version", list(sys.version_info[:2]) == backend["python_version"], list(sys.version_info[:2]))
         ram = _system_ram_gib()
@@ -969,6 +1076,8 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = 
         command.append("--resume")
     if restart:
         command.append("--restart")
+    if recover:
+        command.append("--recover")
     report = {
         "schema_version": 2, "artifact_type": "adapter_training_dry_run",
         "created_at": datetime.now(UTC).isoformat(), "passed": all(item["passed"] for item in checks),
@@ -988,6 +1097,9 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = 
     if restart and report["passed"]:
         check("restart_before_first_checkpoint", lambda: _validate_restart_output(ROOT / config["output"]["directory"], _run_identity(config, report)))
         report["passed"] = all(item["passed"] for item in checks)
+    if recover and report["passed"]:
+        checkpoint = check("recovery_checkpoint", lambda: str(_recovery_checkpoint(config, _run_identity(config, report))))
+        report["passed"] = checkpoint is not None and all(item["passed"] for item in checks)
     return report
 
 
@@ -1022,18 +1134,26 @@ def _verify_training_gate(config: dict[str, Any], report: dict[str, Any], config
 
 def execute_training(
     config: dict[str, Any], snapshot_path: str, *, run_identity: dict[str, Any],
-    resume_checkpoint: Path | None = None, restart: bool = False,
+    resume_checkpoint: Path | None = None, restart: bool = False, recover: bool = False,
 ) -> None:
     # Called only after main verifies saved evidence and repeats the local preflight.
     if resume_checkpoint is not None and restart:
         raise RuntimeError("Resume and restart are mutually exclusive")
     adapter, training, data, resources = (config[key] for key in ("adapter", "training", "data", "resources"))
+    _validate_recovery_mode(config, resume=resume_checkpoint is not None and not recover, restart=restart, recover=recover)
+    evaluation_enabled = training.get("eval_strategy", "steps") != "no"
     _validate_embedding_offload(resources)
     output = (ROOT / config["output"]["directory"]).resolve()
-    safe, detail = _safe_output(output, resume=resume_checkpoint is not None or restart)
+    safe, detail = _safe_output(output, resume=(resume_checkpoint is not None and not recover) or restart)
     if not safe:
         raise RuntimeError(detail)
-    if resume_checkpoint is not None:
+    if recover:
+        selected = _recovery_checkpoint(config, run_identity)
+        if resume_checkpoint is None or selected != resume_checkpoint.resolve():
+            raise RuntimeError("Selected recovery checkpoint changed before model load")
+        resume_checkpoint = selected
+        output.mkdir(parents=True, exist_ok=True)
+    elif resume_checkpoint is not None:
         selected = _select_resume_checkpoint(output, run_identity)
         if selected != _under(resume_checkpoint, output / "checkpoints"):
             raise RuntimeError("Selected resume checkpoint changed before model load")
@@ -1063,7 +1183,7 @@ def execute_training(
     )
     raw_stop_after_step = diagnostics.get("stop_after_step") if diagnostic_enabled else None
     stop_after_step = int(raw_stop_after_step) if raw_stop_after_step is not None else None
-    if diagnostic_enabled and resume_checkpoint is None and not restart:
+    if diagnostic_enabled and (resume_checkpoint is None or recover) and not restart:
         for path in (memory_log_path, exit_report_path):
             if path is not None and path.exists():
                 raise RuntimeError(f"Diagnostic evidence already exists and will not be overwritten: {path}")
@@ -1139,6 +1259,11 @@ def execute_training(
                 raise RuntimeError("Unexpected full state dict during adapter checkpoint")
             super()._save(output_dir=output_dir, state_dict=_adapter_only_state_dict(self.model))
 
+        def evaluate(self, *args: Any, **kwargs: Any) -> Any:
+            if not evaluation_enabled:
+                raise RuntimeError("In-process evaluation is disabled; use evaluate_adapter.py after training exits")
+            return super().evaluate(*args, **kwargs)
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=snapshot_path, use_exact_model_name=True, fast_inference=False,
         max_seq_length=data["max_sequence_length"], dtype=torch.bfloat16, load_in_4bit=True,
@@ -1161,7 +1286,8 @@ def execute_training(
         return Dataset.from_list(tokenize_training_examples(tokenizer, examples, data["max_sequence_length"]))
 
     trainer = AdapterOnlySFTTrainer(
-        model=model, processing_class=tokenizer, train_dataset=prepared("train"), eval_dataset=prepared("validation"),
+        model=model, processing_class=tokenizer, train_dataset=prepared("train"),
+        eval_dataset=prepared("validation") if evaluation_enabled else None,
         callbacks=[CheckpointIntegrityCallback()] + ([DiagnosticMemoryCallback()] if diagnostic_enabled else []),
         args=SFTConfig(
             output_dir=str(output / "checkpoints"), max_length=data["max_sequence_length"], packing=False,
@@ -1170,8 +1296,10 @@ def execute_training(
             learning_rate=training["learning_rate"], num_train_epochs=training["epochs"],
             max_steps=training["max_steps"] if training["max_steps"] is not None else -1,
             warmup_ratio=training["warmup_ratio"], weight_decay=training["weight_decay"],
-            optim=training["optimizer"], bf16=True, fp16=False, eval_strategy="steps", save_strategy="steps",
-            eval_steps=training["validation_steps"], save_steps=training["checkpoint_steps"],
+            optim=training["optimizer"], bf16=True, fp16=False,
+            eval_strategy="steps" if evaluation_enabled else "no", do_eval=evaluation_enabled,
+            eval_on_start=False, load_best_model_at_end=False, save_strategy="steps",
+            eval_steps=training["validation_steps"] if evaluation_enabled else None, save_steps=training["checkpoint_steps"],
             save_total_limit=training["save_total_limit"], save_only_model=False,
             save_safetensors=True, logging_steps=training["logging_steps"],
             # Unsloth's generated SFTConfig defaults to 250. Preserve the warm
@@ -1186,6 +1314,8 @@ def execute_training(
     def verify_runtime(event: str) -> None:
         nonlocal runtime_settings
         runtime_settings = _training_runtime_settings(trainer, resources)
+        runtime_settings["eval_strategy"] = getattr(trainer.args, "eval_strategy", "unavailable")
+        runtime_settings["save_strategy"] = getattr(trainer.args, "save_strategy", "unavailable")
         record = {
             "timestamp_utc": datetime.now(UTC).isoformat(),
             "event": event,
@@ -1193,6 +1323,8 @@ def execute_training(
             "compile_mode": config["backend"].get("compile_mode"),
             "torch_compile_disable": os.environ.get("TORCH_COMPILE_DISABLE"),
             "unsloth_compile_disable": os.environ.get("UNSLOTH_COMPILE_DISABLE"),
+            "torchinductor_compile_threads": os.environ.get("TORCHINDUCTOR_COMPILE_THREADS"),
+            "unsloth_force_single_compile_worker": os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"),
             **runtime_settings,
         }
         # Always report actual settings, including on a refused startup and
@@ -1201,10 +1333,24 @@ def execute_training(
         if memory_log_path is not None:
             _append_jsonl(memory_log_path, {**record, "cuda": _cuda_memory_snapshot(torch)})
         _verify_training_runtime(runtime_settings)
+        if config["backend"].get("compile_mode") == "native" and (
+            os.environ.get("TORCHINDUCTOR_COMPILE_THREADS") != "1"
+            or os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER") != "1"
+        ):
+            raise RuntimeError("Native compile requires the proven single-worker Inductor/Unsloth runtime")
+        if not evaluation_enabled and (
+            runtime_settings["eval_strategy"] != "no" or getattr(trainer.args, "do_eval", True)
+            or getattr(trainer.args, "eval_on_start", True) or getattr(trainer.args, "load_best_model_at_end", True)
+        ):
+            raise RuntimeError("Effective recovery Trainer evaluation must remain disabled")
+        if runtime_settings["save_strategy"] != "steps" or trainer.args.save_steps != training["checkpoint_steps"] or trainer.args.save_only_model:
+            raise RuntimeError("Effective checkpoint saving must remain independent of evaluation with optimizer state")
 
     caught: BaseException | None = None
     try:
         verify_runtime("runtime_ready")
+        if recover:
+            _atomic_json(output / RUN_IDENTITY_FILE, run_identity)
         if resume_checkpoint is None:
             _atomic_json(output / RUN_IDENTITY_FILE, run_identity)
             trainer.train()
@@ -1215,6 +1361,8 @@ def execute_training(
             model.save_pretrained(str(output / "adapter"), state_dict=_adapter_only_state_dict(model), safe_serialization=True)
             tokenizer.save_pretrained(str(output / "adapter"))
         write_json(output / "training_config.json", config)
+        if config.get("recovery"):
+            _mark_training_complete(output, config, run_identity, int(trainer.state.global_step))
     except BaseException as exc:
         caught = exc
         raise
@@ -1264,15 +1412,17 @@ def build_parser() -> argparse.ArgumentParser:
     recovery = parser.add_mutually_exclusive_group()
     recovery.add_argument("--resume", action="store_true", help="Resume the latest complete checkpoint from the exact same approved run; never restart silently")
     recovery.add_argument("--restart", action="store_true", help="Explicitly restart the same approved run only if it stopped before writing any checkpoint")
+    recovery.add_argument("--recover", action="store_true", help="Resume the pinned source checkpoint into a fresh evaluation-disabled recovery run")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(args.config.resolve())
+    _validate_recovery_mode(config, resume=args.resume, restart=args.restart, recover=args.recover)
     report_path = _under(args.report, ROOT / "training/reports")
     if args.dry_run:
-        report = dry_run(args.config, allow_downloads=args.allow_downloads, resume=args.resume, restart=args.restart, report_path=report_path)
+        report = dry_run(args.config, allow_downloads=args.allow_downloads, resume=args.resume, restart=args.restart, recover=args.recover, report_path=report_path)
         write_json(report_path, report)
         print(json.dumps({"passed": report["passed"], "checks": [{"name": item["name"], "passed": item["passed"]} for item in report["checks"]], "report": str(report_path), "training_performed": False}, indent=2))
         return 0 if report["passed"] else 1
@@ -1281,7 +1431,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     saved_path = _under(args.dry_run_report, ROOT / "training/reports")
     report = json.loads(saved_path.read_text(encoding="utf-8"))
     _verify_training_gate(config, report, args.config, resume=args.resume, restart=args.restart)
-    fresh = dry_run(args.config, allow_downloads=False, resume=args.resume, restart=args.restart, report_path=saved_path)
+    fresh = dry_run(args.config, allow_downloads=False, resume=args.resume, restart=args.restart, recover=args.recover, report_path=saved_path)
     if not fresh["passed"]:
         failed = [{"name": item["name"], "detail": item["detail"]} for item in fresh["checks"] if not item["passed"]]
         raise RuntimeError(f"Current local preflight failed: {json.dumps(failed, ensure_ascii=True)}")
@@ -1289,9 +1439,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise RuntimeError("Installed environment or cached model changed after the approved dry-run")
     identity = _run_identity(config, fresh)
     checkpoint = _select_resume_checkpoint(ROOT / config["output"]["directory"], identity) if args.resume else None
+    if args.recover:
+        checkpoint = _recovery_checkpoint(config, identity)
     if checkpoint is not None:
         print(f"Resuming LocalPilot training from {checkpoint}", flush=True)
-    execute_training(config, fresh["model_evidence"]["snapshot_path"], run_identity=identity, resume_checkpoint=checkpoint, restart=args.restart)
+    execute_training(config, fresh["model_evidence"]["snapshot_path"], run_identity=identity, resume_checkpoint=checkpoint, restart=args.restart, recover=args.recover)
     return 0
 
 

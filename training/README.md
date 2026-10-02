@@ -1,6 +1,6 @@
 # LocalPilot Training
 
-This workspace exists to improve the single operational LocalPilot model. It is not a parallel "developer model" project. A candidate model or adapter is temporary until evaluation proves it better; if promoted, it becomes LocalPilot and the previous checkpoint remains only as rollback.
+This workspace exists to improve LocalPilot's operational model lineage. It is not a parallel "developer model" project. A trained candidate remains a retained checkpoint with its evaluation evidence. The owner may deploy such a candidate operationally with an explicit rollback while remediation continues, but benchmark promotion remains a separate evidence gate; a promoted checkpoint becomes the new validated reference while the prior model remains available for rollback.
 
 ## Current sequence
 
@@ -265,7 +265,61 @@ The native-compile endurance failure completed step 2004 before a compiled fused
 
 The runner now explicitly passes `torch_empty_cache_steps=None` to `SFTConfig` and logs/asserts the effective `trainer.args.torch_empty_cache_steps`, including in startup JSONL and diagnostic exit reports. This disables the Trainer's periodic cache purge, preserving cached allocator blocks. Transformers documents the option as an OOM-avoidance tradeoff for some workloads ([4.56.2 TrainingArguments](https://huggingface.co/docs/transformers/v4.56.2/en/main_classes/trainer#transformers.TrainingArguments)); disabling it here addresses the confirmed purge cadence. The underlying reason that allocation failed is not established. The purge cadence is confirmed, but a causal link from the purges to the final OOM remains a hypothesis; the logs do not distinguish PyTorch allocator fragmentation from ROCm/WSL residency behavior. This is a targeted mitigation whose effectiveness must be tested by a new long endurance run.
 
-Use `qlora_v1_native_compile_endurance.yaml` for that endurance run. **Native compilation remains enabled**, with the existing model/data, rank 8, 1,040-token sequence length, micro-batch 1, accumulation 4, BF16, `adamw_8bit`, learning rate, and full 11,112-step schedule unchanged. Validation/checkpoints remain at 3,704/7,408/11,112, with per-step telemetry, no diagnostic stop, and final adapter save only after success. The 320-step native diagnostic retains its callback stop and full LR schedule. `qlora_v1.yaml` remains the separate legacy eager/checkpoint-recovery profile; the Windows guarded launcher still selects that file, so use the endurance config's resolved dry-run command for native endurance.
+`qlora_v1_native_compile_endurance.yaml` records that original corrected endurance specification. It reached step **7408**, then failed inside `Trainer._evaluate()` before the save stage. The latest complete checkpoint is **checkpoint-3704**, verified against all six file hashes and its completion marker. No checkpoint-7408 was saved; the source run must never be relabeled as step 7408.
+
+Use **`qlora_v1_native_compile_recovery.yaml`** for recovery. Native compilation, model/data, rank 8, 1,040-token length, micro-batch 1, accumulation 4, BF16, `adamw_8bit`, LR schedule, seed, `torch_empty_cache_steps=None`, and measured `cuda:0` embeddings with offload disabled are preserved. The full schedule still ends at step **11112**. Recovery sets `eval_strategy="no"`, `do_eval=False`, `eval_on_start=False`, and supplies no validation dataset to the training Trainer. Checkpoint saves remain independently scheduled every 3704 steps, retaining optimizer/scheduler/RNG state and completion markers. No best-model selection or automatic validation runs at the end of training.
+
+Recovery writes to a new output directory with a new implementation/specification identity. `--recover` verifies the pinned source dry-run report, source identity, checkpoint-3704 marker and every checkpoint file before loading the model; it also compares all stable settings and current model/data/environment evidence. It does not copy, modify, relabel, or delete the source checkpoint. Normal `--resume` still requires an exact matching identity and selects only a complete checkpoint in the **new** run. Stale source approval cannot authorize the recovery specification.
+
+In the training WSL environment, prepare a fresh recovery report:
+
+```bash
+source /home/natha/.venvs/localpilot-training/bin/activate
+source /etc/profile.d/rocdxg-amd-smi-lib.sh
+cd /mnt/e/LLM_HOME/src/localpilot
+unset PYTORCH_CUDA_ALLOC_CONF PYTORCH_ALLOC_CONF
+python training/scripts/train_adapter.py \
+  --config training/configs/qlora_v1_native_compile_recovery.yaml --dry-run --recover \
+  --report training/reports/adapter_v1_native_compile_recovery_no_eval_20260928_dry_run.json
+```
+
+After the matching report passes and the recovery is approved, set only this recovery config's `status` to `approved_after_dry_run`. The guarded Windows launcher now accepts an explicit config selection, preserving sleep prevention and the selected memory policy:
+
+```powershell
+.\training\scripts\start_guarded_adapter.ps1 -ConfigName qlora_v1_native_compile_recovery.yaml -Mode Recover -MemoryPolicy CriticalOnly
+```
+
+For later interruption recovery, use `-Mode Resume` with a new matching `--dry-run --resume` report once the new run has a verified checkpoint. If it stops before its first new save, preserve the failed output/evidence and prepare a fresh recovery output/report pair from the still-verified source checkpoint; `--recover` refuses nonempty destinations. The default launcher profile remains `qlora_v1.yaml` for legacy runs.
+
+After the training process **exits successfully**, run validation in a **separate WSL Python process**:
+
+```bash
+python training/scripts/evaluate_adapter.py \
+  --config training/configs/qlora_v1_native_compile_recovery.yaml \
+  --dry-run-report training/reports/adapter_v1_native_compile_recovery_no_eval_20260928_dry_run.json \
+  --report training/reports/adapter_v1_native_compile_recovery_no_eval_20260928_validation.json
+```
+
+The evaluator requires verified natural completion at 11112, an intact final checkpoint and final adapter, and matching model/data/environment evidence. It loads the adapter read-only and calculates validation loss using the original completion masks, with batch size 1 and no retained predictions. It never calls `train()` or restores optimizer/scheduler/RNG state; failed evaluation cannot affect saved training artifacts. This validation loss is separate from the held-out Eval v1 and execution promotion gates, which remain required. Passing local tests and preflight does not establish that the resumed endurance run or subsequent validation will complete successfully.
+
+### Proven runtime standard for subsequent packages
+
+Package 1 completed naturally at step 11112 after the recovery lineage disabled in-process evaluation and the final resume forced a single TorchInductor/Unsloth compile worker. Earlier native compilation with a 16-worker asynchronous pool later wedged with the trainer alive but no GPU, file-I/O, or cache progress. For native-compile runs, `train_adapter.py` now sets `TORCHINDUCTOR_COMPILE_THREADS=1` and `UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=1` **before importing Unsloth** and records those effective values in dry-run/runtime evidence. This preserves native GPU compilation; it changes compiler-worker concurrency, not the optimizer batch or model topology.
+
+The standard for new long-running training packages is:
+
+- start from the strongest retained checkpoint/lineage selected by the package plan;
+- use native compile with the enforced single compile worker, BF16, verified `cuda:0` embedding placement, and `torch_empty_cache_steps=None`;
+- create a fresh package config, output directory, dry-run report, runtime telemetry and run identity rather than editing or relabeling a historical Package 1 config;
+- keep in-process training evaluation disabled for the long run; evaluation and validation happen only after natural completion in a fresh process, so evaluation failure cannot invalidate a completed checkpoint;
+- save complete adapter/optimizer/scheduler/RNG/trainer state with a completion marker on a **1500 optimizer-step default cadence** for future packages. A package may choose a shorter final interval or a tighter cadence when its total schedule is shorter, but changing the cadence is part of the package specification and requires a new matching dry-run;
+- retain at least the latest complete recovery points plus the final checkpoint, and never treat a partially written checkpoint as resumable;
+- require the guarded Windows launcher, sleep prevention, memory telemetry, model/data/environment digest checks and explicit approval for the exact dry-run specification; and
+- after training, export to a separately named Ollama model, preserve the previous operational model for rollback, run unchanged cross-capability benchmarks, and treat promotion as an evidence decision separate from successful training/export.
+
+The 3704-step checkpoint cadence in the Package 1 endurance/recovery configs is historical evidence and must not be rewritten. The 1500-step rule applies when authoring the next package config.
+
+The proven Package 1 export path is also retained as versioned evidence: exact base `openai/gpt-oss-20b@6cee5e81ee83917806bbde320786a8fb61efebee`, external exporter checkout `E:\\LLM_HOME\\src\\nestra-model-export` at local commit `64a74fb`, and llama.cpp `ec7630a640789c393694fb194f1bbbf0369fc62d`. The exporter merged all 1,632 LoRA modules one tensor group at a time, emitted BF16 shards, converted lazily to GGUF, and quantized to the baseline-compatible MXFP4_MOE layout. That exporter commit must be preserved/backed up and independently reviewed before it is changed for a later package; the Package 1 source adapter/checkpoints remain untouched.
 
 The Windows host launcher (`training/scripts/start_guarded_adapter.ps1`) follows the selected output directory rather than a hard-coded historical run name. It rejects unsupported CPU embedding-offload requests and requires at least 24 GiB of configured WSL memory and 24 GiB of WSL swap; the dry-run still verifies actual guest RAM and storage before model load. It does not certify tensor placement; the trainer performs that check after loading. Policy v3 defaults to `-MemoryPolicy MonitorOnly`: it records host available RAM, Windows commit headroom, the top working-set/private-memory processes, available per-process GPU-memory counters, and the latest verified checkpoint without automatically stopping a viable training run. `CriticalOnly` and `Protective` remain explicit opt-in intervention modes.
 

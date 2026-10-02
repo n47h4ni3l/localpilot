@@ -394,7 +394,7 @@ GitHub is an executable validation and review boundary, not a promotion authorit
 - `[systemsense]`: collection cadence, retention, baselines, correlations, and compact context; and
 - `[selfdev]`: developer models, cycle budgets, candidate limits, resources, repair, and learning storage.
 
-The operational model is `gpt-oss:20b`: LocalPilot uses it for everyday work, self-development planning/research/review, and Claude Code targets it through the local Ollama Anthropic-compatible endpoint. Claude Code is the implementation harness, not a second reasoning authority. See [the Claude Code backend guide](docs/claude-code-backend.md).
+The configured `[model].name` is the everyday operational model, and `[selfdev].developer_model` must match it so LocalPilot uses the same model for planning/research/review. The Claude Code implementation path is separately pinned to `gpt-oss:20b`, which also remains the rollback baseline when a retained trained candidate such as `nestra:20b-p1` is deployed operationally. Operational deployment is reversible and is not the same as benchmark promotion. See [the Claude Code backend guide](docs/claude-code-backend.md).
 
 Read the example and corresponding tests before changing security-critical limits.
 

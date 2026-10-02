@@ -129,9 +129,10 @@ class SystemSenseConfig:
 @dataclass(slots=True)
 class SelfDevConfig:
     enabled: bool = True
-    # Planning, research, and independent review stay on the everyday model.
+    # Planning, research, and independent review stay on the configured
+    # everyday operational model. Claude Code implementation can remain pinned
+    # separately so a retained trained candidate can be deployed reversibly.
     developer_model: str = "gpt-oss:20b"
-    # The one-model design has no alternate implementation or review model.
     developer_model_fallbacks: list[str] = field(default_factory=list)
     # Give repository/tool loops a deliberate context allocation instead of
     # inheriting Ollama's runtime default. This remains separate from the
@@ -210,8 +211,10 @@ def _apply(instance: Any, values: dict[str, Any]) -> Any:
 def _normalize_model_thinking(cfg: Config) -> None:
     think = cfg.model.think
     model_name = cfg.model.name.lower()
-    if "gpt-oss" in model_name:
-        # Ollama ignores boolean think values for GPT-OSS. Migrate old configs
+    if "gpt-oss" in model_name or model_name.startswith("nestra:"):
+        # Nestra checkpoints retain the GPT-OSS architecture. Ollama ignores
+        # boolean think values for GPT-OSS-family models, so normalize them to
+        # an explicit supported reasoning level.
         # rather than silently leaving the model at an undefined effort level.
         if think is True:
             cfg.model.think = "high"
@@ -272,9 +275,14 @@ def load_config(path: str | Path | None = None) -> Config:
         _apply(cfg.systemsense, raw.get("systemsense", {}))
         selfdev_raw = raw.get("selfdev", {})
         _apply(cfg.selfdev, selfdev_raw)
-        # Migrate the former shipped Qwen defaults to the one-model contract.
-        # Custom model choices still fail validation below instead of silently
-        # changing owner intent.
+        # When the owner changes only the everyday model, keep planning/research/
+        # review on that same model automatically. An explicit mismatch still
+        # fails validation below.
+        if "developer_model" not in selfdev_raw:
+            cfg.selfdev.developer_model = cfg.model.name
+        # Migrate the former shipped Qwen defaults to the current operational
+        # model contract. Explicit owner model choices remain subject to the
+        # validation below rather than being silently replaced.
         if selfdev_raw.get("developer_model") == "qwen2.5:32b":
             cfg.selfdev.developer_model = "gpt-oss:20b"
         if selfdev_raw.get("developer_model_fallbacks") == ["qwen2.5:14b"]:
@@ -310,10 +318,15 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ValueError("selfdev.implementation_backend must be claude_code or local_tools")
     if cfg.selfdev.implementation_model != "gpt-oss:20b":
         raise ValueError("selfdev.implementation_model must remain gpt-oss:20b")
-    if cfg.selfdev.developer_model != "gpt-oss:20b" or cfg.selfdev.developer_model_fallbacks:
+    cfg.selfdev.developer_model = str(cfg.selfdev.developer_model).strip()
+    if not cfg.selfdev.developer_model:
+        raise ValueError("selfdev.developer_model must be a non-empty Ollama model name")
+    if cfg.selfdev.developer_model != cfg.model.name:
         raise ValueError(
-            "selfdev planning/research/review must use only gpt-oss:20b; remove developer fallbacks"
+            "selfdev.developer_model must match model.name so planning/research/review use the everyday operational model"
         )
+    if cfg.selfdev.developer_model_fallbacks:
+        raise ValueError("selfdev.developer_model_fallbacks must remain empty")
     if cfg.selfdev.implementation_context_tokens < 65536:
         raise ValueError(
             "selfdev.implementation_context_tokens must be at least 65536 for Claude Code with Ollama"

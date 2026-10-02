@@ -278,9 +278,9 @@ def load_config(path: str | Path | None = None) -> Config:
         # fails validation below.
         if "developer_model" not in selfdev_raw:
             cfg.selfdev.developer_model = cfg.model.name
-        # Migrate the former shipped Qwen defaults to the one-model contract.
-        # Custom model choices still fail validation below instead of silently
-        # changing owner intent.
+        # Migrate the former shipped Qwen defaults to the current operational
+        # model contract. Explicit owner model choices remain subject to the
+        # validation below rather than being silently replaced.
         if selfdev_raw.get("developer_model") == "qwen2.5:32b":
             cfg.selfdev.developer_model = "gpt-oss:20b"
         if selfdev_raw.get("developer_model_fallbacks") == ["qwen2.5:14b"]:

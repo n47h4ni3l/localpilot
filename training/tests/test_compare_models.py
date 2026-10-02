@@ -86,6 +86,16 @@ class CompareModelsTests(unittest.TestCase):
         self.assertFalse(result["gates"]["execution_at_least_baseline"])
         self.assertFalse(result["gates"]["no_scope_violations"])
 
+    def test_perfect_execution_task_can_also_be_a_hard_failure(self) -> None:
+        evidence = self.evidence()
+        evidence[3]["scores"]["hard_failure_count"] = 1
+        result = compare(*evidence)
+        self.assertEqual(result["evolution_execution"]["candidate"]["perfect_tasks"], 4)
+        self.assertEqual(result["evolution_execution"]["candidate"]["hard_failures"], 1)
+        self.assertFalse(result["gates"]["execution_hard_failures_not_higher"])
+        self.assertFalse(result["promotion_recommended"])
+        self.assertEqual(result["comparison_status"], "blocked")
+
     def test_critical_category_regression_cannot_hide_in_improved_average(self) -> None:
         evidence = self.evidence()
         evidence[1]["scores"]["critical_category_mean"] = 3.0

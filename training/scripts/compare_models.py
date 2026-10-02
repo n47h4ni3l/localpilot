@@ -108,8 +108,9 @@ def normalize_execution(summary: dict[str, Any]) -> dict[str, Any]:
         "scope_violations": _optional_count(scores.get("scope_violation_count"), "execution scope violations"),
     }
     _validate_counters(result, ["hard_failures", "perfect_tasks", "scope_violations"])
-    if result["task_count"] is not None and result["hard_failures"] + result["perfect_tasks"] > result["task_count"]:
-        raise RuntimeError("Hard failures and perfect tasks exceed task_count")
+    # These counters are not mutually exclusive. A task can satisfy every
+    # deterministic scoring criterion while still recording a hard failure from
+    # an independent runtime error (for example, a bounded repair timeout).
     return result
 
 

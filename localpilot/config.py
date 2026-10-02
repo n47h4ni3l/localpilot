@@ -211,8 +211,10 @@ def _apply(instance: Any, values: dict[str, Any]) -> Any:
 def _normalize_model_thinking(cfg: Config) -> None:
     think = cfg.model.think
     model_name = cfg.model.name.lower()
-    if "gpt-oss" in model_name:
-        # Ollama ignores boolean think values for GPT-OSS. Migrate old configs
+    if "gpt-oss" in model_name or model_name.startswith("nestra:"):
+        # Nestra checkpoints retain the GPT-OSS architecture. Ollama ignores
+        # boolean think values for GPT-OSS-family models, so normalize them to
+        # an explicit supported reasoning level.
         # rather than silently leaving the model at an undefined effort level.
         if think is True:
             cfg.model.think = "high"

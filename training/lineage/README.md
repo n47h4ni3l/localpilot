@@ -24,7 +24,9 @@ After the owner accepts a completed candidate as the working lineage head, run `
 - final adapter file sizes and SHA256 values;
 - deployed Ollama model and digest;
 - GGUF SHA256;
-- rollback model and digest;
+- immediately previous rollback model and digest;
+- original frozen GPT-OSS baseline/control model and digest;
+- final checkpoint completion-marker hash plus checkpoint file inventory;
 - retained Eval v1 and Evolution Execution aggregate evidence; and
 - the explicit owner decision.
 

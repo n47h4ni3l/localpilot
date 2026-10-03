@@ -444,6 +444,11 @@ def _raw_compact_context(systemsense: Any) -> str:
                 "available": bool(raw_sensors.get("available")),
                 "errors": list(raw_sensors.get("errors") or []),
                 "sensor_count": len(raw_sensors.get("sensors") or []),
+                "temperature_sensors": [
+                    row for row in (raw_sensors.get("sensors") or [])
+                    if isinstance(row, dict)
+                    and str(row.get("SensorType") or "").casefold() == "temperature"
+                ][:24],
             },
         },
         # Transparent deterministic index from the raw volume rows. It is not
@@ -458,6 +463,10 @@ def _raw_compact_context(systemsense: Any) -> str:
         + json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
         + "\nFor any hardware-specific conclusion or action, inspect the raw SystemSense sensor/inventory surfaces first. "
         "Never use the desktop presentation snapshot as model evidence."
+        " Windows thermal_zones and the hardware_provider are independent sources: "
+        "an empty thermal_zones array or thermal:com_error does not invalidate hardware_provider readings. "
+        "Report available temperatures by their component and sensor name; zero CPU temperature is "
+        "unavailable evidence, not a valid temperature or proof that GPU readings are missing."
     )
 
 

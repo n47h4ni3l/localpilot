@@ -128,11 +128,13 @@ def build_manifest(args: argparse.Namespace) -> dict:
         },
         "evaluation": {
             "eval_v1": {
+                "report": args.eval_report_ref,
                 "overall": args.eval_overall,
                 "critical": args.eval_critical,
                 "hard_failures": args.eval_hard_failures,
             },
             "evolution_execution_v1": {
+                "report": args.execution_report_ref,
                 "overall": args.execution_overall,
                 "hard_failures": args.execution_hard_failures,
                 "scope_violations": args.execution_scope_violations,
@@ -156,9 +158,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--rollback-digest", required=True)
     parser.add_argument("--baseline-model", required=True)
     parser.add_argument("--baseline-digest", required=True)
+    parser.add_argument("--eval-report-ref", required=True)
     parser.add_argument("--eval-overall", type=float, required=True)
     parser.add_argument("--eval-critical", type=float, required=True)
     parser.add_argument("--eval-hard-failures", type=int, required=True)
+    parser.add_argument("--execution-report-ref", required=True)
     parser.add_argument("--execution-overall", type=float, required=True)
     parser.add_argument("--execution-hard-failures", type=int, required=True)
     parser.add_argument("--execution-scope-violations", type=int, required=True)

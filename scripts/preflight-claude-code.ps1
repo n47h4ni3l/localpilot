@@ -76,7 +76,7 @@ try {
 }
 $activeModel = $processes.models | Where-Object {
     $candidateName = if ($_.name) { $_.name } else { $_.model }
-    $candidateName.Split(':')[0] -eq $Model.Split(':')[0]
+    $candidateName -eq $Model
 } | Select-Object -First 1
 $allocated = if ($activeModel) { [int]$activeModel.context_length } else { 0 }
 if ($allocated -lt $RequiredContext) {

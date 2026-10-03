@@ -1,4 +1,5 @@
 .venv/
+.venv.unusable-*/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -11,6 +12,10 @@ localpilot-data/
 localpilot/_hardware/
 tools/SystemSense.HardwareProvider/bin/
 tools/SystemSense.HardwareProvider/obj/
+tools/WindowsInstaller/bin/
+tools/WindowsInstaller/obj/
 *.log
 .DS_Store
 Thumbs.db
+.localpilot-release.json
+dist/

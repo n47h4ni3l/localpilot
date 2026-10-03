@@ -2,6 +2,7 @@ import io
 import http.client
 import json
 import sqlite3
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from localpilot.broker import BrokerApp, BrokerHTTPServer, load_or_create_broker_token
+from localpilot.broker import BrokerApp, BrokerBusyError, BrokerHTTPServer, load_or_create_broker_token
 from localpilot.chat_store import ChatStore
 from localpilot.desktop import _markdown_segments
 from localpilot.config import Config, load_config
@@ -176,6 +177,53 @@ def test_broker_systemsense_summary_fails_soft_without_leaking_details(tmp_path)
         "available": False,
         "error_type": "OperationalError",
     }
+
+
+def test_broker_administrator_status_and_idle_shutdown_are_authenticated_and_preserve_active_response(
+    tmp_path, monkeypatch
+):
+    app = _broker(tmp_path)
+    monkeypatch.setattr("localpilot.broker.current_process_elevated", lambda: False)
+    server = BrokerHTTPServer(("127.0.0.1", 0), app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+
+    def request(method, route, *, authorized=True):
+        headers = {"Authorization": f"Bearer {app.token}"} if authorized else {}
+        connection.request(method, route, headers=headers)
+        response = connection.getresponse()
+        return response.status, json.loads(response.read())
+
+    try:
+        assert request("GET", "/v1/broker/status", authorized=False)[0] == 401
+        assert request("POST", "/v1/broker/shutdown", authorized=False)[0] == 401
+        assert app._shutdown_requested is False
+        status, payload = request("GET", "/v1/broker/status")
+        assert status == 200
+        assert payload["elevated"] is False
+        assert payload["pending_requests"] == 0
+        session = app.store.create_session()
+        active = app.submit(session["id"], "Please finish this response")
+        assert request("POST", "/v1/broker/shutdown")[0] == 409
+        assert app._shutdown_requested is False
+        assert thread.is_alive()
+        assert app.store.message(active["assistant"]["id"])["status"] == "streaming"
+        app._on_runtime_message({"kind": "result", "request_id": active["request_id"],
+                                 "session_id": session["id"], "answer": "Finished"})
+        assert request("POST", "/v1/broker/shutdown")[0] == 202
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        with pytest.raises(BrokerBusyError, match="restarting"):
+            app.submit(session["id"], "This must not start during shutdown")
+        assert [row["content"] for row in app.store.messages(session["id"])] == [
+            "Please finish this response", "Finished"
+        ]
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_chat_history_is_unicode_safe_persistent_and_separate_from_learning(tmp_path):
@@ -605,6 +653,39 @@ def test_supervisor_does_not_forward_raw_worker_stderr(tmp_path):
         {"kind": "supervisor", "type": "runtime.stderr", "payload": {"diagnostic": True}}
     ]
     assert "private prompt fragment" not in json.dumps(messages)
+
+
+@pytest.mark.parametrize("graceful_timeout", [False, True])
+def test_supervisor_stop_allows_stdin_cleanup_before_bounded_termination(tmp_path, graceful_timeout):
+    calls = []
+
+    class Process:
+        pid = 321
+        stdin = io.StringIO()
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout):
+            assert self.stdin.closed
+            calls.append("wait")
+            if graceful_timeout and calls == ["wait"]:
+                raise subprocess.TimeoutExpired("worker", timeout)
+            return 0
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def kill(self):
+            raise AssertionError("Worker exited without a forced kill")
+
+    supervisor = RuntimeSupervisor(tmp_path)
+    supervisor._process = Process()
+
+    supervisor.stop()
+
+    assert calls == (["wait", "terminate", "wait"] if graceful_timeout else ["wait"])
+    assert supervisor.pid is None
 
 
 def test_supervisor_replaces_crashed_pid_and_records_crash_recovery(tmp_path, monkeypatch):

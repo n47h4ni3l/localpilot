@@ -295,8 +295,13 @@ class SystemSenseHardwareCollector:
             raise RuntimeError("SystemSense hardware provider was not installed")
         self.bundled = bundled_collector or BundledHardwareMonitorCollector()
         self.fallback = _legacy_collector_factory(wmi)
+        self._explicit_wmi = wmi is not None and bundled_collector is None
 
     def collect(self) -> dict[str, Any]:
+        if self._explicit_wmi:
+            # An injected WMI adapter is an explicit provider selection; do not
+            # probe unrelated live hardware behind that integration's back.
+            return self.fallback.collect()
         primary = self.bundled.collect()
         if primary.get("available"):
             return primary

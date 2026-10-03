@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ctypes
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+
+import pytest
 
 from localpilot import cli
 
@@ -40,3 +43,43 @@ def test_desktop_command_launches_tkinter_only_when_requested(monkeypatch):
     cli.main()
 
     assert calls == [(cli._root(), None)]
+
+
+def test_windowed_desktop_startup_shows_real_error_and_preserves_nonzero_failure(monkeypatch):
+    calls = []
+    error = RuntimeError("LocalPilot is still responding. Let the response finish.")
+    module = ModuleType("localpilot.webview_app")
+
+    def fail_startup(*args):
+        raise error
+
+    module.main = fail_startup
+    monkeypatch.setitem(sys.modules, "localpilot.webview_app", module)
+    monkeypatch.setattr(sys, "argv", ["localpilot", "desktop"])
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "executable", "pythonw.exe")
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(
+        user32=SimpleNamespace(MessageBoxW=lambda *args: calls.append(args))
+    ), raising=False)
+
+    with pytest.raises(RuntimeError) as failure:
+        cli.main()
+
+    assert failure.value is error
+    assert len(calls) == 1
+    assert str(error) in calls[0][1]
+    assert calls[0][2] == "LocalPilot"
+
+
+@pytest.mark.parametrize("platform,executable", [("win32", "python.exe"), ("linux", "pythonw.exe")])
+def test_console_and_nonwindows_startup_errors_do_not_open_dialogs(monkeypatch, platform, executable):
+    calls = []
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(sys, "executable", executable)
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(
+        user32=SimpleNamespace(MessageBoxW=lambda *args: calls.append(args))
+    ), raising=False)
+
+    cli._show_desktop_startup_error(RuntimeError("An actual startup failure"))
+
+    assert calls == []

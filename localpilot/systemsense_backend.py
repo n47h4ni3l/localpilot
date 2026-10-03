@@ -66,7 +66,9 @@ class BackendTelemetryCollector:
     ) -> None:
         self.wmi = wmi or WmiClient()
         self.performance = performance or WindowsPerformanceCollector(self.wmi)
-        self.sensors = sensors or LibreHardwareMonitorCollector(self.wmi)
+        # Only a caller-supplied adapter explicitly selects legacy WMI. The
+        # default backend must use the same bundled-first path as passive data.
+        self.sensors = sensors or LibreHardwareMonitorCollector(wmi)
 
     def _source_provenance(self) -> dict[str, Any]:
         wmi_available = bool(getattr(self.wmi, "available", os.name == "nt"))
@@ -83,7 +85,7 @@ class BackendTelemetryCollector:
             "hardware_monitor": {
                 "available": bool(sensor_state.get("available")),
                 "source": sensor_state.get("source"),
-                "provenance": "optional LibreHardwareMonitor/OpenHardwareMonitor WMI sensor bridge",
+                "provenance": "bundled LibreHardwareMonitorLib provider with optional legacy WMI sensor bridge",
                 "errors": list(sensor_state.get("errors") or []),
             },
         }

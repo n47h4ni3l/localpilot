@@ -1,0 +1,90 @@
+{
+  "accepted_as_lineage_head": true,
+  "artifact_type": "nestra_lineage_head",
+  "base": {
+    "identity": "openai/gpt-oss-20b",
+    "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+    "training_model_id": "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
+    "training_revision": "093fba6992ef5a7152481afec0bdfca1ac486998"
+  },
+  "benchmark_promoted": false,
+  "deployment": {
+    "digest": "870386dd9cbfe625ab110af128ffbf6216565e5c9d2d603a070e8f6228f203d9",
+    "gguf_sha256": "16fb6a401fe668bb48ffc692cf6d105a61a5c51f17a9def525c15f2363b902ed",
+    "model": "nestra:20b-p1"
+  },
+  "evaluation": {
+    "eval_v1": {
+      "critical": 1.875,
+      "hard_failures": 3,
+      "overall": 2.04,
+      "report": "nestra-benchmark:training/reports/nestra_20b_p1_eval_v1_20261002_codex_reviewed_scored_20261003.json"
+    },
+    "evolution_execution_v1": {
+      "hard_failures": 1,
+      "overall": 4.0,
+      "report": "nestra-benchmark:training/reports/nestra_20b_p1_evolution_execution_post_cc_20261002_scored.json",
+      "scope_violations": 0
+    }
+  },
+  "original_baseline": {
+    "digest": "17052f91a42e97930aa6e28a6c6c06a983e6a58dbb00434885a0cf5313e376f7",
+    "model": "gpt-oss:20b"
+  },
+  "owner_acceptance": {
+    "decision": "accepted_as_working_lineage",
+    "note": "Owner accepted P1 as the working cumulative Nestra lineage while preserving the mixed Package 1 benchmark evidence."
+  },
+  "package": 1,
+  "recorded_at": "2026-10-03T02:28:47.467242+00:00",
+  "rollback": {
+    "digest": "17052f91a42e97930aa6e28a6c6c06a983e6a58dbb00434885a0cf5313e376f7",
+    "model": "gpt-oss:20b"
+  },
+  "schema_version": 1,
+  "training": {
+    "adapter_files": {
+      "adapter_config.json": {
+        "bytes": 1589,
+        "sha256": "b2d668fd50043552a267970def1e78bb5f11719e21bf8fa553e323e6e323cf68"
+      },
+      "adapter_model.safetensors": {
+        "bytes": 370291488,
+        "sha256": "fe1177027ddff3d5536e997eec489166ed2a88f1a1dc6e8934e0eef089c99fa7"
+      }
+    },
+    "checkpoint_files": {
+      "adapter_config.json": {
+        "bytes": 1589,
+        "sha256": "b2d668fd50043552a267970def1e78bb5f11719e21bf8fa553e323e6e323cf68"
+      },
+      "adapter_model.safetensors": {
+        "bytes": 370291488,
+        "sha256": "fe1177027ddff3d5536e997eec489166ed2a88f1a1dc6e8934e0eef089c99fa7"
+      },
+      "optimizer.pt": {
+        "bytes": 199957587,
+        "sha256": "119f96e8d497e1e8300a9501b0759dad07f8b0b8f6da7158681e0b79f986032b"
+      },
+      "rng_state.pth": {
+        "bytes": 14645,
+        "sha256": "3d6d8fafcd1ee268414be5acf0366296af5b03d60871978712eac1979cb42d65"
+      },
+      "scheduler.pt": {
+        "bytes": 1465,
+        "sha256": "56224418b7f790c49c611d9a1510ef6e4fa4627f88878b6d7cd6cbf48a103f40"
+      },
+      "trainer_state.json": {
+        "bytes": 1932935,
+        "sha256": "ea7398304b113052f965ff284a50a1bd36208a340e036e4a4bb64ac39a1aaac8"
+      }
+    },
+    "checkpoint_marker_sha256": "bc2641214dfd45ec4e9cbeef160fc942050e8d81802bbb66ef25e1a995e0260c",
+    "completion_marker_sha256": "6461419aadb99d2727dd7273bdc001ade87e0441d1c1bc5e44dd746d0e777095",
+    "config": "training/configs/qlora_v1_native_compile_recovery.yaml",
+    "global_step": 11112,
+    "output_directory": "training/outputs/adapter_v1_native_compile_recovery_no_eval_20260928",
+    "run_identity_sha256": "1a1d47ddee0d5e38e4e6c4c72de00e38838c99762fffaa207e32a539631f66b7",
+    "training_config_sha256": "55cd7e4f3f2d39f8a5e6710e79245cc561c51a4847256115d069120461a9b599"
+  }
+}

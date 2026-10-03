@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 import localpilot.systemsense_backend as backend_module
+import localpilot.systemsense_collectors as collectors_module
+import localpilot.systemsense_hardware as hardware_module
 from localpilot.systemsense_backend import BackendTelemetryCollector
 from localpilot.tools.systemsense import SystemSenseReader
 
@@ -168,6 +170,70 @@ def test_backend_sensor_detail_is_bounded_and_source_identified():
     assert payload["available"] is True
     assert payload["source"] == "LibreHardwareMonitor"
     assert payload["count"] == 1
+    assert payload["items"][0]["Name"] == "CPU Package"
+
+
+@pytest.mark.parametrize("bundled_available", [True, False])
+def test_default_backend_uses_bundled_sensors_and_retains_wmi_fallback(
+    monkeypatch, bundled_available
+):
+    calls = {"bundled": 0, "wmi": 0}
+
+    class SensorWmi(FakeWmi):
+        def query(self, namespace, class_name, properties, where=""):
+            calls["wmi"] += 1
+            if namespace == r"root\OpenHardwareMonitor":
+                return FakeSensors().collect()["sensors"]
+            return []
+
+    class BundledSensors:
+        def collect(self):
+            calls["bundled"] += 1
+            return {
+                "source": "LibreHardwareMonitorLib",
+                "available": bundled_available,
+                "errors": [] if bundled_available else ["bundled-provider:not-installed"],
+                "sensors": [
+                    {"Name": "GPU Core", "SensorType": "Temperature", "Value": 50.0}
+                ] if bundled_available else [],
+            }
+
+    monkeypatch.setattr(backend_module, "WmiClient", SensorWmi)
+    monkeypatch.setattr(collectors_module, "WmiClient", SensorWmi)
+    monkeypatch.setattr(hardware_module, "BundledHardwareMonitorCollector", BundledSensors)
+
+    payload = BackendTelemetryCollector().sensor_detail(limit=10)
+
+    assert calls["bundled"] == 1
+    assert payload["available"] is True
+    if bundled_available:
+        assert calls["wmi"] == 0
+        assert payload["source"] == "LibreHardwareMonitorLib"
+        assert payload["items"][0]["Name"] == "GPU Core"
+    else:
+        assert calls["wmi"] == 2
+        assert payload["source"] == "OpenHardwareMonitor"
+        assert payload["items"][0]["Name"] == "CPU Package"
+        assert "bundled-provider:not-installed" in payload["errors"]
+
+
+def test_backend_explicit_wmi_adapter_does_not_probe_live_bundled_hardware(monkeypatch):
+    class SensorWmi(FakeWmi):
+        def query(self, namespace, class_name, properties, where=""):
+            if namespace == r"root\OpenHardwareMonitor":
+                return FakeSensors().collect()["sensors"]
+            return []
+
+    class BundledSensors:
+        def collect(self):
+            raise AssertionError("An explicit WMI adapter must not probe live hardware")
+
+    monkeypatch.setattr(hardware_module, "BundledHardwareMonitorCollector", BundledSensors)
+
+    payload = BackendTelemetryCollector(wmi=SensorWmi()).sensor_detail(limit=10)
+
+    assert payload["available"] is True
+    assert payload["source"] == "OpenHardwareMonitor"
     assert payload["items"][0]["Name"] == "CPU Package"
 
 

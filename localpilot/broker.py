@@ -17,8 +17,13 @@ from localpilot.audit import AuditLog
 from localpilot.chat_store import ChatStore
 from localpilot.config import Config, load_config
 from localpilot.foreground import write_foreground_turns
+from localpilot.process import current_process_elevated
 from localpilot.runtime_supervisor import RuntimeSupervisor
 from localpilot.systemsense import get_system_sense
+
+
+class BrokerBusyError(RuntimeError):
+    """A broker transition would interrupt an active foreground request."""
 
 
 def _loopback_webview_origin(value: str | None) -> str | None:
@@ -88,6 +93,7 @@ class BrokerApp:
         self._condition = threading.Condition()
         self._lock = threading.RLock()
         self._pending: dict[str, dict[str, Any]] = {}
+        self._shutdown_requested = False
         initialized_foreground_state = write_foreground_turns(self.data_dir, ())
         self.audit.write(
             "foreground_turn_state",
@@ -118,6 +124,24 @@ class BrokerApp:
         self.runtime.stop()
         with self._lock:
             write_foreground_turns(self.data_dir, ())
+
+    def broker_status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "pid": os.getpid(),
+                "elevated": current_process_elevated(),
+                "pending_requests": len(self._pending),
+                "shutdown_requested": self._shutdown_requested,
+            }
+
+    def begin_idle_shutdown(self) -> None:
+        with self._lock:
+            if self._pending:
+                raise BrokerBusyError(
+                    "Wait until LocalPilot finishes responding before restarting it as administrator."
+                )
+            self._shutdown_requested = True
+        self.audit.write("broker_shutdown_requested", broker_pid=os.getpid(), reason="authenticated_idle_shutdown")
 
     def _sync_foreground_turns_locked(self) -> bool:
         requests = tuple(
@@ -195,6 +219,8 @@ class BrokerApp:
             raise ValueError("Message content exceeds the 100,000 character limit")
         with self._lock:
             # Serialize transcript creation with deletion, before the runtime starts.
+            if self._shutdown_requested:
+                raise BrokerBusyError("LocalPilot is restarting; please retry once it is ready.")
             self.store.session(session_id)
             history = self.store.completed_history(session_id)
             user_message = self.store.add_message(session_id, "user", content.strip())
@@ -284,6 +310,8 @@ class BrokerApp:
 
     def restart_runtime(self, *, source: str, reason: str) -> bool:
         with self._lock:
+            if self._shutdown_requested:
+                raise BrokerBusyError("LocalPilot is stopping; a runtime restart is unavailable.")
             pending = next(iter(self._pending.items()), None)
         request_id = pending[0] if pending else None
         item = pending[1] if pending else {}
@@ -485,6 +513,9 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
             if parts == ["v1", "sessions"]:
                 self._json(HTTPStatus.OK, {"sessions": self.server.app.store.sessions()})
                 return
+            if parts == ["v1", "broker", "status"]:
+                self._json(HTTPStatus.OK, self.server.app.broker_status())
+                return
             if parts == ["v1", "systemsense", "summary"]:
                 self._json(
                     HTTPStatus.OK,
@@ -564,11 +595,20 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._json(HTTPStatus.ACCEPTED, {"status": "restarting"})
                 return
+            if parts == ["v1", "broker", "shutdown"]:
+                self.server.app.begin_idle_shutdown()
+                try:
+                    self._json(HTTPStatus.ACCEPTED, {"status": "stopping", "pid": os.getpid()})
+                finally:
+                    threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
         except KeyError as exc:
             self._json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except BrokerBusyError as exc:
+            self._json(HTTPStatus.CONFLICT, {"error": str(exc)})
         except RuntimeError as exc:
             self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
 
@@ -588,8 +628,10 @@ def serve(root: str | Path, config: Config, *, config_path: str | Path | None = 
     try:
         server.serve_forever(poll_interval=0.25)
     finally:
-        server.server_close()
-        app.stop()
+        try:
+            app.stop()
+        finally:
+            server.server_close()
 
 
 def build_parser() -> argparse.ArgumentParser:

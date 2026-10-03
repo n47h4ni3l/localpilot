@@ -46,7 +46,7 @@ $handler = [System.Net.Http.HttpClientHandler]::new()
 $handler.UseProxy = $false
 $client = [System.Net.Http.HttpClient]::new($handler)
 try {
-    $client.Timeout = [TimeSpan]::FromSeconds(20)
+    $client.Timeout = [TimeSpan]::FromSeconds(300)
     Write-Verbose "Checking the configured Ollama model through the local HTTP API."
     $showContent = [System.Net.Http.StringContent]::new(
         $showBody, [System.Text.Encoding]::UTF8, "application/json"
@@ -56,7 +56,6 @@ try {
     ).GetAwaiter().GetResult()
     $showResponse.EnsureSuccessStatusCode() | Out-Null
 
-    $client.Timeout = [TimeSpan]::FromSeconds(300)
     Write-Verbose "Loading $Model with a $RequiredContext-token context for a live allocation check."
     $content = [System.Net.Http.StringContent]::new(
         $loadBody, [System.Text.Encoding]::UTF8, "application/json"
@@ -95,7 +94,14 @@ public static class LocalPilotWorkingSet {
 '@
     }
     Get-Process -Name "llama-server" -ErrorAction SilentlyContinue | ForEach-Object {
-        [LocalPilotWorkingSet]::EmptyWorkingSet($_.Handle) | Out-Null
+        try {
+            $processHandle = $_.Handle
+            if ($null -ne $processHandle -and $processHandle -ne [IntPtr]::Zero) {
+                [LocalPilotWorkingSet]::EmptyWorkingSet($processHandle) | Out-Null
+            }
+        } catch {
+            Write-Verbose "Optional working-set trim unavailable: $($_.Exception.Message)"
+        }
     }
 }
 

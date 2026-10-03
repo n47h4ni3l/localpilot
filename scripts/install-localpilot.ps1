@@ -47,6 +47,56 @@ function Test-WebViewRuntime {
     return $false
 }
 
+function Ensure-ClaudeExecutable {
+    param([string]$Executable)
+    $command = Get-Command -Name $Executable -CommandType Application -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    if (Test-Path -LiteralPath $Executable -PathType Leaf) { return (Resolve-Path -LiteralPath $Executable).Path }
+    if ($Executable -notin @('claude', 'claude.exe')) {
+        throw "The configured Claude Code executable is missing: $Executable. Restore it or update selfdev.implementation_executable; setup preserved your selection."
+    }
+    Install-RequiredPackage 'Anthropic.ClaudeCode' 'Claude Code' | Out-Host
+    $command = Get-Command -Name $Executable -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $command) { throw 'Claude Code was installed but could not be discovered. Restart setup to refresh its environment.' }
+    return $command.Source
+}
+
+function Test-ImplementationReadiness {
+    param([string]$Python, [string]$ConfigPath)
+    $settingsCode = @'
+import json, sys
+from localpilot.config import load_config
+cfg = load_config(sys.argv[1]).selfdev
+print(json.dumps({'enabled': cfg.enabled, 'backend': cfg.implementation_backend, 'executable': cfg.implementation_executable}))
+'@
+    $settings = & $Python -c $settingsCode $ConfigPath
+    if ($LASTEXITCODE -ne 0) { throw 'Could not read the configured implementation backend.' }
+    $settings = ($settings | Out-String) | ConvertFrom-Json
+    if (-not $settings.enabled -or $settings.backend -ne 'claude_code') { return }
+    Ensure-ClaudeExecutable -Executable $settings.executable | Out-Null
+    Write-Host 'Checking the implementation backend and its local model context...'
+    $preflightCode = @'
+import sys
+from localpilot.config import load_config
+from localpilot.implementation_backend import ClaudeCodeBackend
+cfg = load_config(sys.argv[1]).selfdev
+result = ClaudeCodeBackend(
+    executable=cfg.implementation_executable, model=cfg.implementation_model,
+    context_tokens=cfg.implementation_context_tokens,
+    timeout_seconds=cfg.implementation_timeout_seconds,
+    base_url=cfg.implementation_base_url,
+).preflight()
+print(f'Claude Code: {result.version}; model: {result.model}; context: {result.context_tokens}')
+for message in result.messages:
+    print(message)
+raise SystemExit(0 if result.healthy else 1)
+'@
+    & $Python -c $preflightCode $ConfigPath
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The configured implementation backend is not ready. See the checks above and installation log, then retry setup.'
+    }
+}
+
 function Assert-ReleasePayload {
     param([string]$Root, [string]$ExpectedRuntime)
     $manifestPath = Join-Path $Root '.localpilot-release.json'
@@ -211,6 +261,7 @@ try {
     try {
         & (Join-Path $root 'scripts\bootstrap.ps1') -Unattended -RuntimeOnly
         $python = Join-Path $root '.venv\Scripts\python.exe'
+        Test-ImplementationReadiness -Python $python -ConfigPath (Join-Path $root 'localpilot.toml')
         $shortcutOptions = @{ PythonPath = $python; RunAsAdministrator = $true }
         if ($ShortcutPath) { $shortcutOptions.ShortcutPath = $ShortcutPath }
         & (Join-Path $root 'scripts\install-desktop-shortcut.ps1') @shortcutOptions

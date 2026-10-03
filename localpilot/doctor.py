@@ -68,6 +68,15 @@ def doctor(config: Config, project_root: str | Path) -> list[tuple[str, bool, st
             "Missing; run scripts/build-systemsense-hardware.ps1",
         ))
     checks.append(("GitHub CLI (optional)", shutil.which("gh") is not None, shutil.which("gh") or "not found"))
+    if config.selfdev.enabled and config.selfdev.implementation_backend == "claude_code":
+        configured = config.selfdev.implementation_executable
+        executable = shutil.which(configured)
+        if not executable and Path(configured).is_file():
+            executable = str(Path(configured).resolve())
+        checks.append((
+            "Claude Code implementation executable", executable is not None,
+            executable or f"Missing: {configured}; rerun Install LocalPilot.cmd",
+        ))
 
     models, model_source = _ollama_models()
     model_ok = config.model.name in models

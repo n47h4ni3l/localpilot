@@ -72,60 +72,25 @@ Remove-Item -LiteralPath $resolved -Recurse -Force
 '@ | Set-Content -LiteralPath (Join-Path $wrapper 'Extract-Setup.ps1') -Encoding utf8
     $exe = Join-Path $output "$stem.exe"
     if (Test-Path -LiteralPath $exe) { throw "Output already exists: $exe" }
-    $sed = Join-Path $scratch 'package.sed'
-    @"
-[Version]
-Class=IEXPRESS
-SEDVersion=3
-[Options]
-PackagePurpose=InstallApp
-ShowInstallProgramWindow=1
-HideExtractAnimation=1
-UseLongFileName=1
-InsideCompressed=0
-CAB_FixedSize=0
-CAB_ResvCodeSigning=0
-RebootMode=N
-InstallPrompt=%InstallPrompt%
-DisplayLicense=%DisplayLicense%
-FinishMessage=%FinishMessage%
-TargetName=%TargetName%
-FriendlyName=%FriendlyName%
-AppLaunched=%AppLaunched%
-PostInstallCmd=%PostInstallCmd%
-AdminQuietInstCmd=%AdminQuietInstCmd%
-UserQuietInstCmd=%UserQuietInstCmd%
-SourceFiles=SourceFiles
-[Strings]
-InstallPrompt=
-DisplayLicense=
-FinishMessage=
-TargetName=$exe
-FriendlyName=LocalPilot $version Setup
-AppLaunched=cmd.exe /c Start-Setup.cmd
-PostInstallCmd=<None>
-AdminQuietInstCmd=cmd.exe /c Start-Setup.cmd
-UserQuietInstCmd=cmd.exe /c Start-Setup.cmd
-FILE0=Start-Setup.cmd
-FILE1=Extract-Setup.ps1
-FILE2=payload.zip
-[SourceFiles]
-SourceFiles0=$wrapper\
-[SourceFiles0]
-%FILE0%=
-%FILE1%=
-%FILE2%=
-"@ | Set-Content -LiteralPath $sed -Encoding ascii
-    $iexpress = Join-Path $env:SystemRoot 'System32\iexpress.exe'
-    $pack = Start-Process -FilePath $iexpress -ArgumentList @('/N', '/Q', ('"' + $sed + '"')) -WindowStyle Hidden -PassThru -Wait
-    if ($pack.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) {
-        throw 'Windows installer packaging failed; the source ZIP is preserved.'
-    }
+    $embeddedZip = Join-Path $scratch 'embedded-wrapper.zip'
+    [IO.Compression.ZipFile]::CreateFromDirectory($wrapper, $embeddedZip, [IO.Compression.CompressionLevel]::Optimal, $false)
+    $bootstrapOutput = Join-Path $scratch 'bootstrap-publish'
+    & dotnet publish (Join-Path $repoRoot 'tools\WindowsInstaller\WindowsInstaller.csproj') `
+        --configuration Release --framework net8.0-windows --runtime $RuntimeIdentifier `
+        --self-contained true --output $bootstrapOutput `
+        "-p:PayloadArchive=$embeddedZip" "-p:Version=$version" `
+        -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+        -p:EnableCompressionInSingleFile=true -p:PublishTrimmed=false `
+        -p:DebugType=None -p:DebugSymbols=false
+    if ($LASTEXITCODE -ne 0) { throw 'Windows installer bootstrap compilation failed; the source ZIP is preserved.' }
+    $compiled = Join-Path $bootstrapOutput 'LocalPilot.Setup.exe'
+    if (-not (Test-Path -LiteralPath $compiled -PathType Leaf)) { throw 'Windows installer executable was not produced.' }
+    Copy-Item -LiteralPath $compiled -Destination $exe
     $header = [IO.File]::ReadAllBytes($exe)
     if ($header.Length -lt 2 -or $header[0] -ne 77 -or $header[1] -ne 90) { throw 'Installer has an invalid executable header.' }
     $roundtrip = Join-Path $scratch 'extracted-check'
     New-Item -ItemType Directory -Path $roundtrip -Force | Out-Null
-    $check = Start-Process -FilePath $exe -ArgumentList @('/Q', '/C', ('/T:"' + $roundtrip + '"')) -WindowStyle Hidden -PassThru -Wait
+    $check = Start-Process -FilePath $exe -ArgumentList @('"/extract:' + $roundtrip + '"') -WindowStyle Hidden -PassThru -Wait
     if ($check.ExitCode -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $roundtrip 'payload.zip'))) {
         throw 'The executable could not extract its embedded installation payload.'
     }

@@ -191,3 +191,33 @@ def test_release_git_initialization_can_resume_after_failed_fetch_without_replac
     assert (destination / "localpilot.toml").read_text() == "owner configuration"
     assert (destination / "application.txt").read_text() == "release application"
     assert not (destination / ".git" / "localpilot-install-pending").exists()
+
+
+@pytest.mark.parametrize("scenario", ["existing_custom", "missing_custom", "missing_default"])
+def test_claude_setup_preserves_custom_executable_and_installs_only_missing_default(tmp_path: Path, scenario: str):
+    executable = tmp_path / "custom-claude.exe"
+    if scenario == "existing_custom":
+        executable.write_bytes(b"existing executable")
+    wrapper = _installation_functions(tmp_path)
+    with wrapper.open("a", encoding="utf-8") as file:
+        file.write(
+            "$script:installed = $false\n"
+            "function Get-Command { param($Name, $CommandType, $ErrorAction) "
+            "if ($script:installed) { return [pscustomobject]@{ Source=$Destination } } }\n"
+            "function Install-RequiredPackage { param($PackageId, $DisplayName) "
+            "if ($PackageId -ne 'Anthropic.ClaudeCode') { throw 'Unexpected package' }; "
+            "$script:installed = $true }\n"
+            "if ($Operation -eq 'claude') { "
+            "$selected = Ensure-ClaudeExecutable -Executable $Source; "
+            "@{selected=$selected; installed=$script:installed} | ConvertTo-Json }\n"
+        )
+    configured = "claude" if scenario == "missing_default" else str(executable)
+    result = _powershell(wrapper, str(ROOT / "scripts" / "install-localpilot.ps1"), "claude", configured, str(executable), "unused")
+    if scenario == "missing_custom":
+        assert result.returncode != 0
+        assert "setup preserved your selection" in result.stderr
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        observation = json.loads(result.stdout)
+        assert Path(observation["selected"]) == executable
+        assert observation["installed"] is (scenario == "missing_default")

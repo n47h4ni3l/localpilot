@@ -16,7 +16,11 @@ installation fails, rerun the installer to continue.
 
 The installer uses an isolated Python environment belonging to LocalPilot.
 It installs Python 3.12 and Ollama when absent, plus Git, GitHub CLI,
-Microsoft WebView2 and the PawnIO hardware sensor driver. The release bundle
+Microsoft WebView2 and the PawnIO hardware sensor driver. When the configured
+implementation backend uses Claude Code, setup installs its native CLI if
+missing and checks the selected local model's implementation context. This
+local Ollama configuration does not require Anthropic sign-in. A custom Claude
+executable path or a disabled implementation backend is preserved. The release bundle
 already contains the SystemSense hardware helper, so a release installation
 does not require the .NET SDK. A Git source checkout builds the helper if it
 is missing and installs the .NET SDK when needed.

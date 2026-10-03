@@ -24,7 +24,7 @@ In practical terms, LocalPilot works for the owner while the PC is active and ma
 | Autonomous merge or stable-code promotion | Not enabled |
 | Arbitrary desktop or shell control | Not implemented |
 | Candidate implementation and repository tests | Claude Code in a confined candidate workspace; independently reviewed by LocalPilot |
-| Model-weight training or fine-tuning | Not implemented |
+| Model-weight training or fine-tuning | Implemented through the guarded WSL2/ROCm QLoRA pipeline; Package 1 completed a retained `nestra:20b-p1` candidate |
 | Sustained recursive self-improvement | Not demonstrated |
 
 That distinction matters. LocalPilot has substantial infrastructure for attempting measurable improvement, but infrastructure is not evidence that open-ended or recursive capability growth has occurred.

@@ -407,8 +407,7 @@ class ClaudeCodeBackend:
                 (
                     item for item in processes
                     if isinstance(item, dict)
-                    and str(item.get("name") or item.get("model") or "").split(":", 1)[0]
-                    == self.model.split(":", 1)[0]
+                    and str(item.get("name") or item.get("model") or "") == self.model
                 ),
                 None,
             )

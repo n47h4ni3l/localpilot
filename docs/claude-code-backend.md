@@ -1,6 +1,6 @@
 # Claude Code implementation backend
 
-LocalPilot uses one configured everyday model for operator work plus planning/research/independent review. Claude Code performs only implementation work in the isolated candidate workspace and may remain pinned to the preserved baseline implementation model. This separation allows a retained trained candidate such as `nestra:20b-p1` to be deployed reversibly as LocalPilot's everyday/review model while `gpt-oss:20b` remains available as the Claude Code implementation model and rollback baseline. Operational deployment is distinct from benchmark promotion.
+LocalPilot uses the accepted operational lineage head for everyday work, planning/research/independent review, and the model behind Claude Code implementation. Claude Code remains a confined implementation harness; it does not permanently pin LocalPilot to the original GPT-OSS weights. When the owner accepts `nestra:20b-p1` as the working lineage head, the same Nestra model powers all four reasoning roles. Older accepted models remain installed for explicit rollback, while `gpt-oss:20b` remains the frozen original baseline/control. Operational lineage acceptance is distinct from formal benchmark promotion.
 
 ## Windows install and configuration
 
@@ -22,7 +22,7 @@ name = "nestra:20b-p1"
 developer_model = "nestra:20b-p1"
 developer_model_fallbacks = []
 implementation_backend = "claude_code"
-implementation_model = "gpt-oss:20b"
+implementation_model = "nestra:20b-p1"
 implementation_context_tokens = 65536
 implementation_max_turns = 40
 implementation_timeout_seconds = 600
@@ -32,7 +32,7 @@ implementation_max_output_chars = 120000
 implementation_executable = "E:\\Tools\\ClaudeCode\\claude.exe"
 implementation_base_url = "http://localhost:11434"
 ```
-LocalPilot's `model.name` and `selfdev.developer_model` must match: the same operational model performs everyday answers and LocalPilot's planning/research/review. `selfdev.implementation_model` remains pinned to `gpt-oss:20b` for the current Claude Code contract. To roll back P1, set both operational fields back to `gpt-oss:20b`; do not delete either Ollama model.
+LocalPilot's `model.name`, `selfdev.developer_model`, and `selfdev.implementation_model` must match. Claude Code therefore implements with the same accepted model that planned and reviewed the work. To roll back P1, set all three model fields back to `gpt-oss:20b`; do not delete either Ollama model.
 
 
 LocalPilot independently reviews Claude Code's candidate after each implementation attempt. If review or static checks reject the candidate, it can send the concrete failure evidence back to Claude Code for another bounded repair pass. The default allowance is twelve repair passes, with configuration accepted up to twenty; whole-cycle wall-clock, resource, and foreground-preemption guards still bound the run.

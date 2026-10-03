@@ -129,9 +129,10 @@ class SystemSenseConfig:
 @dataclass(slots=True)
 class SelfDevConfig:
     enabled: bool = True
-    # Planning, research, and independent review stay on the configured
-    # everyday operational model. Claude Code implementation can remain pinned
-    # separately so a retained trained candidate can be deployed reversibly.
+    # Planning, research, independent review, and Claude Code implementation
+    # follow the accepted operational lineage head. Older accepted models remain
+    # installed as explicit rollback/control checkpoints rather than silently
+    # continuing to implement code behind a newer Nestra operator.
     developer_model: str = "gpt-oss:20b"
     developer_model_fallbacks: list[str] = field(default_factory=list)
     # Give repository/tool loops a deliberate context allocation instead of
@@ -280,6 +281,17 @@ def load_config(path: str | Path | None = None) -> Config:
         # fails validation below.
         if "developer_model" not in selfdev_raw:
             cfg.selfdev.developer_model = cfg.model.name
+        if "implementation_model" not in selfdev_raw:
+            cfg.selfdev.implementation_model = cfg.model.name
+        # P1 was first deployed under the earlier split-brain contract where
+        # Nestra handled operator/review work while Claude Code stayed explicitly
+        # pinned to GPT-OSS. Treat that exact legacy pairing as migration input
+        # so a trusted-main update cannot strand an existing P1 installation.
+        if (
+            cfg.model.name.startswith("nestra:")
+            and selfdev_raw.get("implementation_model") == "gpt-oss:20b"
+        ):
+            cfg.selfdev.implementation_model = cfg.model.name
         # Migrate the former shipped Qwen defaults to the current operational
         # model contract. Explicit owner model choices remain subject to the
         # validation below rather than being silently replaced.
@@ -316,14 +328,19 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg.selfdev.implementation_backend = str(cfg.selfdev.implementation_backend).strip().lower()
     if cfg.selfdev.implementation_backend not in {"claude_code", "local_tools"}:
         raise ValueError("selfdev.implementation_backend must be claude_code or local_tools")
-    if cfg.selfdev.implementation_model != "gpt-oss:20b":
-        raise ValueError("selfdev.implementation_model must remain gpt-oss:20b")
+    cfg.selfdev.implementation_model = str(cfg.selfdev.implementation_model).strip()
+    if not cfg.selfdev.implementation_model:
+        raise ValueError("selfdev.implementation_model must be a non-empty Ollama model name")
     cfg.selfdev.developer_model = str(cfg.selfdev.developer_model).strip()
     if not cfg.selfdev.developer_model:
         raise ValueError("selfdev.developer_model must be a non-empty Ollama model name")
     if cfg.selfdev.developer_model != cfg.model.name:
         raise ValueError(
             "selfdev.developer_model must match model.name so planning/research/review use the everyday operational model"
+        )
+    if cfg.selfdev.implementation_model != cfg.model.name:
+        raise ValueError(
+            "selfdev.implementation_model must match model.name so Claude Code implementation uses the accepted operational lineage"
         )
     if cfg.selfdev.developer_model_fallbacks:
         raise ValueError("selfdev.developer_model_fallbacks must remain empty")

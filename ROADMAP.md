@@ -38,29 +38,25 @@ The project should move systematically forward and preserve evidence of what has
 7. When a lineage must be abandoned, branch from the strongest earlier checkpoint rather than starting from ignorance.
 8. Never weaken a validated safety boundary merely to obtain progress on a benchmark or feature.
 
-The desired training pattern is:
+The desired training pattern is cumulative. The deployed GGUF is an inference artifact only; the trainable lineage is the accepted adapter state over the exact frozen base:
 
 ```text
-current LocalPilot
+frozen GPT-OSS base
       |
+      + accepted Package 1 adapter
       v
-training candidate A
+   Nestra P1
       |
-      +-- capability gains
-      +-- measured weakness
-              |
-              v
-      targeted remediation package
-              |
-              v
-training candidate B
+      + continue the accepted adapter with Package 2 data
+      v
+   Nestra P2
       |
-      +-- prior gains retained
-      +-- weakness recovered
-              |
-              v
-       promotion candidate
+      + targeted remediation / next curriculum package
+      v
+   Nestra P3 ...
 ```
+
+Each new package creates a fresh optimizer/scheduler while inheriting the previous accepted adapter weights. The previous accepted Nestra remains rollback; the original GPT-OSS model remains the frozen control. A completed training run becomes the next lineage head only after an explicit owner decision. Formal benchmark promotion remains a separate evidence claim.
 
 If candidate B reveals another weakness, that weakness becomes the next curriculum target. Evaluation is not merely a pass/fail gate; it becomes a curriculum generator.
 
@@ -84,13 +80,13 @@ Core capabilities:
 - compatibility preservation;
 - CI diagnosis and repair;
 - disciplined scope control;
-- delegation to Claude Code as the implementation specialist;
-- independent LocalPilot review of Claude's work; and
+- delegation to Claude Code as the confined implementation harness, powered by the current accepted Nestra lineage;
+- independent LocalPilot review of Claude Code's work using the same accepted core model plus deterministic repository/test evidence; and
 - durable candidate/PR repair loops.
 
 Desired operating model:
 
-> LocalPilot is the architect, investigator, product owner, evaluator, and reviewer. Claude Code is the confined programmer. The filesystem and Git state are authoritative; neither model is expected to remember source code conversationally.
+> Nestra is the architect, investigator, product owner, evaluator, reviewer, and underlying implementation model. Claude Code is the confined programming harness through which Nestra edits and tests candidates. The filesystem, Git state, tests and benchmark evidence are authoritative; model confidence is not.
 
 Exit evidence for this phase should include strong held-out software-engineering evaluation, reliable candidate creation/repair, repeated successful CI repair, and demonstrated preservation of safety/confinement boundaries.
 

@@ -67,10 +67,14 @@ def embedding_model(input_device="cuda:0", output_device="cuda:0"):
     def embedding(device):
         return types.SimpleNamespace(weight=types.SimpleNamespace(device=device)) if device is not None else None
 
+    lora_parameter = types.SimpleNamespace(requires_grad=True)
     return types.SimpleNamespace(
         save_pretrained=mock.Mock(),
         get_input_embeddings=mock.Mock(return_value=embedding(input_device)),
         get_output_embeddings=mock.Mock(return_value=embedding(output_device)),
+        named_parameters=lambda: iter([
+            ("base_model.model.layers.0.lora_A.default.weight", lora_parameter),
+        ]),
     )
 
 
@@ -113,13 +117,17 @@ def stub_training_runtime(model=None, *, before_train=None, config_factory=stub_
         save_pretrained=mock.Mock(),
         apply_chat_template=lambda messages, **kwargs: list(range(5 if kwargs["add_generation_prompt"] else 8)),
     )
+    parent_loader = mock.Mock(return_value=model)
     backend = types.SimpleNamespace(
         from_pretrained=mock.Mock(return_value=(model, tokenizer)),
         get_peft_model=mock.Mock(return_value=model),
+        for_training=mock.Mock(side_effect=lambda loaded, **kwargs: loaded),
+        parent_loader=parent_loader,
     )
     factory = mock.Mock(return_value=types.SimpleNamespace(train=mock.Mock(), before_train=before_train))
     modules = {
         "unsloth": types.SimpleNamespace(FastLanguageModel=backend),
+        "peft": types.SimpleNamespace(PeftModel=types.SimpleNamespace(from_pretrained=parent_loader)),
         "torch": types.SimpleNamespace(bfloat16=object(), cuda=mock.Mock()),
         "datasets": types.SimpleNamespace(Dataset=types.SimpleNamespace(from_list=lambda rows: rows)),
         "trl": types.SimpleNamespace(SFTConfig=config_factory, SFTTrainer=stub_sft_trainer(factory)),
@@ -206,8 +214,122 @@ class TrainAdapterTests(unittest.TestCase):
     def save_config(self) -> None:
         write_json(self.config_path, self.config)
 
+    def add_parent_lineage(self) -> Path:
+        self.config["lineage"] = {
+            "package": 2,
+            "parent_manifest": "training/lineage/package-1.json",
+        }
+        self.config["output"]["directory"] = "training/outputs/package-2"
+        parent_output = self.root / "training/outputs/package-1"
+        adapter_dir = parent_output / "adapter"
+        adapter_dir.mkdir(parents=True)
+        (adapter_dir / "adapter_model.safetensors").write_bytes(b"accepted-p1-adapter")
+        write_json(adapter_dir / "adapter_config.json", {
+            "peft_type": "LORA",
+            "r": self.config["adapter"]["rank"],
+            "lora_alpha": self.config["adapter"]["alpha"],
+            "lora_dropout": self.config["adapter"]["dropout"],
+            "bias": self.config["adapter"]["bias"],
+            "target_modules": self.config["adapter"]["target_modules"],
+        })
+        adapter_files = runner._artifact_inventory(
+            adapter_dir, ("adapter_model.safetensors", "adapter_config.json")
+        )
+        marker_path = parent_output / runner.TRAINING_COMPLETE_FILE
+        write_json(marker_path, {
+            "schema_version": 1,
+            "global_step": 11112,
+            "run_identity_sha256": "1" * 64,
+            "training_config_sha256": "2" * 64,
+            "adapter_files": adapter_files,
+        })
+        final_checkpoint = parent_output / "checkpoints/checkpoint-11112"
+        final_checkpoint.mkdir(parents=True)
+        checkpoint_marker = final_checkpoint / runner.CHECKPOINT_MARKER_FILE
+        write_json(checkpoint_marker, {
+            "schema_version": 1,
+            "global_step": 11112,
+            "run_identity_sha256": "1" * 64,
+            "files": {},
+        })
+        manifest_path = self.root / "training/lineage/package-1.json"
+        write_json(manifest_path, {
+            "schema_version": 1,
+            "artifact_type": "nestra_lineage_head",
+            "package": 1,
+            "accepted_as_lineage_head": True,
+            "benchmark_promoted": False,
+            "base": {
+                "identity": self.config["model"]["base_identity"],
+                "revision": self.config["model"]["base_revision"],
+            },
+            "training": {
+                "output_directory": "training/outputs/package-1",
+                "global_step": 11112,
+                "completion_marker_sha256": runner._sha256_file(marker_path),
+                "checkpoint_marker_sha256": runner._sha256_file(checkpoint_marker),
+                "adapter_files": adapter_files,
+            },
+            "deployment": {"model": "nestra:20b-p1", "digest": "3" * 64},
+        })
+        self.save_config()
+        return manifest_path
+
     def dry_run(self, **kwargs) -> dict:
         return runner.dry_run(self.config_path, importer=self.importer, **kwargs)
+
+    def test_cumulative_parent_is_hash_pinned_and_included_in_dry_run_evidence(self) -> None:
+        self.add_parent_lineage()
+        report = self.dry_run()
+        self.assertTrue(report["passed"], [item for item in report["checks"] if not item["passed"]])
+        parent = report["model_evidence"]["parent_adapter"]
+        self.assertEqual(parent["package"], 1)
+        self.assertEqual(parent["model"], "nestra:20b-p1")
+        self.assertEqual(len(parent["manifest_sha256"]), 64)
+        self.assertEqual(
+            Path(parent["adapter_path"]).resolve(),
+            (self.root / "training/outputs/package-1/adapter").resolve(),
+        )
+
+    def test_cumulative_parent_refuses_changed_weights_or_adapter_architecture(self) -> None:
+        self.add_parent_lineage()
+        parent_adapter = self.root / "training/outputs/package-1/adapter"
+        (parent_adapter / "adapter_model.safetensors").write_bytes(b"changed")
+        with self.assertRaisesRegex(RuntimeError, "differ from the accepted lineage"):
+            runner._parent_adapter_evidence(self.config)
+
+        self.addCleanup(lambda: None)
+
+    def test_cumulative_training_loads_parent_trainably_with_fresh_package_state(self) -> None:
+        self.add_parent_lineage()
+        with stub_training_runtime() as (factory, backend), redirect_stdout(io.StringIO()):
+            runner.execute_training(
+                self.config, str(self.snapshot), run_identity={"test": "package-2"}
+            )
+        backend.get_peft_model.assert_not_called()
+        backend.parent_loader.assert_called_once()
+        call = backend.parent_loader.call_args
+        self.assertTrue(call.kwargs["is_trainable"])
+        self.assertTrue(call.kwargs["local_files_only"])
+        self.assertEqual(
+            Path(call.args[1]).resolve(),
+            (self.root / "training/outputs/package-1/adapter").resolve(),
+        )
+        backend.for_training.assert_called_once_with(
+            call.args[0], use_gradient_checkpointing=self.config["resources"]["gradient_checkpointing"]
+        )
+        factory.return_value.train.assert_called_once_with()
+
+    def test_lineage_config_refuses_missing_parent_manifest(self) -> None:
+        self.config["lineage"] = {"package": 2, "parent_manifest": "training/lineage/missing.json"}
+        self.config["output"]["directory"] = "training/outputs/package-2"
+        self.save_config()
+        report = self.dry_run()
+        self.assertFalse(report["passed"])
+        model_check = next(
+            item for item in report["checks"] if item["name"] == "model_tokenizer_and_adapter"
+        )
+        self.assertIn("Parent lineage manifest is unreadable", str(model_check["detail"]))
 
     def test_tracked_config_targets_external_corpus_and_epoch_cadence(self) -> None:
         self.assertEqual(self.config["data"]["corpus_path"], "training/datasets/external_corpus_v1.jsonl")
@@ -863,6 +985,13 @@ class TrainAdapterTests(unittest.TestCase):
         ordinary_control = types.SimpleNamespace(should_save=False)
         callback.on_step_end(None, types.SimpleNamespace(global_step=6), ordinary_control)
         self.assertFalse(ordinary_control.should_save)
+        final_control = types.SimpleNamespace(should_save=False)
+        callback.on_step_end(
+            None,
+            types.SimpleNamespace(global_step=self.config["training"]["estimated_optimizer_steps"]),
+            final_control,
+        )
+        self.assertTrue(final_control.should_save)
         trainer.train.assert_called_once_with()
         self.assertEqual(trainer.saved_state_dict, {"lora_A.default.weight": b"test"})
         output = self.root / self.config["output"]["directory"]
@@ -900,6 +1029,23 @@ class TrainAdapterTests(unittest.TestCase):
         self.assertEqual(Path(trainer.train.call_args.kwargs["resume_from_checkpoint"]).resolve(), checkpoint.resolve())
         self.assertEqual((output / runner.RUN_IDENTITY_FILE).read_bytes(), saved_identity_bytes)
         self.assertEqual(trainer_factory.call_args.kwargs["args"]["save_steps"], 50)
+
+    def test_non_recovery_package_marks_natural_completion_at_target_step(self) -> None:
+        target = self.config["training"]["estimated_optimizer_steps"]
+
+        def finish_at_target(trainer):
+            trainer.state.global_step = target
+
+        with (
+            stub_training_runtime(before_train=finish_at_target),
+            mock.patch.object(runner, "_mark_training_complete") as complete,
+            redirect_stdout(io.StringIO()),
+        ):
+            runner.execute_training(
+                self.config, str(self.snapshot), run_identity={"test": "natural-completion"}
+            )
+        complete.assert_called_once()
+        self.assertEqual(complete.call_args.args[3], target)
 
     def test_execute_training_explicit_restart_uses_fresh_train_call(self) -> None:
         identity = {"test_run": "mocked-restart"}

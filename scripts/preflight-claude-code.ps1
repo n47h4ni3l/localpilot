@@ -6,8 +6,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if ($Model -ne "gpt-oss:20b") {
-    throw "LocalPilot's current Claude Code implementation-model contract requires gpt-oss:20b."
+if ([string]::IsNullOrWhiteSpace($Model)) {
+    throw "Claude Code implementation model must be a non-empty installed Ollama model name."
 }
 if ($RequiredContext -lt 65536) {
     throw "Claude Code with Ollama requires at least 65536 context tokens."
@@ -33,12 +33,7 @@ if ($missing.Count -gt 0) {
     throw "Claude Code is missing required CLI flags: $($missing -join ', ')"
 }
 
-Write-Verbose "Checking the configured Ollama model."
-$models = ollama list
-if (($models -join "`n") -notmatch [regex]::Escape($Model)) {
-    throw "Ollama model $Model is not installed. Run: ollama pull $Model"
-}
-
+$showBody = @{ model = $Model } | ConvertTo-Json -Compress
 $loadBody = @{
     model = $Model
     prompt = ""
@@ -50,8 +45,18 @@ Add-Type -AssemblyName System.Net.Http
 $handler = [System.Net.Http.HttpClientHandler]::new()
 $handler.UseProxy = $false
 $client = [System.Net.Http.HttpClient]::new($handler)
-$client.Timeout = [TimeSpan]::FromSeconds(300)
 try {
+    $client.Timeout = [TimeSpan]::FromSeconds(20)
+    Write-Verbose "Checking the configured Ollama model through the local HTTP API."
+    $showContent = [System.Net.Http.StringContent]::new(
+        $showBody, [System.Text.Encoding]::UTF8, "application/json"
+    )
+    $showResponse = $client.PostAsync(
+        "http://127.0.0.1:11434/api/show", $showContent
+    ).GetAwaiter().GetResult()
+    $showResponse.EnsureSuccessStatusCode() | Out-Null
+
+    $client.Timeout = [TimeSpan]::FromSeconds(300)
     Write-Verbose "Loading $Model with a $RequiredContext-token context for a live allocation check."
     $content = [System.Net.Http.StringContent]::new(
         $loadBody, [System.Text.Encoding]::UTF8, "application/json"
@@ -72,7 +77,7 @@ try {
 }
 $activeModel = $processes.models | Where-Object {
     $candidateName = if ($_.name) { $_.name } else { $_.model }
-    $candidateName.Split(':')[0] -eq $Model.Split(':')[0]
+    $candidateName -eq $Model
 } | Select-Object -First 1
 $allocated = if ($activeModel) { [int]$activeModel.context_length } else { 0 }
 if ($allocated -lt $RequiredContext) {

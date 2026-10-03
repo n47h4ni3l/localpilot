@@ -337,7 +337,13 @@ class ClaudeCodeBackend:
             creationflags=hidden_process_creation_flags(),
         )
 
-    def _ollama_json(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _ollama_json(
+        self,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         probe_base_url = self.base_url.replace("//localhost", "//127.0.0.1", 1)
         req = urllib_request.Request(
@@ -347,7 +353,12 @@ class ClaudeCodeBackend:
             method="GET" if data is None else "POST",
         )
         opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
-        with opener.open(req, timeout=min(300.0, max(120.0, self.timeout_seconds))) as response:
+        timeout = (
+            float(timeout_seconds)
+            if timeout_seconds is not None
+            else min(300.0, max(120.0, self.timeout_seconds))
+        )
+        with opener.open(req, timeout=timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
         if not isinstance(result, dict):
             raise ValueError(f"Ollama {path} returned a non-object response")
@@ -358,8 +369,8 @@ class ClaudeCodeBackend:
         parsed_url = urlparse(self.base_url)
         if parsed_url.scheme != "http" or parsed_url.hostname not in {"localhost", "127.0.0.1", "::1"}:
             messages.append("implementation_base_url must be a loopback HTTP Ollama endpoint")
-        if self.model != "gpt-oss:20b":
-            messages.append("implementation_model must remain gpt-oss:20b for the one-model design")
+        if not self.model:
+            messages.append("implementation_model must be a non-empty installed Ollama model")
         if self.context_tokens < 65536:
             messages.append(
                 f"configured implementation context is {self.context_tokens}; Claude Code with Ollama requires at least 65536"
@@ -388,46 +399,37 @@ class ClaudeCodeBackend:
                 messages.append(f"Claude Code preflight failed: {type(exc).__name__}: {_bounded(exc, 500)}")
 
         try:
-            model_probe = subprocess.run(
-                ["ollama", "show", self.model],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-                shell=False,
-                creationflags=hidden_process_creation_flags(),
+            # Use Ollama's bounded HTTP API rather than the CLI metadata command.
+            # The CLI can wedge even while the local server is healthy; /api/show
+            # establishes model availability without spawning another Ollama client.
+            self._ollama_json("/api/show", {"model": self.model}, timeout_seconds=20.0)
+            self._ollama_json(
+                "/api/generate",
+                {
+                    "model": self.model,
+                    "prompt": "",
+                    "stream": False,
+                    "keep_alive": "10m",
+                    "options": {"num_ctx": self.context_tokens, "num_predict": 1},
+                },
             )
-            if model_probe.returncode != 0:
-                messages.append(f"Ollama model is unavailable: {self.model}")
-            else:
-                self._ollama_json(
-                    "/api/generate",
-                    {
-                        "model": self.model,
-                        "prompt": "",
-                        "stream": False,
-                        "keep_alive": "10m",
-                        "options": {"num_ctx": self.context_tokens, "num_predict": 1},
-                    },
+            processes = self._ollama_json("/api/ps", timeout_seconds=20.0).get("models", [])
+            active = next(
+                (
+                    item for item in processes
+                    if isinstance(item, dict)
+                    and str(item.get("name") or item.get("model") or "") == self.model
+                ),
+                None,
+            )
+            allocated = int(active.get("context_length") or 0) if isinstance(active, dict) else 0
+            if allocated < self.context_tokens:
+                messages.append(
+                    f"Ollama allocated {allocated or 'unknown'} context tokens after loading {self.model}; "
+                    f"at least {self.context_tokens} are required"
                 )
-                processes = self._ollama_json("/api/ps").get("models", [])
-                active = next(
-                    (
-                        item for item in processes
-                        if isinstance(item, dict)
-                        and str(item.get("name") or item.get("model") or "").split(":", 1)[0]
-                        == self.model.split(":", 1)[0]
-                    ),
-                    None,
-                )
-                allocated = int(active.get("context_length") or 0) if isinstance(active, dict) else 0
-                if allocated < self.context_tokens:
-                    messages.append(
-                        f"Ollama allocated {allocated or 'unknown'} context tokens after loading {self.model}; "
-                        f"at least {self.context_tokens} are required"
-                    )
-                elif int(active.get("size_vram") or 0) >= int(active.get("size") or 0) * 0.95:
-                    _trim_windows_gpu_runner_working_sets()
+            elif int(active.get("size_vram") or 0) >= int(active.get("size") or 0) * 0.95:
+                _trim_windows_gpu_runner_working_sets()
         except (OSError, subprocess.SubprocessError) as exc:
             messages.append(f"Ollama preflight failed: {type(exc).__name__}: {_bounded(exc, 500)}")
         except (ValueError, json.JSONDecodeError) as exc:

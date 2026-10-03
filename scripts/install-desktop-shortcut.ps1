@@ -1,4 +1,7 @@
-param([Parameter(Mandatory = $true)][string]$PythonPath)
+param(
+    [Parameter(Mandatory = $true)][string]$PythonPath,
+    [switch]$RunAsAdministrator
+)
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = (Resolve-Path -LiteralPath $PythonPath).Path
@@ -19,5 +22,14 @@ try {
     $shortcut.IconLocation = (Join-Path $repoRoot 'localpilot-data/desktop/localpilot.ico') + ',0'
     $shortcut.Description = 'Open the LocalPilot desktop companion'
     $shortcut.Save()
+    if ($RunAsAdministrator) {
+        # Shell Link header LinkFlags: SLDF_RUNAS_USER requests UAC elevation.
+        $bytes = [IO.File]::ReadAllBytes($shortcutPath)
+        if ($bytes.Length -lt 76 -or [BitConverter]::ToUInt32($bytes, 0) -ne 76) {
+            throw "Unexpected Windows shortcut header."
+        }
+        $bytes[0x14] = $bytes[0x14] -bor 0x20
+        [IO.File]::WriteAllBytes($shortcutPath, $bytes)
+    }
     Write-Host "Desktop shortcut ready: $shortcutPath"
 } finally { Pop-Location }

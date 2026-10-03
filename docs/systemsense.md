@@ -21,6 +21,9 @@ To install the desktop launcher with an existing Python installation, run
 `scripts/install-desktop-shortcut.ps1 -PythonPath <path-to-python.exe>`.
 It uses the sibling `pythonw.exe`, the checkout's configuration, and the
 `localpilot.cli desktop` entrypoint, and creates an avatar icon on the desktop.
+Add `-RunAsAdministrator` to enable the shortcut's Windows elevation flag.
+Windows then requests UAC approval on launch. Existing desktop and background
+processes retain their original permissions until restarted.
 
 ```text
 Windows / hardware

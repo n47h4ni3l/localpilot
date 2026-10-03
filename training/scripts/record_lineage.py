@@ -133,11 +133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--execution-scope-violations", type=int, required=True)
     parser.add_argument("--note", required=True)
     parser.add_argument("--benchmark-promoted", action="store_true")
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=ROOT / "training/lineage/current.json",
-    )
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
 
     if args.package < 1:
@@ -149,7 +145,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if min(args.eval_hard_failures, args.execution_hard_failures, args.execution_scope_violations) < 0:
         raise RuntimeError("Failure and scope counts cannot be negative")
 
-    target = args.output.resolve()
+    target = (
+        args.output.resolve()
+        if args.output is not None
+        else (ROOT / f"training/lineage/package-{args.package}.json").resolve()
+    )
     lineage_root = (ROOT / "training/lineage").resolve()
     try:
         target.relative_to(lineage_root)

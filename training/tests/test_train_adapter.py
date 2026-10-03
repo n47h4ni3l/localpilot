@@ -974,6 +974,13 @@ class TrainAdapterTests(unittest.TestCase):
         ordinary_control = types.SimpleNamespace(should_save=False)
         callback.on_step_end(None, types.SimpleNamespace(global_step=6), ordinary_control)
         self.assertFalse(ordinary_control.should_save)
+        final_control = types.SimpleNamespace(should_save=False)
+        callback.on_step_end(
+            None,
+            types.SimpleNamespace(global_step=self.config["training"]["estimated_optimizer_steps"]),
+            final_control,
+        )
+        self.assertTrue(final_control.should_save)
         trainer.train.assert_called_once_with()
         self.assertEqual(trainer.saved_state_dict, {"lora_A.default.weight": b"test"})
         output = self.root / self.config["output"]["directory"]
@@ -1011,6 +1018,23 @@ class TrainAdapterTests(unittest.TestCase):
         self.assertEqual(Path(trainer.train.call_args.kwargs["resume_from_checkpoint"]).resolve(), checkpoint.resolve())
         self.assertEqual((output / runner.RUN_IDENTITY_FILE).read_bytes(), saved_identity_bytes)
         self.assertEqual(trainer_factory.call_args.kwargs["args"]["save_steps"], 50)
+
+    def test_non_recovery_package_marks_natural_completion_at_target_step(self) -> None:
+        target = self.config["training"]["estimated_optimizer_steps"]
+
+        def finish_at_target(trainer):
+            trainer.state.global_step = target
+
+        with (
+            stub_training_runtime(before_train=finish_at_target),
+            mock.patch.object(runner, "_mark_training_complete") as complete,
+            redirect_stdout(io.StringIO()),
+        ):
+            runner.execute_training(
+                self.config, str(self.snapshot), run_identity={"test": "natural-completion"}
+            )
+        complete.assert_called_once()
+        self.assertEqual(complete.call_args.args[3], target)
 
     def test_execute_training_explicit_restart_uses_fresh_train_call(self) -> None:
         identity = {"test_run": "mocked-restart"}

@@ -45,8 +45,8 @@ Add-Type -AssemblyName System.Net.Http
 $handler = [System.Net.Http.HttpClientHandler]::new()
 $handler.UseProxy = $false
 $client = [System.Net.Http.HttpClient]::new($handler)
-$client.Timeout = [TimeSpan]::FromSeconds(300)
 try {
+    $client.Timeout = [TimeSpan]::FromSeconds(20)
     Write-Verbose "Checking the configured Ollama model through the local HTTP API."
     $showContent = [System.Net.Http.StringContent]::new(
         $showBody, [System.Text.Encoding]::UTF8, "application/json"
@@ -56,6 +56,7 @@ try {
     ).GetAwaiter().GetResult()
     $showResponse.EnsureSuccessStatusCode() | Out-Null
 
+    $client.Timeout = [TimeSpan]::FromSeconds(300)
     Write-Verbose "Loading $Model with a $RequiredContext-token context for a live allocation check."
     $content = [System.Net.Http.StringContent]::new(
         $loadBody, [System.Text.Encoding]::UTF8, "application/json"

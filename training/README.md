@@ -306,16 +306,35 @@ The evaluator requires verified natural completion at 11112, an intact final che
 
 Package 1 completed naturally at step 11112 after the recovery lineage disabled in-process evaluation and the final resume forced a single TorchInductor/Unsloth compile worker. Earlier native compilation with a 16-worker asynchronous pool later wedged with the trainer alive but no GPU, file-I/O, or cache progress. For native-compile runs, `train_adapter.py` now sets `TORCHINDUCTOR_COMPILE_THREADS=1` and `UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=1` **before importing Unsloth** and records those effective values in dry-run/runtime evidence. This preserves native GPU compilation; it changes compiler-worker concurrency, not the optimizer batch or model topology.
 
+### Cumulative accepted adapter lineage
+
+Package 1 is the root Nestra adapter over the exact frozen GPT-OSS base. Package 2 and later must not create a fresh unrelated LoRA when the owner has accepted a prior Nestra as the working lineage head. They load the exact same pinned base snapshot, verify the accepted lineage manifest and final adapter hashes, then load that adapter with PEFT `is_trainable=True` before creating a fresh package Trainer. This carries learned adapter weights forward while deliberately creating a new optimizer/scheduler for the new curriculum package.
+
+The deployed GGUF/Ollama model is never a training source. Quantized deployment outputs are disposable inference artifacts relative to the retained base + adapter lineage. In-package `--resume` remains distinct: it restores that package's own optimizer/scheduler/RNG state from a verified checkpoint.
+
+For a Package 2 config, add a lineage section such as:
+
+```json
+"lineage": {
+  "package": 2,
+  "parent_manifest": "training/lineage/package-1.json"
+}
+```
+
+The dry-run refuses an absent or altered manifest, a parent that was not explicitly accepted by the owner, a skipped package number, base-identity mismatch, changed completion marker, changed adapter files, or incompatible LoRA rank/alpha/dropout/bias/target modules. The same adapter hashes are verified again immediately before model loading.
+
+After accepting a completed candidate as the working lineage head, use `training/scripts/record_lineage.py` to produce an immutable package manifest from the natural-completion marker and final adapter hashes. Owner acceptance and formal benchmark promotion are separate fields; mixed evaluation evidence must remain recorded rather than being rewritten to justify continued training.
+
 The standard for new long-running training packages is:
 
-- start from the strongest retained checkpoint/lineage selected by the package plan;
+- start from the strongest owner-accepted adapter lineage selected by the package plan; Package 2+ must declare and verify its parent lineage manifest rather than silently starting a fresh LoRA;
 - use native compile with the enforced single compile worker, BF16, verified `cuda:0` embedding placement, and `torch_empty_cache_steps=None`;
 - create a fresh package config, output directory, dry-run report, runtime telemetry and run identity rather than editing or relabeling a historical Package 1 config;
 - keep in-process training evaluation disabled for the long run; evaluation and validation happen only after natural completion in a fresh process, so evaluation failure cannot invalidate a completed checkpoint;
 - save complete adapter/optimizer/scheduler/RNG/trainer state with a completion marker on a **1500 optimizer-step default cadence** for future packages. A package may choose a shorter final interval or a tighter cadence when its total schedule is shorter, but changing the cadence is part of the package specification and requires a new matching dry-run;
 - retain at least the latest complete recovery points plus the final checkpoint, and never treat a partially written checkpoint as resumable;
 - require the guarded Windows launcher, sleep prevention, memory telemetry, model/data/environment digest checks and explicit approval for the exact dry-run specification; and
-- after training, export to a separately named Ollama model, preserve the previous operational model for rollback, run unchanged cross-capability benchmarks, and treat promotion as an evidence decision separate from successful training/export.
+- after training, merge the cumulative adapter into the exact frozen GPT-OSS base, export to a separately named `nestra:20b-pN` Ollama model, preserve the previous accepted Nestra for rollback and the original GPT-OSS as frozen control, run unchanged cross-capability benchmarks, and treat owner lineage acceptance and formal benchmark promotion as separate evidence decisions.
 
 The 3704-step checkpoint cadence in the Package 1 endurance/recovery configs is historical evidence and must not be rewritten. The 1500-step rule applies when authoring the next package config.
 

@@ -46,6 +46,16 @@ function Resolve-WorkerRunLevel {
     throw "Cannot preserve the existing worker's unknown run level '$ExistingRunLevel'. Pass -RunAsAdministrator explicitly."
 }
 
+function Test-WorkerInterpreter {
+    param($Process, [string]$SelectedGui, [string]$HostGui)
+    if ($Process.ExecutablePath -ieq $SelectedGui) { return $true }
+    if ($Process.ExecutablePath -ine $HostGui) { return $false }
+    # Windows venv redirectors retain a launcher while the worker runs in
+    # the base Python image. Require the exact selected launcher as parent.
+    $launcher = Get-CimInstance Win32_Process -Filter "ProcessId = $($Process.ParentProcessId)" -ErrorAction SilentlyContinue
+    return [bool]($launcher -and $launcher.ExecutablePath -ieq $SelectedGui)
+}
+
 function Restore-PreviousWorkerTask {
     param([string]$Name, [string]$Xml, [bool]$Enabled, [bool]$Running)
 
@@ -69,6 +79,11 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $interpreters = Resolve-WorkerPython -Executable $PythonExecutable -Root $repoRoot
 $pythonEntryPoint = $interpreters.Console
 $pythonwEntryPoint = $interpreters.Gui
+$hostPythonw = (& $pythonEntryPoint -c "from pathlib import Path; import sys; print(Path(getattr(sys, '_base_executable', sys.executable)).with_name('pythonw.exe'))" | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $hostPythonw -PathType Leaf)) {
+    throw "Unable to identify the selected Python environment's Windows host executable."
+}
+$hostPythonw = (Resolve-Path -LiteralPath $hostPythonw).Path
 $configPath = if ($ConfigPath) { [System.IO.Path]::GetFullPath($ConfigPath) } else { Join-Path $repoRoot "localpilot.toml" }
 $git = Get-Command git -ErrorAction Stop
 
@@ -193,7 +208,7 @@ try {
         if (
             $candidate -and
             $candidate.Name -eq "pythonw.exe" -and
-            $candidate.ExecutablePath -ieq $pythonwEntryPoint -and
+            (Test-WorkerInterpreter -Process $candidate -SelectedGui $pythonwEntryPoint -HostGui $hostPythonw) -and
             $candidate.CommandLine -like "*localpilot.background_worker*" -and
             $candidate.CommandLine -like "*$repoRoot*" -and
             $candidate.CommandLine -like "*$configPath*" -and

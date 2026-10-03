@@ -129,8 +129,8 @@ def test_preflight_loads_model_at_target_context_and_verifies_allocation(
         lambda: trims.append(True) or 1,
     )
 
-    def ollama_json(path, payload=None):
-        calls.append((path, payload))
+    def ollama_json(path, payload=None, **kwargs):
+        calls.append((path, payload, kwargs.get("timeout_seconds")))
         if path == "/api/ps":
             return {
                 "models": [{
@@ -143,10 +143,11 @@ def test_preflight_loads_model_at_target_context_and_verifies_allocation(
     backend._ollama_json = ollama_json
     result = backend.preflight()
     assert result.healthy is healthy
-    assert calls[0] == ("/api/show", {"model": "gpt-oss:20b"})
+    assert calls[0] == ("/api/show", {"model": "gpt-oss:20b"}, 20.0)
     assert calls[1][0] == "/api/generate"
     assert calls[1][1]["options"]["num_ctx"] == 65536
-    assert calls[2][0] == "/api/ps"
+    assert calls[1][2] is None
+    assert calls[2] == ("/api/ps", None, 20.0)
     assert trims == ([True] if healthy else [])
     if not healthy:
         assert "allocated 32768" in "; ".join(result.messages)
@@ -160,7 +161,7 @@ def test_preflight_accepts_nestra_as_implementation_model(monkeypatch):
         args, 0, stdout="2.1.263" if args == ("--version",) else flags, stderr=""
     )
 
-    def ollama_json(path, payload=None):
+    def ollama_json(path, payload=None, **kwargs):
         if path == "/api/ps":
             return {
                 "models": [{

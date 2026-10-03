@@ -283,6 +283,15 @@ def load_config(path: str | Path | None = None) -> Config:
             cfg.selfdev.developer_model = cfg.model.name
         if "implementation_model" not in selfdev_raw:
             cfg.selfdev.implementation_model = cfg.model.name
+        # P1 was first deployed under the earlier split-brain contract where
+        # Nestra handled operator/review work while Claude Code stayed explicitly
+        # pinned to GPT-OSS. Treat that exact legacy pairing as migration input
+        # so a trusted-main update cannot strand an existing P1 installation.
+        if (
+            cfg.model.name.startswith("nestra:")
+            and selfdev_raw.get("implementation_model") == "gpt-oss:20b"
+        ):
+            cfg.selfdev.implementation_model = cfg.model.name
         # Migrate the former shipped Qwen defaults to the current operational
         # model contract. Explicit owner model choices remain subject to the
         # validation below rather than being silently replaced.

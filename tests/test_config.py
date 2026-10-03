@@ -39,13 +39,13 @@ def test_default_models_preserve_baseline_operator_review_and_implementation():
     assert cfg.selfdev.opportunity_similarity_threshold == 0.82
 
 
-def test_toml_custom_everyday_model_also_becomes_review_model_by_default(tmp_path: Path):
+def test_toml_custom_everyday_model_becomes_review_and_implementation_model_by_default(tmp_path: Path):
     path = tmp_path / "localpilot.toml"
     path.write_text('[model]\nname = "nestra:20b-p1"\n', encoding="utf-8")
     cfg = load_config(path)
     assert cfg.model.name == "nestra:20b-p1"
     assert cfg.selfdev.developer_model == "nestra:20b-p1"
-    assert cfg.selfdev.implementation_model == "gpt-oss:20b"
+    assert cfg.selfdev.implementation_model == "nestra:20b-p1"
 
 
 def test_nestra_alias_uses_explicit_gpt_oss_thinking_levels(tmp_path: Path):
@@ -55,7 +55,23 @@ def test_nestra_alias_uses_explicit_gpt_oss_thinking_levels(tmp_path: Path):
     assert cfg.model.think == "high"
 
 
-def test_toml_allows_operational_candidate_for_everyday_and_review(tmp_path: Path):
+def test_toml_allows_operational_candidate_for_everyday_review_and_implementation(tmp_path: Path):
+    path = tmp_path / "localpilot.toml"
+    path.write_text(
+        '[model]\nname = "nestra:20b-p1"\n'
+        '[selfdev]\ndeveloper_model = "nestra:20b-p1"\n'
+        'implementation_model = "nestra:20b-p1"\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    assert cfg.model.name == "nestra:20b-p1"
+    assert cfg.selfdev.developer_model == "nestra:20b-p1"
+    assert cfg.selfdev.implementation_model == "nestra:20b-p1"
+
+
+
+
+def test_toml_rejects_implementation_model_that_differs_from_everyday_model(tmp_path: Path):
     path = tmp_path / "localpilot.toml"
     path.write_text(
         '[model]\nname = "nestra:20b-p1"\n'
@@ -63,10 +79,8 @@ def test_toml_allows_operational_candidate_for_everyday_and_review(tmp_path: Pat
         'implementation_model = "gpt-oss:20b"\n',
         encoding="utf-8",
     )
-    cfg = load_config(path)
-    assert cfg.model.name == "nestra:20b-p1"
-    assert cfg.selfdev.developer_model == "nestra:20b-p1"
-    assert cfg.selfdev.implementation_model == "gpt-oss:20b"
+    with pytest.raises(ValueError, match="implementation_model must match model.name"):
+        load_config(path)
 
 
 def test_toml_rejects_review_model_that_differs_from_everyday_model(tmp_path: Path):

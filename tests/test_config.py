@@ -71,12 +71,24 @@ def test_toml_allows_operational_candidate_for_everyday_review_and_implementatio
 
 
 
-def test_toml_rejects_implementation_model_that_differs_from_everyday_model(tmp_path: Path):
+def test_legacy_split_p1_config_migrates_implementation_to_nestra(tmp_path: Path):
     path = tmp_path / "localpilot.toml"
     path.write_text(
         '[model]\nname = "nestra:20b-p1"\n'
         '[selfdev]\ndeveloper_model = "nestra:20b-p1"\n'
         'implementation_model = "gpt-oss:20b"\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    assert cfg.selfdev.implementation_model == "nestra:20b-p1"
+
+
+def test_toml_rejects_other_implementation_model_that_differs_from_everyday_model(tmp_path: Path):
+    path = tmp_path / "localpilot.toml"
+    path.write_text(
+        '[model]\nname = "nestra:20b-p1"\n'
+        '[selfdev]\ndeveloper_model = "nestra:20b-p1"\n'
+        'implementation_model = "qwen2.5:14b"\n',
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="implementation_model must match model.name"):

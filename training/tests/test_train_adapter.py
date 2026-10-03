@@ -243,6 +243,15 @@ class TrainAdapterTests(unittest.TestCase):
             "training_config_sha256": "2" * 64,
             "adapter_files": adapter_files,
         })
+        final_checkpoint = parent_output / "checkpoints/checkpoint-11112"
+        final_checkpoint.mkdir(parents=True)
+        checkpoint_marker = final_checkpoint / runner.CHECKPOINT_MARKER_FILE
+        write_json(checkpoint_marker, {
+            "schema_version": 1,
+            "global_step": 11112,
+            "run_identity_sha256": "1" * 64,
+            "files": {},
+        })
         manifest_path = self.root / "training/lineage/package-1.json"
         write_json(manifest_path, {
             "schema_version": 1,
@@ -256,7 +265,9 @@ class TrainAdapterTests(unittest.TestCase):
             },
             "training": {
                 "output_directory": "training/outputs/package-1",
+                "global_step": 11112,
                 "completion_marker_sha256": runner._sha256_file(marker_path),
+                "checkpoint_marker_sha256": runner._sha256_file(checkpoint_marker),
                 "adapter_files": adapter_files,
             },
             "deployment": {"model": "nestra:20b-p1", "digest": "3" * 64},

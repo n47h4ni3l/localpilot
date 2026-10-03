@@ -719,6 +719,105 @@ def _artifact_inventory(directory: Path, names: Sequence[str]) -> dict[str, Any]
     return result
 
 
+def _parent_adapter_evidence(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Verify and resolve the accepted adapter lineage used to initialize a new package."""
+    lineage = config.get("lineage")
+    if lineage is None:
+        return None
+    manifest_path = _under(ROOT / lineage["parent_manifest"], ROOT / "training/lineage")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Parent lineage manifest is unreadable") from exc
+    if manifest.get("schema_version") != 1 or manifest.get("artifact_type") != "nestra_lineage_head":
+        raise RuntimeError("Parent lineage manifest has the wrong schema or artifact type")
+    if manifest.get("accepted_as_lineage_head") is not True:
+        raise RuntimeError("Parent lineage was not explicitly accepted as the working head")
+    if manifest.get("package") != lineage["package"] - 1:
+        raise RuntimeError("Parent lineage package does not immediately precede this package")
+
+    model = config["model"]
+    base = manifest.get("base")
+    if not isinstance(base, dict) or (
+        base.get("identity") != model["base_identity"]
+        or base.get("revision") != model["base_revision"]
+    ):
+        raise RuntimeError("Parent lineage does not use the exact configured frozen base")
+
+    training = manifest.get("training")
+    deployment = manifest.get("deployment")
+    if not isinstance(training, dict) or not isinstance(deployment, dict):
+        raise RuntimeError("Parent lineage is missing training or deployment evidence")
+    parent_model = deployment.get("model")
+    if not isinstance(parent_model, str) or not parent_model.strip():
+        raise RuntimeError("Parent lineage is missing its deployed model identity")
+
+    output_value = training.get("output_directory")
+    if not isinstance(output_value, str) or not output_value:
+        raise RuntimeError("Parent lineage is missing its training output directory")
+    parent_output = _under(ROOT / output_value, TRAINING_OUTPUT_ROOT)
+    parent_adapter = _under(parent_output / "adapter", parent_output)
+
+    expected_files = training.get("adapter_files")
+    if not isinstance(expected_files, dict):
+        raise RuntimeError("Parent lineage is missing adapter file hashes")
+    actual_files = _artifact_inventory(
+        parent_adapter, ("adapter_model.safetensors", "adapter_config.json")
+    )
+    if actual_files != expected_files:
+        raise RuntimeError("Parent adapter files differ from the accepted lineage manifest")
+
+    marker_path = _under(parent_output / TRAINING_COMPLETE_FILE, parent_output)
+    marker_sha = training.get("completion_marker_sha256")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(marker_sha or "")):
+        raise RuntimeError("Parent lineage is missing the completion-marker SHA256")
+    if _sha256_file(marker_path) != marker_sha:
+        raise RuntimeError("Parent training completion marker changed")
+    try:
+        completion = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Parent training completion marker is invalid") from exc
+    if completion.get("adapter_files") != actual_files:
+        raise RuntimeError("Parent completion marker does not match the accepted adapter")
+
+    try:
+        parent_config = json.loads(
+            (parent_adapter / "adapter_config.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Parent adapter_config.json is invalid") from exc
+    adapter = config["adapter"]
+    if (
+        str(parent_config.get("peft_type", "")).lower() != "lora"
+        or parent_config.get("r") != adapter["rank"]
+        or parent_config.get("lora_alpha") != adapter["alpha"]
+        or float(parent_config.get("lora_dropout", -1)) != float(adapter["dropout"])
+        or parent_config.get("bias") != adapter["bias"]
+        or set(parent_config.get("target_modules") or []) != set(adapter["target_modules"])
+    ):
+        raise RuntimeError("Parent adapter architecture does not match the new package")
+
+    return {
+        "manifest": str(manifest_path),
+        "manifest_sha256": _sha256_file(manifest_path),
+        "package": manifest["package"],
+        "model": parent_model,
+        "adapter_path": str(parent_adapter),
+        "adapter_files": actual_files,
+        "completion_marker_sha256": marker_sha,
+    }
+
+
+def _trainable_lora_names(model: Any) -> list[str]:
+    names = [
+        name for name, parameter in model.named_parameters()
+        if bool(getattr(parameter, "requires_grad", False))
+    ]
+    if not names or any("lora_" not in name for name in names):
+        raise RuntimeError("Cumulative parent must expose only nonempty trainable LoRA parameters")
+    return names
+
+
 def _mark_training_complete(output: Path, config: dict[str, Any], identity: dict[str, Any], step: int) -> None:
     target = config["training"]["estimated_optimizer_steps"]
     if step != target:
@@ -785,6 +884,17 @@ def _validate_config(config: dict[str, Any]) -> None:
             raise RuntimeError(f"Model {key} must be an immutable 40-character commit")
     if adapter.get("type") != "qlora" or set(adapter.get("target_modules", [])) != TARGET_MODULES:
         raise RuntimeError("Adapter must use the documented gpt-oss QLoRA target modules")
+    lineage = config.get("lineage")
+    if lineage is not None:
+        if not isinstance(lineage, dict):
+            raise RuntimeError("lineage must be an object")
+        package = lineage.get("package")
+        if type(package) is not int or package < 2:
+            raise RuntimeError("A cumulative lineage package must be an integer >= 2")
+        parent_manifest = lineage.get("parent_manifest")
+        if not isinstance(parent_manifest, str) or not parent_manifest:
+            raise RuntimeError("Cumulative training requires lineage.parent_manifest")
+        _under(ROOT / parent_manifest, ROOT / "training/lineage")
 
     def number(section: dict[str, Any], name: str, minimum: float, maximum: float, *, integer: bool = False) -> None:
         value = section.get(name)
@@ -916,11 +1026,13 @@ def _model_preflight(config: dict[str, Any], rows: list[dict[str, Any]], modules
         task_type="CAUSAL_LM", r=adapter["rank"], lora_alpha=adapter["alpha"],
         lora_dropout=adapter["dropout"], bias=adapter["bias"], target_modules=adapter["target_modules"],
     )
+    parent = _parent_adapter_evidence(config)
     return {
         "model_id": model["training_model_id"], "revision": model["revision"],
         "snapshot_path": str(snapshot), "weight_inventory": inventory,
         "token_counts": token_counts,
         "adapter_config_validated": True,
+        "parent_adapter": parent,
     }
 
 
@@ -1270,11 +1382,27 @@ def execute_training(
         full_finetuning=False, offload_embedding=resources["offload_embeddings"],
         local_files_only=True, trust_remote_code=False,
     )
-    model = FastLanguageModel.get_peft_model(
-        model, r=adapter["rank"], lora_alpha=adapter["alpha"], lora_dropout=adapter["dropout"],
-        bias=adapter["bias"], target_modules=adapter["target_modules"],
-        use_gradient_checkpointing=resources["gradient_checkpointing"], random_state=training["seed"],
-    )
+    parent = _parent_adapter_evidence(config)
+    if parent is None:
+        model = FastLanguageModel.get_peft_model(
+            model, r=adapter["rank"], lora_alpha=adapter["alpha"], lora_dropout=adapter["dropout"],
+            bias=adapter["bias"], target_modules=adapter["target_modules"],
+            use_gradient_checkpointing=resources["gradient_checkpointing"], random_state=training["seed"],
+        )
+    else:
+        # A new curriculum package continues the accepted adapter weights but
+        # deliberately starts with a fresh Trainer/optimizer/scheduler. In-run
+        # --resume remains a separate mechanism and restores package-local state.
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(
+            model, parent["adapter_path"], is_trainable=True, local_files_only=True,
+        )
+        prepared = FastLanguageModel.for_training(
+            model, use_gradient_checkpointing=resources["gradient_checkpointing"],
+        )
+        if prepared is not None:
+            model = prepared
+        _trainable_lora_names(model)
     rows = load_jsonl(ROOT / data["corpus_path"])
 
     def prepared(split: str) -> Any:

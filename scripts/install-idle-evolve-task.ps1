@@ -79,11 +79,16 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $interpreters = Resolve-WorkerPython -Executable $PythonExecutable -Root $repoRoot
 $pythonEntryPoint = $interpreters.Console
 $pythonwEntryPoint = $interpreters.Gui
-$hostPythonw = (& $pythonEntryPoint -c "from pathlib import Path; import sys; print(Path(getattr(sys, '_base_executable', sys.executable)).with_name('pythonw.exe'))" | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $hostPythonw -PathType Leaf)) {
+$runtimeIdentity = (& $pythonEntryPoint -c "from pathlib import Path; import json,sys; print(json.dumps({'launcher':str(Path(sys.argv[1]).resolve()), 'host':str(Path(getattr(sys, '_base_executable', sys.executable)).resolve().with_name('pythonw.exe'))}))" $pythonwEntryPoint | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $runtimeIdentity) {
     throw "Unable to identify the selected Python environment's Windows host executable."
 }
-$hostPythonw = (Resolve-Path -LiteralPath $hostPythonw).Path
+$runtimeIdentity = $runtimeIdentity | ConvertFrom-Json
+$verifiedPythonw = [string]$runtimeIdentity.launcher
+$hostPythonw = [string]$runtimeIdentity.host
+if (-not (Test-Path -LiteralPath $verifiedPythonw -PathType Leaf) -or -not (Test-Path -LiteralPath $hostPythonw -PathType Leaf)) {
+    throw "The selected Python environment's Windows launcher or host executable is missing."
+}
 $configPath = if ($ConfigPath) { [System.IO.Path]::GetFullPath($ConfigPath) } else { Join-Path $repoRoot "localpilot.toml" }
 $git = Get-Command git -ErrorAction Stop
 
@@ -208,7 +213,7 @@ try {
         if (
             $candidate -and
             $candidate.Name -eq "pythonw.exe" -and
-            (Test-WorkerInterpreter -Process $candidate -SelectedGui $pythonwEntryPoint -HostGui $hostPythonw) -and
+            (Test-WorkerInterpreter -Process $candidate -SelectedGui $verifiedPythonw -HostGui $hostPythonw) -and
             $candidate.CommandLine -like "*localpilot.background_worker*" -and
             $candidate.CommandLine -like "*$repoRoot*" -and
             $candidate.CommandLine -like "*$configPath*" -and

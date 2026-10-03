@@ -140,7 +140,7 @@ def test_worker_identity_accepts_actual_windows_venv_redirector(tmp_path):
         identity = json.loads(pid_file.read_text())
         result = _run_functions(f"""
 $candidate = Get-CimInstance Win32_Process -Filter 'ProcessId = {identity['pid']}'
-@{{ accepted = Test-WorkerInterpreter -Process $candidate -SelectedGui {_quote_ps(pythonw)} -HostGui {_quote_ps(identity['host'])}; image=$candidate.ExecutablePath }} | ConvertTo-Json -Compress
+@{{ accepted = Test-WorkerInterpreter -Process $candidate -SelectedGui {_quote_ps(pythonw.resolve())} -HostGui {_quote_ps(Path(identity['host']).resolve())}; image=$candidate.ExecutablePath }} | ConvertTo-Json -Compress
 """)
         assert result["accepted"] is True
         assert Path(result["image"]).resolve() == Path(identity["host"]).resolve()

@@ -122,10 +122,6 @@ def test_preflight_loads_model_at_target_context_and_verifies_allocation(
     backend._run_probe = lambda *args: subprocess.CompletedProcess(
         args, 0, stdout="2.1.263" if args == ("--version",) else flags, stderr=""
     )
-    monkeypatch.setattr(
-        "localpilot.implementation_backend.subprocess.run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="installed", stderr=""),
-    )
     calls: list[tuple[str, dict | None]] = []
     trims: list[bool] = []
     monkeypatch.setattr(
@@ -147,13 +143,41 @@ def test_preflight_loads_model_at_target_context_and_verifies_allocation(
     backend._ollama_json = ollama_json
     result = backend.preflight()
     assert result.healthy is healthy
-    assert calls[0][0] == "/api/generate"
-    assert calls[0][1]["options"]["num_ctx"] == 65536
-    assert calls[1][0] == "/api/ps"
+    assert calls[0] == ("/api/show", {"model": "gpt-oss:20b"})
+    assert calls[1][0] == "/api/generate"
+    assert calls[1][1]["options"]["num_ctx"] == 65536
+    assert calls[2][0] == "/api/ps"
     assert trims == ([True] if healthy else [])
     if not healthy:
         assert "allocated 32768" in "; ".join(result.messages)
 
+
+
+def test_preflight_accepts_nestra_as_implementation_model(monkeypatch):
+    backend = ClaudeCodeBackend(executable_argv=(sys.executable,), model="nestra:20b-p1")
+    flags = " ".join(backend._REQUIRED_FLAGS)
+    backend._run_probe = lambda *args: subprocess.CompletedProcess(
+        args, 0, stdout="2.1.263" if args == ("--version",) else flags, stderr=""
+    )
+
+    def ollama_json(path, payload=None):
+        if path == "/api/ps":
+            return {
+                "models": [{
+                    "name": "nestra:20b-p1", "context_length": 65536,
+                    "size": 100, "size_vram": 100,
+                }]
+            }
+        return {"done": True}
+
+    backend._ollama_json = ollama_json
+    monkeypatch.setattr(
+        "localpilot.implementation_backend._trim_windows_gpu_runner_working_sets",
+        lambda: 1,
+    )
+    result = backend.preflight()
+    assert result.healthy is True
+    assert result.model == "nestra:20b-p1"
 
 def test_real_process_wrapper_edits_only_candidate_and_returns_structured_evidence(tmp_path: Path):
     root = _repo(tmp_path)

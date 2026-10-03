@@ -1,6 +1,7 @@
 param(
     [string]$InstallDirectory = "",
     [switch]$SkipLaunch,
+    [switch]$SkipBackgroundWorker,
     [string]$ShortcutPath = ""
 )
 
@@ -95,6 +96,15 @@ raise SystemExit(0 if result.healthy else 1)
     if ($LASTEXITCODE -ne 0) {
         throw 'The configured implementation backend is not ready. See the checks above and installation log, then retry setup.'
     }
+}
+
+function Install-ConfiguredBackgroundWorker {
+    param([string]$Root, [string]$Python, [string]$ConfigPath)
+    $enabled = & $Python -c "import sys; from localpilot.config import load_config; print('yes' if load_config(sys.argv[1]).selfdev.enabled else 'no')" $ConfigPath
+    if ($LASTEXITCODE -ne 0) { throw 'Could not read the background worker configuration.' }
+    if (($enabled | Out-String).Trim() -ne 'yes') { return }
+    & (Join-Path $Root 'scripts\install-idle-evolve-task.ps1') `
+        -PythonExecutable $Python -ConfigPath $ConfigPath -RunAsAdministrator
 }
 
 function Assert-ReleasePayload {
@@ -219,6 +229,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     $arguments = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $PSCommandPath))
     if ($InstallDirectory) { $arguments += @('-InstallDirectory', ('"{0}"' -f $InstallDirectory)) }
     if ($SkipLaunch) { $arguments += '-SkipLaunch' }
+    if ($SkipBackgroundWorker) { $arguments += '-SkipBackgroundWorker' }
     if ($ShortcutPath) { $arguments += @('-ShortcutPath', ('"{0}"' -f $ShortcutPath)) }
     try {
         $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -Wait -PassThru -WindowStyle Normal
@@ -275,6 +286,9 @@ try {
         } finally { $ErrorActionPreference = $savedErrorPreference }
         if (-not $githubAuthenticated) {
             Write-Host 'Desktop chat is ready. To enable GitHub repair PRs, sign in once with: gh auth login --web'
+        }
+        if (-not $SkipBackgroundWorker -and -not $script:restartRequired) {
+            Install-ConfiguredBackgroundWorker -Root $root -Python $python -ConfigPath (Join-Path $root 'localpilot.toml')
         }
         if (-not $SkipLaunch -and -not $script:restartRequired) {
             $shortcut = if ($ShortcutPath) { [IO.Path]::GetFullPath($ShortcutPath) } else { Join-Path ([Environment]::GetFolderPath('Desktop')) 'LocalPilot.lnk' }

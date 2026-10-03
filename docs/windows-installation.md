@@ -25,6 +25,11 @@ already contains the SystemSense hardware helper, so a release installation
 does not require the .NET SDK. A Git source checkout builds the helper if it
 is missing and installs the .NET SDK when needed.
 
+When self-development is enabled, setup registers the hidden background worker
+using the installed LocalPilot environment and administrator access. It
+verifies that the worker starts, restoring the previous task if replacement
+fails. Foreground, idle, resource and human-merge gates still apply.
+
 Existing `localpilot.toml`, model selection, local data, Git history and Python
 environment are preserved on reinstallation. An existing installation keeps
 its checkout rather than having bundle files copied over it; use the desktop
@@ -47,3 +52,5 @@ install in place. This leaves the checkout's configuration and data intact.
 Advanced installations can call `scripts/install-localpilot.ps1` with
 `-InstallDirectory <directory>` and `-SkipLaunch`. `-ShortcutPath <path>`
 creates the shortcut at an alternative path for a separate installation.
+Use `-SkipBackgroundWorker` when testing a separate installation without
+replacing the PC's existing LocalPilot background task.

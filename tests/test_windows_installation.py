@@ -221,3 +221,38 @@ def test_claude_setup_preserves_custom_executable_and_installs_only_missing_defa
         observation = json.loads(result.stdout)
         assert Path(observation["selected"]) == executable
         assert observation["installed"] is (scenario == "missing_default")
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_setup_worker_uses_selected_environment_and_respects_disabled_selfdev(tmp_path: Path, enabled: bool):
+    installed = tmp_path / "installed"
+    scripts = installed / "scripts"
+    scripts.mkdir(parents=True)
+    marker = tmp_path / "worker-settings.json"
+    task_installer = scripts / "install-idle-evolve-task.ps1"
+    task_installer.write_text(
+        "param($PythonExecutable, $ConfigPath, [switch]$RunAsAdministrator)\n"
+        "@{python=$PythonExecutable; config=$ConfigPath; elevated=[bool]$RunAsAdministrator} "
+        "| ConvertTo-Json | Set-Content -LiteralPath $env:LOCALPILOT_WORKER_SETUP_TEST_MARKER\n",
+        encoding="utf-8",
+    )
+    python = tmp_path / "selected-python.ps1"
+    python.write_text("$global:LASTEXITCODE=0\n'" + ("yes" if enabled else "no") + "'\n", encoding="utf-8")
+    config = installed / "owner-config.toml"
+    wrapper = _installation_functions(tmp_path)
+    with wrapper.open("a", encoding="utf-8") as file:
+        file.write("if ($Operation -eq 'worker') { Install-ConfiguredBackgroundWorker -Root $Destination -Python $Source -ConfigPath $Remote }\n")
+    environment = os.environ.copy()
+    environment["LOCALPILOT_WORKER_SETUP_TEST_MARKER"] = str(marker)
+    result = subprocess.run(
+        [str(POWERSHELL), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(wrapper),
+         str(ROOT / "scripts" / "install-localpilot.ps1"), "worker", str(python), str(installed), str(config)],
+        capture_output=True, text=True, timeout=30, env=environment,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    if enabled:
+        assert json.loads(marker.read_text(encoding="utf-8-sig")) == {
+            "python": str(python), "config": str(config), "elevated": True,
+        }
+    else:
+        assert not marker.exists()

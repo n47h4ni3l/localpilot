@@ -337,7 +337,13 @@ class ClaudeCodeBackend:
             creationflags=hidden_process_creation_flags(),
         )
 
-    def _ollama_json(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _ollama_json(
+        self,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         probe_base_url = self.base_url.replace("//localhost", "//127.0.0.1", 1)
         req = urllib_request.Request(
@@ -347,7 +353,12 @@ class ClaudeCodeBackend:
             method="GET" if data is None else "POST",
         )
         opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
-        with opener.open(req, timeout=min(300.0, max(120.0, self.timeout_seconds))) as response:
+        timeout = (
+            float(timeout_seconds)
+            if timeout_seconds is not None
+            else min(300.0, max(120.0, self.timeout_seconds))
+        )
+        with opener.open(req, timeout=timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
         if not isinstance(result, dict):
             raise ValueError(f"Ollama {path} returned a non-object response")
@@ -391,7 +402,7 @@ class ClaudeCodeBackend:
             # Use Ollama's bounded HTTP API rather than the CLI metadata command.
             # The CLI can wedge even while the local server is healthy; /api/show
             # establishes model availability without spawning another Ollama client.
-            self._ollama_json("/api/show", {"model": self.model})
+            self._ollama_json("/api/show", {"model": self.model}, timeout_seconds=20.0)
             self._ollama_json(
                 "/api/generate",
                 {
@@ -402,7 +413,7 @@ class ClaudeCodeBackend:
                     "options": {"num_ctx": self.context_tokens, "num_predict": 1},
                 },
             )
-            processes = self._ollama_json("/api/ps").get("models", [])
+            processes = self._ollama_json("/api/ps", timeout_seconds=20.0).get("models", [])
             active = next(
                 (
                     item for item in processes

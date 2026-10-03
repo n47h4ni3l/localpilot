@@ -16,6 +16,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from train_adapter import (
+    CHECKPOINT_MARKER_FILE,
     ROOT,
     TRAINING_COMPLETE_FILE,
     TRAINING_OUTPUT_ROOT,
@@ -47,6 +48,28 @@ def build_manifest(args: argparse.Namespace) -> dict:
     )
     if marker.get("adapter_files") != adapter_files:
         raise RuntimeError("Final adapter differs from the natural-completion marker")
+    step = marker.get("global_step")
+    if type(step) is not int or step < 1:
+        raise RuntimeError("Training completion marker has an invalid global step")
+    checkpoint = _under(
+        output / "checkpoints" / f"checkpoint-{step}",
+        output / "checkpoints",
+    )
+    checkpoint_marker_path = _under(
+        checkpoint / CHECKPOINT_MARKER_FILE, checkpoint
+    )
+    try:
+        checkpoint_marker = json.loads(
+            checkpoint_marker_path.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Final checkpoint completion marker is missing or invalid") from exc
+    if (
+        checkpoint_marker.get("global_step") != step
+        or checkpoint_marker.get("run_identity_sha256")
+        != marker.get("run_identity_sha256")
+    ):
+        raise RuntimeError("Final checkpoint evidence does not match natural completion")
 
     package = int(args.package)
     lineage = config.get("lineage")
@@ -86,6 +109,8 @@ def build_manifest(args: argparse.Namespace) -> dict:
             "run_identity_sha256": marker["run_identity_sha256"],
             "training_config_sha256": marker["training_config_sha256"],
             "completion_marker_sha256": _sha256_file(marker_path),
+            "checkpoint_marker_sha256": _sha256_file(checkpoint_marker_path),
+            "checkpoint_files": checkpoint_marker.get("files"),
             "adapter_files": adapter_files,
         },
         "deployment": {
@@ -96,6 +121,10 @@ def build_manifest(args: argparse.Namespace) -> dict:
         "rollback": {
             "model": args.rollback_model,
             "digest": _sha256(args.rollback_digest, "rollback digest"),
+        },
+        "original_baseline": {
+            "model": args.baseline_model,
+            "digest": _sha256(args.baseline_digest, "baseline digest"),
         },
         "evaluation": {
             "eval_v1": {
@@ -125,6 +154,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--candidate-gguf-sha256", required=True)
     parser.add_argument("--rollback-model", required=True)
     parser.add_argument("--rollback-digest", required=True)
+    parser.add_argument("--baseline-model", required=True)
+    parser.add_argument("--baseline-digest", required=True)
     parser.add_argument("--eval-overall", type=float, required=True)
     parser.add_argument("--eval-critical", type=float, required=True)
     parser.add_argument("--eval-hard-failures", type=int, required=True)

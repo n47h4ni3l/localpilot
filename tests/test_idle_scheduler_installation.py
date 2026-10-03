@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+import time
 
 import pytest
 
@@ -96,3 +98,52 @@ Restore-PreviousWorkerTask -Name 'LocalPilot Background Worker' -Xml '<Task>old-
     elif running:
         expected.append("start:LocalPilot Background Worker")
     assert result["events"] == expected
+
+
+@pytest.mark.parametrize("image,parent_image,expected", [
+    ("selected", "unrelated", True),
+    ("host", "selected", True),
+    ("host", "unrelated", False),
+    ("unrelated", "selected", False),
+])
+def test_worker_identity_requires_selected_image_or_its_own_redirector(image, parent_image, expected):
+    result = _run_functions(f"""
+function Get-CimInstance {{ param($ClassName, $Filter, $ErrorAction); return [pscustomobject]@{{ ExecutablePath='{parent_image}' }} }}
+$candidate = [pscustomobject]@{{ ExecutablePath='{image}'; ParentProcessId=123 }}
+@{{ accepted = Test-WorkerInterpreter -Process $candidate -SelectedGui selected -HostGui host }} | ConvertTo-Json -Compress
+""")
+    assert result["accepted"] is expected
+
+
+def test_worker_identity_accepts_actual_windows_venv_redirector(tmp_path):
+    if os.name != "nt":
+        pytest.skip("Windows Python redirector behavior")
+    environment = tmp_path / "selected environment"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(environment)], check=True, timeout=30)
+    pythonw = environment / "Scripts" / "pythonw.exe"
+    pid_file = tmp_path / "probe-pid.json"
+    stop_file = tmp_path / "finish-probe"
+    code = (
+        "import json,os,sys,time; from pathlib import Path; "
+        "Path(sys.argv[1]).write_text(json.dumps({'pid':os.getpid(),'host':sys._base_executable})); "
+        "stop=Path(sys.argv[2]); deadline=time.monotonic()+60\n"
+        "while not stop.exists() and time.monotonic()<deadline: time.sleep(.1)\n"
+    )
+    probe = subprocess.Popen(
+        [str(pythonw), "-c", code, str(pid_file), str(stop_file)],
+        creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(.1)
+        identity = json.loads(pid_file.read_text())
+        result = _run_functions(f"""
+$candidate = Get-CimInstance Win32_Process -Filter 'ProcessId = {identity['pid']}'
+@{{ accepted = Test-WorkerInterpreter -Process $candidate -SelectedGui {_quote_ps(pythonw.resolve())} -HostGui {_quote_ps(Path(identity['host']).resolve())}; image=$candidate.ExecutablePath }} | ConvertTo-Json -Compress
+""")
+        assert result["accepted"] is True
+        assert Path(result["image"]).resolve() == Path(identity["host"]).resolve()
+    finally:
+        stop_file.touch()
+        probe.wait(timeout=10)

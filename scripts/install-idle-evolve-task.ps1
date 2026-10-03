@@ -46,6 +46,16 @@ function Resolve-WorkerRunLevel {
     throw "Cannot preserve the existing worker's unknown run level '$ExistingRunLevel'. Pass -RunAsAdministrator explicitly."
 }
 
+function Test-WorkerInterpreter {
+    param($Process, [string]$SelectedGui, [string]$HostGui)
+    if ($Process.ExecutablePath -ieq $SelectedGui) { return $true }
+    if ($Process.ExecutablePath -ine $HostGui) { return $false }
+    # Windows venv redirectors retain a launcher while the worker runs in
+    # the base Python image. Require the exact selected launcher as parent.
+    $launcher = Get-CimInstance Win32_Process -Filter "ProcessId = $($Process.ParentProcessId)" -ErrorAction SilentlyContinue
+    return [bool]($launcher -and $launcher.ExecutablePath -ieq $SelectedGui)
+}
+
 function Restore-PreviousWorkerTask {
     param([string]$Name, [string]$Xml, [bool]$Enabled, [bool]$Running)
 
@@ -69,6 +79,16 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $interpreters = Resolve-WorkerPython -Executable $PythonExecutable -Root $repoRoot
 $pythonEntryPoint = $interpreters.Console
 $pythonwEntryPoint = $interpreters.Gui
+$runtimeIdentity = (& $pythonEntryPoint -c "from pathlib import Path; import json,sys; print(json.dumps({'launcher':str(Path(sys.argv[1]).resolve()), 'host':str(Path(getattr(sys, '_base_executable', sys.executable)).resolve().with_name('pythonw.exe'))}))" $pythonwEntryPoint | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $runtimeIdentity) {
+    throw "Unable to identify the selected Python environment's Windows host executable."
+}
+$runtimeIdentity = $runtimeIdentity | ConvertFrom-Json
+$verifiedPythonw = [string]$runtimeIdentity.launcher
+$hostPythonw = [string]$runtimeIdentity.host
+if (-not (Test-Path -LiteralPath $verifiedPythonw -PathType Leaf) -or -not (Test-Path -LiteralPath $hostPythonw -PathType Leaf)) {
+    throw "The selected Python environment's Windows launcher or host executable is missing."
+}
 $configPath = if ($ConfigPath) { [System.IO.Path]::GetFullPath($ConfigPath) } else { Join-Path $repoRoot "localpilot.toml" }
 $git = Get-Command git -ErrorAction Stop
 
@@ -193,7 +213,7 @@ try {
         if (
             $candidate -and
             $candidate.Name -eq "pythonw.exe" -and
-            $candidate.ExecutablePath -ieq $pythonwEntryPoint -and
+            (Test-WorkerInterpreter -Process $candidate -SelectedGui $verifiedPythonw -HostGui $hostPythonw) -and
             $candidate.CommandLine -like "*localpilot.background_worker*" -and
             $candidate.CommandLine -like "*$repoRoot*" -and
             $candidate.CommandLine -like "*$configPath*" -and

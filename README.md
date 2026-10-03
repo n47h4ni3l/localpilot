@@ -2,7 +2,7 @@
 
 LocalPilot is a private, local-first Windows agent and an experiment in evidence-driven, cumulative capability growth. It uses local [Ollama](https://ollama.com/) models for everyday assistance, persistent memory, bounded research, passive machine awareness, structured study, and isolated software-development candidates.
 
-The current package version is `0.2.0`. LocalPilot is a working agent system, not a claim of AGI: it can operate persistently, learn through explicit memory and source-grounded study, and prepare proposed improvements to its own repository, but it does not train its model weights, execute arbitrary commands, or promote its own code.
+The current package version is `0.2.0`. LocalPilot is a working agent system, not a claim of AGI: it can operate persistently, learn through explicit memory and source-grounded study, prepare proposed improvements to its own repository, and train guarded local QLoRA packages, but it does not execute arbitrary commands or autonomously promote its own code or model lineage.
 
 > **Stable mission:** Become an increasingly capable general-purpose personal intelligence that expands what its user can understand, create, and accomplish while remaining reliable, transparent, resource-aware, interruptible, and under human control.
 
@@ -394,7 +394,7 @@ GitHub is an executable validation and review boundary, not a promotion authorit
 - `[systemsense]`: collection cadence, retention, baselines, correlations, and compact context; and
 - `[selfdev]`: developer models, cycle budgets, candidate limits, resources, repair, and learning storage.
 
-The configured `[model].name` is the everyday operational model, and `[selfdev].developer_model` must match it so LocalPilot uses the same model for planning/research/review. The Claude Code implementation path is separately pinned to `gpt-oss:20b`, which also remains the rollback baseline when a retained trained candidate such as `nestra:20b-p1` is deployed operationally. Operational deployment is reversible and is not the same as benchmark promotion. See [the Claude Code backend guide](docs/claude-code-backend.md).
+The configured `[model].name` is the accepted operational lineage head. `[selfdev].developer_model` and `[selfdev].implementation_model` must match it, so the same accepted Nestra weights handle everyday work, planning/research/review, and Claude Code implementation. The previous accepted Nestra remains the immediate rollback model; the original `gpt-oss:20b` is retained as the frozen historical baseline/control. Operational lineage acceptance is reversible and is not the same as formal benchmark promotion. See [the Claude Code backend guide](docs/claude-code-backend.md) and [training lineage guide](training/lineage/README.md).
 
 Read the example and corresponding tests before changing security-critical limits.
 

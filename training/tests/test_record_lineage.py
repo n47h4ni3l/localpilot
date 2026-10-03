@@ -21,9 +21,11 @@ def _args(config: Path) -> argparse.Namespace:
         rollback_digest="3" * 64,
         baseline_model="gpt-oss:20b",
         baseline_digest="6" * 64,
+        eval_report_ref="nestra-benchmark:training/reports/eval-scored.json",
         eval_overall=2.04,
         eval_critical=1.875,
         eval_hard_failures=3,
+        execution_report_ref="nestra-benchmark:training/reports/evolution-scored.json",
         execution_overall=4.0,
         execution_hard_failures=1,
         execution_scope_violations=0,
@@ -100,6 +102,7 @@ def test_build_manifest_binds_completed_adapter_and_owner_decision(
         checkpoint_marker
     )
     assert result["evaluation"]["eval_v1"]["hard_failures"] == 3
+    assert result["evaluation"]["eval_v1"]["report"].endswith("eval-scored.json")
     assert result["evaluation"]["evolution_execution_v1"]["hard_failures"] == 1
 
 

@@ -6,9 +6,14 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Sequence
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 from train_adapter import (
     ROOT,

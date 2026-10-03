@@ -821,7 +821,7 @@ def _trainable_lora_names(model: Any) -> list[str]:
 def _mark_training_complete(output: Path, config: dict[str, Any], identity: dict[str, Any], step: int) -> None:
     target = config["training"]["estimated_optimizer_steps"]
     if step != target:
-        raise RuntimeError(f"Recovery stopped at {step}, before natural completion at {target}")
+        raise RuntimeError(f"Training stopped at {step}, before natural completion at {target}")
     checkpoint = _select_resume_checkpoint(output, identity)
     if checkpoint.name != f"checkpoint-{step}":
         raise RuntimeError("Natural completion requires its verified final checkpoint")
@@ -1307,7 +1307,14 @@ def execute_training(
             return control
 
         def on_step_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
-            if state.global_step == training["first_checkpoint_step"]:
+            # The first early recovery point and the natural final step are
+            # explicit saves even when neither lands on the regular cadence.
+            # This guarantees every accepted package can bind to a complete
+            # final checkpoint without changing the historical cadence itself.
+            if state.global_step in {
+                training["first_checkpoint_step"],
+                training["estimated_optimizer_steps"],
+            }:
                 control.should_save = True
             return control
 
@@ -1489,8 +1496,9 @@ def execute_training(
             model.save_pretrained(str(output / "adapter"), state_dict=_adapter_only_state_dict(model), safe_serialization=True)
             tokenizer.save_pretrained(str(output / "adapter"))
         write_json(output / "training_config.json", config)
-        if config.get("recovery"):
-            _mark_training_complete(output, config, run_identity, int(trainer.state.global_step))
+        step = int(trainer.state.global_step)
+        if config.get("recovery") or step == training["estimated_optimizer_steps"]:
+            _mark_training_complete(output, config, run_identity, step)
     except BaseException as exc:
         caught = exc
         raise

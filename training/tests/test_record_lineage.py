@@ -19,6 +19,8 @@ def _args(config: Path) -> argparse.Namespace:
         candidate_gguf_sha256="2" * 64,
         rollback_model="gpt-oss:20b",
         rollback_digest="3" * 64,
+        baseline_model="gpt-oss:20b",
+        baseline_digest="6" * 64,
         eval_overall=2.04,
         eval_critical=1.875,
         eval_hard_failures=3,
@@ -52,6 +54,18 @@ def test_build_manifest_binds_completed_adapter_and_owner_decision(
     (output / runner.TRAINING_COMPLETE_FILE).write_text(
         json.dumps(marker), encoding="utf-8"
     )
+    checkpoint = output / "checkpoints/checkpoint-11112"
+    checkpoint.mkdir(parents=True)
+    checkpoint_marker = checkpoint / runner.CHECKPOINT_MARKER_FILE
+    checkpoint_marker.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "global_step": 11112,
+            "run_identity_sha256": "4" * 64,
+            "files": {"adapter_model.safetensors": {"bytes": 1, "sha256": "7" * 64}},
+        }),
+        encoding="utf-8",
+    )
     config_path = tmp_path / "training/configs/p1.json"
     config_path.parent.mkdir(parents=True)
     config_path.write_text("{}\n", encoding="utf-8")
@@ -81,6 +95,10 @@ def test_build_manifest_binds_completed_adapter_and_owner_decision(
     )
     assert result["deployment"]["model"] == "nestra:20b-p1"
     assert result["rollback"]["model"] == "gpt-oss:20b"
+    assert result["original_baseline"]["model"] == "gpt-oss:20b"
+    assert result["training"]["checkpoint_marker_sha256"] == runner._sha256_file(
+        checkpoint_marker
+    )
     assert result["evaluation"]["eval_v1"]["hard_failures"] == 3
     assert result["evaluation"]["evolution_execution_v1"]["hard_failures"] == 1
 
@@ -104,6 +122,17 @@ def test_build_manifest_refuses_adapter_changed_after_completion(
             "run_identity_sha256": "4" * 64,
             "training_config_sha256": "5" * 64,
             "adapter_files": original_files,
+        }),
+        encoding="utf-8",
+    )
+    checkpoint = output / "checkpoints/checkpoint-11112"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / runner.CHECKPOINT_MARKER_FILE).write_text(
+        json.dumps({
+            "schema_version": 1,
+            "global_step": 11112,
+            "run_identity_sha256": "4" * 64,
+            "files": {},
         }),
         encoding="utf-8",
     )

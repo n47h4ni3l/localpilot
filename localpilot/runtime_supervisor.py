@@ -329,12 +329,19 @@ class RuntimeSupervisor:
             return
         old_pid = process.pid
         started_at = self._process_started_at
-        process.terminate()
         try:
+            if process.stdin is not None:
+                process.stdin.close()
+            else:
+                process.terminate()
             returncode = process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            returncode = process.wait(timeout=5)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            process.terminate()
+            try:
+                returncode = process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                returncode = process.wait(timeout=5)
         self._record_lifecycle(
             "stopped",
             old_pid=old_pid,

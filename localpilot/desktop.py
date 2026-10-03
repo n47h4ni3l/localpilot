@@ -11,11 +11,15 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 from localpilot.broker import load_or_create_broker_token
 from localpilot.config import Config, load_config
+from localpilot.process import current_process_elevated
 
 
 def _markdown_segments(content: str) -> list[tuple[str, str]]:
@@ -102,8 +106,14 @@ def ensure_broker(
 ) -> BrokerClient:
     root = Path(root).resolve()
     client = BrokerClient(root, config)
+    require_elevated = current_process_elevated() is True
     if client.healthy():
-        return client
+        if not require_elevated:
+            return client
+        status = _elevated_broker_status(client)
+        if status.get("elevated") is True:
+            return client
+        _stop_unelevated_broker(client, status, timeout=timeout)
     argv = [sys.executable, "-m", "localpilot.broker", "--root", str(root)]
     if config_path:
         argv.extend(["--config", str(Path(config_path).resolve())])
@@ -130,9 +140,48 @@ def ensure_broker(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if client.healthy():
+            if require_elevated and _elevated_broker_status(client).get("elevated") is not True:
+                raise RuntimeError("LocalPilot's broker did not inherit administrator rights.")
             return client
         time.sleep(0.1)
     raise RuntimeError("LocalPilot broker did not become ready")
+
+
+def _elevated_broker_status(client: BrokerClient) -> dict[str, Any]:
+    try:
+        status = client.request("GET", "/v1/broker/status", timeout=2.0)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            "LocalPilot could not verify the existing broker's administrator rights. "
+            "Close the older LocalPilot broker and launch the administrator shortcut again."
+        ) from exc
+    if not isinstance(status.get("elevated"), bool):
+        raise RuntimeError("LocalPilot's broker administrator state is unavailable.")
+    return status
+
+
+def _stop_unelevated_broker(
+    client: BrokerClient, status: dict[str, Any], *, timeout: float
+) -> None:
+    try:
+        broker_pid = int(status["pid"])
+        if broker_pid <= 0:
+            raise ValueError("Invalid broker process identity")
+        process = psutil.Process(broker_pid)
+        result = client.request("POST", "/v1/broker/shutdown", {}, timeout=2.0)
+        if result.get("status") != "stopping" or result.get("pid") != broker_pid:
+            raise RuntimeError("LocalPilot did not acknowledge the broker shutdown.")
+        # Wait for the authenticated broker process, including its runtime
+        # cleanup, rather than treating a temporarily failed health check as exit.
+        process.wait(timeout=max(0.1, float(timeout)))
+    except urllib.error.HTTPError as exc:
+        if exc.code == HTTPStatus.CONFLICT:
+            raise RuntimeError(
+                "LocalPilot is still responding. Let the response finish, then launch the administrator shortcut again."
+            ) from exc
+        raise RuntimeError("LocalPilot could not stop its unelevated broker safely.") from exc
+    except (KeyError, TypeError, ValueError, OSError, psutil.Error) as exc:
+        raise RuntimeError("LocalPilot's unelevated broker did not stop safely; no replacement was launched.") from exc
 
 
 class PixelPilot:

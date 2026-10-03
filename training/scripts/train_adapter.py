@@ -779,6 +779,29 @@ def _parent_adapter_evidence(config: dict[str, Any]) -> dict[str, Any] | None:
         raise RuntimeError("Parent training completion marker is invalid") from exc
     if completion.get("adapter_files") != actual_files:
         raise RuntimeError("Parent completion marker does not match the accepted adapter")
+    if training.get("global_step") != completion.get("global_step"):
+        raise RuntimeError("Parent lineage global step differs from its completion marker")
+
+    checkpoint = _under(
+        parent_output / "checkpoints" / f"checkpoint-{completion['global_step']}",
+        parent_output / "checkpoints",
+    )
+    checkpoint_marker = _under(checkpoint / CHECKPOINT_MARKER_FILE, checkpoint)
+    expected_checkpoint_sha = training.get("checkpoint_marker_sha256")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(expected_checkpoint_sha or "")):
+        raise RuntimeError("Parent lineage is missing the final checkpoint-marker SHA256")
+    if _sha256_file(checkpoint_marker) != expected_checkpoint_sha:
+        raise RuntimeError("Parent final checkpoint completion marker changed")
+    try:
+        checkpoint_evidence = json.loads(checkpoint_marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Parent final checkpoint completion marker is invalid") from exc
+    if (
+        checkpoint_evidence.get("global_step") != completion.get("global_step")
+        or checkpoint_evidence.get("run_identity_sha256")
+        != completion.get("run_identity_sha256")
+    ):
+        raise RuntimeError("Parent final checkpoint evidence does not match natural completion")
 
     try:
         parent_config = json.loads(
@@ -805,6 +828,7 @@ def _parent_adapter_evidence(config: dict[str, Any]) -> dict[str, Any] | None:
         "adapter_path": str(parent_adapter),
         "adapter_files": actual_files,
         "completion_marker_sha256": marker_sha,
+        "checkpoint_marker_sha256": expected_checkpoint_sha,
     }
 
 

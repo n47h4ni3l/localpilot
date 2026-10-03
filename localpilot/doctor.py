@@ -58,6 +58,15 @@ def doctor(config: Config, project_root: str | Path) -> list[tuple[str, bool, st
     checks.append(("Windows", os.name == "nt", platform.platform()))
     checks.append(("Ollama CLI (optional)", True, shutil.which("ollama") or "not on PATH; Python client is supported"))
     checks.append(("Git", shutil.which("git") is not None, shutil.which("git") or "not found"))
+    if os.name == "nt" and config.systemsense.enabled:
+        from localpilot.systemsense_hardware import bundled_helper_path
+
+        helper = bundled_helper_path()
+        checks.append((
+            "SystemSense hardware provider", helper.is_file(),
+            str(helper) if helper.is_file() else
+            "Missing; run scripts/build-systemsense-hardware.ps1",
+        ))
     checks.append(("GitHub CLI (optional)", shutil.which("gh") is not None, shutil.which("gh") or "not found"))
 
     models, model_source = _ollama_models()

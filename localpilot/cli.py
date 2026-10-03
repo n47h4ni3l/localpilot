@@ -709,3 +709,7 @@ def main() -> None:
         except (RuntimeError, ValueError) as exc:
             console.print(f"[red]Study refused:[/red] {exc}")
             raise SystemExit(1) from exc
+
+
+if __name__ == "__main__":
+    main()

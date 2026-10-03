@@ -1,6 +1,14 @@
+param(
+    [switch]$Unattended,
+    [switch]$RuntimeOnly,
+    [string]$PythonPath = ""
+)
 $ErrorActionPreference = "Stop"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+Push-Location $repoRoot
+try {
 
-Write-Host "LocalPilot v0.1 bootstrap" -ForegroundColor Cyan
+Write-Host "LocalPilot installation" -ForegroundColor Cyan
 
 function Refresh-ProcessPath {
     $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -31,6 +39,7 @@ function Install-WingetPackage {
         --id $PackageId `
         --exact `
         --source winget `
+        --silent `
         --accept-package-agreements `
         --accept-source-agreements `
         --disable-interactivity
@@ -64,12 +73,14 @@ function Test-Python311 {
 function Find-CompatiblePython {
     $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
     if ($pyLauncher) {
-        $version = Test-Python311 -Executable $pyLauncher.Source -PrefixArgs @("-3")
-        if ($version) {
-            return [pscustomobject]@{
-                Executable = $pyLauncher.Source
-                PrefixArgs = @("-3")
-                Version = $version
+        foreach ($selector in @('-3.12', '-3')) {
+            $version = Test-Python311 -Executable $pyLauncher.Source -PrefixArgs @($selector)
+            if ($version) {
+                return [pscustomobject]@{
+                    Executable = $pyLauncher.Source
+                    PrefixArgs = @($selector)
+                    Version = $version
+                }
             }
         }
     }
@@ -131,6 +142,14 @@ function Find-Ollama {
     return $null
 }
 
+function Read-OllamaModels {
+    # Windows PowerShell turns redirected native stderr into ErrorRecords.
+    # A stopped Ollama service is expected here and must remain recoverable.
+    $ErrorActionPreference = 'Continue'
+    $lines = @(& $ollama list 2>$null)
+    return [pscustomobject]@{ Lines = $lines; ExitCode = $LASTEXITCODE }
+}
+
 function Find-DotNet8Sdk {
     $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
     $dotnetPath = if ($dotnet) { $dotnet.Source } else { $null }
@@ -162,18 +181,35 @@ function Find-DotNet8Sdk {
     return $null
 }
 
-$python = Join-Path $PWD ".venv\Scripts\python.exe"
+$python = if ($PythonPath) { (Resolve-Path -LiteralPath $PythonPath).Path } else { Join-Path $repoRoot ".venv\Scripts\python.exe" }
 $pythonVersion = $null
 
 if (Test-Path -LiteralPath $python -PathType Leaf) {
     $pythonVersion = Test-Python311 -Executable $python
     if (-not $pythonVersion) {
+        if ($PythonPath) { throw "The supplied Python interpreter requires Python 3.11+." }
         Write-Host "LocalPilot's existing .venv is not usable with Python 3.11+. Rebuilding it..." -ForegroundColor Yellow
-        Remove-Item -LiteralPath (Join-Path $PWD ".venv") -Recurse -Force
+        $environmentPath = [IO.Path]::GetFullPath((Join-Path $repoRoot ".venv"))
+        $preservedEnvironment = [IO.Path]::GetFullPath((Join-Path $repoRoot (".venv.unusable-" + [Guid]::NewGuid().ToString('N'))))
+        if ((Split-Path $environmentPath) -ne $repoRoot -or (Split-Path $preservedEnvironment) -ne $repoRoot) {
+            throw "Virtual environment recovery escaped this checkout."
+        }
+        Move-Item -LiteralPath $environmentPath -Destination $preservedEnvironment
+        Write-Host "Previous environment preserved at $preservedEnvironment"
     }
 }
 
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+    if ($PythonPath) { throw "The supplied Python interpreter is missing." }
+    $partialEnvironment = [IO.Path]::GetFullPath((Join-Path $repoRoot ".venv"))
+    if (Test-Path -LiteralPath $partialEnvironment) {
+        $preservedEnvironment = [IO.Path]::GetFullPath((Join-Path $repoRoot (".venv.unusable-" + [Guid]::NewGuid().ToString('N'))))
+        if ((Split-Path $partialEnvironment) -ne $repoRoot -or (Split-Path $preservedEnvironment) -ne $repoRoot) {
+            throw "Virtual environment recovery escaped this checkout."
+        }
+        Move-Item -LiteralPath $partialEnvironment -Destination $preservedEnvironment
+        Write-Host "Incomplete environment preserved at $preservedEnvironment"
+    }
     $bootstrapPython = Find-CompatiblePython
     if (-not $bootstrapPython) {
         Install-WingetPackage -PackageId "Python.Python.3.12" -DisplayName "Python 3.12"
@@ -214,7 +250,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Installing and synchronizing LocalPilot runtime dependencies..."
-& $python -m pip install -e ".[dev]"
+if ($RuntimeOnly) {
+    & $python -m pip install -e "."
+} else {
+    & $python -m pip install -e ".[dev]"
+}
 if ($LASTEXITCODE -ne 0) {
     throw "LocalPilot dependency installation failed. The installation is incomplete."
 }
@@ -237,7 +277,7 @@ Write-Host "Pillow: $pillowVersion"
 # releases carry inside LocalPilot. A complete source bootstrap therefore
 # installs the required .NET SDK when the helper needs to be built.
 if ($env:OS -eq "Windows_NT") {
-    $rid = switch ($env:PROCESSOR_ARCHITECTURE) {
+    $rid = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
         "ARM64" { "win-arm64" }
         "x86" { "win-x86" }
         default { "win-x64" }
@@ -268,14 +308,33 @@ if (-not (Test-Path "localpilot.toml")) {
     Write-Host "Created localpilot.toml from the example config."
 }
 
-$model = "gpt-oss:20b"
-$models = (& $ollama list | Out-String)
-if ($models -notmatch [regex]::Escape($model)) {
+$model = (& $python -c "import sys,tomllib; from pathlib import Path; print(tomllib.loads(Path(sys.argv[1]).read_text(encoding='utf-8')).get('model',{}).get('name','gpt-oss:20b'))" (Join-Path $repoRoot 'localpilot.toml') | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $model) { throw "Could not read the configured LocalPilot model." }
+$modelProbe = Read-OllamaModels
+$modelLines = $modelProbe.Lines
+if ($modelProbe.ExitCode -ne 0) {
+    Write-Host "Starting the local Ollama server..."
+    Start-Process -FilePath $ollama -ArgumentList 'serve' -WindowStyle Hidden | Out-Null
+    $ollamaReady = $false
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        Start-Sleep -Seconds 1
+        $modelProbe = Read-OllamaModels
+        $modelLines = $modelProbe.Lines
+        if ($modelProbe.ExitCode -eq 0) { $ollamaReady = $true; break }
+    }
+    if (-not $ollamaReady) { throw "Ollama did not become ready. Check the Ollama installation, then retry." }
+}
+$installedModels = @($modelLines | Select-Object -Skip 1 | ForEach-Object { ($_ -split '\s+')[0] })
+if ($installedModels -notcontains $model) {
     Write-Host ""
     Write-Host "$model is not installed. Pulling it is a large download and may take some time." -ForegroundColor Yellow
-    $answer = Read-Host "Download $model now? [y/N]"
+    if ($Unattended -and $model -like 'nestra:*') {
+        throw "Configured local model '$model' is missing. Restore that model before starting LocalPilot; its configuration was preserved."
+    }
+    $answer = if ($Unattended) { 'y' } else { Read-Host "Download $model now? [y/N]" }
     if ($answer -match '^[Yy]$') {
         & $ollama pull $model
+        if ($LASTEXITCODE -ne 0) { throw "Ollama could not download '$model'. Retry installation to resume the download." }
     } else {
         Write-Host "Skipped model download. You can run 'ollama pull $model' later." -ForegroundColor Yellow
     }
@@ -291,3 +350,4 @@ Write-Host "localpilot doctor"
 Write-Host "localpilot"
 Write-Host ""
 Write-Host "After pulling a newer LocalPilot revision, rerun .\scripts\bootstrap.ps1 to synchronize any new dependencies."
+} finally { Pop-Location }

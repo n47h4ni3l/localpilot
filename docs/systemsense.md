@@ -24,6 +24,16 @@ It uses the sibling `pythonw.exe`, the checkout's configuration, and the
 Add `-RunAsAdministrator` to enable the shortcut's Windows elevation flag.
 Windows then requests UAC approval on launch. Existing desktop and background
 processes retain their original permissions until restarted.
+Reinstalling the shortcut preserves its previous administrator setting when
+the switch is omitted. Pass `-RunAsAdministrator:$false` explicitly to clear it.
+The Windows installer enables administrator launch for reliable CPU sensor
+access; see [Windows installation](windows-installation.md).
+
+Hardware builds publish and verify a replacement in a temporary sibling
+directory before replacing the installed helper. A failed build preserves the
+previous helper. The release bundle includes its self-contained helper, so
+end users do not need the .NET SDK. Source bootstrap installs the SDK only when
+it must build a missing helper.
 
 ```text
 Windows / hardware

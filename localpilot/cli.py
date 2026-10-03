@@ -536,21 +536,42 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _show_desktop_startup_error(error: Exception) -> None:
+    """Surface startup failures when Windows launches Python without a console."""
+    if sys.platform != "win32" or Path(sys.executable).name.casefold() != "pythonw.exe":
+        return
+    try:
+        import ctypes
+
+        detail = str(error).strip() or type(error).__name__
+        ctypes.windll.user32.MessageBoxW(
+            None, "LocalPilot could not start.\n\n" + detail,
+            "LocalPilot", 0x00010010,  # MB_SETFOREGROUND | MB_ICONERROR
+        )
+    except (AttributeError, OSError):
+        # Preserve the original failure if the desktop itself cannot show UI.
+        pass
+
+
 def main() -> None:
     args = build_parser().parse_args()
 
     root = _root()
+    if args.command == "desktop":
+        try:
+            if args.tkinter:
+                from localpilot.desktop import main as desktop_main
+            else:
+                from localpilot.webview_app import main as desktop_main
+            desktop_main(root, args.config)
+        except Exception as exc:
+            _show_desktop_startup_error(exc)
+            raise
+        return
     config = load_config(args.config)
     console = Console(file=_ConsoleSafeWriter(sys.stdout))
     if args.command in {None, "chat"}:
         _chat(console, config, root)
-    elif args.command == "desktop":
-        if args.tkinter:
-            from localpilot.desktop import main as desktop_main
-        else:
-            from localpilot.webview_app import main as desktop_main
-
-        desktop_main(root, args.config)
     elif args.command == "broker":
         from localpilot.broker import serve
 

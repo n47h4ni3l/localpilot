@@ -9,7 +9,9 @@ def test_idle_scheduler_preserves_evolve_safety_contract():
     assert 'TrustedBranch = "main"' in script
     assert "branch --show-current" in script
     assert "status --porcelain --untracked-files=all" in script
-    assert ".venv\\Scripts\\pythonw.exe" in script
+    assert '[string]$PythonExecutable' in script
+    assert 'Resolve-WorkerPython -Executable $PythonExecutable' in script
+    assert '"pythonw.exe"' in script
     assert "-m localpilot.background_worker" in script
     assert "--interval-seconds $PollSeconds" in script
     assert "AtLogOn" in script
@@ -23,5 +25,5 @@ def test_idle_scheduler_preserves_evolve_safety_contract():
     assert "Disable-ScheduledTask -TaskName $LegacyTaskName -ErrorAction Stop" in script
     assert "verifiedLegacy.Settings.Enabled" in script
     assert "TaskName and LegacyTaskName must be different" in script
-    assert script.index("background_worker_cycle_start") < script.index("Disable-ScheduledTask")
+    assert script.index("background_worker_cycle_start") < script.index("Disable-ScheduledTask -TaskName $LegacyTaskName -ErrorAction Stop")
     assert "--force" not in script.split("Register-ScheduledTask", 1)[0]

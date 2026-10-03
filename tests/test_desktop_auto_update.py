@@ -5,6 +5,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import psutil
+import pytest
+
 from localpilot import desktop_auto_update, desktop_updater
 from localpilot.desktop_state import DesktopUIState
 
@@ -119,6 +122,8 @@ def test_shared_update_script_uses_pinned_prefetched_target(monkeypatch, tmp_pat
     calls = []
 
     monkeypatch.setattr(desktop_updater, "_powershell_executable", lambda: "pwsh")
+    caller_python = root / "installed python" / "python.exe"
+    monkeypatch.setattr(desktop_updater, "_console_python", lambda: caller_python)
 
     def fake_run(call_root: Path, args: list[str], *, timeout: int = 120):
         calls.append((call_root, list(args), timeout))
@@ -140,6 +145,7 @@ def test_shared_update_script_uses_pinned_prefetched_target(monkeypatch, tmp_pat
     assert timeout == 1800
     assert "-File" in args
     assert str(script) in args
+    assert args[args.index("-PythonExecutable") + 1] == str(caller_python)
     assert "-SkipFetch" in args
     assert args[args.index("-ExpectedOldSha") + 1] == old_sha
     assert args[args.index("-ExpectedTargetSha") + 1] == target_sha
@@ -199,3 +205,40 @@ def test_apply_handoff_routes_normal_update_through_shared_script(monkeypatch, t
     assert shared[1]["old_sha"] == old_sha
     assert shared[1]["target_sha"] == target_sha
     assert shared[1]["remote"] == "origin"
+
+
+def test_updater_recognizes_module_desktop_launcher_but_not_cli_checks(monkeypatch, tmp_path):
+    class Process:
+        pid = 12345
+
+        def __init__(self, command):
+            self.command = command
+
+        def cmdline(self):
+            return ["pythonw.exe", "-m", "localpilot.cli", "--config", "localpilot.toml", self.command]
+
+        def cwd(self):
+            return str(tmp_path)
+
+    monkeypatch.setattr(desktop_updater.os, "getpid", lambda: 99999)
+    assert desktop_updater._belongs_to_localpilot(Process("desktop"), tmp_path.resolve())
+    assert not desktop_updater._belongs_to_localpilot(Process("doctor"), tmp_path.resolve())
+
+
+def test_updater_refuses_to_continue_when_process_shutdown_is_denied(monkeypatch, tmp_path):
+    class Process:
+        pid = 12345
+
+        def terminate(self):
+            raise psutil.AccessDenied(self.pid)
+
+        def kill(self):
+            raise psutil.AccessDenied(self.pid)
+
+    process = Process()
+    monkeypatch.setattr(desktop_updater.psutil, "process_iter", lambda: iter([process]))
+    monkeypatch.setattr(desktop_updater, "_belongs_to_localpilot", lambda process, root: True)
+    monkeypatch.setattr(desktop_updater.psutil, "wait_procs", lambda processes, timeout: ([], [process]))
+
+    with pytest.raises(RuntimeError, match="remain running"):
+        desktop_updater._stop_localpilot_processes(tmp_path)

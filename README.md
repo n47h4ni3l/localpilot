@@ -2,7 +2,7 @@
 
 LocalPilot is a private, local-first Windows agent and an experiment in evidence-driven, cumulative capability growth. It uses local [Ollama](https://ollama.com/) models for everyday assistance, persistent memory, bounded research, passive machine awareness, structured study, and isolated software-development candidates.
 
-The current package version is `0.2.0`. LocalPilot is a working agent system, not a claim of AGI: it can operate persistently, learn through explicit memory and source-grounded study, prepare proposed improvements to its own repository, and train guarded local QLoRA packages, but it does not execute arbitrary commands or autonomously promote its own code or model lineage.
+The current package version is `0.2.1`. LocalPilot is a working agent system, not a claim of AGI: it can operate persistently, learn through explicit memory and source-grounded study, prepare proposed improvements to its own repository, and train guarded local QLoRA packages, but it does not execute arbitrary commands or autonomously promote its own code or model lineage.
 
 > **Stable mission:** Become an increasingly capable general-purpose personal intelligence that expands what its user can understand, create, and accomplish while remaining reliable, transparent, resource-aware, interruptible, and under human control.
 
@@ -279,6 +279,37 @@ The CLI remains an independent fallback even when the desktop or broker is not r
 
 ## Install
 
+### Windows desktop setup
+
+Download the Windows setup executable from the repository's GitHub Releases,
+open it, and approve Windows' administrator prompt. Setup installs missing
+runtime dependencies, prepares an isolated LocalPilot environment, downloads
+the default chat model for a new install, creates the desktop icon, checks
+readiness, and opens the desktop. The sensor helper is included in the release
+package, so a release installation does not require the .NET SDK.
+
+The ZIP alternative contains `Install LocalPilot.cmd`; extract it and open that
+file. A Git source checkout can use the same file to install in place. Bundled
+release installs use `%LOCALAPPDATA%\LocalPilot\app` so their files remain after
+the installer closes. The source commit, package version and sensor helper hash
+are recorded in the bundle and checked before installation.
+
+Existing configuration, conversations, memory, and model files are preserved.
+A new installation uses `gpt-oss:20b`; an existing custom model such as
+`nestra:20b-p1` must already be installed in Ollama. Setup respects that choice.
+GitHub sign-in is required separately to publish self-development PRs; ordinary
+desktop chat does not require GitHub authentication.
+
+The desktop icon requests administrator access for low-level hardware readings.
+An elevated desktop replaces an idle unelevated broker before starting its
+runtime. If a response is still active, setup leaves it intact and displays
+clear retry guidance. Desktop startup errors appear in a Windows dialog.
+
+For maintainers, `scripts/build-windows-installer.ps1` builds a committed source
+ZIP and self-extracting Windows executable with a freshly built sensor helper,
+checks extraction against the original payload, and writes SHA-256 checksums.
+The Windows release workflow validates and uploads these artifacts.
+
 ### Requirements
 
 - Windows 10 or Windows 11
@@ -506,7 +537,6 @@ A useful proposal answers: **What is limiting LocalPilot now, what evidence demo
 ## Known limitations
 
 - LocalPilot is Windows-first. Scheduling, foreground detection, process priority, several observation tools, and CI contracts are Windows-specific.
-- Package metadata reports version `0.2.0`, while the bootstrap and CLI startup banners still identify the build as `0.1`.
 - Stable PC mutation is intentionally narrow: four allow-listed app launches, five Settings destinations, and three installed built-in power-plan targets.
 - The desktop has no screenshot vision, arbitrary pointer or keyboard control, or general application automation.
 - Autonomous candidates are not locally sandboxed strongly enough to execute safely. GitHub Actions therefore adds latency and an external dependency.

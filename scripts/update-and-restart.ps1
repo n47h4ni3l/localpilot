@@ -6,15 +6,46 @@ param(
     [switch]$SkipFetch,
     [string]$ExpectedOldSha = "",
     [string]$ExpectedTargetSha = "",
-    [string]$ConfigPath = ""
+    [string]$ConfigPath = "",
+    [string]$PythonExecutable = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$python = Join-Path $repoRoot ".venv\Scripts\python.exe"
-$localpilot = Join-Path $repoRoot ".venv\Scripts\localpilot.exe"
+
+function Resolve-UpdatePython {
+    param([string]$Executable, [string]$Root)
+
+    $candidate = if ($Executable) { $Executable } else { Join-Path $Root ".venv\Scripts\python.exe" }
+    $candidate = [System.IO.Path]::GetFullPath($candidate)
+    if ([System.IO.Path]::GetFileName($candidate) -ieq "pythonw.exe") {
+        $candidate = Join-Path ([System.IO.Path]::GetDirectoryName($candidate)) "python.exe"
+    }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        throw "LocalPilot's Python interpreter is missing: $candidate. Pass -PythonExecutable with the interpreter used to launch LocalPilot."
+    }
+    return (Resolve-Path -LiteralPath $candidate).Path
+}
+
+function Get-UpdateGuiPython {
+    param([string]$Executable)
+
+    $pythonw = Join-Path ([System.IO.Path]::GetDirectoryName($Executable)) "pythonw.exe"
+    if (Test-Path -LiteralPath $pythonw -PathType Leaf) {
+        return $pythonw
+    }
+    return $Executable
+}
+
+function Assert-UpdateAdministrator {
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
+    if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw "Run the LocalPilot updater from an administrator PowerShell session so elevated desktop and sensor processes can be stopped and restarted reliably."
+    }
+}
 
 function Assert-LastExitCode {
     param([string]$Message)
@@ -51,23 +82,15 @@ function Assert-CleanWorkingTree {
 }
 
 function Start-LocalPilotDesktop {
-    if (-not (Test-Path -LiteralPath $localpilot -PathType Leaf)) {
-        throw "LocalPilot launcher is missing: $localpilot"
-    }
-
-    $arguments = @()
-    if ($ConfigPath) {
-        $resolvedConfig = [System.IO.Path]::GetFullPath($ConfigPath)
-        if (-not (Test-Path -LiteralPath $resolvedConfig -PathType Leaf)) {
-            throw "Configured LocalPilot config file does not exist: $resolvedConfig"
-        }
+    $arguments = @("-m", "localpilot.cli")
+    if ($resolvedConfig) {
         # --config is a root CLI option and must precede the desktop subcommand.
         $arguments += "--config"
         $arguments += ('"{0}"' -f $resolvedConfig)
     }
     $arguments += "desktop"
 
-    Start-Process -FilePath $localpilot -ArgumentList $arguments -WorkingDirectory $repoRoot
+    Start-Process -FilePath $guiPython -ArgumentList $arguments -WorkingDirectory $repoRoot -WindowStyle Hidden
 }
 
 if ($Remote -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
@@ -89,9 +112,17 @@ if ($SkipFetch -and -not $ExpectedTargetSha) {
 Write-Host "`n=== LocalPilot clean update/restart ===" -ForegroundColor Cyan
 Write-Host "Repository: $repoRoot"
 
-if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-    throw "LocalPilot's virtual environment is missing. Run .\scripts\bootstrap.ps1 once, then rerun this script."
+$python = Resolve-UpdatePython -Executable $PythonExecutable -Root $repoRoot
+$guiPython = Get-UpdateGuiPython -Executable $python
+$resolvedConfig = ""
+if ($ConfigPath) {
+    $resolvedConfig = [System.IO.Path]::GetFullPath($ConfigPath)
+    if (-not (Test-Path -LiteralPath $resolvedConfig -PathType Leaf)) {
+        throw "Configured LocalPilot config file does not exist: $resolvedConfig"
+    }
 }
+Write-Host "Python: $python"
+Assert-UpdateAdministrator
 
 # These are generated .NET outputs only. Remove them before the cleanliness
 # check so older checkouts created before the ignore rules can recover cleanly.
@@ -101,8 +132,17 @@ $knownBuildArtifacts = @(
 )
 foreach ($artifact in $knownBuildArtifacts) {
     if (Test-Path -LiteralPath $artifact) {
-        Write-Host "Removing generated build artifact: $artifact"
-        Remove-Item -LiteralPath $artifact -Recurse -Force
+        $resolvedArtifact = (Resolve-Path -LiteralPath $artifact).Path
+        $repoPrefix = $repoRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+        if (-not $resolvedArtifact.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove generated build artifact outside the checkout: $resolvedArtifact"
+        }
+        $artifactItem = Get-Item -LiteralPath $resolvedArtifact -Force
+        if ($artifactItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            throw "Refusing to remove a redirected generated build directory: $resolvedArtifact"
+        }
+        Write-Host "Removing generated build artifact: $resolvedArtifact"
+        Remove-Item -LiteralPath $resolvedArtifact -Recurse -Force
     }
 }
 
@@ -201,13 +241,19 @@ try {
     }
 
     Write-Host "Refreshing LocalPilot environment..."
-    # bootstrap.ps1 and build-systemsense-hardware.ps1 use terminating errors
-    # for failure. Do not inspect LASTEXITCODE after a PowerShell script because
-    # it can legitimately retain the last native command's code from inside it.
-    & (Join-Path $repoRoot "scripts\bootstrap.ps1")
+    # Refresh the interpreter that launched LocalPilot. Bootstrap creates a new
+    # repo .venv and must not silently switch an existing installed runtime.
+    & $python -m pip install -e .
+    Assert-LastExitCode "LocalPilot dependency installation failed in the selected Python environment."
+    & $python -m pip check
+    Assert-LastExitCode "LocalPilot dependency verification failed in the selected Python environment."
+    & $python -c "import localpilot, localpilot.native_avatar_companion; from PIL import Image, ImageTk"
+    Assert-LastExitCode "Updated LocalPilot desktop dependencies could not be imported."
 
     $runtimeIdentifier = Get-RuntimeIdentifier
     Write-Host "Rebuilding SystemSense hardware provider ($runtimeIdentifier)..."
+    # The build script uses terminating errors. LASTEXITCODE can retain an
+    # unrelated native command's result after a successful PowerShell script.
     & (Join-Path $repoRoot "scripts\build-systemsense-hardware.ps1") -RuntimeIdentifier $runtimeIdentifier
 
     if (-not $SkipHardwareSmokeCheck) {

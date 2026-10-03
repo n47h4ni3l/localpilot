@@ -132,6 +132,22 @@ def test_prompt_keeps_gpu_temperatures_when_windows_thermal_query_fails(tmp_path
     assert "does not invalidate hardware_provider readings" in context
 
 
+def test_prompt_declares_temperature_row_truncation(tmp_path):
+    sense = _sense(tmp_path)
+    payload = _SensorCollector().collect()
+    payload["sensors"] = [
+        _sensor(f"/cpu/0/temperature/{i}", f"Core {i}", "Temperature", 50,
+                "/cpu/0", "Cpu", "CPU") for i in range(30)
+    ]
+    sense.sensors.collect = lambda: payload
+    sense.collect_dynamic()
+    context = json.loads(sense.compact_context().split("\n")[1])
+    provider = context["raw_collectors"]["hardware_provider"]
+    assert provider["temperature_sensor_count"] == 30
+    assert provider["temperature_sensors_truncated"] is True
+    assert len(provider["temperature_sensors"]) == 24
+
+
 def test_desktop_summary_is_simple_but_model_surface_returns_raw_truth(tmp_path):
     sense = _sense(tmp_path)
     sense.collect_dynamic()

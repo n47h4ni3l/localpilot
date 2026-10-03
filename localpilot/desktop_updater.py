@@ -64,6 +64,8 @@ def _run_shared_update_script(
         "Bypass",
         "-File",
         str(script),
+        "-PythonExecutable",
+        str(_console_python()),
         "-Branch",
         branch,
         "-Remote",
@@ -149,7 +151,11 @@ def _belongs_to_localpilot(process: psutil.Process, root: Path) -> bool:
         "localpilot.background_worker",
         "localpilot.exe",
     )
-    if not any(marker in joined for marker in markers):
+    cli_desktop = any(
+        cmdline[index : index + 2] == ["-m", "localpilot.cli"]
+        for index in range(len(cmdline) - 1)
+    ) and "desktop" in cmdline
+    if not cli_desktop and not any(marker in joined for marker in markers):
         return False
     root_text = str(root).lower()
     if root_text in joined:
@@ -181,7 +187,9 @@ def _stop_localpilot_processes(root: Path) -> None:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     if alive:
-        psutil.wait_procs(alive, timeout=5)
+        _gone, alive = psutil.wait_procs(alive, timeout=5)
+    if alive:
+        raise RuntimeError("LocalPilot processes remain running after update shutdown; check administrator permissions.")
 
 
 def _verify_clean_trusted_main(root: Path, branch: str, old_sha: str, target_sha: str) -> None:
@@ -204,6 +212,9 @@ def _refresh_environment(root: Path) -> None:
     installed = _run(root, [str(python), "-m", "pip", "install", "-e", "."], timeout=600)
     if installed.returncode != 0:
         raise RuntimeError(installed.stderr.strip() or installed.stdout.strip() or "Editable install refresh failed.")
+    checked = _run(root, [str(python), "-m", "pip", "check"], timeout=60)
+    if checked.returncode != 0:
+        raise RuntimeError(checked.stderr.strip() or checked.stdout.strip() or "Updated LocalPilot dependencies are inconsistent.")
     smoke = _run(root, [str(python), "-c", "import localpilot, localpilot.native_avatar_companion"], timeout=60)
     if smoke.returncode != 0:
         raise RuntimeError(smoke.stderr.strip() or smoke.stdout.strip() or "Updated LocalPilot import check failed.")

@@ -1,4 +1,4 @@
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 # SystemSense prefers LocalPilot's bundled read-only hardware provider while
 # preserving the existing Libre/OpenHardwareMonitor WMI fallbacks. Installing

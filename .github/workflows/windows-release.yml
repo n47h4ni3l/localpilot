@@ -1,0 +1,56 @@
+name: Windows release package
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: python -m pip install -e ".[dev]"
+      - name: Verify release version matches the tag
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: python -c "import os,tomllib; p=tomllib.load(open('pyproject.toml','rb')); assert os.environ['RELEASE_TAG'] == 'v'+p['project']['version'], 'Release tag and package version differ'"
+      - run: python -m pytest -q
+      - run: python -m pytest training/tests -q
+      - name: Package the committed Windows installer
+        shell: pwsh
+        run: ./scripts/build-windows-installer.ps1
+      - name: Validate the built release archive
+        shell: pwsh
+        run: |
+          $env:LOCALPILOT_RELEASE_ARCHIVE = (Get-ChildItem dist/*.zip | Select-Object -First 1).FullName
+          $env:LOCALPILOT_RELEASE_EXPECTED_SHA = (git rev-parse HEAD).Trim()
+          python -m pytest tests/test_windows_release_package.py -q
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocalPilot-Windows-installer
+          path: dist/*
+          if-no-files-found: error
+      - name: Attach installer to published release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: pwsh
+        run: gh release upload $env:RELEASE_TAG dist/* --clobber

@@ -41,7 +41,7 @@ a fresh Windows PC, including Smart App Control where enabled.
 
 After the provider is configured, supply an authenticated PowerShell adapter
 that accepts a `-Paths` string array. It must sign every supplied file with the
-chosen public RSA certificate, SHA-256 digest and an RFC 3161 timestamp, throw on failures, and
+chosen public certificate, SHA-256 digest and an RFC 3161 timestamp, throw on failures, and
 return a failing exit status if its signing client fails. The adapter runs only
 on the maintainer's build machine or protected CI runner; it is never needed on
 an end user's PC. It must not modify certificate trust stores.
@@ -62,7 +62,7 @@ update checks. Keep the provider adapter outside released source.
 
 `-SignToolPath` can select a Windows SDK SignTool explicitly. Otherwise setup
 locates an installed SDK tool. Verification requires embedded Authenticode
-signatures, a valid RSA code-signing certificate matching the exact expected
+signatures, a valid code-signing certificate matching the exact expected
 Subject, a timestamp, and successful `signtool verify /pa /all /tw /v` without
 warnings. Use a clean signing runner with standard Windows public trust roots;
 do not import a private test root to make verification pass.

@@ -100,7 +100,6 @@ function Invoke-TestSignTool {
             "self-signed",
             False,
         ),
-        ("$script:signature.SignerCertificate.PublicKey.Oid.Value = '1.2.840.10045.2.1'", 0, "RSA", False),
         ("$script:signature.SignerCertificate.Extensions = @()", 0, "Code Signing", False),
         (
             "$script:signature.SignerCertificate.Extensions[0].EnhancedKeyUsages[0].Value = '1.3.6.1.5.5.7.3.1'",
@@ -131,13 +130,14 @@ def test_signature_gate_rejects_untrusted_policy_boundaries(tmp_path, mutation, 
     assert log.exists() is tool_called
 
 
-def test_success_verifies_every_embedded_signature_and_requires_timestamp_without_pipeline_output(tmp_path):
+@pytest.mark.parametrize("key_oid", ["1.2.840.113549.1.1.1", "1.2.840.10045.2.1"])
+def test_success_verifies_every_embedded_signature_and_requires_timestamp_without_pipeline_output(tmp_path, key_oid):
     artifact = tmp_path / "artifact [literal].exe"
     artifact.write_bytes(b"test policy fixture")
     log = tmp_path / "verification.jsonl"
     result = _run_policy(
         tmp_path,
-        VALID_SIGNATURE + r"""
+        VALID_SIGNATURE + f"$script:signature.SignerCertificate.PublicKey.Oid.Value = '{key_oid}'\n" + r"""
 $objects = @(Assert-WindowsCodeSignature -Path $env:LOCALPILOT_TEST_ARTIFACT `
     -ExpectedPublisher $env:LOCALPILOT_TEST_PUBLISHER)
 if ($objects.Count -ne 0) { throw 'Signature assertion leaked pipeline output.' }

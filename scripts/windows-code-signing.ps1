@@ -80,9 +80,6 @@ function Assert-WindowsCodeSignature {
     if ([string]::Equals($certificate.Subject, $certificate.Issuer, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'A self-signed signing certificate cannot establish public publisher trust.'
     }
-    if ($null -eq $certificate.PublicKey -or $certificate.PublicKey.Oid.Value -ne '1.2.840.113549.1.1.1') {
-        throw 'The signing certificate must use RSA for Smart App Control compatibility.'
-    }
     $codeSigningUsage = $false
     foreach ($extension in @($certificate.Extensions)) {
         if ($extension.Oid.Value -eq '2.5.29.37') {

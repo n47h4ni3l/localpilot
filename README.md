@@ -267,7 +267,7 @@ Rejection and retry retain the earlier branch, pull request, outcome, and lesson
 
 ## Desktop and runtime
 
-`localpilot desktop` opens the WebView desktop companion. A native transparent avatar represents collapsed mode; expanded mode provides persistent chat, conversation selection, runtime events, and the read-only SystemSense glance panel. Use `localpilot desktop --tkinter` for the legacy Tkinter interface.
+`localpilot desktop` opens the native avatar and its WebView chat together. The avatar stays visible beside the chat, which provides persistent conversations, runtime events, and the read-only SystemSense glance panel. Opening the desktop icon again brings forward the existing conversation. Automatic updates wait until its chat is closed so an unsent message stays intact. Use `localpilot desktop --tkinter` for the legacy Tkinter interface.
 
 The desktop talks to a loopback-only broker authenticated with a per-install token. The broker owns visible chat persistence and supervises a replaceable runtime worker that owns Ollama and the registered operator tools.
 
@@ -304,6 +304,9 @@ The desktop icon requests administrator access for low-level hardware readings.
 An elevated desktop replaces an idle unelevated broker before starting its
 runtime. If a response is still active, setup leaves it intact and displays
 clear retry guidance. Desktop startup errors appear in a Windows dialog.
+Reinstallation closes the previous LocalPilot windows and runtime gracefully
+before opening the repaired desktop. Setup waits for background work to finish
+and refuses to force-close a process that cannot be identified or stopped safely.
 
 For maintainers, `scripts/build-windows-installer.ps1` builds a committed source
 ZIP and self-extracting Windows executable with a freshly built sensor helper,

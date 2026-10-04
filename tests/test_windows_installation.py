@@ -8,6 +8,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -117,6 +118,88 @@ def _installation_functions(tmp_path: Path) -> Path:
     return wrapper
 
 
+def test_installer_wait_returns_parent_status_while_desktop_child_remains_open(tmp_path: Path):
+    ready, stop, finished = (tmp_path / name for name in ('ready', 'stop', 'finished'))
+    child = tmp_path / 'desktop-child.py'
+    child.write_text(
+        'import time\nfrom pathlib import Path\n'
+        f'Path({str(ready)!r}).touch()\n'
+        'deadline = time.monotonic() + 30\n'
+        f'while not Path({str(stop)!r}).exists() and time.monotonic() < deadline:\n'
+        '    time.sleep(0.05)\n'
+        f'Path({str(finished)!r}).touch()\n', encoding='utf-8',
+    )
+    parent = tmp_path / 'installer-parent.py'
+    parent.write_text(
+        'import subprocess, sys, time\nfrom pathlib import Path\n'
+        f'subprocess.Popen([sys.executable, {str(child)!r}], '
+        'stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n'
+        'deadline = time.monotonic() + 10\n'
+        f'while not Path({str(ready)!r}).exists() and time.monotonic() < deadline:\n'
+        '    time.sleep(0.05)\n'
+        'sys.exit(23)\n', encoding='utf-8',
+    )
+    wrapper = _installation_functions(tmp_path)
+    with wrapper.open('a', encoding='utf-8') as file:
+        file.write(
+            "if ($Operation -eq 'wait') { "
+            "$process = Start-Process -FilePath $Source -ArgumentList ('\"{0}\"' -f $Destination) "
+            "-PassThru -WindowStyle Hidden; Wait-InstallerProcess -Process $process }\n"
+        )
+    started = time.monotonic()
+    try:
+        result = _powershell(wrapper, str(ROOT / 'scripts' / 'install-localpilot.ps1'),
+                             'wait', sys.executable, str(parent), 'unused')
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stdout.strip() == '23'
+        assert time.monotonic() - started < 20
+        assert ready.exists() and not finished.exists()
+    finally:
+        stop.touch()
+        deadline = time.monotonic() + 10
+        while ready.exists() and not finished.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not ready.exists() or finished.exists(), 'The test desktop child did not finish cooperatively.'
+
+
+@pytest.mark.parametrize('include_worker, shutdown_ok', [(True, True), (False, True), (True, False)])
+def test_reinstall_shutdown_preserves_config_and_refuses_unfinished_shutdown(
+    tmp_path: Path, include_worker: bool, shutdown_ok: bool,
+):
+    marker = tmp_path / 'shutdown-settings.json'
+    python = tmp_path / 'selected-python.ps1'
+    python.write_text(
+        "@{root=$args[2]; config=$args[3]; worker=$args[4]} | ConvertTo-Json "
+        "| Set-Content -LiteralPath $env:LOCALPILOT_TEST_SHUTDOWN_MARKER\n"
+        f'$global:LASTEXITCODE={0 if shutdown_ok else 1}\n', encoding='utf-8',
+    )
+    installed = tmp_path / 'installed'
+    config = installed / 'owner-config.toml'
+    wrapper = _installation_functions(tmp_path)
+    with wrapper.open('a', encoding='utf-8') as file:
+        file.write(
+            "if ($Operation -eq 'stop') { Stop-PreviousLocalPilot -Root $Destination "
+            "-Python $Source -ConfigPath $Remote "
+            "-IncludeBackgroundWorker ($env:LOCALPILOT_TEST_INCLUDE_WORKER -eq 'yes') }\n"
+        )
+    environment = os.environ.copy()
+    environment['LOCALPILOT_TEST_INCLUDE_WORKER'] = 'yes' if include_worker else 'no'
+    environment['LOCALPILOT_TEST_SHUTDOWN_MARKER'] = str(marker)
+    result = subprocess.run(
+        [str(POWERSHELL), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(wrapper),
+         str(ROOT / 'scripts' / 'install-localpilot.ps1'), 'stop', str(python), str(installed), str(config)],
+        capture_output=True, text=True, timeout=30, env=environment,
+    )
+    assert json.loads(marker.read_text(encoding='utf-8-sig')) == {
+        'root': str(installed), 'config': str(config), 'worker': 'yes' if include_worker else 'no',
+    }
+    if shutdown_ok:
+        assert result.returncode == 0, result.stdout + result.stderr
+    else:
+        assert result.returncode != 0
+        assert 'no process was force-terminated' in result.stderr
+
+
 @pytest.mark.parametrize("condition", ["valid", "corrupt", "wrong_arch"])
 def test_release_payload_requires_matching_architecture_and_provider_hash(tmp_path: Path, condition: str):
     root = tmp_path / "bundle"
@@ -136,6 +219,43 @@ def test_release_payload_requires_matching_architecture_and_provider_hash(tmp_pa
     expected_runtime = "win-arm64" if condition == "wrong_arch" else "win-x64"
     result = _powershell(wrapper, str(ROOT / "scripts" / "install-localpilot.ps1"), "validate", "unused", str(root), expected_runtime)
     assert (result.returncode == 0) is (condition == "valid"), result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('legacy, accepted', [('', True), ('old install', True), ('old install', False)])
+def test_legacy_setup_uses_explicit_alias_and_aborts_if_unverified(tmp_path: Path, legacy: str, accepted: bool):
+    marker = tmp_path / 'legacy-settings.json'
+    python = tmp_path / 'selected-python.ps1'
+    python.write_text(
+        "@{root=$args[2]; config=$args[3]; legacy=$args[4]} | ConvertTo-Json "
+        "| Set-Content -LiteralPath $env:LOCALPILOT_TEST_LEGACY_MARKER\n"
+        f'$global:LASTEXITCODE={0 if accepted else 1}\n', encoding='utf-8',
+    )
+    installed = tmp_path / 'current install'
+    config = installed / 'owner config.toml'
+    previous = str(tmp_path / legacy) if legacy else ''
+    wrapper = _installation_functions(tmp_path)
+    with wrapper.open('a', encoding='utf-8') as file:
+        file.write(
+            "if ($Operation -eq 'legacy') { Stop-LegacyLocalPilot -Root $Destination "
+            "-Python $Source -ConfigPath $Remote -LegacyRoot $env:LOCALPILOT_TEST_LEGACY_ROOT }\n"
+        )
+    environment = os.environ.copy()
+    environment['LOCALPILOT_TEST_LEGACY_ROOT'] = previous
+    environment['LOCALPILOT_TEST_LEGACY_MARKER'] = str(marker)
+    result = subprocess.run(
+        [str(POWERSHELL), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(wrapper),
+         str(ROOT / 'scripts' / 'install-localpilot.ps1'), 'legacy', str(python), str(installed), str(config)],
+        capture_output=True, text=True, timeout=30, env=environment,
+    )
+    if not legacy:
+        assert not marker.exists()
+    else:
+        assert json.loads(marker.read_text(encoding='utf-8-sig')) == {
+            'root': str(installed), 'config': str(config), 'legacy': previous,
+        }
+    assert (result.returncode == 0) is accepted, result.stdout + result.stderr
+    if not accepted:
+        assert 'configuration and data were preserved' in result.stderr
 
 
 def test_release_copy_preserves_existing_configuration_data_and_environment(tmp_path: Path):

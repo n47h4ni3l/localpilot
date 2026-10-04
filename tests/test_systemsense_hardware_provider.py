@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import json
+import io
+import subprocess
+import sys
 from types import SimpleNamespace
+
+import pytest
 
 from localpilot import systemsense_collectors
 from localpilot.systemsense_hardware import (
@@ -173,3 +178,92 @@ def test_collector_close_releases_bundled_provider():
     collector.close()
 
     assert bundled.closed is True
+
+
+class SlowProvider:
+    pid = 4242
+
+    def __init__(self):
+        self.stdin = io.StringIO()
+        self.stdout = io.StringIO()
+        self.returncode = None
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout):
+        assert self.stdin.closed
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired("provider", timeout)
+        return self.returncode
+
+    def terminate(self):
+        raise AssertionError("An in-flight hardware read must not be terminated")
+
+    def kill(self):
+        raise AssertionError("An in-flight hardware read must not be killed")
+
+
+def test_close_timeout_retains_exact_provider_until_exit(tmp_path):
+    launches = []
+    collector = BundledHardwareMonitorCollector(
+        tmp_path / "provider.exe", popen_factory=lambda *args, **kwargs: launches.append(args)
+    )
+    provider = SlowProvider()
+    collector._process = provider
+
+    with pytest.raises(RuntimeError, match="shutdown-timeout"):
+        collector.close()
+
+    assert collector._process is provider
+    assert provider.stdin.closed
+    assert not provider.stdout.closed
+    assert collector.collect()["errors"] == ["bundled-provider:shutdown-pending"]
+    assert launches == []
+    provider.returncode = 0
+    collector.close()
+    assert collector._process is None
+    assert provider.stdout.closed
+    assert collector._shutdown_requested is False
+
+
+def test_snapshot_failure_reports_slow_shutdown_without_launching_duplicate(tmp_path, monkeypatch):
+    launches = []
+    collector = BundledHardwareMonitorCollector(
+        tmp_path / "provider.exe", popen_factory=lambda *args, **kwargs: launches.append(args)
+    )
+    provider = SlowProvider()
+    collector._process = provider
+    monkeypatch.setattr(collector, "_await_payload", lambda *args, **kwargs: (None, "timeout"))
+
+    result = collector.collect()
+
+    assert result["available"] is False
+    assert result["errors"] == ["bundled-provider:snapshot-timeout", "bundled-provider:shutdown-timeout"]
+    assert collector._process is provider
+    assert collector.collect()["errors"] == ["bundled-provider:shutdown-pending"]
+    assert launches == []
+
+
+def test_close_sends_eof_and_allows_slow_helper_cleanup(tmp_path):
+    marker = tmp_path / "graceful-exit.txt"
+    # This isolated protocol process represents a hardware read that takes
+    # longer than the old one-second termination grace period.
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import pathlib,sys,time; sys.stdin.read(); time.sleep(1.2); pathlib.Path(sys.argv[1]).write_text('clean')", str(marker)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    collector = BundledHardwareMonitorCollector(tmp_path / "provider.exe")
+    collector._process = process
+    try:
+        collector.close()
+        assert process.returncode == 0
+        assert marker.read_text() == "clean"
+        assert collector._process is None
+    finally:
+        # EOF is also the only cleanup request if an assertion fails.
+        if process.stdin is not None:
+            process.stdin.close()
+        process.wait(timeout=5)

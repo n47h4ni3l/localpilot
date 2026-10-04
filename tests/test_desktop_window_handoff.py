@@ -6,6 +6,7 @@ from localpilot import native_avatar, webview_app
 class FakeWindow:
     def __init__(self) -> None:
         self.destroyed = False
+        self.hidden = False
         self.x = 100
         self.y = 200
         self.width = webview_app.EXPANDED_SIZE[0]
@@ -15,8 +16,13 @@ class FakeWindow:
     def destroy(self) -> None:
         self.destroyed = True
 
-    def evaluate_js(self, script: str) -> None:
+    def hide(self) -> None:
+        self.hidden = True
+
+    def evaluate_js(self, script: str):
         self.scripts.append(script)
+        if "return Boolean" in script:
+            return False
 
 
 class FakeTkRoot:
@@ -65,7 +71,8 @@ def test_webview_collapse_prefers_persisted_avatar_home_position(tmp_path, monke
 
     assert bridge.collapse() == {"ok": True}
     assert captured == {"x": -720, "y": 330}
-    assert window.destroyed is True
+    assert window.destroyed is False
+    assert window.hidden is True
 
 
 def test_webview_explicit_exit_does_not_request_avatar_respawn(tmp_path):
@@ -81,12 +88,14 @@ def test_webview_explicit_exit_does_not_request_avatar_respawn(tmp_path):
 def test_native_close_marks_real_exit_until_avatar_was_already_spawned(tmp_path):
     window = FakeWindow()
     bridge = webview_app.WindowBridge(window, tmp_path, None)
-    bridge.mark_native_close()
+    assert bridge.mark_native_close() is False
+    bridge._closing_thread.join(timeout=2)
     assert bridge.exit_requested is True
 
     second = webview_app.WindowBridge(FakeWindow(), tmp_path / "second", None)
     second._avatar_spawned = True
-    second.mark_native_close()
+    assert second.mark_native_close() is False
+    second._closing_thread.join(timeout=2)
     assert second.exit_requested is False
 
 

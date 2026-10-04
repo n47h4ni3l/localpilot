@@ -260,12 +260,17 @@ class RuntimeSupervisor:
                 self._launch_locked(restarting=True, context=context)
 
     def send(self, message: dict[str, Any]) -> None:
+        with self._lock:
+            if self._stopping:
+                raise RuntimeError("LocalPilot runtime is stopping")
         if not self.running:
             self.start()
         encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":"), default=str)
         with self._write_lock:
             with self._lock:
                 process = self._process
+                if self._stopping:
+                    raise RuntimeError("LocalPilot runtime is stopping")
                 if process is None or process.stdin is None or process.poll() is not None:
                     raise RuntimeError("LocalPilot runtime is unavailable")
                 process.stdin.write(encoded + "\n")
@@ -292,7 +297,7 @@ class RuntimeSupervisor:
             raise ValueError(f"Unsupported whole-runtime restart source: {source}")
         with self._lock:
             process = self._process
-            if process is None or process.poll() is not None:
+            if self._stopping or process is None or process.poll() is not None:
                 return False
             if self._planned_restart is not None:
                 return False
@@ -321,27 +326,45 @@ class RuntimeSupervisor:
         return True
 
     def stop(self) -> None:
-        with self._lock:
-            self._stopping = True
-            process = self._process
-            self._process = None
-        if process is None or process.poll() is not None:
+        # Closing stdin lets the worker finish its current request and run its
+        # cleanup. Keep ownership until it actually exits, including on timeout.
+        with self._write_lock:
+            with self._lock:
+                self._stopping = True
+                process = self._process
+                started_at = self._process_started_at
+                if process is not None and process.poll() is None and process.stdin is not None:
+                    try:
+                        process.stdin.close()
+                    except (OSError, ValueError):
+                        # An already closed/broken pipe still warrants waiting
+                        # for the process; it does not authorize termination.
+                        pass
+        if process is None:
             return
         old_pid = process.pid
-        started_at = self._process_started_at
         try:
-            if process.stdin is not None:
-                process.stdin.close()
-            else:
-                process.terminate()
             returncode = process.wait(timeout=5)
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            process.terminate()
-            try:
-                returncode = process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                returncode = process.wait(timeout=5)
+        except subprocess.TimeoutExpired as exc:
+            self._record_lifecycle(
+                "stop_timeout",
+                old_pid=old_pid,
+                new_pid=None,
+                process_started_at=started_at,
+                reason="graceful_shutdown_timed_out",
+                source="broker_shutdown",
+            )
+            raise RuntimeError(
+                f"LocalPilot runtime {old_pid} is still stopping after the shutdown timeout"
+            ) from exc
+        with self._lock:
+            if self._process is process:
+                self._process = None
+                self._process_started_at = None
+                self._launch_context = {}
+                self._planned_restart = None
+                self._requests.clear()
+                self._active_request_id = None
         self._record_lifecycle(
             "stopped",
             old_pid=old_pid,

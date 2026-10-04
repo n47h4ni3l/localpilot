@@ -229,6 +229,9 @@ def test_updater_refuses_to_continue_when_process_shutdown_is_denied(monkeypatch
     class Process:
         pid = 12345
 
+        def cmdline(self):
+            raise psutil.AccessDenied(self.pid)
+
         def terminate(self):
             raise psutil.AccessDenied(self.pid)
 
@@ -238,7 +241,5 @@ def test_updater_refuses_to_continue_when_process_shutdown_is_denied(monkeypatch
     process = Process()
     monkeypatch.setattr(desktop_updater.psutil, "process_iter", lambda: iter([process]))
     monkeypatch.setattr(desktop_updater, "_belongs_to_localpilot", lambda process, root: True)
-    monkeypatch.setattr(desktop_updater.psutil, "wait_procs", lambda processes, timeout: ([], [process]))
-
-    with pytest.raises(RuntimeError, match="remain running"):
+    with pytest.raises(RuntimeError, match="identity could not be verified"):
         desktop_updater._stop_localpilot_processes(tmp_path)

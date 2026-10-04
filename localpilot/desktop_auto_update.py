@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -163,6 +164,7 @@ def launch_update_if_ready(
     remote: str,
     main_branch: str,
     parent_pid: int | None = None,
+    commit_launch: Callable[[Callable[[], bool]], bool] | None = None,
 ) -> bool:
     handoff = prepare_update_handoff(
         root,
@@ -194,19 +196,24 @@ def launch_update_if_ready(
         ) | int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
     else:
         start_new_session = True
-    try:
-        subprocess.Popen(
-            argv,
-            cwd=str(root_path),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            shell=False,
-            creationflags=creationflags,
-            start_new_session=start_new_session,
-            close_fds=True,
-        )
-    except OSError as exc:
-        state.update(update_check_error=f"Could not start the external updater: {type(exc).__name__}: {exc}"[:1000])
-        return False
-    return True
+    def spawn() -> bool:
+        try:
+            subprocess.Popen(
+                argv,
+                cwd=str(root_path),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                shell=False,
+                creationflags=creationflags,
+                start_new_session=start_new_session,
+                close_fds=True,
+            )
+        except OSError as exc:
+            state.update(update_check_error=f"Could not start the external updater: {type(exc).__name__}: {exc}"[:1000])
+            return False
+        return True
+
+    # Fetch/preflight may take time. The UI owner admits only this final spawn
+    # under the same short lock used to open chat, after preparation completes.
+    return commit_launch(spawn) if commit_launch is not None else spawn()

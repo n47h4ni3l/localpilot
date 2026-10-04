@@ -72,6 +72,7 @@ class BundledHardwareMonitorCollector:
         )
         self._popen_factory = popen_factory
         self._process: subprocess.Popen[str] | None = None
+        self._shutdown_requested = False
         self._responses: queue.Queue[tuple[int, str]] = queue.Queue()
         self._reader_thread: threading.Thread | None = None
         self._lock = threading.RLock()
@@ -86,34 +87,43 @@ class BundledHardwareMonitorCollector:
         except (OSError, ValueError):
             return
 
-    def _stop_process(self) -> None:
+    def _stop_process(self) -> list[str]:
         process = self._process
-        self._process = None
         if process is None:
-            return
-        try:
-            if process.poll() is None and process.stdin is not None:
+            return []
+        if process.poll() is None:
+            self._shutdown_requested = True
+            if process.stdin is not None:
                 try:
-                    process.stdin.write("quit\n")
-                    process.stdin.flush()
-                    process.wait(timeout=1.0)
-                except (OSError, ValueError, subprocess.TimeoutExpired):
-                    process.terminate()
-                    try:
-                        process.wait(timeout=1.0)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-        finally:
-            for stream in (process.stdin, process.stdout):
-                try:
-                    if stream is not None:
-                        stream.close()
-                except OSError:
+                    # EOF requests exit even while cold enumeration or a sensor
+                    # snapshot is in flight. Never force an active sensor read.
+                    process.stdin.close()
+                except (OSError, ValueError):
                     pass
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                # Retain the exact child and its reader until it exits. A later
+                # sample must not launch a second provider or reuse this one.
+                return ["bundled-provider:shutdown-timeout"]
+            except OSError:
+                return ["bundled-provider:shutdown-wait-failed"]
+        if self._process is process:
+            self._process = None
+            self._shutdown_requested = False
+        for stream in (process.stdin, process.stdout):
+            try:
+                if stream is not None:
+                    stream.close()
+            except (OSError, ValueError):
+                pass
+        return []
 
     def close(self) -> None:
         with self._lock:
-            self._stop_process()
+            errors = self._stop_process()
+            if errors:
+                raise RuntimeError("SystemSense hardware provider is still stopping: " + ", ".join(errors))
 
     def _await_payload(
         self,
@@ -169,6 +179,8 @@ class BundledHardwareMonitorCollector:
     def _start_process(self) -> tuple[subprocess.Popen[str] | None, list[str]]:
         process = self._process
         if process is not None and process.poll() is None:
+            if self._shutdown_requested:
+                return None, ["bundled-provider:shutdown-pending"]
             return process, []
         self._stop_process()
 
@@ -204,8 +216,7 @@ class BundledHardwareMonitorCollector:
 
         ready, errors = self._wait_until_ready(process)
         if not ready:
-            self._stop_process()
-            return None, errors
+            return None, errors + self._stop_process()
         return process, []
 
     @staticmethod
@@ -247,24 +258,24 @@ class BundledHardwareMonitorCollector:
                     "errors": errors,
                 }
             if process.stdin is None:
-                self._stop_process()
+                stop_errors = self._stop_process()
                 return {
                     "source": "LibreHardwareMonitorLib",
                     "available": False,
                     "sensors": [],
-                    "errors": ["bundled-provider:no-stdin"],
+                    "errors": ["bundled-provider:no-stdin", *stop_errors],
                 }
 
             try:
                 process.stdin.write("snapshot\n")
                 process.stdin.flush()
             except (OSError, ValueError):
-                self._stop_process()
+                stop_errors = self._stop_process()
                 return {
                     "source": "LibreHardwareMonitorLib",
                     "available": False,
                     "sensors": [],
-                    "errors": ["bundled-provider:write-failed"],
+                    "errors": ["bundled-provider:write-failed", *stop_errors],
                 }
 
             payload, error = self._await_payload(
@@ -272,12 +283,12 @@ class BundledHardwareMonitorCollector:
                 timeout_seconds=self.timeout_seconds,
             )
             if error is not None:
-                self._stop_process()
+                stop_errors = self._stop_process()
                 return {
                     "source": "LibreHardwareMonitorLib",
                     "available": False,
                     "sensors": [],
-                    "errors": [f"bundled-provider:snapshot-{error}"],
+                    "errors": [f"bundled-provider:snapshot-{error}", *stop_errors],
                 }
             return self._normalize_payload(payload)
 

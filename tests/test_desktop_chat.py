@@ -656,7 +656,7 @@ def test_supervisor_does_not_forward_raw_worker_stderr(tmp_path):
 
 
 @pytest.mark.parametrize("graceful_timeout", [False, True])
-def test_supervisor_stop_allows_stdin_cleanup_before_bounded_termination(tmp_path, graceful_timeout):
+def test_supervisor_stop_allows_stdin_cleanup_and_retains_slow_worker(tmp_path, graceful_timeout):
     calls = []
 
     class Process:
@@ -674,7 +674,7 @@ def test_supervisor_stop_allows_stdin_cleanup_before_bounded_termination(tmp_pat
             return 0
 
         def terminate(self):
-            calls.append("terminate")
+            raise AssertionError("Graceful shutdown must not terminate the worker")
 
         def kill(self):
             raise AssertionError("Worker exited without a forced kill")
@@ -682,10 +682,14 @@ def test_supervisor_stop_allows_stdin_cleanup_before_bounded_termination(tmp_pat
     supervisor = RuntimeSupervisor(tmp_path)
     supervisor._process = Process()
 
-    supervisor.stop()
+    if graceful_timeout:
+        with pytest.raises(RuntimeError, match="still stopping"):
+            supervisor.stop()
+    else:
+        supervisor.stop()
 
-    assert calls == (["wait", "terminate", "wait"] if graceful_timeout else ["wait"])
-    assert supervisor.pid is None
+    assert calls == ["wait"]
+    assert supervisor.pid == (321 if graceful_timeout else None)
 
 
 def test_supervisor_replaces_crashed_pid_and_records_crash_recovery(tmp_path, monkeypatch):

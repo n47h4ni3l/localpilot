@@ -29,6 +29,9 @@ When self-development is enabled, setup registers the hidden background worker
 using the installed LocalPilot environment and administrator access. It
 verifies that the worker starts, restoring the previous task if replacement
 fails. Foreground, idle, resource and human-merge gates still apply.
+The previous worker finishes its current cycle and releases its lock before
+the replacement starts. A timeout leaves the previous task recoverable and
+does not force-terminate a running process.
 
 Existing `localpilot.toml`, model selection, local data, Git history and Python
 environment are preserved on reinstallation. An existing installation keeps
@@ -40,6 +43,19 @@ The desktop icon requests administrator access each time it launches, allowing
 the hardware provider to access CPU sensors. Windows still requires UAC
 approval. If the PawnIO installation requests a Windows restart, restart the
 PC and then open LocalPilot using its desktop icon.
+
+The avatar appears beside the chat as soon as the desktop opens. Opening the
+icon again brings forward the existing conversation instead of creating a
+second desktop. Automatic updates wait while the chat is open, preserving an
+unsent message. Reinstallation closes the previous windows and runtime safely
+before opening the replacement; an active response or shutdown problem gives
+retry guidance. The setup window finishes independently of the running desktop.
+
+**Start with Windows** remains an opt-in preference. When enabled, setup uses
+a login task for this user and installation with administrator access. The
+task launches the same desktop and configuration as the desktop icon, without
+opening an extra desktop. Changing this preference requires opening LocalPilot
+as administrator. Setup preserves an existing disabled preference.
 
 Public installers require a trusted code-signing identity. Check the digital
 signature and publisher on the EXE before installation. An unsigned development
@@ -61,3 +77,8 @@ Advanced installations can call `scripts/install-localpilot.ps1` with
 creates the shortcut at an alternative path for a separate installation.
 Use `-SkipBackgroundWorker` when testing a separate installation without
 replacing the PC's existing LocalPilot background task.
+To migrate an enabled login shortcut from an older checkout, pass
+`-LegacyInstallDirectory <old directory>`. Both configurations must resolve to
+the same local data directory. Setup closes only that verified previous desktop
+and removes its login shortcut after the new task has been checked; its source,
+configuration and data remain preserved.

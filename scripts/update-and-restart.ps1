@@ -63,6 +63,52 @@ function Get-RuntimeIdentifier {
     }
 }
 
+function Find-UpdateDotNetSdk {
+    $command = Get-Command dotnet -ErrorAction SilentlyContinue
+    $executable = if ($command) { $command.Source } else { $null }
+    if (-not $executable -and $env:ProgramFiles) {
+        $candidate = Join-Path $env:ProgramFiles 'dotnet\dotnet.exe'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $executable = $candidate }
+    }
+    if (-not $executable) { return $null }
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $versions = @(& $executable --list-sdks 2>$null)
+        $sdkExitCode = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $savedPreference }
+    if ($sdkExitCode -ne 0) { return $null }
+    foreach ($version in $versions) {
+        if ([string]$version -match '^\s*(\d+)\.\d+\.\d+' -and [int]$Matches[1] -ge 8) {
+            return $executable
+        }
+    }
+    return $null
+}
+
+function Ensure-UpdateDotNetSdk {
+    $sdk = Find-UpdateDotNetSdk
+    if ($sdk) { return $sdk }
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        throw 'The sensor update needs .NET SDK 8 and Microsoft App Installer/WinGet. Install App Installer and retry; LocalPilot remains running.'
+    }
+    Write-Host 'Installing the prerequisite for the hardware sensor update...'
+    & $winget.Source install --id Microsoft.DotNet.SDK.8 --exact --source winget --silent `
+        --accept-package-agreements --accept-source-agreements --disable-interactivity | Out-Host
+    if ($LASTEXITCODE -in @(3010, 1641)) {
+        throw 'The update prerequisite requires a Windows restart. Restart and retry the update; LocalPilot has not been stopped.'
+    }
+    if ($LASTEXITCODE -ne 0) { throw 'The update prerequisite could not be installed; LocalPilot remains running.' }
+    $env:Path = (@(
+        [Environment]::GetEnvironmentVariable('Path', 'Machine'),
+        [Environment]::GetEnvironmentVariable('Path', 'User'), $env:Path
+    ) | Where-Object { $_ }) -join ';'
+    $sdk = Find-UpdateDotNetSdk
+    if (-not $sdk) { throw 'The update prerequisite is not ready. Restart Windows and retry; LocalPilot remains running.' }
+    return $sdk
+}
+
 function Get-GitCommit {
     param([string]$Revision)
     $value = (& git rev-parse --verify "$Revision^{commit}" 2>$null)
@@ -179,7 +225,7 @@ try {
         & git fetch --no-tags --prune $Remote "+refs/heads/$($Branch):$remoteRef"
         Assert-LastExitCode "Could not fetch '$Remote/$Branch'. LocalPilot was left running unchanged."
     } else {
-        Write-Host "Using previously fetched update target (no network access required after handoff)..."
+        Write-Host "Using the previously fetched source update target..."
     }
 
     if ($ExpectedTargetSha) {
@@ -199,6 +245,9 @@ try {
         throw "Update refused because local '$Branch' is ahead of or diverged from target $($targetSha.Substring(0, 7))."
     }
 
+    # Release installs include the helper and need no SDK. A later source
+    # update rebuilds it, so obtain the SDK before closing the working desktop.
+    $dotnetForUpdate = Ensure-UpdateDotNetSdk
     Write-Host ("Update preflight complete: {0} -> {1}. LocalPilot is still running." -f $oldSha.Substring(0, 7), $targetSha.Substring(0, 7)) -ForegroundColor Green
 
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -207,15 +256,14 @@ try {
         $taskWasRunning = ($task.State -eq "Running")
 
         if ($taskWasEnabled) {
-            Write-Host "Stopping scheduled background worker..."
-            Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+            Write-Host "Pausing background worker triggers during the update..."
             Disable-ScheduledTask -TaskName $TaskName -ErrorAction Stop | Out-Null
             $taskTemporarilyDisabled = $true
         }
     }
 
     Write-Host "Stopping all LocalPilot processes..."
-    & $python -c "from pathlib import Path; from localpilot.desktop_updater import _stop_localpilot_processes; _stop_localpilot_processes(Path.cwd())"
+    & $python -c "from pathlib import Path; import sys; from localpilot.desktop_updater import _stop_localpilot_processes; _stop_localpilot_processes(Path.cwd(), config_path=(sys.argv[1] if len(sys.argv) > 1 else None) or None)" $resolvedConfig
     Assert-LastExitCode "LocalPilot processes could not be stopped cleanly."
     $processesStopped = $true
     Start-Sleep -Seconds 2
@@ -254,7 +302,7 @@ try {
     Write-Host "Rebuilding SystemSense hardware provider ($runtimeIdentifier)..."
     # The build script uses terminating errors. LASTEXITCODE can retain an
     # unrelated native command's result after a successful PowerShell script.
-    & (Join-Path $repoRoot "scripts\build-systemsense-hardware.ps1") -RuntimeIdentifier $runtimeIdentifier
+    & (Join-Path $repoRoot "scripts\build-systemsense-hardware.ps1") -RuntimeIdentifier $runtimeIdentifier -DotNetPath $dotnetForUpdate
 
     if (-not $SkipHardwareSmokeCheck) {
         $provider = Join-Path $repoRoot "localpilot\_hardware\$runtimeIdentifier\LocalPilot.SystemSense.HardwareProvider.exe"

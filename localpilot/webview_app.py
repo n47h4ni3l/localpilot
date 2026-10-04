@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,8 @@ from localpilot.config import load_config
 from localpilot.comic_geometry import pixel
 from localpilot.desktop import BrokerClient, ensure_broker
 from localpilot.desktop_state import DesktopUIState
+from localpilot.desktop_startup import set_startup, startup_shortcut_path, startup_status
+from localpilot.foreground import active_foreground_turns
 from localpilot.desktop_update_status import (
     check_for_updates as check_desktop_updates,
     current_update_status,
@@ -141,45 +144,8 @@ def _launch_native_avatar(
 
 
 def _startup_shortcut_path() -> Path:
-    """Location of the Startup-folder entry used for 'start with Windows'."""
-    appdata = os.environ.get("APPDATA")
-    base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
-    return base / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "LocalPilot.lnk"
-
-
-def _write_startup_shortcut(target: Path, root: Path, config_path: str | None) -> None:
-    """Create a .lnk that starts the persistent illustrated companion at login."""
-    exe = str(_desktop_python_executable())
-    argv = ["-m", COMPANION_MODULE, "--root", str(root.resolve())]
-    if config_path:
-        argv.extend(["--config", str(Path(config_path).resolve())])
-    arguments = subprocess.list2cmdline(argv)
-
-    ps = (
-        "$s = New-Object -ComObject WScript.Shell; "
-        "$sc = $s.CreateShortcut([Environment]::GetEnvironmentVariable('LOCALPILOT_SHORTCUT_PATH')); "
-        "$sc.TargetPath = [Environment]::GetEnvironmentVariable('LOCALPILOT_EXECUTABLE'); "
-        "$sc.Arguments = [Environment]::GetEnvironmentVariable('LOCALPILOT_ARGUMENTS'); "
-        "$sc.WorkingDirectory = [Environment]::GetEnvironmentVariable('LOCALPILOT_WORKING_DIRECTORY'); "
-        "$sc.Save()"
-    )
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "LOCALPILOT_SHORTCUT_PATH": str(target.resolve()),
-            "LOCALPILOT_EXECUTABLE": exe,
-            "LOCALPILOT_ARGUMENTS": arguments,
-            "LOCALPILOT_WORKING_DIRECTORY": str(root.resolve()),
-        }
-    )
-    subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-        check=True,
-        capture_output=True,
-        env=environment,
-        timeout=10,
-        creationflags=hidden_process_creation_flags(),
-    )
+    """Legacy link location, retained only for ownership-checked migration."""
+    return startup_shortcut_path()
 
 
 class WindowBridge:
@@ -203,6 +169,8 @@ class WindowBridge:
         self._avatar_external = bool(avatar_external)
         self._exit_requested = False
         self._systemsense_open = False
+        self._close_allowed = False
+        self._closing_thread: threading.Thread | None = None
 
     @property
     def exit_requested(self) -> bool:
@@ -286,7 +254,7 @@ class WindowBridge:
         if not self._avatar_external and not self.ensure_avatar():
             return {"ok": False, "reason": "native-avatar-launch-failed"}
         self.clear_companion_state()
-        self._window.destroy()
+        self._window.hide()
         return {"ok": True}
 
     def exit_companion(self) -> dict[str, Any]:
@@ -296,10 +264,65 @@ class WindowBridge:
         self._window.destroy()
         return {"ok": True}
 
-    def mark_native_close(self, *_args: Any) -> None:
+    def _complete_native_close(self) -> None:
         self.clear_companion_state()
         if self._avatar_external or not self._avatar_spawned:
             self._exit_requested = True
+
+    def _close_when_idle(self) -> None:
+        try:
+            # FormClosing runs on WinForms' UI thread. Evaluate on this worker
+            # after vetoing the first close so WebView2 can answer normally.
+            busy = self._window.evaluate_js("""
+(() => {
+  const input = document.getElementById('composer-input');
+  const composer = document.getElementById('composer');
+  const busy = Boolean(!input || (input.value || '').trim() ||
+    (composer && composer.classList.contains('is-busy')) || document.querySelector('.caret'));
+  if (!busy) input.readOnly = true;
+  return Boolean(busy);
+})()
+""")
+            if busy is not False or active_foreground_turns(self._state.path.parent):
+                self._window.evaluate_js("""
+(() => {
+  const app = document.getElementById('app');
+  if (app) app.classList.add('is-expanded');
+  const input = document.getElementById('composer-input');
+  let notice = document.getElementById('desktop-close-feedback');
+  if (!notice && input) {
+    notice = document.createElement('p');
+    notice.id = 'desktop-close-feedback';
+    notice.className = 'desktop-close-feedback';
+    notice.setAttribute('role', 'status');
+    const anchor = input.closest('.composer-wrap') || input.parentElement;
+    if (anchor) anchor.appendChild(notice);
+  }
+  if (notice) notice.textContent = 'Finish the response or send/save your draft before closing.';
+  if (input) { input.readOnly = false; input.focus(); }
+})()
+""")
+                return
+            self._close_allowed = True
+            self._complete_native_close()
+            self._window.destroy()
+        except Exception:
+            # Failed/unfinished WebView admission must leave the same UI alive.
+            self._close_allowed = False
+            try:
+                self._window.evaluate_js("const input = document.getElementById('composer-input'); if (input) input.readOnly = false;")
+            except Exception:
+                pass
+
+    def mark_native_close(self, *_args: Any) -> bool:
+        if self._close_allowed:
+            self._complete_native_close()
+            return True
+        thread = self._closing_thread
+        if thread is None or not thread.is_alive():
+            self._closing_thread = threading.Thread(target=self._close_when_idle, daemon=True)
+            self._closing_thread.start()
+        return False
 
     def set_always_on_top(self, value: bool) -> dict[str, Any]:
         enabled = bool(value)
@@ -316,20 +339,15 @@ class WindowBridge:
         return {"ok": True}
 
     def get_start_with_windows(self) -> dict[str, Any]:
-        return {"ok": True, "enabled": _startup_shortcut_path().exists()}
+        try:
+            return startup_status(self._root, self._config_path)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return {"ok": False, "reason": str(exc)}
 
     def set_start_with_windows(self, value: bool) -> dict[str, Any]:
-        if os.name != "nt":
-            return {"ok": False, "reason": "not-windows"}
-        target = _startup_shortcut_path()
         try:
-            if value:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _write_startup_shortcut(target, self._root, self._config_path)
-            else:
-                target.unlink(missing_ok=True)
-            return {"ok": True, "enabled": value}
-        except (OSError, subprocess.SubprocessError) as exc:
+            return set_startup(self._root, self._config_path, bool(value))
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
             return {"ok": False, "reason": str(exc)}
 
     def get_location_settings(self) -> dict[str, Any]:
@@ -447,6 +465,11 @@ def main(
     root = Path(root).resolve()
 
     if _should_detach_gui(sys.argv[0]) and _launch_detached(root, config_path):
+        return
+    if not companion:
+        from localpilot.native_avatar_companion import main as companion_main
+
+        companion_main(root, config_path, x=x, y=y, open_chat=True)
         return
 
     config = load_config(config_path)

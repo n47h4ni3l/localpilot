@@ -12,7 +12,10 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from localpilot import webview_app
+from localpilot import native_avatar_companion
 
 
 class FakeWindow:
@@ -20,6 +23,7 @@ class FakeWindow:
         self.resized: list[tuple[int, int, object]] = []
         self.on_top_value: bool | None = None
         self.destroyed = False
+        self.hidden = False
         self.x = 100
         self.y = 200
         self.width = webview_app.EXPANDED_SIZE[0]
@@ -32,6 +36,9 @@ class FakeWindow:
 
     def destroy(self) -> None:
         self.destroyed = True
+
+    def hide(self) -> None:
+        self.hidden = True
 
     @property
     def on_top(self) -> bool | None:
@@ -168,7 +175,7 @@ def test_standalone_webview_cannot_impersonate_external_avatar_state(tmp_path):
     }
 
 
-def test_collapse_spawns_native_avatar_then_destroys_webview_for_standalone_host(tmp_path, monkeypatch):
+def test_collapse_spawns_native_avatar_and_hides_same_chat_for_standalone_host(tmp_path, monkeypatch):
     window = FakeWindow()
     captured = {}
 
@@ -179,7 +186,8 @@ def test_collapse_spawns_native_avatar_then_destroys_webview_for_standalone_host
     monkeypatch.setattr(webview_app, "_launch_native_avatar", fake_launch)
     bridge = webview_app.WindowBridge(window, tmp_path, None)
     assert bridge.collapse() == {"ok": True}
-    assert window.destroyed is True
+    assert window.destroyed is False
+    assert window.hidden is True
     assert captured["x"] == window.x + window.width + webview_app.EDGE_INSET
     assert captured["y"] == window.y + window.height - webview_app.NATIVE_AVATAR_SIZE
 
@@ -195,7 +203,9 @@ def test_companion_collapse_never_spawns_duplicate_avatar(tmp_path, monkeypatch)
     bridge = webview_app.WindowBridge(window, tmp_path, None, avatar_external=True)
     assert bridge.avatar_external is True
     assert bridge.collapse() == {"ok": True}
-    assert window.destroyed is True
+    assert window.destroyed is False
+    assert window.hidden is True
+    assert bridge._closing_thread is None
     assert launches == []
 
 
@@ -222,12 +232,14 @@ def test_start_with_windows_refuses_on_non_windows_without_touching_pathlib(tmp_
         assert bridge.set_start_with_windows(True) == {"ok": False, "reason": "not-windows"}
 
 
-def test_get_start_with_windows_reports_disabled_when_no_shortcut_exists(tmp_path):
+def test_get_start_with_windows_uses_root_scoped_task_status(tmp_path, monkeypatch):
     window = FakeWindow()
     bridge = webview_app.WindowBridge(window, tmp_path, None)
+    calls = []
+    monkeypatch.setattr(webview_app, "startup_status", lambda root, config: calls.append((root, config)) or {"ok": True, "enabled": False})
     result = bridge.get_start_with_windows()
-    assert result["ok"] is True
-    assert isinstance(result["enabled"], bool)
+    assert result == {"ok": True, "enabled": False}
+    assert calls == [(tmp_path, None)]
 
 
 def test_open_config_file_without_a_config_path_reports_a_clear_reason(tmp_path):
@@ -282,6 +294,42 @@ def test_console_script_detaches_only_for_normal_windows_desktop_entrypoint():
     assert not webview_app._should_detach_gui("C:/venv/Scripts/python.exe", platform_name="nt")
 
 
+def test_standalone_chat_entrypoint_routes_through_persistent_avatar_owner(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(webview_app, "_should_detach_gui", lambda argv0: False)
+    monkeypatch.setattr(native_avatar_companion, "main", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(webview_app, "ensure_broker", lambda *args, **kwargs: pytest.fail("Owner must start before chat broker access"))
+    webview_app.main(tmp_path, x=100, y=200)
+    assert calls == [((tmp_path.resolve(), None), {"x": 100, "y": 200, "open_chat": True})]
+
+
+@pytest.mark.parametrize(("composer_busy", "foreground_busy", "closed"), [(False, False, True), (True, False, False), (False, True, False), (None, False, False)])
+def test_native_close_checks_actual_composer_and_foreground_without_blocking_ui(tmp_path, monkeypatch, composer_busy, foreground_busy, closed):
+    class ClosingWindow(FakeWindow):
+        def __init__(self):
+            super().__init__()
+            self.scripts = []
+
+        def evaluate_js(self, script):
+            self.scripts.append(script)
+            if "return Boolean" in script:
+                return composer_busy
+
+    window = ClosingWindow()
+    monkeypatch.setattr(webview_app, "active_foreground_turns", lambda data: ({"request_id": "active"},) if foreground_busy else ())
+    bridge = webview_app.WindowBridge(window, tmp_path, None, avatar_external=True)
+    assert bridge.mark_native_close() is False
+    bridge._closing_thread.join(timeout=2)
+    assert not bridge._closing_thread.is_alive()
+    assert window.destroyed is closed
+    assert bridge.exit_requested is closed
+    if not closed:
+        assert any("send/save your draft" in script for script in window.scripts)
+        assert any("is-expanded" in script for script in window.scripts)
+    else:
+        assert bridge.mark_native_close() is True
+
+
 def test_normal_detached_launcher_starts_persistent_avatar_companion(tmp_path, monkeypatch):
     pythonw = tmp_path / "pythonw.exe"
     pythonw.write_text("", encoding="utf-8")
@@ -328,33 +376,12 @@ def test_startup_shortcut_path_is_under_startup_folder():
     assert "Startup" in path.parts
 
 
-def test_startup_shortcut_starts_persistent_companion_and_uses_environment_values(tmp_path, monkeypatch):
-    captured = {}
-
-    def fake_run(argv, **kwargs):
-        captured["argv"] = argv
-        captured["kwargs"] = kwargs
-
-    monkeypatch.setattr(webview_app.subprocess, "run", fake_run)
-    root = tmp_path / "O'Brien $([danger]) project"
-    target = tmp_path / "Startup" / "LocalPilot.lnk"
-    config = root / "owner's localpilot.toml"
-    webview_app._write_startup_shortcut(target, root, str(config))
-
-    script = captured["argv"][-1]
-    assert str(root) not in script
-    assert "$([danger])" not in script
-    environment = captured["kwargs"]["env"]
-    assert environment["LOCALPILOT_ARGUMENTS"] == subprocess.list2cmdline(
-        [
-            "-m",
-            webview_app.COMPANION_MODULE,
-            "--root",
-            str(root.resolve()),
-            "--config",
-            str(config.resolve()),
-        ]
-    )
+def test_start_with_windows_reports_admin_requirement_without_changing_toggle(tmp_path, monkeypatch):
+    bridge = webview_app.WindowBridge(FakeWindow(), tmp_path, None)
+    monkeypatch.setattr(webview_app, "set_startup", lambda *args: {"ok": False, "reason": "Reopen LocalPilot as administrator."})
+    assert bridge.set_start_with_windows(True) == {"ok": False, "reason": "Reopen LocalPilot as administrator."}
+    javascript = (webview_app.WEBVIEW_DIR / "app.js").read_text(encoding="utf-8")
+    assert "settingsStatusText.textContent = (result && result.reason)" in javascript
 
 
 def test_frontend_is_fully_local_and_uses_strict_csp():

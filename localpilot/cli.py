@@ -561,9 +561,10 @@ def main() -> None:
         try:
             if args.tkinter:
                 from localpilot.desktop import main as desktop_main
+                desktop_main(root, args.config)
             else:
-                from localpilot.webview_app import main as desktop_main
-            desktop_main(root, args.config)
+                from localpilot.native_avatar_companion import main as desktop_main
+                desktop_main(root, args.config, open_chat=True)
         except Exception as exc:
             _show_desktop_startup_error(exc)
             raise

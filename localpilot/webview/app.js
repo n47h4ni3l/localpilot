@@ -405,7 +405,6 @@
     composerInput.focus();
   }
   function collapse() {
-    app.classList.remove("is-expanded");
     bridge("collapse");
     closeSettings();
     closeHistory();
@@ -669,6 +668,8 @@
     if (result && result.ok) {
       startupToggle.classList.toggle("is-on", wantOn);
       startupToggle.setAttribute("aria-checked", String(wantOn));
+    } else if (settingsStatusText) {
+      settingsStatusText.textContent = (result && result.reason) || "Login startup could not be changed.";
     }
   });
   ontopToggle.addEventListener("click", async function () {
@@ -957,7 +958,7 @@
   });
 
   async function requestSystemDiagnosis(scope) {
-    if (!activeSessionId || composerWrap.classList.contains("is-busy")) return;
+    if (!activeSessionId || composerInput.readOnly || composerWrap.classList.contains("is-busy")) return;
     systemDiagnoseSignals.disabled = true;
     closeSystemPanel();
     composerInput.value = "/diagnose " + scope;
@@ -1463,6 +1464,7 @@
   sendBtn.addEventListener("click", trySend);
 
   async function trySend() {
+    if (composerInput.readOnly) return;
     const text = composerInput.value.trim();
     if (!text || !activeSessionId) return;
     followMessages = true;

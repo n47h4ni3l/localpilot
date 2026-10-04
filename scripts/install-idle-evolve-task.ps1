@@ -71,6 +71,90 @@ function Restore-PreviousWorkerTask {
     }
 }
 
+function Assert-PreviousWorkerInactive {
+    param([string]$TaskName, [string]$Root, [string]$ConfigPath)
+
+    $scheduled = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    if ([string]$scheduled.State -notin @('Ready', 'Disabled')) {
+        throw 'The previous task is not inactive and has no verified worker PID; it was not terminated.'
+    }
+    # A detached venv host can survive its scheduled launcher. With no usable
+    # PID owner, refuse any worker for this root/config rather than guessing
+    # whether an orphan belongs to the old task or a separate invocation.
+    $unidentifiedWorkers = @(Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe'" -ErrorAction Stop | Where-Object {
+        $_.CommandLine -match '(?i)(?:^|\s)-m\s+localpilot\.background_worker(?:\s|$)' -and
+        $_.CommandLine.IndexOf($Root, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+        $_.CommandLine.IndexOf($ConfigPath, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    })
+    if ($unidentifiedWorkers.Count) {
+        throw 'The previous worker PID is unavailable but a configured worker process is still alive; it was not terminated.'
+    }
+}
+
+function Stop-ExistingWorkerGracefully {
+    param(
+        $Task,
+        [string]$PidPath,
+        [string]$Root,
+        [string]$ConfigPath,
+        [int]$TimeoutSeconds
+    )
+
+    # Disable triggers before asking the worker to finish its current cycle.
+    # Stopping the task immediately can leave its venv host holding the OS lock.
+    Disable-ScheduledTask -TaskName $Task.TaskName -ErrorAction Stop | Out-Null
+    if (-not (Test-Path -LiteralPath $PidPath -PathType Leaf)) {
+        Assert-PreviousWorkerInactive -TaskName $Task.TaskName -Root $Root -ConfigPath $ConfigPath
+        return
+    }
+    try {
+        $owner = Get-Content -LiteralPath $PidPath -Raw | ConvertFrom-Json
+        $ownerPid = [int]$owner.pid
+    } catch {
+        throw 'The previous worker PID identity is invalid; it was not terminated.'
+    }
+    if ($ownerPid -le 0) {
+        Assert-PreviousWorkerInactive -TaskName $Task.TaskName -Root $Root -ConfigPath $ConfigPath
+        return
+    }
+    $worker = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerPid" -ErrorAction Stop
+    if (-not $worker) {
+        Assert-PreviousWorkerInactive -TaskName $Task.TaskName -Root $Root -ConfigPath $ConfigPath
+        return
+    }
+    $actions = @($Task.Actions)
+    if ($actions.Count -ne 1 -or -not $actions[0].Execute -or
+        -not $owner.root -or [IO.Path]::GetFullPath([string]$owner.root) -ine $Root -or
+        $worker.Name -ine 'pythonw.exe' -or -not $worker.ExecutablePath -or
+        -not $worker.CreationDate -or
+        $worker.CommandLine -notmatch '(?i)(?:^|\s)-m\s+localpilot\.background_worker(?:\s|$)' -or
+        $worker.CommandLine.IndexOf($Root, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+        $worker.CommandLine.IndexOf($ConfigPath, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        throw 'The previous PID does not identify this configured worker; it was not terminated.'
+    }
+    $launcherPath = (Resolve-Path -LiteralPath $actions[0].Execute -ErrorAction Stop).Path
+    if ($worker.ExecutablePath -ine $launcherPath) {
+        $launcher = Get-CimInstance Win32_Process -Filter "ProcessId = $($worker.ParentProcessId)" -ErrorAction Stop
+        if (-not $launcher -or $launcher.ExecutablePath -ine $launcherPath) {
+            throw 'The previous worker does not belong to its scheduled interpreter; it was not terminated.'
+        }
+    }
+    $stopPath = [IO.Path]::ChangeExtension($PidPath, '.stop')
+    $request = @{ target_pid = $ownerPid; requested_at = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText($stopPath, $request, [Text.UTF8Encoding]::new($false))
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $current = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerPid" -ErrorAction Stop
+        $sameWorker = $current -and $current.CreationDate -eq $worker.CreationDate -and
+            $current.ExecutablePath -ieq $worker.ExecutablePath -and
+            $current.CommandLine -ceq $worker.CommandLine
+        $scheduled = Get-ScheduledTask -TaskName $Task.TaskName -ErrorAction Stop
+        if (-not $sameWorker -and $scheduled.State -ne 'Running') { return }
+        Start-Sleep -Milliseconds 250
+    }
+    throw "The previous worker did not finish within $TimeoutSeconds seconds; it was not force-terminated. Retry after its current cycle finishes."
+}
+
 if ($TaskName -eq $LegacyTaskName) {
     throw "TaskName and LegacyTaskName must be different so the legacy task remains available until verification succeeds."
 }
@@ -183,11 +267,14 @@ $task = New-ScheduledTask `
     -Principal $principal `
     -Description "Start one hidden LocalPilot worker at logon. A $WatchdogMinutes-minute trigger is ignored while it runs and relaunches it after a hard crash. The worker polls every $PollSeconds seconds and LocalPilot's existing gates remain authoritative."
 
+$replacementRegistered = $false
 try {
-    if ($existingRunning) {
-        Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    if ($existing) {
+        Stop-ExistingWorkerGracefully -Task $existing -PidPath $workerPidPath `
+            -Root $repoRoot -ConfigPath $configPath -TimeoutSeconds $StartupTimeoutSeconds
     }
     Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force -ErrorAction Stop | Out-Null
+    $replacementRegistered = $true
     Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
     $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
     $verifiedProcess = $null
@@ -232,7 +319,15 @@ try {
     }
 } catch {
     $replacementError = $_
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($replacementRegistered) {
+        try {
+            $replacement = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+            Stop-ExistingWorkerGracefully -Task $replacement -PidPath $workerPidPath `
+                -Root $repoRoot -ConfigPath $configPath -TimeoutSeconds $StartupTimeoutSeconds
+        } catch {
+            throw "Worker replacement failed, and the replacement could not be stopped gracefully; no worker was force-terminated. Cause: $($_.Exception.Message). Original failure: $($replacementError.Exception.Message)"
+        }
+    }
     try {
         Restore-PreviousWorkerTask -Name $TaskName -Xml $existingXml -Enabled $existingEnabled -Running $existingRunning
     } catch {

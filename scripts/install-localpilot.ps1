@@ -2,12 +2,23 @@ param(
     [string]$InstallDirectory = "",
     [switch]$SkipLaunch,
     [switch]$SkipBackgroundWorker,
-    [string]$ShortcutPath = ""
+    [string]$ShortcutPath = "",
+    [string]$LegacyInstallDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $script:restartRequired = $false
+
+function Wait-InstallerProcess {
+    param([System.Diagnostics.Process]$Process)
+    # Start-Process -Wait includes descendants. The desktop intentionally
+    # stays open after setup; wait only for the elevated installer itself.
+    $null = $Process.Handle
+    $Process.WaitForExit()
+    if ($null -eq $Process.ExitCode) { throw 'Windows did not return the installer exit status.' }
+    return $Process.ExitCode
+}
 
 function Refresh-InstallerPath {
     $env:Path = (@(
@@ -105,6 +116,53 @@ function Install-ConfiguredBackgroundWorker {
     if (($enabled | Out-String).Trim() -ne 'yes') { return }
     & (Join-Path $Root 'scripts\install-idle-evolve-task.ps1') `
         -PythonExecutable $Python -ConfigPath $ConfigPath -RunAsAdministrator
+}
+
+function Stop-PreviousLocalPilot {
+    param([string]$Root, [string]$Python, [string]$ConfigPath, [bool]$IncludeBackgroundWorker = $true)
+    Write-Host 'Closing the previous LocalPilot windows and runtime safely...'
+    $workerOption = if ($IncludeBackgroundWorker) { 'yes' } else { 'no' }
+    & $Python -c "from pathlib import Path; import sys; from localpilot.desktop_updater import _stop_localpilot_processes; _stop_localpilot_processes(Path(sys.argv[1]).resolve(), config_path=sys.argv[2], include_background_worker=sys.argv[3] == 'yes')" $Root $ConfigPath $workerOption
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The previous LocalPilot processes have not all closed safely. Finish any running conversation and retry setup; no process was force-terminated.'
+    }
+}
+
+function Stop-LegacyLocalPilot {
+    param([string]$Root, [string]$Python, [string]$ConfigPath, [string]$LegacyRoot)
+    if (-not $LegacyRoot) { return }
+    Write-Host 'Checking the previous installation and closing its desktop safely...'
+    $code = @'
+from pathlib import Path
+import sys
+from localpilot.desktop_startup import validate_legacy_install
+from localpilot.desktop_updater import _stop_localpilot_processes
+root, config, legacy = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+legacy_config = validate_legacy_install(root, config, legacy)
+if legacy.resolve() != root.resolve():
+    _stop_localpilot_processes(legacy.resolve(), config_path=legacy_config, include_background_worker=False)
+'@
+    & $Python -c $code $Root $ConfigPath $LegacyRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The previous installation could not be verified or closed safely. Its configuration and data were preserved; retry after finishing any conversation.'
+    }
+}
+
+function Update-ConfiguredDesktopStartup {
+    param([string]$Root, [string]$Python, [string]$ConfigPath, [string]$LegacyRoot)
+    Write-Host 'Preserving the Windows login preference for this installation...'
+    $code = @'
+from pathlib import Path
+import sys
+from localpilot.desktop_startup import migrate_startup
+legacy = sys.argv[3] if len(sys.argv) > 3 else None
+result = migrate_startup(Path(sys.argv[1]), sys.argv[2], legacy_root=legacy or None, python_executable=sys.executable)
+if not result.get('ok'):
+    raise RuntimeError(result.get('reason', 'Windows login setup failed.'))
+print('Start with Windows: ' + ('enabled with administrator access' if result['enabled'] else 'disabled'))
+'@
+    & $Python -c $code $Root $ConfigPath $LegacyRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Windows login setup did not verify. The previous startup preference was preserved.' }
 }
 
 function Assert-ReleasePayload {
@@ -231,15 +289,17 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     if ($SkipLaunch) { $arguments += '-SkipLaunch' }
     if ($SkipBackgroundWorker) { $arguments += '-SkipBackgroundWorker' }
     if ($ShortcutPath) { $arguments += @('-ShortcutPath', ('"{0}"' -f $ShortcutPath)) }
+    if ($LegacyInstallDirectory) { $arguments += @('-LegacyInstallDirectory', ('"{0}"' -f $LegacyInstallDirectory)) }
     try {
-        $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -Wait -PassThru -WindowStyle Normal
+        $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -PassThru -WindowStyle Normal
+        $installerExitCode = Wait-InstallerProcess -Process $elevated
     } catch {
         $message = "Windows did not start administrator setup: $($_.Exception.Message). Run Install LocalPilot.cmd again and approve the administrator prompt."
         Add-Content -LiteralPath (Join-Path $logDirectory 'installation.log') -Value $message
         Write-Host $message -ForegroundColor Yellow
         exit 1
     }
-    exit $elevated.ExitCode
+    exit $installerExitCode
 }
 
 $transcriptStarted = $false
@@ -278,6 +338,16 @@ try {
         & (Join-Path $root 'scripts\install-desktop-shortcut.ps1') @shortcutOptions
         & $python -m localpilot.cli --config (Join-Path $root 'localpilot.toml') doctor
         if ($LASTEXITCODE -ne 0) { throw 'LocalPilot readiness checks failed. See the installation log, then retry.' }
+        if (-not $SkipLaunch -and -not $script:restartRequired) {
+            Stop-LegacyLocalPilot -Root $root -Python $python -ConfigPath (Join-Path $root 'localpilot.toml') `
+                -LegacyRoot $LegacyInstallDirectory
+            Stop-PreviousLocalPilot -Root $root -Python $python -ConfigPath (Join-Path $root 'localpilot.toml') `
+                -IncludeBackgroundWorker $false
+        }
+        if (-not $script:restartRequired) {
+            Update-ConfiguredDesktopStartup -Root $root -Python $python -ConfigPath (Join-Path $root 'localpilot.toml') `
+                -LegacyRoot $LegacyInstallDirectory
+        }
         $savedErrorPreference = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'

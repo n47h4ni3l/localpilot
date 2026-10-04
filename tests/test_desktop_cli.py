@@ -9,9 +9,9 @@ import pytest
 from localpilot import cli
 
 
-def _fake_desktop_module(name: str, calls: list[tuple[object, object]]) -> ModuleType:
+def _fake_desktop_module(name: str, calls: list) -> ModuleType:
     module = ModuleType(name)
-    module.main = lambda root, config: calls.append((root, config))
+    module.main = lambda root, config, **kwargs: calls.append((root, config, kwargs))
     return module
 
 
@@ -23,15 +23,15 @@ def test_desktop_parser_defaults_to_webview_and_offers_explicit_tkinter_fallback
     assert fallback.tkinter is True
 
 
-def test_desktop_command_launches_webview_by_default(monkeypatch):
+def test_desktop_command_starts_persistent_avatar_and_initial_chat(monkeypatch):
     calls = []
-    monkeypatch.setitem(sys.modules, "localpilot.webview_app", _fake_desktop_module("localpilot.webview_app", calls))
+    monkeypatch.setitem(sys.modules, "localpilot.native_avatar_companion", _fake_desktop_module("localpilot.native_avatar_companion", calls))
     monkeypatch.setitem(sys.modules, "localpilot.desktop", _fake_desktop_module("localpilot.desktop", []))
     monkeypatch.setattr(sys, "argv", ["localpilot", "desktop"])
 
     cli.main()
 
-    assert calls == [(cli._root(), None)]
+    assert calls == [(cli._root(), None, {"open_chat": True})]
 
 
 def test_desktop_command_launches_tkinter_only_when_requested(monkeypatch):
@@ -42,19 +42,19 @@ def test_desktop_command_launches_tkinter_only_when_requested(monkeypatch):
 
     cli.main()
 
-    assert calls == [(cli._root(), None)]
+    assert calls == [(cli._root(), None, {})]
 
 
 def test_windowed_desktop_startup_shows_real_error_and_preserves_nonzero_failure(monkeypatch):
     calls = []
     error = RuntimeError("LocalPilot is still responding. Let the response finish.")
-    module = ModuleType("localpilot.webview_app")
+    module = ModuleType("localpilot.native_avatar_companion")
 
-    def fail_startup(*args):
+    def fail_startup(*args, **kwargs):
         raise error
 
     module.main = fail_startup
-    monkeypatch.setitem(sys.modules, "localpilot.webview_app", module)
+    monkeypatch.setitem(sys.modules, "localpilot.native_avatar_companion", module)
     monkeypatch.setattr(sys, "argv", ["localpilot", "desktop"])
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(sys, "executable", "pythonw.exe")

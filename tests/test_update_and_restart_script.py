@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+import types
 
 import pytest
 
@@ -179,3 +182,59 @@ catch { @{ allowed = $false; message = $_.Exception.Message } | ConvertTo-Json -
     assert result["allowed"] is administrator
     if not administrator:
         assert "administrator PowerShell session" in result["message"]
+
+
+@pytest.mark.parametrize('scenario', ['existing', 'missing', 'install_failure', 'restart'])
+def test_update_obtains_sdk_before_shutdown_and_keeps_existing_desktop_on_failure(tmp_path, scenario):
+    sdk = tmp_path / 'dotnet.ps1'
+    sdk.write_text(
+        "if ($global:LOCALPILOT_TEST_SDK_READY) { '8.0.409 [test]' } else { '7.0.410 [test]' }\n"
+        '$global:LASTEXITCODE=0\n', encoding='utf-8',
+    )
+    winget = tmp_path / 'winget.ps1'
+    code = 123 if scenario == 'install_failure' else 3010 if scenario == 'restart' else 0
+    winget.write_text(
+        "'Downloading .NET SDK... (test progress)'\n"
+        "$global:LOCALPILOT_TEST_SDK_INSTALLED = $true\n"
+        "$global:LOCALPILOT_TEST_SDK_READY = $true\n"
+        f'$global:LASTEXITCODE={code}\n', encoding='utf-8',
+    )
+    ready = '$true' if scenario == 'existing' else '$false'
+    result = _run_update_functions(f"""
+$global:LOCALPILOT_TEST_SDK_READY = {ready}
+$global:LOCALPILOT_TEST_SDK_INSTALLED = $false
+function Out-Host {{ param([Parameter(ValueFromPipeline)]$InputObject) process {{ }} }}
+function Get-Command {{
+    param($Name, $ErrorAction)
+    if ($Name -eq 'dotnet') {{ return [pscustomobject]@{{ Source={_quote_ps(sdk)} }} }}
+    if ($Name -eq 'winget') {{ return [pscustomobject]@{{ Source={_quote_ps(winget)} }} }}
+}}
+$selected = $null
+$errorText = ''
+try {{ $selected = Ensure-UpdateDotNetSdk 6>$null }} catch {{ $errorText = $_.Exception.Message }}
+@{{ selected=$selected; installed=$global:LOCALPILOT_TEST_SDK_INSTALLED; error=$errorText }} | ConvertTo-Json -Compress
+""")
+    assert result['installed'] is (scenario != 'existing')
+    if scenario in ('existing', 'missing'):
+        assert Path(result['selected']) == sdk
+        assert not result['error']
+    else:
+        assert result['selected'] is None
+        assert 'LocalPilot' in result['error']
+    script = _script()
+    assert script.index('$dotnetForUpdate = Ensure-UpdateDotNetSdk') < script.index(
+        'from localpilot.desktop_updater import _stop_localpilot_processes'
+    )
+    assert 'Stop-ScheduledTask -TaskName $TaskName' not in script
+
+
+@pytest.mark.parametrize('arguments, expected', [([], None), ([''], None), (['custom config.toml'], 'custom config.toml')])
+def test_update_shutdown_handles_windows_powershell_dropped_empty_argument(monkeypatch, arguments, expected):
+    snippet = re.search(r'& \$python -c "([^"]+_stop_localpilot_processes\(Path\.cwd\(\)[^"]+)" \$resolvedConfig', _script()).group(1)
+    calls = []
+    fake = types.ModuleType('localpilot.desktop_updater')
+    fake._stop_localpilot_processes = lambda root, **options: calls.append((root, options))
+    monkeypatch.setitem(sys.modules, 'localpilot.desktop_updater', fake)
+    monkeypatch.setattr(sys, 'argv', ['-c', *arguments])
+    exec(snippet, {})
+    assert calls == [(Path.cwd(), {'config_path': expected})]

@@ -1,10 +1,30 @@
 param(
     [string]$OutputDirectory = "",
-    [ValidateSet('win-x64', 'win-arm64')][string]$RuntimeIdentifier = 'win-x64'
+    [ValidateSet('win-x64', 'win-arm64')][string]$RuntimeIdentifier = 'win-x64',
+    [string]$SigningScriptPath = '',
+    [string]$ExpectedPublisher = '',
+    [string]$SignToolPath = '',
+    [switch]$AllowUnsignedPreview
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+. (Join-Path $PSScriptRoot 'windows-code-signing.ps1')
+if ($AllowUnsignedPreview) {
+    if ($SigningScriptPath -or $ExpectedPublisher -or $SignToolPath) {
+        throw 'Choose either an unsigned preview or a verified signed release.'
+    }
+    Write-Warning 'Building an unsigned preview. This package is not ready for public release.'
+} else {
+    if (-not $SigningScriptPath -or -not $ExpectedPublisher) {
+        throw 'A public release requires a signing script and the exact validated certificate Subject. Use -AllowUnsignedPreview only for development packages.'
+    }
+    if (-not (Test-Path -LiteralPath $SigningScriptPath -PathType Leaf)) {
+        throw 'The configured signing script is missing.'
+    }
+    $SigningScriptPath = (Resolve-Path -LiteralPath $SigningScriptPath).Path
+    $SignToolPath = Get-WindowsSignTool -SignToolPath $SignToolPath
+}
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repoRoot 'dist' }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $output -Force | Out-Null
@@ -33,16 +53,32 @@ try {
     New-Item -ItemType Directory -Path $bundled -Force | Out-Null
     Copy-Item -LiteralPath $helper -Destination $bundled
     Copy-Item -LiteralPath (Join-Path $helperDir 'THIRD_PARTY_NOTICES.md') -Destination $bundled
+    $bundledHelper = Join-Path $bundled 'LocalPilot.SystemSense.HardwareProvider.exe'
+    if (-not $AllowUnsignedPreview) {
+        # Tracked scripts must already be signed in the release commit. Adding
+        # signatures here would make a fresh Git installation dirty and prevent
+        # its worker/update guards from accepting the canonical source tree.
+        foreach ($script in Get-ChildItem -LiteralPath $payload -Recurse -File -Filter '*.ps1') {
+            Assert-WindowsCodeSignature -Path $script.FullName -ExpectedPublisher $ExpectedPublisher -SignToolPath $SignToolPath
+        }
+        # Only generated files are signed during packaging; their post-signing
+        # bytes are the ones fingerprinted and embedded in the release.
+        Invoke-WindowsArtifactSigning -Paths @($bundledHelper) `
+            -SigningScriptPath $SigningScriptPath -ExpectedPublisher $ExpectedPublisher -SignToolPath $SignToolPath
+    }
     @{
         version = $version
         source_sha = $sha
         runtime_id = $RuntimeIdentifier
-        hardware_provider_sha256 = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant()
+        hardware_provider_sha256 = (Get-FileHash -LiteralPath $bundledHelper -Algorithm SHA256).Hash.ToLowerInvariant()
+        release_channel = $(if ($AllowUnsignedPreview) { 'unsigned-preview' } else { 'signed' })
+        publisher_subject = $(if ($AllowUnsignedPreview) { $null } else { $ExpectedPublisher })
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $payload '.localpilot-release.json') -Encoding utf8
     if (-not (Test-Path -LiteralPath (Join-Path $payload 'scripts/install-localpilot.ps1'))) {
         throw 'The one-click installer entrypoint is missing from the committed release.'
     }
-    $stem = "LocalPilot-Setup-$version-$RuntimeIdentifier"
+    $prefix = if ($AllowUnsignedPreview) { 'LocalPilot-Preview' } else { 'LocalPilot-Setup' }
+    $stem = "$prefix-$version-$RuntimeIdentifier"
     $zip = Join-Path $output "$stem.zip"
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     if (Test-Path -LiteralPath $zip) { throw "Output already exists: $zip" }
@@ -70,6 +106,10 @@ if (-not $resolved.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase
 }
 Remove-Item -LiteralPath $resolved -Recurse -Force
 '@ | Set-Content -LiteralPath (Join-Path $wrapper 'Extract-Setup.ps1') -Encoding utf8
+    if (-not $AllowUnsignedPreview) {
+        Invoke-WindowsArtifactSigning -Paths @((Join-Path $wrapper 'Extract-Setup.ps1')) `
+            -SigningScriptPath $SigningScriptPath -ExpectedPublisher $ExpectedPublisher -SignToolPath $SignToolPath
+    }
     $exe = Join-Path $output "$stem.exe"
     if (Test-Path -LiteralPath $exe) { throw "Output already exists: $exe" }
     $embeddedZip = Join-Path $scratch 'embedded-wrapper.zip'
@@ -86,6 +126,10 @@ Remove-Item -LiteralPath $resolved -Recurse -Force
     $compiled = Join-Path $bootstrapOutput 'LocalPilot.Setup.exe'
     if (-not (Test-Path -LiteralPath $compiled -PathType Leaf)) { throw 'Windows installer executable was not produced.' }
     Copy-Item -LiteralPath $compiled -Destination $exe
+    if (-not $AllowUnsignedPreview) {
+        Invoke-WindowsArtifactSigning -Paths @($exe) `
+            -SigningScriptPath $SigningScriptPath -ExpectedPublisher $ExpectedPublisher -SignToolPath $SignToolPath
+    }
     $header = [IO.File]::ReadAllBytes($exe)
     if ($header.Length -lt 2 -or $header[0] -ne 77 -or $header[1] -ne 90) { throw 'Installer has an invalid executable header.' }
     $roundtrip = Join-Path $scratch 'extracted-check'
@@ -108,5 +152,9 @@ Remove-Item -LiteralPath $resolved -Recurse -Force
         $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $([IO.Path]::GetFileName($_))"
     } | Set-Content -LiteralPath (Join-Path $output "$stem.sha256") -Encoding ascii
-    Write-Host "Windows release package ready: $exe" -ForegroundColor Green
+    if ($AllowUnsignedPreview) {
+        Write-Host "Unsigned Windows preview ready: $exe" -ForegroundColor Yellow
+    } else {
+        Write-Host "Verified signed Windows release package ready: $exe" -ForegroundColor Green
+    }
 } finally { Pop-Location }

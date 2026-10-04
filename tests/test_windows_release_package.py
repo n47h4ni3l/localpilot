@@ -17,6 +17,32 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize(
+    "arguments, message",
+    [
+        ([], "A public release requires a signing script"),
+        (["-AllowUnsignedPreview", "-ExpectedPublisher", "CN=Example Publisher"], "Choose either an unsigned preview"),
+    ],
+)
+def test_packager_rejects_missing_or_conflicting_signing_identity_before_creating_output(tmp_path, arguments, message):
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if os.name != "nt" or not powershell:
+        pytest.skip("Windows packaging entrypoint")
+    output = tmp_path / "package output"
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+         str(ROOT / "scripts" / "build-windows-installer.ps1"), "-OutputDirectory", str(output), *arguments],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+        creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+    )
+    assert result.returncode != 0
+    assert message in result.stdout + result.stderr
+    assert not output.exists(), "Signing prerequisites must be checked before producing release files"
+
+
 def _extraction_wrapper() -> str:
     source = (ROOT / "scripts" / "build-windows-installer.ps1").read_text(encoding="utf-8")
     match = next(
@@ -100,6 +126,12 @@ def test_built_release_archive_matches_committed_identity_and_bundled_provider()
         assert manifest["version"] == project["project"]["version"]
         runtime = manifest["runtime_id"]
         assert runtime in {"win-x64", "win-arm64"}
+        assert manifest["release_channel"] in {"signed", "unsigned-preview"}
+        if manifest["release_channel"] == "signed":
+            assert isinstance(manifest["publisher_subject"], str) and manifest["publisher_subject"].strip()
+        else:
+            assert manifest["publisher_subject"] is None
+            assert path.name.startswith("LocalPilot-Preview-"), "Unsigned builds must be visibly labelled previews"
         helper = f"localpilot/_hardware/{runtime}/LocalPilot.SystemSense.HardwareProvider.exe"
         notice = f"localpilot/_hardware/{runtime}/THIRD_PARTY_NOTICES.md"
         with archive.open(helper) as stream:
@@ -132,3 +164,9 @@ def test_built_release_archive_matches_committed_identity_and_bundled_provider()
             timeout=30,
         ).stdout.splitlines()
         assert set(names) == set(source_files) | {helper, notice, ".localpilot-release.json"}
+        for name in source_files:
+            if name.endswith(".ps1"):
+                committed = subprocess.run(
+                    ["git", "show", f"{sha}:{name}"], cwd=ROOT, capture_output=True, check=True, timeout=30,
+                ).stdout
+                assert archive.read(name) == committed, "Packaged PowerShell signatures must not dirty the installed Git checkout"

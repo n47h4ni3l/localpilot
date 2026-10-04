@@ -308,7 +308,13 @@ clear retry guidance. Desktop startup errors appear in a Windows dialog.
 For maintainers, `scripts/build-windows-installer.ps1` builds a committed source
 ZIP and self-extracting Windows executable with a freshly built sensor helper,
 checks extraction against the original payload, and writes SHA-256 checksums.
-The Windows release workflow validates and uploads these artifacts.
+Public builds require a validated signing identity: PowerShell scripts must be
+signed and committed, while generated helpers and the final installer are
+signed during packaging. Every signature is verified before the build completes.
+Development builds must explicitly use
+`-AllowUnsignedPreview` and are labelled `LocalPilot-Preview`, not release-ready
+installers. See [Windows signing](docs/windows-code-signing.md) for the signing
+callback, verification requirements and release workflow configuration.
 
 ### Requirements
 

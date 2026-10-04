@@ -1,4 +1,6 @@
 *.pdf binary
+# Authenticode signatures require the committed PowerShell bytes unchanged.
+*.ps1 -text
 pyproject.toml text eol=lf
 training/datasets/external_corpus_v1.jsonl text eol=lf
 training/sources/external_corpus_v1_sources.jsonl text eol=lf

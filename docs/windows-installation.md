@@ -41,6 +41,13 @@ the hardware provider to access CPU sensors. Windows still requires UAC
 approval. If the PawnIO installation requests a Windows restart, restart the
 PC and then open LocalPilot using its desktop icon.
 
+Public installers require a trusted code-signing identity. Check the digital
+signature and publisher on the EXE before installation. An unsigned development
+preview is explicitly named **LocalPilot-Preview** and is not a production
+release. Signing identifies the publisher; Windows may still show a SmartScreen
+warning for a new app while its reputation develops, and administrator approval
+is still required. See [Windows signing](windows-code-signing.md).
+
 LocalPilot's source checkout is connected to its GitHub repository for updates
 and repair pull requests. Desktop chat does not require GitHub sign-in.
 To enable GitHub work, complete `gh auth login --web` once and configure your

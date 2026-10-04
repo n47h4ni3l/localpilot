@@ -2,6 +2,11 @@ name: Windows release package
 
 on:
   workflow_dispatch:
+    inputs:
+      unsigned_preview:
+        description: Build an unsigned development preview (never attach to a public release)
+        type: boolean
+        default: true
   release:
     types: [published]
 
@@ -35,7 +40,16 @@ jobs:
       - run: python -m pytest training/tests -q
       - name: Package the committed Windows installer
         shell: pwsh
-        run: ./scripts/build-windows-installer.ps1
+        env:
+          UNSIGNED_PREVIEW: ${{ github.event_name == 'workflow_dispatch' && inputs.unsigned_preview }}
+          SIGNING_SCRIPT: ${{ vars.WINDOWS_SIGNING_SCRIPT }}
+          EXPECTED_PUBLISHER: ${{ vars.WINDOWS_SIGNING_PUBLISHER }}
+        run: |
+          if ($env:UNSIGNED_PREVIEW -eq 'true') {
+            ./scripts/build-windows-installer.ps1 -AllowUnsignedPreview
+          } else {
+            ./scripts/build-windows-installer.ps1 -SigningScriptPath $env:SIGNING_SCRIPT -ExpectedPublisher $env:EXPECTED_PUBLISHER
+          }
       - name: Validate the built release archive
         shell: pwsh
         run: |
@@ -44,7 +58,7 @@ jobs:
           python -m pytest tests/test_windows_release_package.py -q
       - uses: actions/upload-artifact@v4
         with:
-          name: LocalPilot-Windows-installer
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.unsigned_preview && 'LocalPilot-Windows-unsigned-preview' || 'LocalPilot-Windows-signed-installer' }}
           path: dist/*
           if-no-files-found: error
       - name: Attach installer to published release

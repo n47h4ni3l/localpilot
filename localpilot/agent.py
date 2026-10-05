@@ -2972,6 +2972,15 @@ class LocalPilotAgent:
 
         verification_targets: list[dict[str, Any]] = []
         verification_all_succeeded = True
+        # Durable repository facts cannot spend the live-PC requirement's
+        # observation capacity. Prioritize its first attempt inside the same
+        # existing budgets; success is still enforced separately below.
+        def pc_evidence_pending() -> bool:
+            return (
+                "Windows/PC state" in evidence_requirements
+                and "Windows/PC state" not in attempted_evidence
+            )
+
         if learning_context and not owner_forbids_tools:
             try:
                 parsed_learning_context = json.loads(learning_context.split("\n", 1)[1])
@@ -2981,6 +2990,14 @@ class LocalPilotAgent:
             except (IndexError, TypeError, ValueError, json.JSONDecodeError):
                 verification_targets = []
         for target in verification_targets:
+            if pc_evidence_pending():
+                self.audit.write(
+                    "model_learning_memory_verification_deferred",
+                    reason="required_live_pc_evidence_not_attempted",
+                    target_count=len(verification_targets),
+                    tool_rounds=tool_rounds_used,
+                )
+                break
             if tool_rounds_used >= hard_tool_rounds:
                 break
             name = str(target.get("tool") or "")
@@ -3289,6 +3306,35 @@ class LocalPilotAgent:
 
                 if calls:
                     used_tools = True
+                    if pc_evidence_pending() and not any(
+                        self._tool_evidence_source(self._tool_call_parts(call)[0])
+                        == "Windows/PC state"
+                        for call in calls
+                    ):
+                        # No observation or notebook allowance is spent by a
+                        # lower-priority batch before the required live source.
+                        internal_messages.append(response)
+                        research_control_messages.append(response)
+                        for call in calls:
+                            name, _ = self._tool_call_parts(call)
+                            blocked = {
+                                "role": "tool",
+                                "tool_name": name,
+                                "content": (
+                                    "Not executed: this request requires live Windows/PC state. "
+                                    "Attempt the appropriate read-only PC/SystemSense tool first. "
+                                    "Repository memory cannot substitute for that live evidence."
+                                ),
+                            }
+                            self.messages.append(blocked)
+                            internal_messages.append(blocked)
+                            research_control_messages.append(blocked)
+                        self.audit.write(
+                            "model_live_pc_evidence_priority",
+                            round=turn_no,
+                            tool_rounds=tool_rounds_used,
+                        )
+                        continue
                     checkpoint_calls = [
                         call for call in calls
                         if self._tool_call_parts(call)[0] == RESEARCH_NOTEBOOK_TOOL

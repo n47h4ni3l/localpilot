@@ -2,7 +2,10 @@ import hashlib
 import json
 import sqlite3
 import sys
+from dataclasses import asdict, replace
 from types import SimpleNamespace
+
+import pytest
 
 from localpilot.agent import (
     _LEARNING_MEMORY_CHAR_BUDGET,
@@ -69,6 +72,94 @@ def _record(
 
 def _payload(context: str) -> dict:
     return json.loads(context.split("\n", 1)[1])
+
+
+@pytest.mark.parametrize(
+    "live_result", ['{"cpu_temperature_c": 63}', "Tool error: sensors unavailable"]
+)
+@pytest.mark.parametrize("budget", [1, 2, 4])
+def test_explicit_pc_evidence_precedes_stale_repository_memory(
+    tmp_path, monkeypatch, live_result, budget
+):
+    agent = _agent(tmp_path)
+    agent.config.agent.research_soft_tool_rounds = budget
+    agent.config.agent.research_hard_tool_rounds = budget
+    for index in range(6):
+        _record(
+            agent.memory,
+            key=f"irrelevant:{index}",
+            subject=f"RepositoryComponent{index}",
+            summary="Repository architecture contract unrelated to current PC temperatures.",
+        )
+    agent.memory.invalidate_knowledge_source("repo://localpilot/agent.py", "new-digest")
+    facts = agent.memory.knowledge_facts(include_stale=True)
+    assert len(facts) == 6 and all(fact.stale for fact in facts)
+    # Reproduce the audited retrieval: six stale facts and four automatic reads.
+    retrieved = [
+        dict(asdict(fact), repository_source_digest_status="mismatch") for fact in facts
+    ]
+    context = "Retrieved memory\n" + json.dumps({
+        "kind": "durable_study_memory_retrieval",
+        "facts": retrieved,
+        "verification_targets": [
+            {
+                "tool": "search_repository",
+                "arguments": {
+                    "query": f"RepositoryComponent{index}",
+                    "path": "localpilot/agent.py",
+                    "max_results": 10,
+                },
+            }
+            for index in range(4)
+        ],
+    })
+    monkeypatch.setattr(agent, "_learning_context", lambda prompt: (context, retrieved))
+    executed = []
+
+    def repository_read(**kwargs):
+        executed.append("repository")
+        return "Repository contract found."
+
+    def live_read(**kwargs):
+        executed.append("PC")
+        return live_result
+
+    agent.tools["search_repository"] = replace(
+        agent.tools["search_repository"], fn=repository_read
+    )
+    agent.tools["get_system_sense_summary"] = replace(
+        agent.tools["get_system_sense_summary"], fn=live_read
+    )
+    snapshots = []
+
+    def fake_chat(**kwargs):
+        snapshots.append(str(kwargs["messages"]))
+        if len(snapshots) == 1:
+            return iter([
+                _chunk(tool_calls=[_call("search_repository", {"query": "unrelated"})])
+            ])
+        if len(snapshots) == 2:
+            return iter([_chunk(tool_calls=[_call("get_system_sense_summary")])])
+        content = (
+            "The current CPU temperature is 63 C." if "Tool error" not in live_result
+            else "Sensors are unavailable."
+        )
+        return iter([_chunk(content=content)])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+    answer = agent.ask("Check this PC's current CPU temperature using SystemSense.")
+    assert executed[0] == "PC"
+    assert "repository" not in executed
+    assert agent.audit.latest("model_learning_memory_direct_synthesis") is None
+    assert agent.memory.knowledge_facts(include_stale=True) == facts
+    if "Tool error" not in live_result:
+        assert "63" in answer
+        assert "Observation ID:" in snapshots[-1]
+        assert agent.audit.latest("model_evidence_state")["tool_rounds"] <= budget
+    else:
+        assert "direct-evidence requirement" in answer
+    assert agent.audit.latest("model_learning_memory_verification_deferred")["target_count"] == 4
+    assert agent.audit.latest("model_live_pc_evidence_priority")["tool_rounds"] == 0
 
 
 def test_relevance_search_is_bounded_and_preserves_fact_authority_metadata(tmp_path):

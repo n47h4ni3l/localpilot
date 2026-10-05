@@ -8,6 +8,28 @@ from localpilot.systemsense_views import build_agent_truth
 from localpilot.tools.windows import inspect_process_identity, inspect_process_launch_context
 
 
+def raw_system_sense_tool_schema() -> dict:
+    """Keep enums and array items that Ollama's callable conversion drops."""
+    return {
+        "type": "function",
+        "function": {
+            "name": "inspect_raw_system_sense",
+            "description": "Read bounded raw SystemSense evidence. Select named sensors before slicing; missing/truncated values remain explicit. Sensor reads include hardware provider provenance and separate Windows thermal-zone status.",
+            "parameters": {
+                "type": "object", "properties": {
+                    "category": {"type": "string", "enum": ["dynamic", "sensors", "inventory", "backend"], "default": "dynamic"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+                    "backend_section": {"type": "string", "enum": ["overview", "memory", "processes", "compute", "storage", "network", "sensors"], "default": "overview"},
+                    "requested_sensors": {"type": "array", "items": {"type": "string"}, "maxItems": 32,
+                        "description": "Exact names or aliases: CPU Tctl/Tdie, CCD1, GPU core, GPU memory, GPU hot spot."},
+                    "sensor_type": {"type": "string", "description": "Raw sensor type; use Temperature for temperatures."},
+                    "components": {"type": "array", "items": {"type": "string"}, "description": "Hardware type prefixes, e.g. cpu and gpu."},
+                }, "required": [],
+            },
+        },
+    }
+
+
 class SystemSenseReader:
     """Raw-truth-first read-only access to passive environmental telemetry."""
 
@@ -50,7 +72,11 @@ class SystemSenseReader:
     def get_system_sense_history(
         self, metric: str, hours: float = 1.0, limit: int = 120
     ) -> str:
-        """Read bounded history for one allow-listed environmental metric."""
+        """Read bounded history for an exposed environmental metric.
+
+        Current hardware-provider sensor temperatures are not history metrics:
+        use inspect_raw_system_sense or get_system_sense_summary for those readings.
+        """
         return self._render(
             self.systemsense.history(metric=metric, hours=hours, limit=limit)
         )
@@ -170,10 +196,30 @@ class SystemSenseReader:
         category: str = "dynamic",
         limit: int = 100,
         backend_section: str = "overview",
+        requested_sensors: list[str] | None = None,
+        sensor_type: str = "",
+        components: list[str] | None = None,
     ) -> str:
-        """Drill into raw passive data or bounded high-detail backend telemetry."""
+        """Read raw passive data with provider provenance, or backend diagnostics.
+
+        Args:
+            category: dynamic, sensors, inventory, or backend.
+            limit: Maximum returned rows, bounded to 1..500. Truncation is reported for selections.
+            backend_section: For backend only: overview, memory, processes, compute, storage, network, sensors.
+            requested_sensors: Up to 32 exact names or aliases, e.g. CPU Tctl/Tdie, CCD1, GPU core, GPU memory, GPU hot spot.
+            sensor_type: Optional raw sensor type, e.g. Temperature. Filtering precedes the row limit.
+            components: Optional hardware components, e.g. cpu and gpu.
+
+        Missing requested values are explicit. Sensor selections include capture time,
+        hardware provider identity/errors, and the separate Windows thermal-zone status.
+        """
         if str(category).strip().casefold() == "backend":
             return self._render(
                 self.backend.collect(section=backend_section, limit=limit)
             )
+        if requested_sensors or sensor_type or components:
+            return self._render(self.systemsense.raw(
+                category=category, limit=limit, requested_sensors=requested_sensors or [],
+                sensor_type=sensor_type, components=components or [],
+            ))
         return self._render(self.systemsense.raw(category=category, limit=limit))

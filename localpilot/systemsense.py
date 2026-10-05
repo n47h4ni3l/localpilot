@@ -2727,8 +2727,32 @@ class SystemSense:
         rows = self.store.metric_history(metric, since=since, limit=limit)
         return {"metric": metric, "hours": hours, "samples": len(rows), "items": rows}
 
-    def raw(self, *, category: str = "dynamic", limit: int = 100) -> dict[str, Any]:
+    def raw(self, *, category: str = "dynamic", limit: int = 100,
+            requested_sensors: list[str] | None = None, sensor_type: str = "",
+            components: list[str] | None = None) -> dict[str, Any]:
         limit = max(1, min(int(limit), 500))
+        if category in {"dynamic", "sensors"} and (requested_sensors or sensor_type or components):
+            from localpilot.systemsense_selection import select_sensors
+
+            payload = self._ensure_dynamic() or {}
+            provider = payload.get("raw_sensors") or {}
+            rows = provider.get("sensors") or []
+            selected, selection = select_sensors(
+                rows, requested_sensors=requested_sensors or [], sensor_type=sensor_type,
+                components=components or [], limit=limit,
+            )
+            provenance = {key: value for key, value in provider.items() if key != "sensors"}
+            provenance["sensor_count"] = len(rows)
+            result = {
+                "captured_at": payload.get("captured_at"), "count": len(rows), "items": selected,
+                "selection": selection, "sensor_provider": provenance,
+                "windows_performance": payload.get("performance") or {},
+                "collection": payload.get("collection") or {},
+            }
+            if category == "dynamic":
+                result = {**payload, "raw_sensors": {**provider, "sensors": selected},
+                          "selection": selection}
+            return result
         if category == "dynamic":
             payload = self._ensure_dynamic() or {}
             payload = dict(payload)

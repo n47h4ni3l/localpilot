@@ -22,6 +22,7 @@ from localpilot.learning import (
     StudyRun,
 )
 from localpilot.process import hidden_process_creation_flags
+from localpilot.repository_source import repository_source_files
 from localpilot.tools.web import _SafeRedirectHandler, _ValidatedHTTPSHandler
 
 
@@ -300,16 +301,7 @@ class RepositoryGroundingValidator:
             "LibraryConfig": "library",
         }
 
-        files = sorted(
-            path
-            for path in self.root.rglob("*")
-            if path.is_file()
-            and not any(
-                part in _IGNORED_PARTS
-                for part in path.relative_to(self.root).parts
-            )
-        )
-        for path in files:
+        for path in repository_source_files(self.root):
             relative = path.relative_to(self.root).as_posix()
             paths.add(relative)
             subsystem_tokens.update(

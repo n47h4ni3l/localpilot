@@ -3252,6 +3252,8 @@ class LocalPilotAgent:
                 len(verification_targets) >= 3
                 and len(learning_verification_messages) == len(verification_targets)
                 and verification_all_succeeded
+                # Completed memory checks cannot discharge another source's obligation.
+                and not (evidence_requirements - succeeded_evidence)
             ):
                 self.audit.write(
                     "model_learning_memory_direct_synthesis",

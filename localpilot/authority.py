@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from localpilot.repository_source import repository_source_files
 from localpilot.study import GroundingReport, RepositoryGroundingValidator
 
 
@@ -482,22 +482,15 @@ class InformationAuthorityVerifier:
 
     def _repository_fingerprint(self) -> tuple[tuple[str, str], ...]:
         records: list[tuple[str, str]] = []
-        ignored = {".git", ".venv", "__pycache__", ".pytest_cache", "localpilot-data"}
-        for directory, child_dirs, file_names in os.walk(self.root):
-            child_dirs[:] = sorted(name for name in child_dirs if name not in ignored)
-            for name in sorted(file_names):
-                path = Path(directory, name)
-                try:
-                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                except OSError:
-                    continue
-                records.append(
-                    (
-                        path.relative_to(self.root).as_posix(),
-                        digest,
-                    )
-                )
-        records.sort()
+        for path in repository_source_files(self.root):
+            try:
+                digest = hashlib.sha256()
+                with path.open("rb") as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            except OSError:
+                continue
+            records.append((path.relative_to(self.root).as_posix(), digest.hexdigest()))
         return tuple(records)
 
     def _ground_truth(

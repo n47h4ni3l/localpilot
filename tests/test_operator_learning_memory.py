@@ -2,7 +2,10 @@ import hashlib
 import json
 import sqlite3
 import sys
+from dataclasses import asdict, replace
 from types import SimpleNamespace
+
+import pytest
 
 from localpilot.agent import (
     _LEARNING_MEMORY_CHAR_BUDGET,
@@ -69,6 +72,432 @@ def _record(
 
 def _payload(context: str) -> dict:
     return json.loads(context.split("\n", 1)[1])
+
+
+@pytest.mark.parametrize(
+    "live_result", ['{"cpu_temperature_c": 63}', "Tool error: sensors unavailable"]
+)
+@pytest.mark.parametrize("budget", [1, 2, 4])
+def test_explicit_pc_evidence_precedes_stale_repository_memory(
+    tmp_path, monkeypatch, live_result, budget
+):
+    agent = _agent(tmp_path)
+    agent.config.agent.research_soft_tool_rounds = budget
+    agent.config.agent.research_hard_tool_rounds = budget
+    for index in range(6):
+        _record(
+            agent.memory,
+            key=f"irrelevant:{index}",
+            subject=f"RepositoryComponent{index}",
+            summary="Repository architecture contract unrelated to current PC temperatures.",
+        )
+    agent.memory.invalidate_knowledge_source("repo://localpilot/agent.py", "new-digest")
+    facts = agent.memory.knowledge_facts(include_stale=True)
+    assert len(facts) == 6 and all(fact.stale for fact in facts)
+    # Reproduce the audited retrieval: six stale facts and four automatic reads.
+    retrieved = [
+        dict(asdict(fact), repository_source_digest_status="mismatch") for fact in facts
+    ]
+    context = "Retrieved memory\n" + json.dumps({
+        "kind": "durable_study_memory_retrieval",
+        "facts": retrieved,
+        "verification_targets": [
+            {
+                "tool": "search_repository",
+                "arguments": {
+                    "query": f"RepositoryComponent{index}",
+                    "path": "localpilot/agent.py",
+                    "max_results": 10,
+                },
+            }
+            for index in range(4)
+        ],
+    })
+    monkeypatch.setattr(agent, "_learning_context", lambda prompt: (context, retrieved))
+    executed = []
+
+    def repository_read(**kwargs):
+        executed.append("repository")
+        return "Repository contract found."
+
+    def live_read(**kwargs):
+        executed.append("PC")
+        return live_result
+
+    agent.tools["search_repository"] = replace(
+        agent.tools["search_repository"], fn=repository_read
+    )
+    agent.tools["get_system_sense_summary"] = replace(
+        agent.tools["get_system_sense_summary"], fn=live_read
+    )
+    snapshots = []
+
+    def fake_chat(**kwargs):
+        snapshots.append(str(kwargs["messages"]))
+        if len(snapshots) == 1:
+            return iter([
+                _chunk(tool_calls=[_call("search_repository", {"query": "unrelated"})])
+            ])
+        if len(snapshots) == 2:
+            return iter([_chunk(tool_calls=[_call("get_system_sense_summary")])])
+        content = (
+            "The current CPU temperature is 63 C." if "Tool error" not in live_result
+            else "Sensors are unavailable."
+        )
+        return iter([_chunk(content=content)])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+    answer = agent.ask("Check this PC's current CPU temperature using SystemSense.")
+    assert executed[0] == "PC"
+    assert "repository" not in executed
+    assert agent.audit.latest("model_learning_memory_direct_synthesis") is None
+    assert agent.memory.knowledge_facts(include_stale=True) == facts
+    if "Tool error" not in live_result:
+        assert "63" in answer
+        assert "Observation ID:" in snapshots[-1]
+        assert agent.audit.latest("model_evidence_state")["tool_rounds"] <= budget
+    else:
+        assert "direct-evidence requirement" in answer
+    assert agent.audit.latest("model_learning_memory_verification_deferred")["target_count"] == 4
+    assert agent.audit.latest("model_live_pc_evidence_priority")["tool_rounds"] == 0
+
+
+def _force_stale_repository_retrieval(tmp_path, monkeypatch):
+    agent = _agent(tmp_path)
+    (tmp_path / "localpilot").mkdir()
+    (tmp_path / "localpilot" / "agent.py").write_text("# revised source\n", encoding="utf-8")
+    claims = {
+        "config.model.name": "LocalPilot model configuration selects the Operator model.",
+        "AgentConfig.research_hard_tool_rounds": "The Operator repository defines bounded research tool budgets.",
+        "StudyEngine.upsert_knowledge_facts": "Repository study persists durable knowledge facts.",
+        "LocalPilotAgent.record_human_lesson": "Explicit owner teaching stores a human lesson.",
+        "auto_promote": "Candidate auto promotion is enabled.",
+        "SystemSenseReader.provider_path": "SystemSense hardware provider configuration loads LibreHardwareMonitor.",
+    }
+    for subject, summary in claims.items():
+        _record(agent.memory, key=f"symbol:{subject}", subject=subject, summary=summary)
+    agent.memory.invalidate_knowledge_source("repo://localpilot/agent.py", "changed-digest")
+    facts = agent.memory.knowledge_facts(include_stale=True)
+    assert len(facts) == 6 and all(fact.stale for fact in facts)
+    # Force the audited overbroad retrieval through the real context/target selector.
+    monkeypatch.setattr(agent.memory, "search_knowledge_facts", lambda *args, **kwargs: facts)
+    return agent, facts
+
+
+def test_live_systemsense_question_does_not_select_stale_repository_targets(tmp_path, monkeypatch):
+    agent, facts = _force_stale_repository_retrieval(tmp_path, monkeypatch)
+    prompt = "Check this PC's current CPU and GPU temperatures using SystemSense."
+    context, retrieved = agent._learning_context(prompt)
+    assert len(retrieved) == 6
+    assert _payload(context).get("verification_targets", []) == []
+    assert all(item["material_to_request"] is False for item in retrieved)
+    assert all("verification_required" not in item for item in retrieved)
+    executed = []
+
+    def live_read(**kwargs):
+        executed.append("PC")
+        return '{"cpu_temperature_c": 63, "gpu_temperature_c": 51}'
+
+    def repository_read(**kwargs):
+        executed.append("repository")
+        return "Unrelated repository source."
+
+    agent.tools["get_system_sense_summary"] = replace(
+        agent.tools["get_system_sense_summary"], fn=live_read
+    )
+    agent.tools["search_repository"] = replace(agent.tools["search_repository"], fn=repository_read)
+    agent.tools["read_repository_file"] = replace(agent.tools["read_repository_file"], fn=repository_read)
+    streams = iter([
+        [_chunk(tool_calls=[_call("get_system_sense_summary")])],
+        [_chunk(content="The CPU is 63 C and GPU is 51 C.")],
+        [_chunk(content="The CPU is 63 C and GPU is 51 C.")],
+    ])
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=lambda **kwargs: iter(next(streams))))
+    assert "63" in agent.ask(prompt)
+    assert executed == ["PC"]
+    assert agent.audit.latest("model_learning_memory_live_verification") is None
+    assert agent.memory.knowledge_facts(include_stale=True) == facts
+
+
+def test_mixed_stale_memory_verifies_only_the_material_repository_claim(tmp_path, monkeypatch):
+    agent, facts = _force_stale_repository_retrieval(tmp_path, monkeypatch)
+    prompt = "Inspect the local repository architecture and verify auto_promote safety."
+    context, retrieved = agent._learning_context(prompt)
+    targets = _payload(context)["verification_targets"]
+    assert len(targets) == 1
+    assert targets[0]["arguments"]["query"] == "auto_promote"
+    assert [item["subject"] for item in retrieved if item["material_to_request"]] == ["auto_promote"]
+    executed = []
+
+    def repository_read(**kwargs):
+        executed.append(kwargs["query"])
+        return "AUTO_PROMOTE = False  # human merge only"
+
+    agent.tools["search_repository"] = replace(agent.tools["search_repository"], fn=repository_read)
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=lambda **kwargs: iter([
+        _chunk(content="The live source shows auto promotion is false and merge remains human-only.")
+    ])))
+    assert "auto promotion is false" in agent.ask(prompt)
+    assert executed == ["auto_promote"]
+    assert agent.audit.latest("model_learning_memory_live_verification")["target_count"] == 1
+    assert agent.memory.knowledge_facts(include_stale=True) == facts
+
+
+@pytest.mark.parametrize("prompt", [
+    "Inspect the repository architecture for HTTP cache eviction.",
+    "Review repository Ollama streaming integration.",
+    "Explain the architecture of a medieval castle.",
+    "Review CPU cache configuration in this PC.",
+])
+def test_no_material_memory_claims_produce_no_automatic_targets(tmp_path, monkeypatch, prompt):
+    agent, _ = _force_stale_repository_retrieval(tmp_path, monkeypatch)
+    context, retrieved = agent._learning_context(prompt)
+    assert len(retrieved) == 6
+    assert _payload(context).get("verification_targets", []) == []
+    assert not any(item["material_to_request"] for item in retrieved)
+
+
+def test_repository_topic_match_selects_claim_without_an_exact_symbol(tmp_path, monkeypatch):
+    agent, _ = _force_stale_repository_retrieval(tmp_path, monkeypatch)
+    context, _ = agent._learning_context("Inspect the repository Operator research tool budgets.")
+    assert [target["arguments"]["query"] for target in _payload(context)["verification_targets"]] == [
+        "research_hard_tool_rounds"
+    ]
+
+
+def test_qualified_config_field_selects_its_claim_without_generic_name_matches(tmp_path, monkeypatch):
+    agent, _ = _force_stale_repository_retrieval(tmp_path, monkeypatch)
+    context, _ = agent._learning_context("Inspect the repository model.name setting.")
+    assert [target["arguments"]["query"] for target in _payload(context)["verification_targets"]] == ["name"]
+
+
+def test_systemsense_repository_implementation_claim_is_material_when_requested(tmp_path, monkeypatch):
+    agent, _ = _force_stale_repository_retrieval(tmp_path, monkeypatch)
+    context, _ = agent._learning_context(
+        "Inspect the repository implementation of SystemSenseReader.provider_path."
+    )
+    assert [target["arguments"]["query"] for target in _payload(context)["verification_targets"]] == [
+        "provider_path"
+    ]
+
+
+def test_named_source_and_symbol_matching_do_not_use_substrings(tmp_path, monkeypatch):
+    agent, _ = _force_stale_repository_retrieval(tmp_path, monkeypatch)
+    context, _ = agent._learning_context("Verify auto_promoter in the repository.")
+    assert _payload(context).get("verification_targets", []) == []
+    context, _ = agent._learning_context("Inspect the repository source file agent.py.")
+    targets = _payload(context)["verification_targets"]
+    assert len(targets) == 4
+    assert all(target["arguments"]["path"] == "localpilot/agent.py" for target in targets)
+
+
+def test_empty_durable_memory_does_not_create_keyword_based_targets(tmp_path):
+    agent = _agent(tmp_path)
+    assert agent._learning_context("Inspect the LocalPilot Ollama streaming integration architecture.") == ("", [])
+
+
+def test_relevant_stale_fact_with_unchanged_bytes_still_requires_verification(tmp_path):
+    agent = _agent(tmp_path)
+    source = tmp_path / "policy.py"
+    source.write_text("AUTO_PROMOTE = False\n", encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    _record(agent.memory, key="auto_promote", subject="auto_promote",
+            summary="Auto promotion is enabled.", source_uri="repo://policy.py", source_digest=digest)
+    agent.memory.invalidate_knowledge_source("repo://policy.py", "different-digest")
+    context, retrieved = agent._learning_context("Verify auto_promote in the repository.")
+    assert retrieved[0]["stale"] and retrieved[0]["repository_source_digest_status"] == "match"
+    assert _payload(context)["verification_targets"][0]["arguments"]["query"] == "auto_promote"
+
+
+def _synthesis_memory_agent(tmp_path, *, claim_count=3):
+    agent = _agent(tmp_path)
+    agent.config.agent.research_soft_tool_rounds = 4
+    (tmp_path / "localpilot").mkdir()
+    (tmp_path / "localpilot" / "agent.py").write_text(
+        "\n".join(f"class RoutingClaim{index}: pass" for index in range(claim_count)),
+        encoding="utf-8",
+    )
+    for index in range(claim_count):
+        _record(
+            agent.memory, key=f"symbol:RoutingClaim{index}", subject=f"RoutingClaim{index}",
+            summary=f"RoutingClaim{index} is a repository class.",
+        )
+    agent.memory.invalidate_knowledge_source("repo://localpilot/agent.py", "revised-digest")
+    prompt = "Verify " + ", ".join(f"RoutingClaim{index}" for index in range(claim_count))
+    prompt += " in the local repository."
+    return agent, prompt
+
+
+@pytest.mark.parametrize("source", ["Windows/PC state", "public HTTPS", "private GitHub"])
+@pytest.mark.parametrize("source_ok", [True, False])
+def test_completed_memory_verification_cannot_bypass_outstanding_direct_source(
+    tmp_path, monkeypatch, source, source_ok
+):
+    agent, prompt = _synthesis_memory_agent(tmp_path)
+    tool, arguments, request = {
+        "Windows/PC state": (
+            "get_system_sense_summary", {},
+            "Check this PC's current CPU temperature using SystemSense.",
+        ),
+        "public HTTPS": (
+            "fetch_public_https", {"url": "https://example.org/reference"},
+            "Read https://example.org/reference before answering.",
+        ),
+        "private GitHub": (
+            "get_github_pull_request", {"number": 30}, "Review PR #30 on private GitHub.",
+        ),
+    }[source]
+    prompt += " " + request
+    required = agent._evidence_requirements(prompt)
+    assert required == {"trusted repository", source}
+    context, facts = agent._learning_context(prompt)
+    assert len(_payload(context)["verification_targets"]) == 3
+    assert all(item["material_to_request"] and item["stale"] for item in facts)
+    executed = []
+    repository_read = agent.tools["search_repository"].fn
+    if source == "Windows/PC state":
+        # Step 1 normally defers these reads while PC evidence is pending.
+        # Expose the explicit PC obligation at completion of the final read to
+        # exercise the synthesis invariant independently of that reservation.
+        required.remove(source)
+        monkeypatch.setattr(agent, "_evidence_requirements", lambda _: required)
+
+    def verify_repository(**kwargs):
+        executed.append("repository")
+        result = repository_read(**kwargs)
+        if len(executed) == 3:
+            required.add(source)
+        return result
+
+    def read_source(**kwargs):
+        executed.append(source)
+        if not source_ok:
+            return "Tool error: required source unavailable"
+        return '{"cpu_temperature_c": 63}' if source == "Windows/PC state" else "Requested source inspected."
+
+    agent.tools["search_repository"] = replace(agent.tools["search_repository"], fn=verify_repository)
+    agent.tools[tool] = replace(agent.tools[tool], fn=read_source)
+    snapshots = []
+
+    def fake_chat(**kwargs):
+        snapshots.append({"tools": bool(kwargs.get("tools")), "messages": str(kwargs["messages"])})
+        if kwargs.get("tools") and source not in executed:
+            return iter([_chunk(tool_calls=[_call(tool, arguments)])])
+        answer = (
+            "The CPU temperature is 63 C." if source == "Windows/PC state" and source_ok
+            else "Verified the repository symbols and inspected the requested source."
+            if source_ok else "The requested source remains unverified."
+        )
+        return iter([_chunk(content=answer)])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+    answer = agent.ask(prompt)
+    verification = agent.audit.latest("model_learning_memory_live_verification")
+    assert verification["target_count"] == 3
+    assert verification["succeeded"] == ["trusted repository"]
+    assert agent.audit.latest("model_learning_memory_direct_synthesis") is None
+    assert snapshots[0]["tools"] is True
+    assert executed == ["repository"] * 3 + [source]
+    state = agent.audit.latest("model_evidence_state")
+    assert state["tool_rounds"] == 4
+    assert "Observation ID:" in snapshots[-1]["messages"]
+    if source_ok:
+        assert set(state["succeeded"]) == required
+        assert not answer.startswith("[LocalPilot")
+    else:
+        failure = agent.audit.latest("model_evidence_acquisition_failed")
+        assert failure["missing"] == [source]
+        assert source in failure["attempted"] and source in failure["failed"]
+        assert "direct-evidence requirement" in answer
+        assert agent.audit.latest("model_same_context_postvalidation_complete") is None
+
+
+@pytest.mark.parametrize("location_supplied", [False, True])
+def test_verified_repository_memory_still_allows_synthesis_when_requirements_satisfied(
+    tmp_path, monkeypatch, location_supplied
+):
+    agent, prompt = _synthesis_memory_agent(tmp_path)
+    requirements = {"trusted repository"}
+    if location_supplied:
+        prompt += " Use my location for context."
+        requirements.add("machine location")
+        agent.machine_location = SimpleNamespace(
+            public_status=lambda: {"enabled": True},
+            coarse_model_context=lambda **kwargs: {"source": "test_location_provider", "approximate": True},
+        )
+    snapshots = []
+    answer_text = "The requested repository symbols are present in the verified source."
+
+    def fake_chat(**kwargs):
+        snapshots.append({"tools": bool(kwargs.get("tools")), "messages": str(kwargs["messages"])})
+        return iter([_chunk(content=answer_text)])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+    assert agent.ask(prompt) == answer_text
+    assert agent._evidence_requirements(prompt) == requirements
+    assert set(agent.audit.latest("model_learning_memory_live_verification")["succeeded"]) == requirements
+    assert agent.audit.latest("model_learning_memory_direct_synthesis")["target_count"] == 3
+    assert snapshots[0]["tools"] is False
+    assert "Observation ID:" in snapshots[0]["messages"]
+    assert agent.audit.latest("model_same_context_postvalidation_complete")["accepted"] is True
+
+
+def test_mixed_repository_and_pc_request_keeps_normal_live_evidence_priority(tmp_path, monkeypatch):
+    agent, prompt = _synthesis_memory_agent(tmp_path)
+    prompt += " Check this PC's current CPU temperature using SystemSense."
+    executed = []
+    repository_read = agent.tools["search_repository"].fn
+
+    def verify_repository(**kwargs):
+        executed.append(kwargs["query"])
+        return repository_read(**kwargs)
+
+    def read_pc(**kwargs):
+        executed.append("PC")
+        return '{"cpu_temperature_c": 63}'
+
+    agent.tools["search_repository"] = replace(agent.tools["search_repository"], fn=verify_repository)
+    agent.tools["get_system_sense_summary"] = replace(agent.tools["get_system_sense_summary"], fn=read_pc)
+
+    def fake_chat(**kwargs):
+        if kwargs.get("tools") and len(executed) < 4:
+            call = _call("get_system_sense_summary") if not executed else _call(
+                "search_repository", {"path": "localpilot/agent.py", "query": f"RoutingClaim{len(executed) - 1}"}
+            )
+            return iter([_chunk(tool_calls=[call])])
+        return iter([_chunk(content="The repository symbols were verified and the CPU temperature is 63 C.")])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+    assert "63" in agent.ask(prompt)
+    assert executed == ["PC", "RoutingClaim0", "RoutingClaim1", "RoutingClaim2"]
+    assert agent.audit.latest("model_learning_memory_verification_deferred")["target_count"] == 3
+    assert agent.audit.latest("model_learning_memory_direct_synthesis") is None
+    state = agent.audit.latest("model_evidence_state")
+    assert state["tool_rounds"] == 4
+    assert set(state["succeeded"]) == {"trusted repository", "Windows/PC state"}
+
+
+def test_completed_memory_verification_at_ceiling_cannot_bypass_missing_source(tmp_path, monkeypatch):
+    agent, prompt = _synthesis_memory_agent(tmp_path, claim_count=4)
+    prompt += " Read https://example.org/reference before answering."
+    model_calls = []
+
+    def fake_chat(**kwargs):
+        model_calls.append(kwargs)
+        return iter([_chunk(content="The repository symbols were verified; the reference remains unverified.")])
+
+    def forbidden_extra_read(**kwargs):
+        pytest.fail("The existing hard ceiling must not be increased for missing evidence.")
+
+    agent.tools["fetch_public_https"] = replace(agent.tools["fetch_public_https"], fn=forbidden_extra_read)
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+    answer = agent.ask(prompt)
+    verification = agent.audit.latest("model_learning_memory_live_verification")
+    assert verification["target_count"] == verification["tool_rounds"] == 4
+    assert agent.audit.latest("model_learning_memory_direct_synthesis") is None
+    assert not model_calls[0].get("tools")
+    assert agent.audit.latest("model_evidence_acquisition_failed")["missing"] == ["public HTTPS"]
+    assert "direct-evidence requirement" in answer
 
 
 def test_relevance_search_is_bounded_and_preserves_fact_authority_metadata(tmp_path):
@@ -159,8 +588,7 @@ def test_digest_mismatch_and_stale_state_are_surfaced(tmp_path):
     targets = _payload(context)["verification_targets"]
     assert targets[0]["tool"] == "search_repository"
     assert targets[0]["arguments"]["query"] == "auto_promote"
-    assert targets[1]["arguments"]["path"] == "ARCHITECTURE.md"
-    assert targets[2]["arguments"]["query"] == "record_human_lesson("
+    assert len(targets) == 1  # The word architecture must not add unrelated writer checks.
 
 
 def test_declared_dependency_query_prioritizes_pyproject_live_check(

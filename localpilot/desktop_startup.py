@@ -25,6 +25,16 @@ $ErrorActionPreference = 'Stop'
 function Get-IdentitySid {
     return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 }
+function Resolve-IdentitySid([string]$identity) {
+    if (-not $identity) { return $null }
+    try {
+        if ($identity -match '^S-1-') {
+            return (New-Object Security.Principal.SecurityIdentifier($identity)).Value
+        }
+        return (New-Object Security.Principal.NTAccount($identity)).Translate(
+            [Security.Principal.SecurityIdentifier]).Value
+    } catch { return $null }
+}
 function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     return (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole(
@@ -40,7 +50,7 @@ function Assert-OwnedTask($task) {
     if ($task.Description -cne $description -or $actions.Count -ne 1 -or
         $actions[0].WorkingDirectory -ine $root -or
         $actions[0].Arguments -notmatch '^-m localpilot\.cli --config .+ desktop$' -or
-        $task.Principal.UserId -ine $sid) {
+        (Resolve-IdentitySid $task.Principal.UserId) -ine $sid) {
         throw 'A different task occupies this LocalPilot startup name; it was preserved.'
     }
 }
@@ -54,7 +64,7 @@ function Assert-RegisteredTask($task) {
         $task.Principal.LogonType -ne 'Interactive' -or
         -not $task.Settings.Enabled -or $task.Settings.MultipleInstances -ne 'IgnoreNew' -or
         $triggers.Count -ne 1 -or $triggers[0].CimClass.CimClassName -ne 'MSFT_TaskLogonTrigger' -or
-        $triggers[0].UserId -ine $sid) {
+        (Resolve-IdentitySid $triggers[0].UserId) -ine $sid) {
         throw 'The replacement login task did not verify; the previous setup will be restored.'
     }
 }

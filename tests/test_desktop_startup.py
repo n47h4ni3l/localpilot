@@ -147,6 +147,10 @@ def test_legacy_shortcut_ownership_refuses_other_launches(tmp_path, change):
 # mutation replaced by local functions. No real task is read, created or run.
 _MOCK_SCHEDULER = r"""
 function Get-IdentitySid { return 'S-1-5-21-111-222-333-1001' }
+function Resolve-IdentitySid([string]$identity) {
+    if ($identity -in @($sid, 'test-user', 'TEST-PC\test-user')) { return $sid }
+    return $null
+}
 function Test-Administrator { return $true }
 $script:task = $null
 $script:previous = $null
@@ -190,6 +194,10 @@ function Register-ScheduledTask {
     if ($env:TEST_INVALID -eq 'trigger') { $script:task.Triggers[0].UserId='another-user' }
     if ($env:TEST_INVALID -eq 'execute') { $script:task.Actions[0].Execute='different.exe' }
     if ($env:TEST_INVALID -eq 'enabled') { $script:task.Settings.Enabled=$false }
+    if ($env:TEST_INVALID -eq 'account-name') {
+        $script:task.Principal.UserId='test-user'
+        $script:task.Triggers[0].UserId='TEST-PC\test-user'
+    }
     return $script:task
 }
 function Export-ScheduledTask { param($TaskName,$TaskPath,$ErrorAction) Record 'export'; return '<previous-task/>' }
@@ -238,6 +246,28 @@ def test_highest_task_is_verified_before_legacy_link_removed(tmp_path):
     assert "settings:IgnoreNew:0" in events
     assert events.index("register") < events.index("remove-link")
     assert "restore" not in events and "unregister" not in events
+
+
+def test_scheduler_account_names_are_verified_by_sid_before_migration(tmp_path):
+    result, events = _run_mock_scheduler(tmp_path, invalid="account-name")
+    assert result.returncode == 0, result.stderr
+    assert events.index("register") < events.index("remove-link")
+    assert "restore" not in events and "unregister" not in events
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows account identity")
+def test_real_windows_account_names_resolve_to_current_sid():
+    script = startup._TASK_FUNCTIONS + r'''
+$sid = Get-IdentitySid
+$account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+if ((Resolve-IdentitySid $sid) -ne $sid -or (Resolve-IdentitySid $account) -ne $sid -or
+    (Resolve-IdentitySid ($account.Split('\')[-1])) -ne $sid -or
+    (Resolve-IdentitySid 'localpilot-nonexistent-account-9a2d') -ne $null) { exit 1 }
+'''
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                            capture_output=True, text=True, timeout=30,
+                            creationflags=startup.hidden_process_creation_flags())
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("invalid", ["level", "trigger", "execute", "enabled"])

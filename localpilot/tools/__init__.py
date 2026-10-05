@@ -262,7 +262,7 @@ def registry(
                     ),
                     ToolSpec(
                         "inspect_raw_system_sense",
-                        "Inspect bounded raw passive telemetry, or set category=backend and choose backend_section=overview, memory, processes, compute, storage, network, or sensors for deeper OS/hardware diagnostics with source provenance. Prefer this raw evidence for hardware-specific conclusions and actions.",
+                        "Inspect bounded raw telemetry with category=dynamic, sensors, inventory, or backend. For named metrics use requested_sensors (exact names or aliases), sensor_type=Temperature, and components=[cpu,gpu]; selection precedes the row limit and reports missing/truncated metrics with provider provenance and separate Windows thermal status. For backend choose backend_section=overview, memory, processes, compute, storage, network, or sensors. Prefer raw evidence for hardware conclusions.",
                         RiskLevel.READ_ONLY,
                         reader.inspect_raw_system_sense,
                     ),

@@ -29,6 +29,8 @@ from localpilot.agent_runtime_support import (
 )
 from localpilot.agent_tools import _LIBRARY_TOOLS
 from localpilot.audit import AuditLog
+from localpilot.answer_contract import AnswerContract
+from localpilot.systemsense_selection import SensorRequest
 from localpilot.background_reading import BackgroundReadingNotes
 from localpilot.authority import (
     InformationAuthorityReport,
@@ -51,6 +53,7 @@ from localpilot.safety import SafetyPolicy
 from localpilot.systemsense import SystemSense, get_system_sense
 from localpilot.tools import registry
 from localpilot.tools.library import LocalLibrary
+from localpilot.tools.systemsense import raw_system_sense_tool_schema
 
 
 class _RecoverableToolCallProtocolError(RuntimeError):
@@ -436,7 +439,8 @@ class LocalPilotAgent:
         excluded_tools: frozenset[str] = frozenset(),
     ):
         functions = [
-            spec.fn for name, spec in self.tools.items()
+            raw_system_sense_tool_schema() if name == "inspect_raw_system_sense" else spec.fn
+            for name, spec in self.tools.items()
             if name not in excluded_tools
             and self.policy.permits_without_confirmation(spec.risk)
         ]
@@ -1401,6 +1405,7 @@ class LocalPilotAgent:
         draft_content: str | None = None,
         synthesis_reason: str = "",
         recovery_messages: list[dict[str, Any]] | None = None,
+        answer_contract: AnswerContract = AnswerContract(),
     ) -> str:
         """Convert the live reasoning context into prose without inventing new evidence."""
         answer_think = self.config.model.think if think is None else think
@@ -1409,6 +1414,18 @@ class LocalPilotAgent:
             if recovery_messages is not None
             else [dict(message) for message in self.messages]
         )
+        request_anchor = answer_contract.context(prompt)
+        self.audit.write(
+            "model_answer_contract", query_digest=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            fields=[{"field": field.name, "value": field.value} for field in answer_contract.fields],
+            original_request_repeated_in_every_recovery=True,
+        )
+
+        def stream_answer(*args, **kwargs):
+            messages = kwargs.pop("messages", None)
+            context = [dict(message) for message in (self.messages if messages is None else messages)]
+            context.append({"role": "user", "content": request_anchor})
+            return self._stream_chat_message(*args, messages=context, **kwargs)
         if synthesis_reason == "repeated_no_information":
             lead = (
                 "Repeated read-only attempts produced no usable evidence. Stop searching and adapt now. "
@@ -1476,7 +1493,7 @@ class LocalPilotAgent:
         )
         try:
             if draft_content is None:
-                response = self._stream_chat_message(
+                response = stream_answer(
                     chat,
                     think=answer_think,
                     options={"num_predict": _FINAL_ANSWER_NUM_PREDICT},
@@ -1534,7 +1551,7 @@ class LocalPilotAgent:
                     }
                     self.messages.append(retry_instruction)
                     transient.append(retry_instruction)
-                    response = self._stream_chat_message(
+                    response = stream_answer(
                         chat,
                         think=answer_think,
                         options={"num_predict": _FINAL_ANSWER_NUM_PREDICT},
@@ -1734,7 +1751,7 @@ class LocalPilotAgent:
                 recovery_think: bool | str = (
                     False if operational_self_status else "medium"
                 )
-                recovered = self._stream_chat_message(
+                recovered = stream_answer(
                     chat,
                     think=recovery_think,
                     options={"num_predict": 2048},
@@ -1767,7 +1784,7 @@ class LocalPilotAgent:
                             "mention this repair, or continue from the fragment. Return the complete replacement only."
                         ),
                     }
-                    completed_recovery = self._stream_chat_message(
+                    completed_recovery = stream_answer(
                         chat,
                         think=False,
                         options={"num_predict": 1600},
@@ -1816,7 +1833,7 @@ class LocalPilotAgent:
                     }
                     self.messages.append(render_instruction)
                     transient.append(render_instruction)
-                    rendered_recovery = self._stream_chat_message(
+                    rendered_recovery = stream_answer(
                         chat,
                         think=False,
                         options={"num_predict": 1200},
@@ -1916,7 +1933,7 @@ class LocalPilotAgent:
                     }
                     self.messages.append(retry_instruction)
                     transient.append(retry_instruction)
-                    retried = self._stream_chat_message(
+                    retried = stream_answer(
                         chat,
                         think="medium",
                         options={"num_predict": 1536},
@@ -1958,7 +1975,7 @@ class LocalPilotAgent:
                             f"{practical_troubleshooting_recovery}{work_planning_recovery}"
                         ),
                     }
-                    final_render = self._stream_chat_message(
+                    final_render = stream_answer(
                         chat,
                         think=False,
                         options={"num_predict": 800},
@@ -2081,12 +2098,13 @@ class LocalPilotAgent:
                     prompt, content, successful_tools, clean_recovery_messages
                 )
                 risks = list(dict.fromkeys([*risks, *evidence_risks, *contextual_risks]))
-                gaps: list[str] = []
+                gaps = answer_contract.gaps(content)
                 self.audit.write(
                     "model_same_context_postvalidation_complete",
                     model=self.config.model.name,
                     round=round_no,
-                    accepted=not risks,
+                    accepted=not risks and not gaps,
+                    missing_requested_fields=gaps,
                     repository_review=authority_review,
                     issue_codes=risks,
                     successful_tools=sorted(successful_tools),
@@ -2094,7 +2112,7 @@ class LocalPilotAgent:
                     trusted_durable_evidence=deterministic_operational_status_fallback,
                     prose_rewritten=False,
                 )
-                if risks:
+                if risks or gaps:
                     if risks or gaps:
                         authority_issue_details = "; ".join(
                             f"{issue.code} [{issue.claim_class}]: {issue.detail}"
@@ -2113,6 +2131,7 @@ class LocalPilotAgent:
                                 "The authority postcondition rejected the preceding draft for these unsupported "
                                 f"claim classes: {', '.join(risks)}. Details: "
                                 f"{'; '.join(item for item in (authority_issue_details, evidence_issue_details) if item)}. "
+                                f"Missing or incorrect requested fields: {', '.join(gaps)}. "
                                 "Correct only those failed assertions: remove them or label their precise scope "
                                 "unresolved. Preserve the draft's useful judgments, hypotheses, initiative, natural "
                                 "voice, organization, and every claim established by complete raw or repository "
@@ -2122,7 +2141,7 @@ class LocalPilotAgent:
                         }
                         self.messages.append(correction_instruction)
                         transient.append(correction_instruction)
-                        corrected = self._stream_chat_message(
+                        corrected = stream_answer(
                             chat,
                             think="low",
                             options={"num_predict": _FINAL_ANSWER_NUM_PREDICT},
@@ -2148,7 +2167,7 @@ class LocalPilotAgent:
                                 prompt, corrected_content, successful_tools, clean_recovery_messages
                             ),
                         ]))
-                        corrected_gaps: list[str] = []
+                        corrected_gaps = answer_contract.gaps(corrected_content)
                         corrected_calls = corrected.get("tool_calls") or []
                         accepted_correction = bool(
                             corrected_content.strip()
@@ -2181,13 +2200,14 @@ class LocalPilotAgent:
                                     "a paraphrase of the same assertion is not a correction. Preserve the answer's "
                                     "judgment, voice, hypotheses, chosen next step, and exact literals from live evidence. "
                                     f"Remaining issues: {'; '.join(item for item in (corrected_issue_details, corrected_evidence_details) if item) or ', '.join(corrected_risks)}. "
+                                    f"Missing or incorrect requested fields: {', '.join(corrected_gaps)}. "
                                     "Do not turn the answer into a checklist, table, menu, or validator report, and do "
                                     "not mention this postcondition."
                                 ),
                             }
                             self.messages.append(final_correction_instruction)
                             transient.append(final_correction_instruction)
-                            final_correction = self._stream_chat_message(
+                            final_correction = stream_answer(
                                 chat,
                                 think="low",
                                 options={"num_predict": _FINAL_ANSWER_NUM_PREDICT},
@@ -2212,7 +2232,7 @@ class LocalPilotAgent:
                                     prompt, final_content, successful_tools, clean_recovery_messages
                                 ),
                             ]))
-                            final_gaps: list[str] = []
+                            final_gaps = answer_contract.gaps(final_content)
                             final_accepted = bool(
                                 final_content.strip()
                                 and not final_calls
@@ -2295,7 +2315,7 @@ class LocalPilotAgent:
                                         f"OWNER'S ORIGINAL REQUEST:\n{prompt}"
                                     ),
                                 }
-                                late_render = self._stream_chat_message(
+                                late_render = stream_answer(
                                     chat,
                                     think=False,
                                     options={"num_predict": 1200},
@@ -2412,6 +2432,9 @@ class LocalPilotAgent:
                                 "[LocalPilot withheld the draft because unsupported factual assertions "
                                 "remained after bounded corrections.]"
                             )
+                if not content.startswith("[LocalPilot") and answer_contract.gaps(content):
+                    self.audit.write("model_answer_contract_failed", missing=answer_contract.gaps(content))
+                    content = "[LocalPilot withheld an incomplete answer after bounded requested-field corrections.]"
                 content = self._strip_authority_meta(content)
                 visible = self._visible_decline(content)
                 self.messages.append({"role": "assistant", "content": visible})
@@ -2471,7 +2494,7 @@ class LocalPilotAgent:
                     }
                     self.messages.append(continuation_instruction)
                     transient.append(continuation_instruction)
-                    continuation = self._stream_chat_message(
+                    continuation = stream_answer(
                         chat,
                         think=False,
                         options={"num_predict": continuation_budget},
@@ -2517,6 +2540,7 @@ class LocalPilotAgent:
                             draft_content=continuation_content,
                             synthesis_reason=synthesis_reason,
                             recovery_messages=clean_recovery_messages,
+                            answer_contract=answer_contract,
                         )
                     if continuation_exhausted:
                         marker = (
@@ -2553,7 +2577,7 @@ class LocalPilotAgent:
                 }
                 self.messages.append(retry_instruction)
                 transient.append(retry_instruction)
-                retry = self._stream_chat_message(
+                retry = stream_answer(
                     chat,
                     think=answer_think,
                     options={"num_predict": _FINAL_ANSWER_NUM_PREDICT},
@@ -2577,6 +2601,7 @@ class LocalPilotAgent:
                         draft_content=content,
                         synthesis_reason=synthesis_reason,
                         recovery_messages=clean_recovery_messages,
+                        answer_contract=answer_contract,
                     )
 
             marker = (
@@ -2981,6 +3006,8 @@ class LocalPilotAgent:
             attempted_evidence.add("machine location")
             succeeded_evidence.add("machine location")
         successful_tools: set[str] = set()
+        sensor_request = SensorRequest.from_prompt(prompt) if "Windows/PC state" in evidence_requirements else SensorRequest()
+        answer_contract = AnswerContract()
         failed_evidence: set[str] = set()
         evidence_recovery_attempts = 0
         post_tool_guidance_given = False
@@ -3201,6 +3228,19 @@ class LocalPilotAgent:
             synthesis_reason: str = "",
             answer_think: bool | str | None = None,
         ) -> str:
+            missing = evidence_requirements - succeeded_evidence
+            if missing:
+                marker = (
+                    "[LocalPilot could not satisfy this request's direct-evidence requirement because it "
+                    "did not acquire the required source successfully within the bounded recovery loop.]"
+                )
+                self.messages.append({"role": "assistant", "content": marker})
+                self.audit.write(
+                    "model_evidence_acquisition_failed", round=round_no,
+                    missing=sorted(missing), attempted=sorted(attempted_evidence),
+                    succeeded=sorted(succeeded_evidence), failed=sorted(failed_evidence),
+                )
+                return marker
             strip_transient_controls(reason="before_final_synthesis")
             return self._continue_high_reasoning_answer(
                 chat,
@@ -3217,6 +3257,7 @@ class LocalPilotAgent:
                 draft_content=draft_content,
                 synthesis_reason=synthesis_reason,
                 recovery_messages=[dict(message) for message in self.messages],
+                answer_contract=answer_contract,
             )
 
         try:
@@ -3411,6 +3452,10 @@ class LocalPilotAgent:
                             and len(checkpoint_calls) == 1
                         ):
                             _, checkpoint_args = self._tool_call_parts(checkpoint_calls[0])
+                            if isinstance(checkpoint_args.get("proposed_arguments"), dict):
+                                checkpoint_args = {**checkpoint_args, "proposed_arguments": sensor_request.tool_arguments(
+                                    str(checkpoint_args.get("proposed_tool", "")), checkpoint_args["proposed_arguments"]
+                                )}
                             decision = research_notebook.submit(checkpoint_args)
                             accepted = decision.accepted
                             decision_redundancies = decision.redundant_with
@@ -3503,6 +3548,7 @@ class LocalPilotAgent:
                     unique_candidates: list[tuple[str, dict[str, Any]]] = []
                     for call in calls:
                         name, args = self._tool_call_parts(call)
+                        args = sensor_request.tool_arguments(name, args)
                         spec = self.tools.get(name)
                         cache_key = self._tool_cache_key(name, args)
                         cacheable = spec is not None and str(spec.risk) == "read_only"
@@ -3545,6 +3591,7 @@ class LocalPilotAgent:
                     unique_execution = False
                     for call in calls:
                         name, args = self._tool_call_parts(call)
+                        args = sensor_request.tool_arguments(name, args)
                         if name in {"search_library", "read_library_passage"}:
                             library_grounding_attempted = True
                         evidence_source = self._tool_evidence_source(name)
@@ -3676,6 +3723,27 @@ class LocalPilotAgent:
                             and permitted
                         ):
                             ok = self._tool_result_success(result)
+                            if evidence_source == "Windows/PC state" and ok and sensor_request.active:
+                                missing_metrics, acquired_contract = sensor_request.evaluate(str(result))
+                                try:
+                                    captured_at = json.loads(str(result)).get("captured_at")
+                                except (ValueError, AttributeError):
+                                    captured_at = None
+                                self.audit.write(
+                                    "model_requested_evidence_coverage", tool=name,
+                                    missing=missing_metrics, captured_fields=[f.name for f in acquired_contract.fields],
+                                    evidence_fields=[{"field": f.name, "value": f.value} for f in acquired_contract.fields],
+                                    captured_at=captured_at,
+                                    complete=not missing_metrics,
+                                )
+                                if missing_metrics:
+                                    add_internal(
+                                        "The PC observation did not satisfy the original requested metrics: "
+                                        + ", ".join(missing_metrics) + ". Use a bounded raw named-sensor read or complete summary."
+                                    )
+                                    ok = False
+                                else:
+                                    answer_contract = acquired_contract
                             if str(spec.risk) == "read_only":
                                 if ok:
                                     unhelpful_tool_counts.pop(name, None)
@@ -3790,12 +3858,21 @@ class LocalPilotAgent:
                             stagnation_guidance_given = True
                             post_tool_guidance_given = True
                             stagnant_tool_names.update(stagnant_tools)
-                            evidence_requirements.difference_update(failed_evidence)
+                            # Failed discovery is not satisfaction of an explicit source.
+                            sensor_guidance = (
+                                "For current hardware-provider temperatures use inspect_raw_system_sense with "
+                                "named sensor selection, or get_system_sense_summary; history and inventory "
+                                "cannot substitute for those metrics. " if sensor_request.active else ""
+                            )
                             add_internal(
                                 "A read-only discovery tool has now produced repeated zero-information results and "
-                                f"is blocked for the rest of this turn: {', '.join(stagnant_tools)}. Adapt once: if "
-                                "you know a specific relevant official HTTPS URL, use fetch_public_https directly; "
-                                "otherwise synthesize what remains unresolved. Do not call the blocked tool again.",
+                                f"is blocked for the rest of this turn: {', '.join(stagnant_tools)}. "
+                                f"Outstanding required sources remain: {', '.join(sorted(evidence_requirements - succeeded_evidence)) or 'none'}. "
+                                "Adapt once using a different appropriate registered read-only source. "
+                                f"{sensor_guidance}For a public-web requirement, a specific "
+                                "relevant official HTTPS URL may be read with fetch_public_https. If the required "
+                                "source cannot be acquired within the existing bounds, the request remains unresolved. "
+                                "Do not call the blocked tool again.",
                                 research_control=True,
                             )
                             self.audit.write(
@@ -3803,6 +3880,8 @@ class LocalPilotAgent:
                                 round=turn_no,
                                 tool_rounds=tool_rounds_used,
                                 tools=stagnant_tools,
+                                required=sorted(evidence_requirements),
+                                outstanding=sorted(evidence_requirements - succeeded_evidence),
                             )
                             continue
                         self.audit.write(

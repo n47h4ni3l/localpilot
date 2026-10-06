@@ -1,12 +1,55 @@
 # LocalPilot
 
-LocalPilot is a private, local-first Windows agent and an experiment in evidence-driven, cumulative capability growth. It uses local [Ollama](https://ollama.com/) models for everyday assistance, persistent memory, bounded research, passive machine awareness, structured study, and isolated software-development candidates.
+> **One shared foundation. Millions of individually evolving intelligences.**
 
-The current package version is `0.2.1`. LocalPilot is a working agent system, not a claim of AGI: it can operate persistently, learn through explicit memory and source-grounded study, prepare proposed improvements to its own repository, and train guarded local QLoRA packages, but it does not execute arbitrary commands or autonomously promote its own code or model lineage.
+**LocalPilot** is the local-first agent runtime behind **Nestra**: a personal intelligence intended to grow with the person who owns it. Official Nestra releases provide a common foundation. Each installation can develop its own private library, memory, understanding of the owner's work, and—eventually—its own independently trained adaptation.
 
-> **Stable mission:** Become an increasingly capable general-purpose personal intelligence that expands what its user can understand, create, and accomplish while remaining reliable, transparent, resource-aware, interruptible, and under human control.
+The ambition is not millions of copies of the same assistant with different profiles. It is millions of personal intelligences that begin with shared capabilities but develop distinct strengths over years of learning, experience, and use.
 
-In practical terms, LocalPilot works for the owner while the PC is active and may work on LocalPilot when the PC is idle.
+LocalPilot is experimental software, currently at version `0.2.1`. It is **not** an AGI or superintelligence claim. The existing system can converse locally, study selected sources during idle periods, retain source-linked learning, and prepare reviewed development candidates. Private Library-to-model-weight learning and preserving trained personal adapters across foundation upgrades are **future work**, not shipped capabilities.
+
+## The vision
+
+### A foundation everyone can build upon
+
+The planned official Nestra foundation is trained and evaluated through a cumulative sequence of roughly five or six capability packages: software engineering, machine stewardship, bounded computer/tool use, experimental self-improvement, resource intelligence, and other broadly useful skills. A public release should offer the same validated starting capabilities to every installation. The foundation evolves through separately evaluated, reversible releases—not by silently absorbing individual users' private material.
+
+### An intelligence that becomes yours
+
+The owner controls a private Library of reference material: manuals, books, research, procedures, and the documents they choose to share. Nestra should be able to read that material at her leisure, retain attributed and revisable knowledge, combine it with explicit teaching and permitted experience, and use it when helping the owner. There should be **no arbitrary publisher or subject allowlist** governing what an owner may place in their personal Library.
+
+Long-term, verified learning should also be eligible for an **optional, private personal training path**. That could yield an owner-specific LoRA or successor adaptation while retaining the official foundation as a known reference point. Personal weight updates must be tested, reversible, resource-aware, and explicitly authorized. Reading a document or storing a memory **does not** itself update model weights.
+
+### Growth without surrendering continuity
+
+A person's Nestra should retain her private files, learning history, and memories across official updates. Carrying trained adaptations across a changed base model is harder: adapter compatibility cannot be assumed. Future releases need explicit compatibility checks and a migration or retraining strategy, rather than silently discarding years of personal learning or attaching incompatible weights.
+
+### One shared foundation; a private branch for each owner
+
+```text
+                  Official Nestra foundation
+                  (shared, evaluated releases)
+                             |
+                  Individual installation
+                             |
+         +-------------------+------------------+
+         |                   |                  |
+  Owner's Library      Durable memory      Permitted experience
+         +-------------------+------------------+
+                             |
+                 Source-grounded learning
+                             |
+          Optional reviewed personal training
+                         (planned)
+                             |
+               Private, reversible adaptation
+
+  Private learning never automatically updates the public foundation.
+```
+
+**User ownership is the boundary.** Local research and personalization should stay with the installation by default. External publication, shared training, or transfer of private source material must be separately authorized. Library documents are information to study, not instructions granting code execution or permission to disclose data. Protected evaluation material stays isolated when an unbiased benchmark is needed.
+
+These are architectural commitments, not a claim that every part is implemented today. The tables and technical sections below describe the current software; the [roadmap](ROADMAP.md) tracks work still to be proven.
 
 ## Current status
 
@@ -18,13 +61,16 @@ In practical terms, LocalPilot works for the owner while the PC is active and ma
 | Passive Windows hardware and runtime awareness | Implemented through SystemSense |
 | Explicit owner teaching and durable typed memory | Implemented |
 | Benchmarked source-grounded study | Implemented for `self`, `qwen`, and `python` |
-| Progressive background library reading | Implemented when the library is enabled |
+| Progressive background library reading | Implemented when the library is enabled; bounded source reading and attributed learning, not weight updates |
 | Idle capability discovery and candidate development | Implemented with resource and authority gates |
 | Candidate branch, pull request, and CI lifecycle | Implemented when GitHub is configured |
 | Autonomous merge or stable-code promotion | Not enabled |
 | Arbitrary desktop or shell control | Not implemented |
 | Candidate implementation and repository tests | Claude Code in a confined candidate workspace; independently reviewed by LocalPilot |
 | Model-weight training or fine-tuning | Implemented through the guarded WSL2/ROCm QLoRA pipeline; Package 1 completed a retained `nestra:20b-p1` candidate |
+| Shared cumulative Nestra foundation | Package 1 retained as the operational lineage head; later foundational packages are in development |
+| Private per-owner model adaptation | Planned; no automatic Library-to-training bridge or personal LoRA lifecycle yet |
+| Continuity of personal adapters across official base upgrades | Planned; compatibility checks and migration/retraining not yet implemented |
 | Sustained recursive self-improvement | Not demonstrated |
 
 That distinction matters. LocalPilot has substantial infrastructure for attempting measurable improvement, but infrastructure is not evidence that open-ended or recursive capability growth has occurred.
@@ -54,6 +100,14 @@ Improvements that help across many future tasks matter more than feature count, 
 ### Human authority and machine initiative can coexist
 
 LocalPilot can choose what to investigate and propose while human review remains the boundary for merge, promotion, and other consequential authority.
+
+### The owner directs personal learning
+
+The Library is owner-managed, not a centrally approved curriculum. Nestra should have room to explore material the owner supplies without an arbitrary subject or publisher gate. She must still treat retrieved instructions as untrusted content, distinguish evidence from inference, and respect the owner's boundaries around actions and sharing.
+
+### Shared progress is not private-data collection
+
+Official model-development evidence and each installation's personal learning are separate. No personal memories, Library content, or future owner-specific adapter should be absorbed into a shared model release or published just because Nestra learned from it.
 
 ## System architecture
 
@@ -193,6 +247,10 @@ read -> reflect -> extract -> verify passage and digest
 ```
 
 A changed source digest makes earlier learning stale until it is verified again. Raw passages, full private notes, and hidden reasoning are not stored as authoritative knowledge.
+
+The owner decides what to place in the private Library. It is not a centrally curated collection or a restricted publisher list. Reading and locally referencing an owner-provided document are separate from publishing it, uploading it to a third-party service, or using it in a redistributable model. Benchmark questions and answers should be kept outside the reader when the owner wants genuinely held-out evaluations.
+
+**Today, this is retrieval and durable memory, not personal weight training.** A future Library-to-personal-adapter pipeline would require separately reviewed data preparation, privacy controls, evaluation, owner approval, and rollback. The common Nestra foundation must not automatically incorporate personal Library material.
 
 See [docs/library-folder-readme.md](docs/library-folder-readme.md) for supported formats, indexing behavior, and privacy boundaries.
 
@@ -456,6 +514,8 @@ These files are excluded from version control and should not be published. Local
 
 Ollama inference and machine-private learning remain local. Public-web tools contact selected HTTPS sources. Candidate branches and source leave the workstation when GitHub delivery is enabled, and executable candidate tests run on GitHub Actions.
 
+The intended personal-intelligence boundary is per installation: the owner's Library, durable memory, study history, and any future personalized adapter remain theirs and are not automatically contributed to official model training or releases. Local-first does not mean that every optional integration is offline; external research or development tools have distinct data flows that owners should review before enabling.
+
 ## Testing
 
 Run the repository suite:
@@ -552,6 +612,8 @@ A useful proposal answers: **What is limiting LocalPilot now, what evidence demo
 - The resource governor models idle state, system CPU, memory, model size, and process priority, but not the full GPU, thermal, power, or foreground-application state.
 - The owner-managed library is disabled by default and supports bounded PDF and UTF-8 text ingestion rather than arbitrary media.
 - Durable learning is intentionally compact and typed. It is not a transcript store, unlimited long-term memory, or model training.
+- An optional private Library-to-personal-LoRA training bridge does not exist yet. Nor is migration of a personal adapter between changed official foundation weights solved.
+- Autonomous Library reading has bounded format, resource, extraction, verification, and progress limitations; a retained source claim is not proof of general truth.
 - One outstanding candidate at a time improves safety and causal attribution but limits parallel exploration.
 - Held-out study and candidate benchmarks can still be gamed or overfit. Strong claims require reproducible evidence and human review.
 - The project has built the machinery for autonomous capability experiments; it has not demonstrated sustained recursive self-improvement.
@@ -559,6 +621,8 @@ A useful proposal answers: **What is limiting LocalPilot now, what evidence demo
 ## Project status and scope
 
 LocalPilot is experimental software under active development. The immediate engineering question is whether its existing persistence, evidence, learning, and candidate-development systems can repeatedly produce useful, measurable improvements that transfer to later work.
+
+The long-term product question is larger: can a shared Nestra foundation support private, continuously developing individual intelligences whose knowledge, capabilities, and owner-controlled identity persist across years and foundation releases? That outcome has to be built and measured—not inferred from a compelling vision.
 
 Claims should be evaluated against the current code, tests, recorded experiment evidence, and human-reviewed outcomes—not the mission statement or [ROADMAP.md](ROADMAP.md) alone.
 

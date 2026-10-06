@@ -719,6 +719,73 @@ def _artifact_inventory(directory: Path, names: Sequence[str]) -> dict[str, Any]
     return result
 
 
+def _unsloth_gpt_oss_targets(targets: Sequence[str]) -> str:
+    """Pinned language/attention/MLP expansion, including GPT-OSS expert linears.
+
+    PEFT serializes Unsloth's expanded targets as a full-match regex rather
+    than the logical projection list. Keep this format explicit: unknown
+    expansions must not silently broaden the accepted parent architecture.
+    """
+    leaves = "(?:" + "|".join(re.escape(target) for target in targets) + ")"
+    blocks = "(?:self_attn|attention|attn|mixer|mlp|feed_forward|ffn|dense|mixer)"
+    standard = (
+        r"(?:.*?(?:language|text).*?" + blocks + r".*?" + leaves + ")"
+        + r"|(?:\bmodel\.layers\.[\d]{1,}\." + blocks + r"\.(?:" + leaves + "))"
+    )
+    return "(?:" + standard + r")|(?:.*\.experts\.(?:down_projs|gate_up_projs)\.\d+)"
+
+
+def _parent_target_contract(
+    config: dict[str, Any], parent_config: dict[str, Any], parent_output: Path,
+    training: dict[str, Any], completion: dict[str, Any],
+) -> dict[str, Any]:
+    targets = parent_config.get("target_modules")
+    requested = config["adapter"]["target_modules"]
+    if isinstance(targets, list) and all(isinstance(target, str) for target in targets):
+        if set(targets) != set(requested):
+            raise RuntimeError("Parent adapter target modules do not match the new package")
+        return {"representation": "list", "logical_targets": sorted(set(targets))}
+
+    mapping = parent_config.get("auto_mapping")
+    if not isinstance(targets, str) or not isinstance(mapping, dict) or (
+        mapping.get("unsloth_fixed") is not True
+        or mapping.get("base_model_class") != "GptOssForCausalLM"
+    ):
+        raise RuntimeError("Parent adapter target representation is unsupported")
+    try:
+        producer = load_config(_under(parent_output / "training_config.json", parent_output))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise RuntimeError("Parent training specification is missing or invalid") from exc
+    producer_sha = training_spec_digest(producer)
+    if (
+        producer_sha != training.get("training_config_sha256")
+        or producer_sha != completion.get("training_config_sha256")
+    ):
+        raise RuntimeError("Parent training specification differs from its accepted evidence")
+    producer_model = producer.get("model", {})
+    if not isinstance(producer_model, dict) or any(
+        producer_model.get(key) != config["model"][key]
+        for key in ("base_identity", "base_revision", "training_model_id", "revision")
+    ):
+        raise RuntimeError("Parent training specification does not use the exact frozen training base")
+    producer_adapter = producer.get("adapter", {})
+    logical = producer_adapter.get("target_modules") if isinstance(producer_adapter, dict) else None
+    if (
+        not isinstance(logical, list)
+        or not all(isinstance(target, str) for target in logical)
+        or set(logical) != TARGET_MODULES
+        or set(logical) != set(requested)
+        or any(producer_adapter.get(key) != config["adapter"][key]
+               for key in ("rank", "alpha", "dropout", "bias"))
+        or targets != _unsloth_gpt_oss_targets(logical)
+    ):
+        raise RuntimeError("Parent serialized target modules do not match the pinned logical contract")
+    return {
+        "representation": "unsloth_gpt_oss_regex", "logical_targets": sorted(set(logical)),
+        "producer_training_spec_sha256": producer_sha,
+    }
+
+
 def _parent_adapter_evidence(config: dict[str, Any]) -> dict[str, Any] | None:
     """Verify and resolve the accepted adapter lineage used to initialize a new package."""
     lineage = config.get("lineage")
@@ -816,9 +883,10 @@ def _parent_adapter_evidence(config: dict[str, Any]) -> dict[str, Any] | None:
         or parent_config.get("lora_alpha") != adapter["alpha"]
         or float(parent_config.get("lora_dropout", -1)) != float(adapter["dropout"])
         or parent_config.get("bias") != adapter["bias"]
-        or set(parent_config.get("target_modules") or []) != set(adapter["target_modules"])
     ):
         raise RuntimeError("Parent adapter architecture does not match the new package")
+
+    target_contract = _parent_target_contract(config, parent_config, parent_output, training, completion)
 
     return {
         "manifest": str(manifest_path),
@@ -829,6 +897,7 @@ def _parent_adapter_evidence(config: dict[str, Any]) -> dict[str, Any] | None:
         "adapter_files": actual_files,
         "completion_marker_sha256": marker_sha,
         "checkpoint_marker_sha256": expected_checkpoint_sha,
+        "target_contract": target_contract,
     }
 
 

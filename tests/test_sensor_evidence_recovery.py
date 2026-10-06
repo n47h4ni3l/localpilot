@@ -5,6 +5,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from ollama import ResponseError
 
 from localpilot.agent import LocalPilotAgent
 from localpilot.answer_contract import AnswerContract, AnswerField
@@ -68,8 +69,14 @@ def _agent(tmp_path, monkeypatch, responses):
     responses = iter(responses)
     def chat(**kwargs):
         snapshots.append([dict(m) for m in kwargs["messages"]])
-        return iter([next(responses)])
-    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=chat))
+        response = next(responses)
+        if isinstance(response, Exception):
+            def failed_stream():
+                raise response
+                yield  # Stream failures occur during iteration, as in production.
+            return failed_stream()
+        return iter([response])
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=chat, ResponseError=ResponseError))
     return agent, snapshots
 
 
@@ -371,3 +378,85 @@ def test_failed_sensor_read_then_process_list_does_not_clear_requirement(tmp_pat
     state = agent.audit.latest("model_evidence_state")
     assert state["required"] == ["Windows/PC state"] and state["succeeded"] == []
     assert state["tool_rounds"] == 4
+
+
+@pytest.mark.parametrize("operator_error", [False, True])
+def test_answer_protocol_recovery_keeps_acquired_fields_and_shared_retry_bound(tmp_path, monkeypatch, operator_error):
+    from ollama import ResponseError
+    without_provider = ANSWER.replace("LibreHardwareMonitorLib", "The provider")
+    responses = ([ResponseError("error parsing tool call: malformed arguments")] if operator_error else []) + [
+        _chunk(calls=[_call("get_system_sense_summary")]),
+        _chunk(without_provider), _chunk(without_provider),
+        ResponseError("error parsing tool call: malformed arguments"), _chunk(ANSWER),
+    ]
+    agent, snapshots = _agent(tmp_path, monkeypatch, responses)
+    agent.tools["get_system_sense_summary"] = replace(
+        agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
+    assert agent.ask(PROMPT) == ANSWER
+    retry = agent.audit.latest("model_answer_tool_call_protocol_recovery_retry")
+    assert retry["attempt"] == (2 if operator_error else 1)
+    assert retry["retry_limit"] == 2
+    context = snapshots[-1]
+    assert not any(message.get("role") == "tool" or message.get("tool_calls") for message in context)
+    assert "LibreHardwareMonitorLib" in str(context) and "51.25" in str(context)
+    assert PROMPT in context[-1]["content"]
+    assert agent.audit.latest("model_evidence_state")["tool_rounds"] == 1
+
+
+def test_answer_protocol_exhaustion_is_bounded_and_never_becomes_unsupported_answer(tmp_path, monkeypatch):
+    from ollama import ResponseError
+    without_provider = ANSWER.replace("LibreHardwareMonitorLib", "The provider")
+    bad = lambda: ResponseError("error parsing tool call: malformed arguments")
+    agent, snapshots = _agent(tmp_path, monkeypatch, [
+        bad(), _chunk(calls=[_call("get_system_sense_summary")]),
+        _chunk(without_provider), _chunk(without_provider), bad(), bad(),
+    ])
+    agent.tools["get_system_sense_summary"] = replace(
+        agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
+    answer = agent.ask(PROMPT)
+    assert answer.startswith("[LocalPilot") and "bounded" in answer
+    exhausted = agent.audit.latest("model_answer_tool_call_protocol_recovery_exhausted")
+    assert exhausted["retries"] == exhausted["retry_limit"] == 2
+    assert agent.audit.latest("model_evidence_state")["tool_rounds"] == 1
+
+
+def test_answer_behavior_recovery_protocol_error_retains_original_fields(tmp_path, monkeypatch):
+    from ollama import ResponseError
+    table = "| Sensor | Temperature |\n| --- | --- |\n| CPU | 51.25 C |"
+    agent, snapshots = _agent(tmp_path, monkeypatch, [
+        _chunk(calls=[_call("get_system_sense_summary")]), _chunk(table), _chunk(table),
+        ResponseError("error parsing tool call: malformed arguments"), _chunk(ANSWER),
+    ])
+    agent.tools["get_system_sense_summary"] = replace(
+        agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
+    assert agent.ask(PROMPT) == ANSWER
+    assert agent.audit.latest("model_answer_tool_call_protocol_recovery_retry")["attempt"] == 1
+    assert PROMPT in snapshots[-1][-1]["content"]
+
+
+def test_protocol_failure_at_tool_ceiling_still_renders_acquired_fields(tmp_path, monkeypatch):
+    agent, snapshots = _agent(tmp_path, monkeypatch, [
+        _chunk(calls=[_call("get_system_sense_summary")]),
+        ResponseError("error parsing tool call: malformed arguments"), _chunk(ANSWER),
+    ])
+    agent.config.agent.research_soft_tool_rounds = 1
+    agent.config.agent.research_hard_tool_rounds = 1
+    agent.tools["get_system_sense_summary"] = replace(
+        agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
+    assert agent.ask(PROMPT) == ANSWER
+    assert agent.audit.latest("model_evidence_state")["tool_rounds"] == 1
+    assert agent.audit.latest("model_answer_tool_call_protocol_recovery_retry")["attempt"] == 1
+    assert not any(message.get("role") == "tool" or message.get("tool_calls") for message in snapshots[-1])
+
+
+def test_unrelated_server_error_during_answer_correction_still_surfaces(tmp_path, monkeypatch):
+    without_provider = ANSWER.replace("LibreHardwareMonitorLib", "The provider")
+    agent, _ = _agent(tmp_path, monkeypatch, [
+        _chunk(calls=[_call("get_system_sense_summary")]), _chunk(without_provider),
+        _chunk(without_provider), ResponseError("Internal Server Error", 500),
+    ])
+    agent.tools["get_system_sense_summary"] = replace(
+        agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
+    with pytest.raises(ResponseError, match="Internal Server Error"):
+        agent.ask(PROMPT)
+    assert agent.audit.latest("model_answer_tool_call_protocol_recovery_retry") is None

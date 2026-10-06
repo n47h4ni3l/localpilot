@@ -93,6 +93,21 @@ def stub_sft_config(**kwargs):
     return {"torch_empty_cache_steps": 250, **kwargs}
 
 
+class PreparationTokenizer:
+    """Inspectable encoder fixture whose inputs can change independently."""
+    def __init__(self):
+        self.offset = 0
+        self.calls = 0
+        self.chat_template = "fixture-native"
+        self.special_tokens_map = {"eos_token": "E"}
+        self.backend_tokenizer = types.SimpleNamespace(to_str=lambda: json.dumps({"offset": self.offset}))
+        self.save_pretrained = mock.Mock()
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.calls += 1
+        return list(range(self.offset, self.offset + (5 if kwargs["add_generation_prompt"] else 8)))
+
+
 def stub_sft_trainer(factory: mock.Mock) -> type:
     class StubSFTTrainer:
         def __init__(self, **kwargs):
@@ -286,6 +301,124 @@ class TrainAdapterTests(unittest.TestCase):
 
     def dry_run(self, **kwargs) -> dict:
         return runner.dry_run(self.config_path, importer=self.importer, **kwargs)
+
+    def prepared_examples(self):
+        tokenizer = PreparationTokenizer()
+        cache = runner.PreparedExamples()
+        maximum = self.config["data"]["max_sequence_length"]
+        self.assertTrue(cache.start(tokenizer, self.rows, maximum))
+        runner.validate_tokenized_examples(tokenizer, runner.expand_training_examples(self.rows), maximum, prepared_examples=cache)
+        cache.dataset_sha256 = sha256_json(self.rows)
+        return tokenizer, cache
+
+    def test_prepared_rows_are_identical_for_all_splits_and_native_tool_turns(self):
+        self.rows[0] = native_trace("example-train", "train")
+        tokenizer, cache = self.prepared_examples()
+        for split in ("train", "validation"):
+            self.assertEqual(cache.for_split(split), runner.tokenize_training_examples(
+                tokenizer, runner.expand_training_examples(self.rows, split), self.config["data"]["max_sequence_length"]))
+        self.assertTrue(cache.matches(PreparationTokenizer(), self.rows, cache.maximum))
+        self.assertTrue(all(entry[1].itemsize == 4 for entry in cache.entries))
+
+    def test_prepared_rows_reject_changed_corpus_or_split_after_approval(self):
+        for field in ("content", "split", "tools"):
+            with self.subTest(field=field):
+                tokenizer, cache = self.prepared_examples()
+                changed = copy.deepcopy(self.rows)
+                if field == "content":
+                    changed[0]["messages"][0]["content"] += " changed"
+                else:
+                    changed[0][field] = "validation" if field == "split" else [{"name": "different-schema"}]
+                with self.assertRaisesRegex(RuntimeError, "Corpus contents changed"):
+                    cache.matches(tokenizer, changed, cache.maximum)
+                self.assertFalse(cache.entries)
+
+    def test_prepared_rows_require_same_encoder_template_special_tokens_and_limit(self):
+        tokenizer, cache = self.prepared_examples()
+        for change in ("backend", "template", "special_tokens", "split_special", "encode_special", "renderer", "limit"):
+            with self.subTest(change=change):
+                live = PreparationTokenizer()
+                maximum = cache.maximum
+                if change == "backend": live.offset = 1
+                if change == "template": live.chat_template += " changed"
+                if change == "special_tokens": live.special_tokens_map["eos_token"] = "OTHER"
+                if change == "split_special": live.split_special_tokens = True
+                if change == "encode_special": live.backend_tokenizer.encode_special_tokens = True
+                if change == "renderer": live.apply_chat_template = lambda *args, **kwargs: [1]
+                if change == "limit": maximum -= 1
+                self.assertFalse(cache.matches(live, self.rows, maximum))
+        self.assertIsNone(runner._preparation_signature(types.SimpleNamespace()))
+
+    def test_prepared_rows_expire_when_native_date_rendering_changes(self):
+        tokenizer = PreparationTokenizer()
+        tokenizer.chat_template = '{{ strftime_now("%Y-%m-%d") }}'
+        cache = runner.PreparedExamples()
+        with mock.patch.object(runner, "datetime") as clock:
+            clock.now.return_value.date.return_value.isoformat.return_value = "2026-10-06"
+            self.assertTrue(cache.start(tokenizer, self.rows, self.config["data"]["max_sequence_length"]))
+            runner.validate_tokenized_examples(tokenizer, runner.expand_training_examples(self.rows), cache.maximum, prepared_examples=cache)
+            cache.dataset_sha256 = sha256_json(self.rows)
+            self.assertTrue(cache.matches(tokenizer, self.rows, cache.maximum))
+            clock.now.return_value.date.return_value.isoformat.return_value = "2026-10-07"
+            self.assertFalse(cache.matches(tokenizer, self.rows, cache.maximum))
+        tokenizer.chat_template = '{{ strftime_now("%H:%M:%S") }}'
+        self.assertIsNone(runner._preparation_signature(tokenizer))
+
+    def test_streamed_preparation_digest_matches_existing_approval_digest(self):
+        for rows in ([], self.rows, [{"b": [1, None, True], "a": "café\n雪"}]):
+            with self.subTest(rows=rows):
+                self.assertEqual(runner._streamed_rows_digest(rows), sha256_json(rows))
+
+    def test_fresh_preflight_only_keeps_prepared_rows_when_all_gates_pass(self):
+        cache = runner.PreparedExamples()
+        self.tokenizer_loader.return_value = PreparationTokenizer()
+        result = self.dry_run(prepared_examples=cache)
+        self.assertTrue(result["passed"])
+        self.assertEqual(cache.dataset_sha256, result["dataset_sha256"])
+        self.assertEqual(len(cache.entries), result["model_evidence"]["token_counts"]["training_examples"])
+        result = self.dry_run(resume=True, prepared_examples=cache)
+        self.assertFalse(result["passed"])
+        self.assertFalse(cache.entries)
+
+    def test_reuse_preserves_oversize_empty_completion_and_prefix_checks(self):
+        for tokens in ([], [99, 98], list(range(self.config["data"]["max_sequence_length"] + 1))):
+            with self.subTest(tokens=len(tokens)):
+                tokenizer = PreparationTokenizer()
+                original = tokenizer.apply_chat_template
+                tokenizer.apply_chat_template = types.MethodType(
+                    lambda current, messages, **kwargs: original(messages, **kwargs) if kwargs["add_generation_prompt"] else tokens,
+                    tokenizer)
+                cache = runner.PreparedExamples()
+                self.assertTrue(cache.start(tokenizer, self.rows, self.config["data"]["max_sequence_length"]))
+                with self.assertRaises(RuntimeError):
+                    runner.validate_tokenized_examples(tokenizer, runner.expand_training_examples(self.rows), cache.maximum, prepared_examples=cache)
+                self.assertFalse(cache.matches(tokenizer, self.rows, cache.maximum))
+
+    def test_training_reuses_exact_rows_and_releases_preparation_before_optimizer(self):
+        _, cache = self.prepared_examples()
+        live = PreparationTokenizer()
+        expected = runner.tokenize_training_examples(live, runner.expand_training_examples(self.rows, "train"), cache.maximum)
+        def before_train(trainer):
+            self.assertFalse(cache.entries)
+            self.assertFalse(cache.dataset_sha256)
+        with stub_training_runtime(before_train=before_train) as (factory, backend), redirect_stdout(io.StringIO()) as output:
+            backend.from_pretrained.return_value = (backend.from_pretrained.return_value[0], live)
+            with mock.patch.object(runner, "tokenize_training_examples", side_effect=AssertionError("Repeated tokenization")):
+                runner.execute_training(self.config, str(self.snapshot), run_identity={"test": "reuse"}, prepared_examples=cache)
+        self.assertEqual(factory.call_args.kwargs["train_dataset"], expected)
+        self.assertTrue(json.loads(output.getvalue().splitlines()[0].split(": ", 1)[1])["preparation_reused"])
+
+    def test_training_recomputes_if_live_tokenizer_changed(self):
+        _, cache = self.prepared_examples()
+        live = PreparationTokenizer()
+        live.offset = 100
+        with stub_training_runtime() as (factory, backend), redirect_stdout(io.StringIO()):
+            backend.from_pretrained.return_value = (backend.from_pretrained.return_value[0], live)
+            with mock.patch.object(runner, "tokenize_training_examples", wraps=runner.tokenize_training_examples) as rebuilt:
+                runner.execute_training(self.config, str(self.snapshot), run_identity={"test": "changed-encoder"}, prepared_examples=cache)
+        self.assertEqual(rebuilt.call_count, 2)  # The fixture enables both train and validation preparation.
+        self.assertEqual(factory.call_args.kwargs["train_dataset"][0]["input_ids"][0], 100)
+        self.assertFalse(cache.entries)
 
     def add_serialized_parent(self, pattern=P1_UNSLOTH_TARGET_REGEX):
         manifest_path = self.add_parent_lineage()

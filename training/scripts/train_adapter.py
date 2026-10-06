@@ -22,6 +22,7 @@ import struct
 import sys
 import tempfile
 import traceback
+from array import array
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -393,12 +394,103 @@ def _tokenized_example(tokenizer: Any, example: dict[str, Any], max_sequence_len
     return full, len(prompt)
 
 
-def validate_tokenized_examples(tokenizer: Any, examples: Sequence[dict[str, Any]], max_sequence_length: int) -> dict[str, int]:
+def _preparation_signature(tokenizer: Any) -> tuple[Any, ...] | None:
+    """Recognize the exact fast-tokenizer renderer, without guessing for other backends."""
+    try:
+        renderer = tokenizer.apply_chat_template.__func__
+        template = tokenizer.chat_template
+        templates = [template] if isinstance(template, str) else list(template.values()) if isinstance(template, dict) else []
+        renderer_date = None
+        for text in templates:
+            date_calls = re.findall(r"\bstrftime_now\(\s*(['\"])%Y-%m-%d\1\s*\)", text)
+            if text.count("strftime_now") != len(date_calls):
+                return None  # Unknown time-dependent rendering uses the original path.
+            if date_calls:
+                renderer_date = datetime.now().date().isoformat()
+        identity = sha256_json({
+            "backend": tokenizer.backend_tokenizer.to_str(),
+            "template": template,
+            "special_tokens": tokenizer.special_tokens_map,
+            "split_special_tokens": getattr(tokenizer, "split_special_tokens", False),
+            "encode_special_tokens": getattr(tokenizer.backend_tokenizer, "encode_special_tokens", False),
+            "renderer_date": renderer_date,
+        })
+        return type(tokenizer), renderer, identity
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _streamed_rows_digest(rows: Sequence[dict[str, Any]]) -> str:
+    """Match sha256_json(rows) without a corpus-sized temporary JSON string."""
+    digest = hashlib.sha256(b"[")
+    for index, row in enumerate(rows):
+        if index:
+            digest.update(b",")
+        digest.update(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    digest.update(b"]")
+    return digest.hexdigest()
+
+
+class PreparedExamples:
+    """Launch-local, compact results of the fresh validated tokenization pass.
+
+    No disk cache or approval bypass: reuse requires identical decoded corpus,
+    sequence limit, tokenizer state and renderer. Release before optimization.
+    """
+    def __init__(self) -> None:
+        self.signature: tuple[Any, ...] | None = None
+        self.dataset_sha256 = ""
+        self.maximum = 0
+        self.splits: dict[str, str] = {}
+        self.entries: list[tuple[str, array, int]] = []
+
+    def start(self, tokenizer: Any, rows: Sequence[dict[str, Any]], maximum: int) -> bool:
+        self.clear()
+        self.signature = _preparation_signature(tokenizer)
+        if self.signature is None:
+            return False
+        self.maximum = maximum
+        self.splits = {row["id"]: row["split"] for row in rows}
+        return True
+
+    def collect(self, example: dict[str, Any], tokens: list[int], prompt_length: int) -> None:
+        self.entries.append((self.splits[example["source_record_id"]], array("I", tokens), prompt_length))
+
+    def matches(self, tokenizer: Any, rows: Sequence[dict[str, Any]], maximum: int) -> bool:
+        if not self.entries or not self.dataset_sha256:
+            return False
+        if self.dataset_sha256 != _streamed_rows_digest(rows):
+            self.clear()
+            raise RuntimeError("Corpus contents changed after the fresh preflight")
+        return self.signature is not None and self.maximum == maximum and self.signature == _preparation_signature(tokenizer)
+
+    def for_split(self, split: str) -> list[dict[str, list[int]]]:
+        result = [
+            {"input_ids": tokens.tolist(),
+             "completion_mask": [0] * prompt_length + [1] * (len(tokens) - prompt_length)}
+            for source_split, tokens, prompt_length in self.entries if source_split == split
+        ]
+        if not result:
+            raise RuntimeError("No tokenized training examples were produced")
+        return result
+
+    def clear(self) -> None:
+        self.signature = None
+        self.dataset_sha256 = ""
+        self.maximum = 0
+        self.splits.clear()
+        self.entries.clear()
+
+
+def validate_tokenized_examples(tokenizer: Any, examples: Sequence[dict[str, Any]], max_sequence_length: int,
+                                *, prepared_examples: PreparedExamples | None = None) -> dict[str, int]:
     """Prove every completion is nonempty, prefix-aligned, and untruncated."""
     lengths: list[int] = []
     completion_lengths: list[int] = []
     for example in examples:
         full, prompt_length = _tokenized_example(tokenizer, example, max_sequence_length)
+        if prepared_examples is not None:
+            prepared_examples.collect(example, full, prompt_length)
         completion_length = len(full) - prompt_length
         lengths.append(len(full))
         completion_lengths.append(completion_length)
@@ -1095,7 +1187,8 @@ def _weight_inventory(snapshot: Path) -> dict[str, Any]:
     return {"shards": inventory, "total_bytes": sum(item["bytes"] for item in inventory)}
 
 
-def _model_preflight(config: dict[str, Any], rows: list[dict[str, Any]], modules: dict[str, Any], allow_downloads: bool) -> dict[str, Any]:
+def _model_preflight(config: dict[str, Any], rows: list[dict[str, Any]], modules: dict[str, Any], allow_downloads: bool,
+                     *, prepared_examples: PreparedExamples | None = None) -> dict[str, Any]:
     model = config["model"]
     cache = Path(model["cache_directory"]).expanduser().resolve() / "hub"
     snapshot = Path(modules["huggingface_hub"].snapshot_download(
@@ -1113,7 +1206,9 @@ def _model_preflight(config: dict[str, Any], rows: list[dict[str, Any]], modules
         raise RuntimeError("Snapshot does not match the proposed prequantized NF4 weights")
     tokenizer = transformers.AutoTokenizer.from_pretrained(str(snapshot), local_files_only=True, trust_remote_code=False)
     examples = expand_training_examples(rows)
-    token_counts = validate_tokenized_examples(tokenizer, examples, config["data"]["max_sequence_length"])
+    maximum = config["data"]["max_sequence_length"]
+    collector = prepared_examples if prepared_examples is not None and prepared_examples.start(tokenizer, rows, maximum) else None
+    token_counts = validate_tokenized_examples(tokenizer, examples, maximum, prepared_examples=collector)
     adapter = config["adapter"]
     modules["peft"].LoraConfig(
         task_type="CAUSAL_LM", r=adapter["rank"], lora_alpha=adapter["alpha"],
@@ -1160,7 +1255,9 @@ def _gpu_preflight(torch: Any, triton: Any, config: dict[str, Any]) -> dict[str,
     return {"name": props.name, "architecture": arch, "hip": hip, "torch": str(torch.__version__), "triton": str(triton.__version__), "free_vram_gib": round(free / 1024**3, 3), "total_vram_gib": round(total / 1024**3, 3)}
 
 
-def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = False, restart: bool = False, recover: bool = False, report_path: Path = DEFAULT_REPORT, importer: Callable[[str], Any] = importlib.import_module) -> dict[str, Any]:
+def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = False, restart: bool = False, recover: bool = False, report_path: Path = DEFAULT_REPORT, importer: Callable[[str], Any] = importlib.import_module, prepared_examples: PreparedExamples | None = None) -> dict[str, Any]:
+    if prepared_examples is not None:
+        prepared_examples.clear()
     config_path = config_path.resolve()
     config = load_config(config_path)
     _validate_recovery_mode(config, resume=resume, restart=restart, recover=recover)
@@ -1272,7 +1369,7 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = 
             for name, expected in backend["package_versions"].items():
                 _add_check(checks, f"version_{name}", versions.get(name) == expected, {"expected": expected, "actual": versions.get(name)})
             if all(name in modules for name in ("huggingface_hub", "transformers", "peft")):
-                model_evidence = check("model_tokenizer_and_adapter", lambda: _model_preflight(config, rows, modules, allow_downloads)) or {}
+                model_evidence = check("model_tokenizer_and_adapter", lambda: _model_preflight(config, rows, modules, allow_downloads, prepared_examples=prepared_examples)) or {}
             else:
                 _add_check(checks, "model_tokenizer_and_adapter", False, "Required model dependencies unavailable")
 
@@ -1305,6 +1402,11 @@ def dry_run(config_path: Path, *, allow_downloads: bool = False, resume: bool = 
     if recover and report["passed"]:
         checkpoint = check("recovery_checkpoint", lambda: str(_recovery_checkpoint(config, _run_identity(config, report))))
         report["passed"] = checkpoint is not None and all(item["passed"] for item in checks)
+    if prepared_examples is not None:
+        if report["passed"]:
+            prepared_examples.dataset_sha256 = report["dataset_sha256"]
+        else:
+            prepared_examples.clear()
     return report
 
 
@@ -1340,6 +1442,7 @@ def _verify_training_gate(config: dict[str, Any], report: dict[str, Any], config
 def execute_training(
     config: dict[str, Any], snapshot_path: str, *, run_identity: dict[str, Any],
     resume_checkpoint: Path | None = None, restart: bool = False, recover: bool = False,
+    prepared_examples: PreparedExamples | None = None,
 ) -> None:
     # Called only after main verifies saved evidence and repeats the local preflight.
     if resume_checkpoint is not None and restart:
@@ -1504,12 +1607,17 @@ def execute_training(
             model = prepared
         _trainable_lora_names(model)
     rows = load_jsonl(ROOT / data["corpus_path"])
+    preparation_reused = prepared_examples is not None and prepared_examples.matches(
+        tokenizer, rows, data["max_sequence_length"]
+    )
 
     def prepared(split: str) -> Any:
         # Prompt/completion masking targets every assistant turn while preserving
         # native tool schemas, calls and results for the chat-template renderer.
         # Render before Arrow sees the rows: JSON-schema property names vary by
         # tool, and coercing those schemas into one Arrow struct can alter them.
+        if preparation_reused:
+            return Dataset.from_list(prepared_examples.for_split(split))
         examples = expand_training_examples(rows, split)
         return Dataset.from_list(tokenize_training_examples(tokenizer, examples, data["max_sequence_length"]))
 
@@ -1537,6 +1645,8 @@ def execute_training(
             seed=training["seed"], data_seed=training["seed"], report_to="none", push_to_hub=False,
         ),
     )
+    if prepared_examples is not None:
+        prepared_examples.clear()
     runtime_settings: dict[str, Any] = {}
 
     def verify_runtime(event: str) -> None:
@@ -1548,6 +1658,7 @@ def execute_training(
             "timestamp_utc": datetime.now(UTC).isoformat(),
             "event": event,
             "global_step": int(getattr(trainer.state, "global_step", 0)),
+            "preparation_reused": preparation_reused,
             "compile_mode": config["backend"].get("compile_mode"),
             "torch_compile_disable": os.environ.get("TORCH_COMPILE_DISABLE"),
             "unsloth_compile_disable": os.environ.get("UNSLOTH_COMPILE_DISABLE"),
@@ -1660,7 +1771,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     saved_path = _under(args.dry_run_report, ROOT / "training/reports")
     report = json.loads(saved_path.read_text(encoding="utf-8"))
     _verify_training_gate(config, report, args.config, resume=args.resume, restart=args.restart)
-    fresh = dry_run(args.config, allow_downloads=False, resume=args.resume, restart=args.restart, recover=args.recover, report_path=saved_path)
+    prepared_examples = PreparedExamples()
+    fresh = dry_run(args.config, allow_downloads=False, resume=args.resume, restart=args.restart, recover=args.recover, report_path=saved_path, prepared_examples=prepared_examples)
     if not fresh["passed"]:
         failed = [{"name": item["name"], "detail": item["detail"]} for item in fresh["checks"] if not item["passed"]]
         raise RuntimeError(f"Current local preflight failed: {json.dumps(failed, ensure_ascii=True)}")
@@ -1672,7 +1784,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         checkpoint = _recovery_checkpoint(config, identity)
     if checkpoint is not None:
         print(f"Resuming LocalPilot training from {checkpoint}", flush=True)
-    execute_training(config, fresh["model_evidence"]["snapshot_path"], run_identity=identity, resume_checkpoint=checkpoint, restart=args.restart, recover=args.recover)
+    execute_training(config, fresh["model_evidence"]["snapshot_path"], run_identity=identity, resume_checkpoint=checkpoint, restart=args.restart, recover=args.recover, prepared_examples=prepared_examples)
     return 0
 
 

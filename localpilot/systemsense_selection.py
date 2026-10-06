@@ -9,6 +9,9 @@ from typing import Any
 from localpilot.answer_contract import AnswerContract, AnswerField, normalized
 
 
+MAX_REQUESTED_METRICS = 32
+
+
 SENSOR_ALIASES = {
     "CPU Tctl/Tdie": ("CPU Tctl/Tdie", "Tctl/Tdie", "Core (Tctl/Tdie)"),
     "CPU CCD1": ("CPU CCD1", "CCD1", "CCD1 (Tdie)"),
@@ -33,7 +36,7 @@ def sensor_matches(row: dict[str, Any], requested: str) -> bool:
 
 def select_sensors(rows: list[dict[str, Any]], *, requested_sensors: list[str],
                    sensor_type: str, components: list[str], limit: int) -> tuple[list[dict], dict]:
-    if len(requested_sensors) > 32:
+    if len(requested_sensors) > MAX_REQUESTED_METRICS:
         raise ValueError("at most 32 requested sensor names are supported per bounded read")
     selected = [row for row in rows if
                 (not sensor_type or normalized(row.get("SensorType", "")) == normalized(sensor_type))
@@ -93,9 +96,15 @@ class SensorRequest:
     def tool_arguments(self, name: str, args: dict) -> dict:
         if not self.active or name != "inspect_raw_system_sense":
             return args
-        # Bind current named metrics to the registered raw reader. Keep the
-        # caller's bounded row limit; an incomplete slice cannot satisfy coverage.
-        return {"category": "sensors", "limit": args.get("limit", 100),
+        # The owner's requested field set takes precedence over a model's
+        # prefix slice. Selection still precedes the unchanged 500-row ceiling.
+        # Broad component questions use the existing bounded field capacity.
+        try:
+            limit = int(args.get("limit", 100))
+        except (TypeError, ValueError):
+            limit = 100
+        required_capacity = len(self.names) or MAX_REQUESTED_METRICS
+        return {"category": "sensors", "limit": min(500, max(required_capacity, limit)),
                 "requested_sensors": list(self.names), "sensor_type": "Temperature",
                 "components": list(self.components)}
 
@@ -104,8 +113,10 @@ class SensorRequest:
             payload = json.loads(str(result).split("\n\n", 1)[-1] if str(result).startswith("[Observation ID:") else str(result))
         except (ValueError, TypeError):
             return (["current requested temperature metrics"] if self.active else []), AnswerContract()
-        if not self.active or not isinstance(payload, dict):
+        if not self.active:
             return [], AnswerContract()
+        if not isinstance(payload, dict):
+            return ["current requested temperature metrics"], AnswerContract()
         rows, provider, windows, selection = sensor_payload(payload)
         # Compatibility with registered integrations that expose flat CPU/GPU metrics.
         if not rows:
@@ -128,7 +139,7 @@ class SensorRequest:
                 if row:
                     fields.append(AnswerField(name, SENSOR_ALIASES[name], row["Value"]))
         else:
-            for row in selected[:32]:
+            for row in selected[:MAX_REQUESTED_METRICS]:
                 if isinstance(row.get("Value"), (int, float)):
                     name = str(row.get("Name"))
                     aliases = next((aliases for key, aliases in SENSOR_ALIASES.items()
@@ -136,7 +147,7 @@ class SensorRequest:
                     if name in {"CPU temperature", "GPU temperature"}:
                         aliases = (name, name.split()[0])
                     fields.append(AnswerField(name, aliases, row["Value"]))
-            if len(selected) > 32:
+            if len(selected) > MAX_REQUESTED_METRICS:
                 missing.append("bounded named selection needed for more than 32 requested metrics")
         if self.provider:
             if provider.get("source"):

@@ -324,3 +324,50 @@ def test_raw_tool_schema_exposes_categories_and_named_selection(tmp_path, monkey
     properties = schema["function"]["parameters"]["properties"]
     assert properties["category"]["enum"] == ["dynamic", "sensors", "inventory", "backend"]
     assert "requested_sensors" in properties and "sensor_type" in properties
+
+
+@pytest.mark.parametrize("payload", [[], [{"pid": 123, "cpu_percent": 2}], "healthy", 1, None])
+def test_unrelated_json_shapes_cannot_satisfy_temperature_request(payload):
+    missing, contract = SensorRequest.from_prompt(PROMPT).evaluate(json.dumps(payload))
+    assert missing
+    assert contract.fields == ()
+
+
+@pytest.mark.parametrize("prompt", [PROMPT,
+    "What CPU and GPU temperatures can you see in the current raw SystemSense hardware-provider sensors? "
+    "Distinguish those readings from Windows thermal-zone errors."])
+def test_owner_metric_selection_overrides_one_row_slice(tmp_path, monkeypatch, prompt):
+    agent, _ = _agent(tmp_path, monkeypatch, [
+        _chunk(calls=[_call("inspect_raw_system_sense", category="sensors", limit=1)]),
+        _chunk(ANSWER), _chunk(ANSWER),
+    ])
+    sense = _sense(tmp_path / "sense")
+    sense.sensors.collect = lambda: {"source": "LibreHardwareMonitorLib", "available": True,
+                                    "errors": [], "sensors": _rows(10000)}
+    sense.performance.collect = lambda: {"thermal_zones": [], "errors": ["thermal:com_error"]}
+    sense.collect_dynamic()
+    agent.tools["inspect_raw_system_sense"] = replace(
+        agent.tools["inspect_raw_system_sense"], fn=SystemSenseReader(sense).inspect_raw_system_sense)
+    assert agent.ask(prompt) == ANSWER
+    coverage = agent.audit.latest("model_requested_evidence_coverage")
+    assert coverage["complete"] and len(coverage["evidence_fields"]) == 7
+    assert agent.audit.latest("model_evidence_state")["tool_rounds"] == 1
+    assert agent.audit.latest("tool_call")["args"]["limit"] <= 500
+
+
+def test_failed_sensor_read_then_process_list_does_not_clear_requirement(tmp_path, monkeypatch):
+    agent, _ = _agent(tmp_path, monkeypatch, [
+        _chunk(calls=[_call("get_system_sense_summary")]),
+        _chunk(calls=[_call("get_top_processes", limit=5)]),
+        _chunk(calls=[_call("get_storage_summary")]),
+        _chunk(calls=[_call("get_system_summary")]),
+        _chunk("The requested GPU sensors are unavailable."),
+    ])
+    agent.tools["get_system_sense_summary"] = replace(agent.tools["get_system_sense_summary"],
+                                                       fn=lambda: "Tool error: sensor read failed")
+    for tool in ("get_top_processes", "get_storage_summary", "get_system_summary"):
+        agent.tools[tool] = replace(agent.tools[tool], fn=lambda **kw: json.dumps([{"unrelated": True}]))
+    assert "direct-evidence requirement" in agent.ask(PROMPT)
+    state = agent.audit.latest("model_evidence_state")
+    assert state["required"] == ["Windows/PC state"] and state["succeeded"] == []
+    assert state["tool_rounds"] == 4

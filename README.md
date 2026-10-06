@@ -51,6 +51,8 @@ A person's Nestra should retain her private files, learning history, and memorie
 
 These are architectural commitments, not a claim that every part is implemented today. The tables and technical sections below describe the current software; the [roadmap](ROADMAP.md) tracks work still to be proven.
 
+> **Current release:** `v0.2.1-alpha.1` — an **unsigned Windows Alpha preview** for evaluation and feedback. Nestra's foundational training programme is still in progress; this is not yet the finished public Nestra release.
+
 ## Current status
 
 | Capability | Current state |
@@ -339,24 +341,45 @@ The CLI remains an independent fallback even when the desktop or broker is not r
 
 ### Windows desktop setup
 
-Download the Windows setup executable from the repository's GitHub Releases,
-open it, and approve Windows' administrator prompt. Setup installs missing
-runtime dependencies, prepares an isolated LocalPilot environment, downloads
-the default chat model for a new install, creates the desktop icon, checks
-readiness, and opens the desktop. The sensor helper is included in the release
-package, so a release installation does not require the .NET SDK.
+**Current release status: Alpha.** The published
+[`v0.2.1-alpha.1`](https://github.com/n47h4ni3l/localpilot/releases/tag/v0.2.1-alpha.1)
+build is an **unsigned Windows development preview** for evaluation and feedback.
+Nestra's foundational training programme is still in progress; this is not yet
+the finished public Nestra release.
 
-The ZIP alternative contains `Install LocalPilot.cmd`; extract it and open that
-file. A Git source checkout can use the same file to install in place. Bundled
-release installs use `%LOCALAPPDATA%\LocalPilot\app` so their files remain after
-the installer closes. The source commit, package version and sensor helper hash
-are recorded in the bundle and checked before installation.
+On 64-bit Windows, download **`LocalPilot-Preview-0.2.1-win-x64.exe`** from the
+Alpha release, open it, and approve Windows' administrator prompt. Because the
+current Alpha executable is unsigned, Windows may display an **Unknown Publisher**
+or **SmartScreen** warning. A signed production installer will replace the preview
+build after publisher identity/code signing and fresh-install validation are
+complete.
 
-Existing configuration, conversations, memory, and model files are preserved.
-A new installation uses `gpt-oss:20b`; an existing custom model such as
-`nestra:20b-p1` must already be installed in Ollama. Setup respects that choice.
-GitHub sign-in is required separately to publish self-development PRs; ordinary
-desktop chat does not require GitHub authentication.
+Setup installs missing runtime dependencies, prepares an isolated LocalPilot
+environment, downloads the default chat model for a new install, creates the
+desktop icon, checks readiness, and opens the desktop. Internet access is needed
+for first-time dependencies and model downloads. The sensor helper is included
+in the release package, so a release installation does not require the .NET SDK.
+
+The accompanying ZIP is the packaged source payload for inspection; the EXE is
+the normal Windows Alpha installer. A Git source checkout can instead use
+`Install LocalPilot.cmd` to install in place. Bundled installs use
+`%LOCALAPPDATA%\LocalPilot\app` so their files remain after the installer
+closes. The source commit, package version and sensor-helper hash are recorded
+in the bundle and checked before installation.
+
+Existing configuration, conversations, Library data, durable learning, memory,
+and model files are preserved when supported by the installer's migration and
+ownership checks. A new installation currently uses `gpt-oss:20b`; an existing
+custom model such as `nestra:20b-p1` must already be installed in Ollama. Setup
+respects that choice. GitHub sign-in is required separately to publish
+self-development PRs; ordinary desktop chat does not require GitHub authentication.
+
+The current Alpha does **not** represent completion of Nestra's training roadmap.
+Package 1 established the first retained Nestra lineage; the remaining
+foundational capability packages are still being developed, trained, and
+evaluated. The Alpha exists to exercise the real installer, desktop/runtime,
+SystemSense, learning, and development architecture while that model-development
+work continues.
 
 The desktop icon requests administrator access for low-level hardware readings.
 An elevated desktop replaces an idle unelevated broker before starting its
@@ -372,10 +395,10 @@ checks extraction against the original payload, and writes SHA-256 checksums.
 Public builds require a validated signing identity: PowerShell scripts must be
 signed and committed, while generated helpers and the final installer are
 signed during packaging. Every signature is verified before the build completes.
-Development builds must explicitly use
-`-AllowUnsignedPreview` and are labelled `LocalPilot-Preview`, not release-ready
-installers. See [Windows signing](docs/windows-code-signing.md) for the signing
-callback, verification requirements and release workflow configuration.
+Development builds must explicitly use `-AllowUnsignedPreview` and are labelled
+`LocalPilot-Preview`, not release-ready installers. See
+[Windows signing](docs/windows-code-signing.md) for the signing callback,
+verification requirements and release workflow configuration.
 
 ### Requirements
 

@@ -19,6 +19,15 @@ from training.scripts.build_eval_manifest import build_manifest
 from training.scripts.training_common import sha256_json, write_json, write_jsonl
 
 
+# The actual serialized target expression in the accepted P1 adapter, produced
+# by the pinned Unsloth GPT-OSS language/attention/MLP and per-expert expansion.
+P1_UNSLOTH_TARGET_REGEX = (
+    r"(?:(?:.*?(?:language|text).*?(?:self_attn|attention|attn|mixer|mlp|feed_forward|ffn|dense|mixer).*?(?:q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj))"
+    r"|(?:\bmodel\.layers\.[\d]{1,}\.(?:self_attn|attention|attn|mixer|mlp|feed_forward|ffn|dense|mixer)\.(?:(?:q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj))))"
+    r"|(?:.*\.experts\.(?:down_projs|gate_up_projs)\.\d+)"
+)
+
+
 def record(identifier: str, prompt: str, split: str) -> dict:
     row = {
         "id": identifier, "messages": [{"role": "user", "content": prompt}],
@@ -222,7 +231,7 @@ class TrainAdapterTests(unittest.TestCase):
         self.config["output"]["directory"] = "training/outputs/package-2"
         parent_output = self.root / "training/outputs/package-1"
         adapter_dir = parent_output / "adapter"
-        adapter_dir.mkdir(parents=True)
+        adapter_dir.mkdir(parents=True, exist_ok=True)
         (adapter_dir / "adapter_model.safetensors").write_bytes(b"accepted-p1-adapter")
         write_json(adapter_dir / "adapter_config.json", {
             "peft_type": "LORA",
@@ -244,7 +253,7 @@ class TrainAdapterTests(unittest.TestCase):
             "adapter_files": adapter_files,
         })
         final_checkpoint = parent_output / "checkpoints/checkpoint-11112"
-        final_checkpoint.mkdir(parents=True)
+        final_checkpoint.mkdir(parents=True, exist_ok=True)
         checkpoint_marker = final_checkpoint / runner.CHECKPOINT_MARKER_FILE
         write_json(checkpoint_marker, {
             "schema_version": 1,
@@ -277,6 +286,92 @@ class TrainAdapterTests(unittest.TestCase):
 
     def dry_run(self, **kwargs) -> dict:
         return runner.dry_run(self.config_path, importer=self.importer, **kwargs)
+
+    def add_serialized_parent(self, pattern=P1_UNSLOTH_TARGET_REGEX):
+        manifest_path = self.add_parent_lineage()
+        parent = self.root / "training/outputs/package-1"
+        producer = copy.deepcopy(self.config)
+        producer.pop("lineage")
+        producer["output"]["directory"] = "training/outputs/package-1"
+        write_json(parent / "training_config.json", producer)
+        adapter_path = parent / "adapter/adapter_config.json"
+        adapter = json.loads(adapter_path.read_text())
+        adapter.update(target_modules=pattern, auto_mapping={
+            "base_model_class": "GptOssForCausalLM", "unsloth_fixed": True,
+        })
+        write_json(adapter_path, adapter)
+        files = runner._artifact_inventory(parent / "adapter", ("adapter_config.json", "adapter_model.safetensors"))
+        marker_path = parent / runner.TRAINING_COMPLETE_FILE
+        marker = json.loads(marker_path.read_text())
+        marker.update(adapter_files=files, training_config_sha256=runner.training_spec_digest(producer))
+        write_json(marker_path, marker)
+        manifest = json.loads(manifest_path.read_text())
+        manifest["training"].update(adapter_files=files,
+            completion_marker_sha256=runner._sha256_file(marker_path),
+            training_config_sha256=marker["training_config_sha256"])
+        write_json(manifest_path, manifest)
+        return parent, manifest_path
+
+    def test_cumulative_parent_accepts_real_p1_unsloth_serialized_targets(self):
+        self.add_serialized_parent()
+        report = self.dry_run()
+        self.assertTrue(report["passed"], report["checks"])
+        targets = report["model_evidence"]["parent_adapter"]["target_contract"]
+        self.assertEqual(targets["representation"], "unsloth_gpt_oss_regex")
+        self.assertEqual(set(targets["logical_targets"]), runner.TARGET_MODULES)
+
+    def test_cumulative_parent_rejects_unrecognized_or_broadened_regex(self):
+        for expression in (".*", P1_UNSLOTH_TARGET_REGEX + "|(?:.*lm_head)", "["):
+            with self.subTest(expression=expression):
+                self.add_serialized_parent(expression)
+                with self.assertRaisesRegex(RuntimeError, "target"):
+                    runner._parent_adapter_evidence(self.config)
+
+    def test_serialized_parent_requires_immutable_producer_spec(self):
+        parent, _ = self.add_serialized_parent()
+        producer = json.loads((parent / "training_config.json").read_text())
+        producer["training"]["learning_rate"] *= 2
+        write_json(parent / "training_config.json", producer)
+        with self.assertRaisesRegex(RuntimeError, "training specification"):
+            runner._parent_adapter_evidence(self.config)
+
+    def test_serialized_parent_does_not_allow_logical_retargeting(self):
+        self.add_serialized_parent()
+        self.config["adapter"]["target_modules"].remove("down_proj")
+        with self.assertRaisesRegex(RuntimeError, "target"):
+            runner._parent_adapter_evidence(self.config)
+
+    def test_serialized_parent_requires_producer_evidence_file(self):
+        parent, _ = self.add_serialized_parent()
+        (parent / "training_config.json").unlink()
+        with self.assertRaisesRegex(RuntimeError, "training specification"):
+            runner._parent_adapter_evidence(self.config)
+
+    def test_serialized_parent_requires_exact_training_base(self):
+        self.add_serialized_parent()
+        for key in ("base_identity", "base_revision", "training_model_id", "revision"):
+            with self.subTest(key=key):
+                changed = copy.deepcopy(self.config)
+                changed["model"][key] += "-changed"
+                with self.assertRaisesRegex(RuntimeError, "frozen.*base"):
+                    runner._parent_adapter_evidence(changed)
+
+    def test_serialized_parent_preserves_scalar_architecture_checks(self):
+        self.add_serialized_parent()
+        for key in ("rank", "alpha", "dropout", "bias"):
+            with self.subTest(key=key):
+                changed = copy.deepcopy(self.config)
+                changed["adapter"][key] = "all" if key == "bias" else changed["adapter"][key] + 1
+                with self.assertRaisesRegex(RuntimeError, "architecture"):
+                    runner._parent_adapter_evidence(changed)
+
+    def test_serialized_parent_requires_manifest_and_completion_spec_agreement(self):
+        _, manifest_path = self.add_serialized_parent()
+        manifest = json.loads(manifest_path.read_text())
+        manifest["training"]["training_config_sha256"] = "0" * 64
+        write_json(manifest_path, manifest)
+        with self.assertRaisesRegex(RuntimeError, "training specification"):
+            runner._parent_adapter_evidence(self.config)
 
     def test_cumulative_parent_is_hash_pinned_and_included_in_dry_run_evidence(self) -> None:
         self.add_parent_lineage()

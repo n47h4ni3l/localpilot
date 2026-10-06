@@ -398,10 +398,22 @@ def _preparation_signature(tokenizer: Any) -> tuple[Any, ...] | None:
     """Recognize the exact fast-tokenizer renderer, without guessing for other backends."""
     try:
         renderer = tokenizer.apply_chat_template.__func__
+        template = tokenizer.chat_template
+        templates = [template] if isinstance(template, str) else list(template.values()) if isinstance(template, dict) else []
+        renderer_date = None
+        for text in templates:
+            date_calls = re.findall(r"\bstrftime_now\(\s*(['\"])%Y-%m-%d\1\s*\)", text)
+            if text.count("strftime_now") != len(date_calls):
+                return None  # Unknown time-dependent rendering uses the original path.
+            if date_calls:
+                renderer_date = datetime.now().date().isoformat()
         identity = sha256_json({
             "backend": tokenizer.backend_tokenizer.to_str(),
-            "template": tokenizer.chat_template,
+            "template": template,
             "special_tokens": tokenizer.special_tokens_map,
+            "split_special_tokens": getattr(tokenizer, "split_special_tokens", False),
+            "encode_special_tokens": getattr(tokenizer.backend_tokenizer, "encode_special_tokens", False),
+            "renderer_date": renderer_date,
         })
         return type(tokenizer), renderer, identity
     except (AttributeError, TypeError, ValueError):

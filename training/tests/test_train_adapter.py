@@ -335,17 +335,34 @@ class TrainAdapterTests(unittest.TestCase):
 
     def test_prepared_rows_require_same_encoder_template_special_tokens_and_limit(self):
         tokenizer, cache = self.prepared_examples()
-        for change in ("backend", "template", "special_tokens", "renderer", "limit"):
+        for change in ("backend", "template", "special_tokens", "split_special", "encode_special", "renderer", "limit"):
             with self.subTest(change=change):
                 live = PreparationTokenizer()
                 maximum = cache.maximum
                 if change == "backend": live.offset = 1
                 if change == "template": live.chat_template += " changed"
                 if change == "special_tokens": live.special_tokens_map["eos_token"] = "OTHER"
+                if change == "split_special": live.split_special_tokens = True
+                if change == "encode_special": live.backend_tokenizer.encode_special_tokens = True
                 if change == "renderer": live.apply_chat_template = lambda *args, **kwargs: [1]
                 if change == "limit": maximum -= 1
                 self.assertFalse(cache.matches(live, self.rows, maximum))
         self.assertIsNone(runner._preparation_signature(types.SimpleNamespace()))
+
+    def test_prepared_rows_expire_when_native_date_rendering_changes(self):
+        tokenizer = PreparationTokenizer()
+        tokenizer.chat_template = '{{ strftime_now("%Y-%m-%d") }}'
+        cache = runner.PreparedExamples()
+        with mock.patch.object(runner, "datetime") as clock:
+            clock.now.return_value.date.return_value.isoformat.return_value = "2026-10-06"
+            self.assertTrue(cache.start(tokenizer, self.rows, self.config["data"]["max_sequence_length"]))
+            runner.validate_tokenized_examples(tokenizer, runner.expand_training_examples(self.rows), cache.maximum, prepared_examples=cache)
+            cache.dataset_sha256 = sha256_json(self.rows)
+            self.assertTrue(cache.matches(tokenizer, self.rows, cache.maximum))
+            clock.now.return_value.date.return_value.isoformat.return_value = "2026-10-07"
+            self.assertFalse(cache.matches(tokenizer, self.rows, cache.maximum))
+        tokenizer.chat_template = '{{ strftime_now("%H:%M:%S") }}'
+        self.assertIsNone(runner._preparation_signature(tokenizer))
 
     def test_streamed_preparation_digest_matches_existing_approval_digest(self):
         for rows in ([], self.rows, [{"b": [1, None, True], "a": "café\n雪"}]):

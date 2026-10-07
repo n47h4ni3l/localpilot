@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+import gc
 import json
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -20,6 +22,23 @@ def _cfg(name: str) -> types.SimpleNamespace:
 
 
 class TriplicateRunnerTests(unittest.TestCase):
+    def test_real_agent_tool_evidence_and_windows_snapshot_cleanup(self) -> None:
+        task = matrix.load_tasks()[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = matrix.original.isolated_config(root, model="gpt-oss:20b")
+            def ask(agent, *args, **kwargs):
+                agent._stream_chat_message(None, think="high", tools=agent._functions())
+                raise RuntimeError("retained failure")
+            with patch.object(matrix.original.LocalPilotAgent, "ask", ask), patch.object(matrix.original.LocalPilotAgent, "_stream_chat_message", return_value={"content": "draft"}):
+                result = matrix._run_cell(task, 0, "base_localpilot", base, base, root)
+            gc.collect()
+            self.assertEqual(result["error"]["message"], "retained failure")
+            schemas = result["evidence"]["model_turns"][0]["settings"]["tools"]
+            self.assertEqual({t["function"]["name"] for t in schemas}, matrix.original.ALLOWED_EVAL_TOOLS)
+            json.dumps(result)
+        self.assertFalse(root.exists())
+
     def test_unmerged_evaluator_requires_exact_clean_revision(self) -> None:
         state = {"branch": "eval/approved", "head": "a" * 40, "clean": True}
         matrix.require_evaluator_checkout(state, "a" * 40)
@@ -39,7 +58,12 @@ class TriplicateRunnerTests(unittest.TestCase):
             (root / "audit.jsonl").write_text('{"event":"withheld"}\n', encoding="utf-8")
             agent = types.SimpleNamespace(data_dir=root, messages=[], _stream_chat_message=lambda **kw: {"content": "viable draft"})
             def ask(*args, **kwargs):
-                agent._stream_chat_message(think="high")
+                class Repository:
+                    def __init__(self):
+                        self.lock = threading.Lock()
+                    def read_repository_file(self, path: str) -> str:
+                        return path
+                agent._stream_chat_message(think="high", tools=[Repository().read_repository_file])
                 agent.messages.append({"role": "tool", "content": "raw evidence"})
                 raise RuntimeError("protocol failure")
             agent.ask = ask
@@ -49,6 +73,8 @@ class TriplicateRunnerTests(unittest.TestCase):
             self.assertEqual(result["evidence"]["model_turns"][0]["response"]["content"], "viable draft")
             self.assertEqual(result["evidence"]["messages"][-1]["content"], "raw evidence")
             self.assertIn("withheld", result["evidence"]["audit_jsonl"])
+            self.assertEqual(result["evidence"]["model_turns"][0]["settings"]["tools"][0]["function"]["name"], "read_repository_file")
+            json.dumps(result)
             self.assertIsNone(matrix.CELL_EVIDENCE.get())
 
     def test_original_eval_v1_is_untouched_and_new_suite_has_76_distinct_tasks(self) -> None:

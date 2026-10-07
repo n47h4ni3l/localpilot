@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 from contextvars import ContextVar
 import hashlib
 import json
@@ -118,8 +119,17 @@ def _scaffold(task: dict[str, Any], config: Any, snapshot: Path, namespace: str)
     if evidence is not None:
         evidence["model_turns"] = []
         def capture_stream(*args: Any, **kwargs: Any) -> Any:
+            from ollama._utils import convert_function_to_tool
+            settings = {k: copy.deepcopy(v) for k, v in kwargs.items() if k not in {"messages", "tools", "chat"}}
+            if kwargs.get("tools") is not None:
+                settings["tools"] = [
+                    convert_function_to_tool(tool).model_dump(mode="json") if callable(tool)
+                    else tool.model_dump(mode="json") if hasattr(tool, "model_dump")
+                    else copy.deepcopy(tool)
+                    for tool in kwargs["tools"]
+                ]
             turn = {"messages": copy.deepcopy(kwargs.get("messages") if kwargs.get("messages") is not None else agent.messages),
-                    "settings": {k: copy.deepcopy(v) for k, v in kwargs.items() if k != "messages"}}
+                    "settings": settings}
             evidence["model_turns"].append(turn)
             try:
                 result = stream(*args, **kwargs)
@@ -132,6 +142,8 @@ def _scaffold(task: dict[str, Any], config: Any, snapshot: Path, namespace: str)
     try:
         return agent.ask(prompt, interface="direct")
     finally:
+        # Avoid a cycle from the capturing closure back to its bound agent.
+        agent._stream_chat_message = stream
         if evidence is not None:
             evidence["messages"] = copy.deepcopy(agent.messages)
             audit_path = agent.data_dir / "audit.jsonl"
@@ -274,6 +286,9 @@ def main() -> int:
         for position, (task_id, repetition, arm) in enumerate(remaining, start=1):
             print(f"[{position}/{len(remaining)}] {task_id} repeat {repetition+1} {arm}", flush=True)
             result = _run_cell(task_by_id[task_id], repetition, arm, base, candidate, snapshot)
+            # SQLite context managers commit but may leave unreachable handles
+            # until collection; release them before Windows snapshot deletion.
+            gc.collect()
             report["cells"].append(result)
             original.write_report(output, report)
             if result["error"]:

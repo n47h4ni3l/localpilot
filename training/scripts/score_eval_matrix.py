@@ -34,7 +34,7 @@ def load_report(path: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     selected = [tasks[task_id] for task_id in report["task_ids"]]
     if report.get("suite") != "Nestra Paired Evaluation v2" or report.get("task_digest") != runner.digest(selected):
         raise RuntimeError("Report is not a valid immutable paired-eval task selection")
-    if report.get("repeats") != 3 or len(report["cells"]) != report["planned_cells"] != 9 * len(selected):
+    if report.get("repeats") != 3 or len(report["cells"]) != report["planned_cells"] or report["planned_cells"] != 9 * len(selected):
         raise RuntimeError("Report is incomplete: finish all three repeats of all three arms first")
     keys = [(c["task_id"], c["repeat"], c["arm"]) for c in report["cells"]]
     expected = {(t["id"], repetition, arm) for t in selected for repetition in (1, 2, 3) for arm in runner.ARMS}

@@ -11,12 +11,17 @@ import argparse
 import copy
 import hashlib
 import json
+import sys
 import tempfile
 import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+ROOT_PATH = Path(__file__).resolve().parents[2]
+if str(ROOT_PATH) not in sys.path:
+    sys.path.insert(0, str(ROOT_PATH))
 
 from training.scripts import run_eval_v1 as original
 

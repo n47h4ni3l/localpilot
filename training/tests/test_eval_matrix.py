@@ -150,6 +150,7 @@ class TriplicateScorerTests(unittest.TestCase):
         self.assertEqual(len({c["review_id"] for c in self.prepared}), 27)
         self.assertTrue(all("arm" not in c and "repeat" not in c for c in self.prepared))
         self.assertTrue(all(c["score"] is None for c in self.prepared))
+        self.assertTrue(all(c["scoring_scale"] == score.SCORING_SCALE for c in self.prepared))
 
     def test_reject_modified_evidence_or_invalid_scores(self) -> None:
         cards = self._graded()
@@ -166,6 +167,10 @@ class TriplicateScorerTests(unittest.TestCase):
         corrupted[0]["failure_origin"] = "fantasy"
         with self.assertRaisesRegex(RuntimeError, "Failure origin missing/invalid"):
             score.validate_cards(corrupted, self.prepared)
+        corrupted = copy.deepcopy(cards)
+        corrupted[0]["hard_failure"] = True
+        with self.assertRaisesRegex(RuntimeError, "Hard failure requires"):
+            score.validate_cards(corrupted, self.prepared)
 
     def test_scored_weight_effect_is_paired_and_ci_not_a_raw_average(self) -> None:
         graded = score.validate_cards(self._graded(), self.prepared)
@@ -175,12 +180,15 @@ class TriplicateScorerTests(unittest.TestCase):
         self.assertEqual(effect["ci95"], [2.0, 2.0])
         self.assertEqual(effect["direction"], "positive")
         self.assertEqual(effect["tasks"], 3)
-        self.assertEqual(summary["evaluable_matched_tasks"], 3)
+        self.assertEqual(summary["evaluable_primary_tasks"], 3)
+        self.assertEqual(summary["evaluable_secondary_tasks"], 3)
+        self.assertEqual(summary["evaluable_all_three_tasks"], 3)
         self.assertFalse(summary["automated_promotion"])
 
     def test_infrastructure_failure_is_not_counted_as_model_regression(self) -> None:
         cells = copy.deepcopy(self.report)
-        cells["cells"][0]["error"] = {"type": "RuntimeError", "message": "broken broker"}
+        target = next(cell for cell in cells["cells"] if cell["arm"] == "base_localpilot")
+        target["error"] = {"type": "RuntimeError", "message": "broken broker"}
         cards = score.prepare(cells, self.lookup)
         for row in cards:
             row["score"], row["hard_failure"], row["failure_origin"] = 2, False, "none"
@@ -190,9 +198,31 @@ class TriplicateScorerTests(unittest.TestCase):
             score.validate_cards(cards, cards)
         faulty["failure_origin"] = "harness"
         summary = score.summarize(cells, score.validate_cards(cards, score.prepare(cells, self.lookup)), self.lookup)
-        self.assertEqual(summary["evaluable_matched_tasks"], 2)
+        self.assertEqual(summary["evaluable_primary_tasks"], 2)
+        self.assertEqual(summary["primary_weight_effect"]["tasks"], 2)
         self.assertTrue(summary["excluded_tasks"])
         self.assertEqual(summary["model_hard_failures"], {})
+
+    def test_optional_direct_failure_does_not_exclude_primary_weight_effect(self) -> None:
+        cells = copy.deepcopy(self.report)
+        target = next(cell for cell in cells["cells"] if cell["arm"] == "base_direct")
+        target["error"] = {"type": "RuntimeError", "message": "direct arm unavailable"}
+        cards = score.prepare(cells, self.lookup)
+        for row in cards:
+            row["score"], row["hard_failure"], row["failure_origin"] = 2, False, "none"
+            row["rationale"], row["reviewer"] = "Reviewed", "external"
+        faulty = next(row for row in cards if row["execution_error"])
+        faulty["failure_origin"] = "environment"
+        summary = score.summarize(
+            cells,
+            score.validate_cards(cards, score.prepare(cells, self.lookup)),
+            self.lookup,
+        )
+        self.assertEqual(summary["evaluable_primary_tasks"], 3)
+        self.assertEqual(summary["primary_weight_effect"]["tasks"], 3)
+        self.assertEqual(summary["evaluable_secondary_tasks"], 2)
+        self.assertEqual(summary["secondary_scaffold_effect"]["tasks"], 2)
+        self.assertEqual(summary["evaluable_all_three_tasks"], 2)
 
     def test_report_cannot_be_scored_when_incomplete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -56,14 +56,25 @@ First preview the plan without running inference:
 .\.venv\Scripts\python.exe training\scripts\run_eval_matrix.py --plan-only
 ```
 
-Pilot a small complete subset to test the workflow:
+Pilot a small complete subset to test the workflow. Use explicit task IDs
+rather than the first N sorted tasks so the pilot exercises every category and
+mixes historical Eval v1 with new paired-v2 cases:
 
 ```powershell
-.\.venv\Scripts\python.exe training\scripts\run_eval_matrix.py --limit 6 --output training\reports\paired_pilot.json
+.\.venv\Scripts\python.exe training\scripts\run_eval_matrix.py `
+  --task-id lp-eval-repo-004 `
+  --task-id lp-eval-debug-002 `
+  --task-id lp-paired-tool-007 `
+  --task-id lp-paired-research-002 `
+  --task-id lp-paired-evolution-003 `
+  --task-id lp-paired-epistemics-002 `
+  --task-id lp-paired-general-007 `
+  --output training\reports\paired_pilot.json
 ```
 
-That pilot covers **54 cells** (6 tasks × 3 runs × 3 conditions). For the
-full suite, use a new output path:
+That pilot covers **63 cells** (7 tasks × 3 runs × 3 conditions), one task from
+each category. It is a runner/reviewer validation exercise, not evidence for a
+model-quality conclusion. For the full suite, use a new output path:
 
 ```powershell
 .\.venv\Scripts\python.exe training\scripts\run_eval_matrix.py --output training\reports\paired_full.json --max-new-cells 27
@@ -92,9 +103,19 @@ Once the report contains all expected cells, prepare a blinded scorecard:
 ```
 
 The review file shuffles cases and hides arm names and repetition numbers.
-Each case contains the prompt, expected behaviour rubric, actual response,
-and any runtime error. Assign a 0–4 `score`, boolean `hard_failure`,
-non-empty `rationale`, `reviewer` identifier, and `failure_origin` from:
+Each case contains the prompt, expected behaviour rubric, common scoring
+anchors, actual response, and any runtime error. Assign a 0–4 `score`, boolean
+`hard_failure`, non-empty `rationale`, `reviewer` identifier, and
+`failure_origin` from:
+
+- **4**: fully satisfies the applicable expected behaviour with no material unsupported claim;
+- **3**: substantially correct, with only a minor omission or imprecision that does not change the outcome;
+- **2**: partially correct and useful, but a material omission or error remains;
+- **1**: mostly incorrect or unusable and misses a core expected behaviour;
+- **0**: no usable answer, directly contradicts a core requirement, or materially fabricates evidence.
+
+`hard_failure=true` is reserved for a fundamental core-task failure. A score
+below 4 is not automatically a hard failure. Set `failure_origin` to:
 
 - `none`: no hard failure or attributable system failure;
 - `model`: attributable model output/behaviour failure;
@@ -119,10 +140,12 @@ primary comparison bootstraps *whole tasks*, 5,000 repetitions, for a
 95% percentile confidence interval (not 684 independent observations). The
 report includes per-category differences, model-attributed hard failures,
 infrastructure fault counts, task wins/losses, and an excluded-case ledger.
-A task with unresolved/tool/harness/environment errors is omitted from the
-model comparison **and reported explicitly**, so it must be rerun or
-investigated before trusting any conclusion. A confidence interval excluding
-zero is evidence of a stable difference on this task population—not proof of
+A task with unresolved/tool/harness/environment errors is omitted only from
+the contrast that depends on the affected arm, and the failure remains
+**reported explicitly**. In particular, a failure confined to optional
+`base_direct` does not remove an otherwise valid `base_localpilot` versus
+`nestra_localpilot` weight comparison. A confidence interval excluding zero
+is evidence of a stable difference on this task population—not proof of
 out-of-sample AGI or real-world superiority.
 
 ## Investigate the three P1 hard failures first

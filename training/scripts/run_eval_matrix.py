@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from contextvars import ContextVar
 import hashlib
 import json
 import sys
@@ -29,6 +30,17 @@ ROOT = original.ROOT
 EXTRA_ROOT = ROOT / "training" / "evals_paired_v2"
 ARMS = ("base_direct", "base_localpilot", "nestra_localpilot")
 REPEATS = 3
+CELL_EVIDENCE: ContextVar[dict[str, Any] | None] = ContextVar("cell_evidence", default=None)
+
+
+def require_evaluator_checkout(state: dict[str, Any], expected_revision: str | None) -> None:
+    if expected_revision is None:
+        original.require_baseline_checkout(state, allow_non_main=False, allow_dirty=False, skip_upstream_check=False)
+        return
+    if len(expected_revision) != 40 or any(c not in "0123456789abcdef" for c in expected_revision):
+        raise RuntimeError("Expected evaluator revision must be a full commit SHA")
+    if not state["clean"] or state["head"] != expected_revision:
+        raise RuntimeError("Evaluator requires a clean checkout at the exact approved revision")
 ROTATIONS = (
     ARMS,
     (ARMS[2], ARMS[0], ARMS[1]),
@@ -85,6 +97,10 @@ def _direct(task: dict[str, Any], config: Any) -> str:
         think=config.model.think,
         options={"temperature": config.model.temperature, "num_ctx": config.model.context_tokens},
     )
+    evidence = CELL_EVIDENCE.get()
+    if evidence is not None:
+        evidence["request_messages"] = messages
+        evidence["raw_response"] = response.model_dump(mode="json") if hasattr(response, "model_dump") else response
     return _response_text(response)
 
 
@@ -97,11 +113,35 @@ def _scaffold(task: dict[str, Any], config: Any, snapshot: Path, namespace: str)
     agent.messages.append({"role": "system", "content": original.EVAL_ISOLATION_MESSAGE})
     prompt, systems = original._task_prompt(task)
     agent.messages.extend(systems)
-    return agent.ask(prompt, interface="direct")
+    evidence = CELL_EVIDENCE.get()
+    stream = agent._stream_chat_message
+    if evidence is not None:
+        evidence["model_turns"] = []
+        def capture_stream(*args: Any, **kwargs: Any) -> Any:
+            turn = {"messages": copy.deepcopy(kwargs.get("messages") if kwargs.get("messages") is not None else agent.messages),
+                    "settings": {k: copy.deepcopy(v) for k, v in kwargs.items() if k != "messages"}}
+            evidence["model_turns"].append(turn)
+            try:
+                result = stream(*args, **kwargs)
+                turn["response"] = copy.deepcopy(result)
+                return result
+            except Exception as exc:
+                turn["error"] = {"type": type(exc).__name__, "message": str(exc)}
+                raise
+        agent._stream_chat_message = capture_stream
+    try:
+        return agent.ask(prompt, interface="direct")
+    finally:
+        if evidence is not None:
+            evidence["messages"] = copy.deepcopy(agent.messages)
+            audit_path = agent.data_dir / "audit.jsonl"
+            evidence["audit_jsonl"] = audit_path.read_text(encoding="utf-8") if audit_path.exists() else ""
 
 
 def _run_cell(task: dict[str, Any], repetition: int, arm: str, base: Any, candidate: Any, snapshot: Path) -> dict[str, Any]:
     started = time.perf_counter()
+    evidence: dict[str, Any] = {}
+    token = CELL_EVIDENCE.set(evidence)
     try:
         if arm == "base_direct":
             response = _direct(task, base)
@@ -114,10 +154,13 @@ def _run_cell(task: dict[str, Any], repetition: int, arm: str, base: Any, candid
     except Exception as exc:
         # Runtime exceptions are NOT automatically recorded as model hard failures.
         response, error = "", {"type": type(exc).__name__, "message": str(exc)[:1200]}
+    finally:
+        CELL_EVIDENCE.reset(token)
     return {
         "task_id": task["id"], "task_type": task["task_type"],
         "repeat": repetition + 1, "arm": arm,
         "response": response, "error": error,
+        "evidence": evidence,
         "duration_seconds": round(time.perf_counter() - started, 3),
     }
 
@@ -181,6 +224,7 @@ def main() -> int:
     parser.add_argument("--max-new-cells", type=int, default=None, help="Bound current session; use --resume for continuation")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--expected-revision", help="Full approved evaluator SHA for a clean unmerged PR checkout")
     parser.add_argument("--plan-only", action="store_true", help="No Ollama calls, local state mutation or evaluation")
     args = parser.parse_args()
     if args.repeats != REPEATS:
@@ -204,7 +248,7 @@ def main() -> int:
                           "model_calls": len(plan(tasks)), "categories": sorted({t["task_type"] for t in tasks})}, indent=2))
         return 0
     state = original.repository_state(ROOT)
-    original.require_baseline_checkout(state, allow_non_main=False, allow_dirty=False, skip_upstream_check=False)
+    require_evaluator_checkout(state, args.expected_revision)
     base = original.isolated_config(ROOT, model=args.base_model)
     candidate = original.isolated_config(ROOT, model=args.candidate_model)
     output = args.output or original.default_output_path("nestra_paired_v2")

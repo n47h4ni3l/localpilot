@@ -20,6 +20,37 @@ def _cfg(name: str) -> types.SimpleNamespace:
 
 
 class TriplicateRunnerTests(unittest.TestCase):
+    def test_unmerged_evaluator_requires_exact_clean_revision(self) -> None:
+        state = {"branch": "eval/approved", "head": "a" * 40, "clean": True}
+        matrix.require_evaluator_checkout(state, "a" * 40)
+        for changed in ({**state, "clean": False}, {**state, "head": "b" * 40}):
+            with self.assertRaisesRegex(RuntimeError, "exact approved revision"):
+                matrix.require_evaluator_checkout(changed, "a" * 40)
+        with self.assertRaisesRegex(RuntimeError, "full commit SHA"):
+            matrix.require_evaluator_checkout(state, "aaaa")
+        with patch.object(matrix.original, "require_baseline_checkout") as guard:
+            matrix.require_evaluator_checkout(state, None)
+            guard.assert_called_once_with(state, allow_non_main=False, allow_dirty=False, skip_upstream_check=False)
+
+    def test_scaffold_evidence_survives_failure(self) -> None:
+        task = matrix.load_tasks()[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "audit.jsonl").write_text('{"event":"withheld"}\n', encoding="utf-8")
+            agent = types.SimpleNamespace(data_dir=root, messages=[], _stream_chat_message=lambda **kw: {"content": "viable draft"})
+            def ask(*args, **kwargs):
+                agent._stream_chat_message(think="high")
+                agent.messages.append({"role": "tool", "content": "raw evidence"})
+                raise RuntimeError("protocol failure")
+            agent.ask = ask
+            with patch.object(matrix.original, "LocalPilotAgent", return_value=agent), patch.object(matrix.original, "restrict_eval_tools"):
+                result = matrix._run_cell(task, 0, "base_localpilot", _cfg("base"), _cfg("p1"), root)
+            self.assertEqual(result["error"]["message"], "protocol failure")
+            self.assertEqual(result["evidence"]["model_turns"][0]["response"]["content"], "viable draft")
+            self.assertEqual(result["evidence"]["messages"][-1]["content"], "raw evidence")
+            self.assertIn("withheld", result["evidence"]["audit_jsonl"])
+            self.assertIsNone(matrix.CELL_EVIDENCE.get())
+
     def test_original_eval_v1_is_untouched_and_new_suite_has_76_distinct_tasks(self) -> None:
         self.assertEqual(len(matrix.original.load_eval_tasks()), 25)
         self.assertEqual(len(matrix.original.load_eval_tasks(matrix.EXTRA_ROOT)), 51)

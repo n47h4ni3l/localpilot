@@ -50,6 +50,15 @@ Use a clean, current `main`, with Ollama available and both model tags
 installed. Do not switch the current accepted Operational model or alter any
 training artifact. The runner checks exact model digests before evaluation.
 
+An explicitly approved, CI-green unmerged evaluator may also run from a clean
+checkout with `--expected-revision FULL_COMMIT_SHA`. This requires an exact
+40-character revision match; it does not permit dirty source or change the
+default current-main guard. Record the live PR head and CI before using it.
+Every cell also retains direct raw responses or scaffold model turns, full
+conversation/tool messages and audit events before temporary state is deleted.
+These local evidence records can contain intermediate drafts; do not upload
+them with code changes.
+
 First preview the plan without running inference:
 
 ```powershell

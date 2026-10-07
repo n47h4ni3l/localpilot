@@ -34,6 +34,19 @@ REPEATS = 3
 CELL_EVIDENCE: ContextVar[dict[str, Any] | None] = ContextVar("cell_evidence", default=None)
 
 
+def evidence_json(value: Any) -> Any:
+    """Freeze SDK objects as JSON evidence without retaining live agent state."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {str(k): evidence_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [evidence_json(v) for v in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return {"unserializable_type": f"{type(value).__module__}.{type(value).__qualname__}"}
+
+
 def require_evaluator_checkout(state: dict[str, Any], expected_revision: str | None) -> None:
     if expected_revision is None:
         original.require_baseline_checkout(state, allow_non_main=False, allow_dirty=False, skip_upstream_check=False)
@@ -128,15 +141,17 @@ def _scaffold(task: dict[str, Any], config: Any, snapshot: Path, namespace: str)
                     else copy.deepcopy(tool)
                     for tool in kwargs["tools"]
                 ]
-            turn = {"messages": copy.deepcopy(kwargs.get("messages") if kwargs.get("messages") is not None else agent.messages),
+            turn = {"messages": evidence_json(kwargs.get("messages") if kwargs.get("messages") is not None else agent.messages),
                     "settings": settings}
             evidence["model_turns"].append(turn)
             try:
                 result = stream(*args, **kwargs)
-                turn["response"] = copy.deepcopy(result)
+                turn["response"] = evidence_json(result)
                 return result
             except Exception as exc:
                 turn["error"] = {"type": type(exc).__name__, "message": str(exc)}
+                if hasattr(exc, "partial_message"):
+                    turn["partial_message"] = evidence_json(exc.partial_message)
                 raise
         agent._stream_chat_message = capture_stream
     try:
@@ -145,7 +160,7 @@ def _scaffold(task: dict[str, Any], config: Any, snapshot: Path, namespace: str)
         # Avoid a cycle from the capturing closure back to its bound agent.
         agent._stream_chat_message = stream
         if evidence is not None:
-            evidence["messages"] = copy.deepcopy(agent.messages)
+            evidence["messages"] = evidence_json(agent.messages)
             audit_path = agent.data_dir / "audit.jsonl"
             evidence["audit_jsonl"] = audit_path.read_text(encoding="utf-8") if audit_path.exists() else ""
 

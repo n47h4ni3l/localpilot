@@ -22,6 +22,16 @@ def _cfg(name: str) -> types.SimpleNamespace:
 
 
 class TriplicateRunnerTests(unittest.TestCase):
+    def test_sdk_tool_calls_are_preserved_as_json_evidence(self) -> None:
+        from ollama import Message
+        call = Message.ToolCall(function=Message.ToolCall.Function(name="search_repository", arguments={"query": "class Agent"}))
+        source = {"role": "assistant", "tool_calls": [call]}
+        frozen = matrix.evidence_json(source)
+        self.assertEqual(frozen["tool_calls"][0]["function"]["arguments"], {"query": "class Agent"})
+        source["tool_calls"].clear()
+        self.assertEqual(len(frozen["tool_calls"]), 1)
+        json.dumps(frozen)
+
     def test_real_agent_tool_evidence_and_windows_snapshot_cleanup(self) -> None:
         task = matrix.load_tasks()[0]
         with tempfile.TemporaryDirectory() as tmp:

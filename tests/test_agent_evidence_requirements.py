@@ -122,6 +122,9 @@ def test_real_observation_requests_still_require_the_exact_evidence_sources():
         "Check this PC's current power plan and Defender status."
     ) == {"Windows/PC state"}
     assert LocalPilotAgent._evidence_requirements(
+        "A service on my PC fails at startup. Please check its current status."
+    ) == {"Windows/PC state"}
+    assert LocalPilotAgent._evidence_requirements(
         "Inspect PR #183 on GitHub and tell me whether its checks passed."
     ) == {"private GitHub"}
     assert LocalPilotAgent._evidence_requirements(

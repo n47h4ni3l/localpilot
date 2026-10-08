@@ -241,10 +241,10 @@ def test_postvalidation_preserves_a_grounded_draft_without_a_rewrite(tmp_path: P
 def test_presentation_only_table_preserves_answer_without_second_model_pass(tmp_path: Path):
     agent = LocalPilotAgent(Config(), tmp_path)
     draft = (
-        "The first step is to test the original symptom.\\n\\n"
-        "| Observation | Interpretation |\\n"
-        "|---|---|\\n"
-        "| Driver reset event | A clue, not yet a confirmed root cause |\\n"
+        "The first step is to test the original symptom.\n\n"
+        "| Observation | Interpretation |\n"
+        "|---|---|\n"
+        "| Driver reset event | A clue, not yet a confirmed root cause |\n"
         "| No event | Investigate alternative causes |"
     )
     streams = []

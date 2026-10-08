@@ -77,7 +77,7 @@ def _is_scenario_question(prompt: str) -> bool:
         r"scaffold|agent|installer|browser|system|tool|spreadsheet|"
         r"conversation|configuration|config|researcher|"
         r"event|update|review|result|benchmark|request|"
-        r"previously reliable|local hardware manual)\b",
+        r"previously reliable|local hardware manual)\b)",
         text,
     ):
         # These prompts discuss a provided scenario. Real commands to inspect

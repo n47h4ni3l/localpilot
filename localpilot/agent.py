@@ -1610,6 +1610,18 @@ class LocalPilotAgent:
                 if content.strip() and not calls
                 else ()
             )
+            # Formatting alone is not a reason to regenerate a valid answer:
+            # a second model pass can discard evidence, invent facts, or
+            # convert a useful reply into a refusal. Substantive checks below
+            # (factual authority, source grounding and tool permissions) remain.
+            if behavior_issues == ("unsolicited_verifier_structure",):
+                self.audit.write(
+                    "model_presentation_warning_preserved",
+                    model=self.config.model.name,
+                    round=round_no,
+                    issues=list(behavior_issues),
+                )
+                behavior_issues = ()
             if behavior_issues:
                 recovery_base_messages = [dict(message) for message in clean_recovery_messages]
                 behavior_draft = {"role": "assistant", "content": content}

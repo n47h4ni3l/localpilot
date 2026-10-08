@@ -68,8 +68,8 @@ def _is_scenario_question(prompt: str) -> bool:
     # A concrete fault on the owner's own machine must not be mistaken for
     # a hypothetical just because it starts with "a service" or "the model".
     # Explicit third-person scenarios ("A user asks ...") remain conceptual.
-    if re.search(r"\\b(?:my|our|this) (?:pc|computer|machine|system|laptop)\\b", text) and not re.match(
-        r"^(?:a|an|the) (?:user|owner|task)\\b", text
+    if re.search(r"\b(?:my|our|this) (?:pc|computer|machine|system|laptop)\b", text) and not re.match(
+        r"^(?:a|an|the) (?:user|owner|task)\b", text
     ):
         return False
     if re.match(

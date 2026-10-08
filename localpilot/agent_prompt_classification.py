@@ -54,9 +54,51 @@ def _uses_implicit_machine_location(prompt: str) -> bool:
     return False
 
 
+def _is_scenario_question(prompt: str) -> bool:
+    """Recognize questions *about* an example, not requests to inspect live state.
+
+    Scenario narratives may mention GitHub, 'current' settings, services or
+    tooling without authorizing (or needing) access to the owner's machine.
+    This only relaxes automatic *mandatory* source acquisition; it never
+    expands the available tools or bypasses action/claim verification.
+    """
+    text = " ".join(str(prompt).strip().lower().split())
+    if not text:
+        return False
+    # A concrete fault on the owner's own machine must not be mistaken for
+    # a hypothetical just because it starts with "a service" or "the model".
+    # Explicit third-person scenarios ("A user asks ...") remain conceptual.
+    if re.search(r"\b(?:my|our|this) (?:pc|computer|machine|system|laptop)\b", text) and not re.match(
+        r"^(?:a|an|the) (?:user|owner|task)\b", text
+    ):
+        return False
+    if re.match(
+        r"^(?:suppose|imagine|hypothetically|in (?:this|a) hypothetical|"
+        r"consider (?:a|this) (?:hypothetical|scenario|case)|"
+        r"you discover|you are given|"
+        r"(?:a|an|the|one|two|three) (?:(?:new|proposed|online|"
+        r"authenticated|existing|recent|historical|previous) )?(?:"
+        r"user|owner|task|model|developer|assistant|contributor|architect|revision|"
+        r"script|service|worker|candidate|change|patch|test|repository|repo|"
+        r"library|manual|document|source|tutorial|blog|support article|"
+        r"diagnostic|windows diagnostic|log|hardware|driver|"
+        r"scaffold|agent|installer|browser|system|tool|spreadsheet|"
+        r"conversation|configuration|config|researcher|"
+        r"event|update|review|result|benchmark|request|"
+        r"previously reliable|local hardware manual)\b)",
+        text,
+    ):
+        # These prompts discuss a provided scenario. Real commands to inspect
+        # PR #123, the live PC, or a named source are not scenario descriptions.
+        return True
+    return False
+
+
 def _evidence_requirements(prompt: str) -> set[str]:
-    """Identify explicit evidence sources the owner asked LocalPilot to inspect."""
+    """Identify sources required by the owner, not incidental scenario nouns."""
     text = " ".join(str(prompt).lower().split())
+    if _is_scenario_question(prompt):
+        return set()
     requirements: set[str] = set()
     watch_process_investigation = is_systemsense_process_investigation_request(prompt)
     if is_systemsense_watch_report_request(prompt) or watch_process_investigation:

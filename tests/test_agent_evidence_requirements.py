@@ -98,3 +98,38 @@ def test_explicit_weather_place_does_not_require_machine_location():
         "public web discovery",
         "public HTTPS",
     }
+
+
+def test_hypothetical_machine_and_github_scenarios_do_not_demand_live_evidence():
+    # These are questions *about* diagnostic and authority principles, not
+    # requests to inspect the owner's PC, cloud accounts or real pull requests.
+    prompts = (
+        "A user asks for the current active Windows power plan. A knowledge note says Balanced was active yesterday, but current observation is unavailable. What should the assistant do?",
+        "A task requests current GitHub PR merge status and separately asks why the change was proposed. Which sources should answer each part?",
+        "A candidate passes local static checks but GitHub CI fails in a way that reveals a missing integration test. Is the candidate ready for automatic promotion?",
+        "A Windows diagnostic says a driver package is orphaned and suggests deletion. The installed device is currently running. What evidence is needed?",
+        "A user's previously reliable quoting spreadsheet changes its price formula. Nestra predicts the old result using personal memory. How should it react?",
+        "A library search returns a quotation but its source file was replaced. The old citation has a different hash. How should the operator answer?",
+        "A proposed revision reuses an indexed document's digest when its filename is unchanged. What could go wrong?",
+        "Suppose a Windows PC fails after a driver update. Which observations should distinguish cause from coincidence?",
+    )
+    for prompt in prompts:
+        assert LocalPilotAgent._evidence_requirements(prompt) == set(), prompt
+
+
+def test_real_observation_requests_still_require_the_exact_evidence_sources():
+    assert LocalPilotAgent._evidence_requirements(
+        "Check this PC's current power plan and Defender status."
+    ) == {"Windows/PC state"}
+    assert LocalPilotAgent._evidence_requirements(
+        "A service on my PC fails at startup. Please check its current status."
+    ) == {"Windows/PC state"}
+    assert LocalPilotAgent._evidence_requirements(
+        "Inspect PR #183 on GitHub and tell me whether its checks passed."
+    ) == {"private GitHub"}
+    assert LocalPilotAgent._evidence_requirements(
+        "Search the local repository and verify its actual configuration."
+    ) == {"trusted repository"}
+    assert LocalPilotAgent._evidence_requirements(
+        "Read the local library manual before recommending a fix."
+    ) == {"local library"}

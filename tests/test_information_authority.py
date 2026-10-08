@@ -238,6 +238,39 @@ def test_postvalidation_preserves_a_grounded_draft_without_a_rewrite(tmp_path: P
     assert event["prose_rewritten"] is False
 
 
+def test_presentation_only_table_preserves_answer_without_second_model_pass(tmp_path: Path):
+    agent = LocalPilotAgent(Config(), tmp_path)
+    draft = (
+        "The first step is to test the original symptom.\n\n"
+        "| Observation | Interpretation |\n"
+        "|---|---|\n"
+        "| Driver reset event | A clue, not yet a confirmed root cause |\n"
+        "| No event | Investigate alternative causes |"
+    )
+    streams = []
+
+    def fake_chat(**kwargs):
+        streams.append(kwargs)
+        return iter([_chunk(draft)])
+
+    assert LocalPilotAgent._response_behavior_issues("How should I reason about a PC freeze?", draft) == (
+        "unsolicited_verifier_structure",
+    )
+    result = agent._continue_high_reasoning_answer(
+        fake_chat,
+        prompt="How should I reason about a PC freeze?",
+        round_no=1,
+        after_tools=False,
+    )
+    assert result == draft
+    assert len(streams) == 1
+    warning = agent.audit.latest("model_presentation_warning_preserved")
+    assert warning["issues"] == ["unsolicited_verifier_structure"]
+    post = agent.audit.latest("model_same_context_postvalidation_complete")
+    assert post["accepted"] is True
+    assert post["prose_rewritten"] is False
+
+
 def test_live_state_postcondition_requires_claim_specific_evidence():
     verifier = TurnEvidenceVerifier()
 

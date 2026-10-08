@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 from contextvars import ContextVar
 import hashlib
 import json
@@ -31,6 +32,19 @@ EXTRA_ROOT = ROOT / "training" / "evals_paired_v2"
 ARMS = ("base_direct", "base_localpilot", "nestra_localpilot")
 REPEATS = 3
 CELL_EVIDENCE: ContextVar[dict[str, Any] | None] = ContextVar("cell_evidence", default=None)
+
+
+def evidence_json(value: Any) -> Any:
+    """Freeze SDK objects as JSON evidence without retaining live agent state."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {str(k): evidence_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [evidence_json(v) for v in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return {"unserializable_type": f"{type(value).__module__}.{type(value).__qualname__}"}
 
 
 def require_evaluator_checkout(state: dict[str, Any], expected_revision: str | None) -> None:
@@ -118,22 +132,35 @@ def _scaffold(task: dict[str, Any], config: Any, snapshot: Path, namespace: str)
     if evidence is not None:
         evidence["model_turns"] = []
         def capture_stream(*args: Any, **kwargs: Any) -> Any:
-            turn = {"messages": copy.deepcopy(kwargs.get("messages") if kwargs.get("messages") is not None else agent.messages),
-                    "settings": {k: copy.deepcopy(v) for k, v in kwargs.items() if k != "messages"}}
+            from ollama._utils import convert_function_to_tool
+            settings = {k: copy.deepcopy(v) for k, v in kwargs.items() if k not in {"messages", "tools", "chat"}}
+            if kwargs.get("tools") is not None:
+                settings["tools"] = [
+                    convert_function_to_tool(tool).model_dump(mode="json") if callable(tool)
+                    else tool.model_dump(mode="json") if hasattr(tool, "model_dump")
+                    else copy.deepcopy(tool)
+                    for tool in kwargs["tools"]
+                ]
+            turn = {"messages": evidence_json(kwargs.get("messages") if kwargs.get("messages") is not None else agent.messages),
+                    "settings": settings}
             evidence["model_turns"].append(turn)
             try:
                 result = stream(*args, **kwargs)
-                turn["response"] = copy.deepcopy(result)
+                turn["response"] = evidence_json(result)
                 return result
             except Exception as exc:
                 turn["error"] = {"type": type(exc).__name__, "message": str(exc)}
+                if hasattr(exc, "partial_message"):
+                    turn["partial_message"] = evidence_json(exc.partial_message)
                 raise
         agent._stream_chat_message = capture_stream
     try:
         return agent.ask(prompt, interface="direct")
     finally:
+        # Avoid a cycle from the capturing closure back to its bound agent.
+        agent._stream_chat_message = stream
         if evidence is not None:
-            evidence["messages"] = copy.deepcopy(agent.messages)
+            evidence["messages"] = evidence_json(agent.messages)
             audit_path = agent.data_dir / "audit.jsonl"
             evidence["audit_jsonl"] = audit_path.read_text(encoding="utf-8") if audit_path.exists() else ""
 
@@ -274,6 +301,9 @@ def main() -> int:
         for position, (task_id, repetition, arm) in enumerate(remaining, start=1):
             print(f"[{position}/{len(remaining)}] {task_id} repeat {repetition+1} {arm}", flush=True)
             result = _run_cell(task_by_id[task_id], repetition, arm, base, candidate, snapshot)
+            # SQLite context managers commit but may leave unreachable handles
+            # until collection; release them before Windows snapshot deletion.
+            gc.collect()
             report["cells"].append(result)
             original.write_report(output, report)
             if result["error"]:

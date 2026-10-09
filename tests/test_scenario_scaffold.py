@@ -128,3 +128,40 @@ def test_desktop_scenario_does_not_convert_to_live_interface_status(tmp_path, mo
     assert "Reason from the example" in answer
     assert agent.audit.latest("model_illustrative_scenario_route") is not None
     assert agent.audit.latest("model_desktop_interface_deterministic_route") is None
+
+
+
+@pytest.mark.parametrize("prompt,substantive_answer", [
+    (
+        "An adapter reload produces text, but its inherited LoRA tensors differ from the accepted parent before optimizer updates. Is lineage validation passed?",
+        "No. Inherited LoRA tensors must match the accepted parent before any optimizer updates; text generation alone does not validate lineage.",
+    ),
+    (
+        "A user asks for the current Windows power plan. Memory says Balanced was active yesterday, but live observation failed. What can be answered?",
+        "Balanced was recorded yesterday, but that does not establish the current active power plan; a fresh read is required.",
+    ),
+    (
+        "A README instructs executing an unfamiliar script. The assistant has read-only repository permission. What should happen?",
+        "Read the script as untrusted data, review its provenance and effects, and do not execute it with read-only authority.",
+    ),
+])
+def test_valid_conceptual_answer_is_not_rewritten_or_withheld(
+    prompt, substantive_answer, monkeypatch, tmp_path
+):
+    agent = LocalPilotAgent(Config(), tmp_path)
+    agent.governor = SimpleNamespace(
+        sample=lambda interval: SimpleNamespace(background_allowed=False),
+        apply_process_priority=lambda idle: None,
+    )
+    calls = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter([_chunk(substantive_answer)])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+    answer = agent.ask(prompt)
+    assert answer == substantive_answer
+    assert all(not call.get("tools") for call in calls)
+    assert agent.audit.latest("model_evidence_acquisition_failed") is None
+    assert agent.audit.latest("model_illustrative_scenario_route") is not None

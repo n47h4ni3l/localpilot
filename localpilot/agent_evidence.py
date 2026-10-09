@@ -24,6 +24,8 @@ from localpilot.agent_prompt_classification import (
     _is_operational_self_status_prompt,
     _is_practical_troubleshooting_prompt,
     _is_temporal_web_prompt,
+    _is_repository_evidence_prompt,
+    _requests_public_web_evidence,
 )
 from localpilot.agent_tools import _LIBRARY_TOOLS, _forbidden_tools
 
@@ -655,6 +657,7 @@ def _contextual_evidence_risks(
     answer = " ".join(str(content).lower().split())
     requires_primary_web = (
         not _is_operational_self_status_prompt(prompt)
+        and (not _is_repository_evidence_prompt(prompt) or _requests_public_web_evidence(prompt))
         and bool(
             re.search(
                 r"\b(?:public (?:web|internet)|primary source|fact[- ]check|"

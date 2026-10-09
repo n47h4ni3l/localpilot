@@ -11,6 +11,8 @@ import json
 import re
 from typing import Any
 
+from localpilot.tools.web import canonical_public_web_url, _DEFAULT_MAX_CHARS
+
 _REPOSITORY_TOOLS = {
     "list_repository_tree",
     "read_repository_file",
@@ -149,5 +151,12 @@ def _tool_call_parts(call: Any) -> tuple[str, dict[str, Any]]:
 
 
 def _tool_cache_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
+    args = dict(args)
+    if name == "fetch_public_https":
+        args["url"] = canonical_public_web_url(args.get("url", ""))
+        args.setdefault("max_chars", _DEFAULT_MAX_CHARS)
+        args.setdefault("start_char", 0)
+    elif name == "search_public_web" and "query" in args:
+        args["query"] = " ".join(str(args["query"]).casefold().split())
     return name, json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
 

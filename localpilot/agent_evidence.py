@@ -26,6 +26,7 @@ from localpilot.agent_prompt_classification import (
     _is_temporal_web_prompt,
 )
 from localpilot.agent_tools import _LIBRARY_TOOLS, _forbidden_tools
+from localpilot.tools.web import web_source_coverage
 
 
 def _response_behavior_issues(prompt: str, content: str) -> tuple[str, ...]:
@@ -767,7 +768,47 @@ def _contextual_evidence_risks(
                 re.IGNORECASE,
             ):
                 risks.append("latest_claim_primary_source_does_not_establish_recency")
+    risks.extend(_incomplete_web_source_risks(content, evidence_messages or []))
     return tuple(dict.fromkeys(risks))
+
+
+def _incomplete_web_source_risks(content: str, messages: list[dict[str, Any]]) -> tuple[str, ...]:
+    """A prefix/window is not evidence that a publisher supplied no information."""
+    reads = [str(message.get('content') or '') for message in messages
+             if message.get('role') == 'tool' and message.get('tool_name') == 'fetch_public_https'
+             and 'Tool error:' not in str(message.get('content') or '')
+             and not ('Identical read-only observation' in str(message.get('content') or '')
+                      and 'HTTPS source: ' not in str(message.get('content') or ''))]
+    if not reads:
+        return ()
+    coverage = [web_source_coverage(read) for read in reads]
+    groups: dict[str, list[dict]] = {}
+    for item in coverage:
+        if item:
+            groups.setdefault(item['digest'], []).append(item)
+    incomplete = any(item is None for item in coverage)
+    for windows in groups.values():
+        end = 0
+        for window in sorted(windows, key=lambda item: item['start']):
+            if window['start'] > end:
+                break
+            end = max(end, window['end'])
+        incomplete = incomplete or end < windows[0]['total']
+    if not incomplete:
+        return ()
+    for sentence in re.split(r'[.!?;\n]', content.lower()):
+        negative = re.search(
+            r"\b(?:manufacturer|publisher|documentation|source|page|site)\b.{0,50}"
+            r"\b(?:does not|doesn['’]?t|has not|hasn['’]?t|did not|didn['’]?t)\b.{0,35}"
+            r"\b(?:provide|publish|specify|list|recommend|include|contain)\b|"
+            r"\bno (?:published |manufacturer[- ](?:provided|recommended) )?"
+            r"(?:recommendation|nozzle temperature|printing temperature|specification)\b",
+            sentence,
+        )
+        scoped = re.search(r'\b(?:excerpt|retrieved portion|returned text|unverified|unresolved|could not verify|cannot verify)\b', sentence)
+        if negative and not scoped:
+            return ('absence_claim_from_incomplete_source',)
+    return ()
 
 
 def _library_citation_from_messages(

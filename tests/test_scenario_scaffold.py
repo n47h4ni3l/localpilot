@@ -34,6 +34,10 @@ def test_illustrative_task_stays_high_reasoning_with_no_local_tools(prompt, monk
         sample=lambda interval: SimpleNamespace(background_allowed=False),
         apply_process_priority=lambda idle: None,
     )
+    agent.systemsense = SimpleNamespace(
+        compact_context=lambda: pytest.fail("Hypothetical reasoning must not ingest live SystemSense state"),
+        record_inference=lambda *args, **kwargs: None,
+    )
     calls = []
 
     def fake_chat(**kwargs):
@@ -100,3 +104,21 @@ def test_illustrative_printer_fault_is_not_forced_into_live_web_attribution():
         prompt, "Check the observations before concluding what caused the failure."
     )
     assert "practical_troubleshooting_source_unattributed" not in issues
+
+
+def test_desktop_scenario_does_not_convert_to_live_interface_status(tmp_path, monkeypatch):
+    agent = LocalPilotAgent(Config(), tmp_path)
+    agent.governor = SimpleNamespace(
+        sample=lambda interval: SimpleNamespace(background_allowed=False),
+        apply_process_priority=lambda idle: None,
+    )
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(
+        chat=lambda **kwargs: iter([_chunk("Reason from the example, not the desktop state.")])
+    ))
+    answer = agent.ask(
+        "A public function is moved inside a desktop GUI. What must be verified to preserve behavior?",
+        interface="desktop",
+    )
+    assert "Reason from the example" in answer
+    assert agent.audit.latest("model_illustrative_scenario_route") is not None
+    assert agent.audit.latest("model_desktop_interface_deterministic_route") is None

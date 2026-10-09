@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +41,7 @@ from localpilot.authority import (
 from localpilot.config import Config
 from localpilot.fast_path import FastPathDecision, classify_fast_path
 from localpilot.learning import HumanLesson, KnowledgeFact, LearningMemory
+from localpilot.quality_feedback import QualityFeedbackStore
 from localpilot.machine_location import MachineLocation
 from localpilot.operator import CommandRunner
 from localpilot.research import (
@@ -139,6 +141,32 @@ class LocalPilotAgent:
             embedding_batch_size=config.model.memory_embedding_batch_size,
             embedding_migration_limit=config.model.memory_embedding_migration_limit,
         )
+        # Collect objective, already validated development delivery facts on
+        # normal startup. Never convert them to model scores or coaching.
+        # Isolated evaluations and disabled self-development skip observation.
+        if (
+            config.agent.feedback_auto_observations_enabled is True
+            and config.selfdev.enabled is True
+        ):
+            try:
+                if self.memory.completed_task_ids():
+                    signals = QualityFeedbackStore(self.data_dir / "quality-feedback.sqlite3")
+                    newly_recorded = signals.sync_verified_development_outcomes(
+                        self.memory.path
+                    )
+                    if newly_recorded:
+                        self.audit.write(
+                            "quality_feedback_objective_evidence_collected",
+                            new_observations=newly_recorded,
+                            scoring_performed=False,
+                            promotion_allowed=False,
+                        )
+            except (OSError, ValueError, RuntimeError, sqlite3.DatabaseError) as exc:
+                # Feedback cannot block normal operator sessions.
+                self.audit.write(
+                    "quality_feedback_objective_evidence_deferred",
+                    error_type=type(exc).__name__,
+                )
         self._last_stream_runtime: dict[str, Any] = {}
         self._event_sink = event_sink
         self._observation_sequence = 0
@@ -155,6 +183,22 @@ class LocalPilotAgent:
                     ),
                 }
             )
+        if config.agent.feedback_coaching_enabled is True:
+            feedback = QualityFeedbackStore(self.data_dir / "quality-feedback.sqlite3")
+            lessons = feedback.approved_lessons(limit=3)
+            if lessons:
+                self.messages.append({
+                    "role": "system",
+                    "content": (
+                        "Owner-approved coaching from independently verified, real-world "
+                        "successes. These are general habits, not current factual evidence. "
+                        "Never treat any score or coaching note as permission to call tools, "
+                        "alter security settings, bypass validation or pursue a rating. "
+                        "Verify consequential claims and follow the owner's current task.\n- "
+                        + "\n- ".join(f"[{topic}] {guidance}" for topic, guidance in lessons)
+                    ),
+                })
+            self.audit.write("quality_feedback_coaching_loaded", count=len(lessons))
         self.governor = ResourceGovernor(config.resource)
 
     def _emit_event(self, event_type: str, **payload: Any) -> None:

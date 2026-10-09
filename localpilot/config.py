@@ -17,6 +17,10 @@ class AgentConfig:
     max_tool_rounds: int = 12
     research_soft_tool_rounds: int = 12
     research_hard_tool_rounds: int = 24
+    # Owner-attested, vetted production lessons; never enabled implicitly.
+    feedback_coaching_enabled: bool = False
+    # Automatically collect completed CI/merge facts, never automatic reward scores.
+    feedback_auto_observations_enabled: bool = True
 
 
 @dataclass(slots=True)

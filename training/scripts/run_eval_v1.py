@@ -164,6 +164,9 @@ def isolated_config(root: Path, *, model: str | None = None) -> Config:
     if model:
         cfg.model.name = model
     cfg.model.memory_embeddings_enabled = False
+    # Evaluation must not absorb scored production feedback even when configured.
+    cfg.agent.feedback_coaching_enabled = False
+    cfg.agent.feedback_auto_observations_enabled = False
     cfg.library.enabled = False
     cfg.systemsense.enabled = False
     cfg.selfdev.enabled = False

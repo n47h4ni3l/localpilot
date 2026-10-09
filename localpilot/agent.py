@@ -2545,6 +2545,28 @@ class LocalPilotAgent:
                                 "[LocalPilot withheld the draft because unsupported factual assertions "
                                 "remained after bounded corrections.]"
                             )
+                if content.startswith("[LocalPilot"):
+                    fallback_sources = set(missing_evidence)
+                    request_text = " ".join(prompt.lower().split())
+                    if ("fetch_public_https" in self._forbidden_tools(prompt)
+                        and re.search(r"\bmanufacturer(?:[- ]specific)?\b", request_text)
+                        and not {"fetch_public_https", "read_library_passage"}.intersection(successful_tools)):
+                        fallback_sources.add("public HTTPS")
+                    if (re.search(r"\binspection[- ]only\b|\bauthorize inspection only\b", request_text)
+                        and re.search(r"\b(?:unknown|unseen|untrusted|no script contents)\b", request_text)):
+                        fallback_sources.add("unseen script")
+                    if fallback_sources:
+                        fallback = agent_evidence._evidence_gap_fallback(prompt, frozenset(fallback_sources))
+                        fallback_risks = self._contextual_evidence_risks(
+                            prompt, fallback, successful_tools, clean_recovery_messages,
+                            missing_evidence=frozenset(fallback_sources),
+                        )
+                        if (not fallback_risks and not self._response_behavior_issues(prompt, fallback)
+                            and self.turn_evidence.review(fallback, successful_tools=successful_tools).accepted
+                            and not answer_contract.gaps(fallback)):
+                            content = fallback
+                            self.audit.write("model_evidence_gap_fallback_delivered", missing=sorted(fallback_sources),
+                                             bounded_corrections_exhausted=True, additional_model_calls=0)
                 if not content.startswith("[LocalPilot") and answer_contract.gaps(content):
                     self.audit.write("model_answer_contract_failed", missing=answer_contract.gaps(content))
                     content = "[LocalPilot withheld an incomplete answer after bounded requested-field corrections.]"

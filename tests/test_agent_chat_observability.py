@@ -258,7 +258,7 @@ def test_post_tool_review_can_choose_to_collect_more_evidence(tmp_path, monkeypa
     )
 
 
-def test_repository_evidence_requirement_fails_visibly_after_two_ignored_recoveries(
+def test_repository_evidence_gap_remains_visible_after_two_ignored_recoveries(
     tmp_path, monkeypatch
 ):
     _, agent = _agent(tmp_path)
@@ -273,8 +273,11 @@ def test_repository_evidence_requirement_fails_visibly_after_two_ignored_recover
     answer = agent.ask("Inspect the actual LocalPilot repository and review PR #30.")
 
     assert len(calls) == 3
-    assert "did not attempt the relevant available read-only source" in answer
-    assert "I still cannot inspect it." not in str(agent.messages)
+    assert answer == "I still cannot inspect it."
+    failure = agent.audit.latest("model_evidence_acquisition_failed")
+    assert failure["missing"] == ["private GitHub", "trusted repository"]
+    assert failure["succeeded"] == []
+    assert not any(message.get("role") == "tool" for message in agent.messages)
 
 
 def test_reasoning_only_turn_continues_in_same_high_context_with_explicit_context(

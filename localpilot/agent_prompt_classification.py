@@ -424,7 +424,13 @@ def _is_operational_self_status_prompt(prompt: str) -> bool:
         return False
     text = " ".join(str(prompt).lower().split())
     self_reference = bool(
-        re.search(r"\b(?:localpilot|you|your|yourself)\b", text)
+        re.search(r"\b(?:localpilot|your|yourself)\b", text)
+        or re.search(
+            r"\b(?:are|have|did|do|can|will|would) you\b|"
+            r"\byou (?:are|have|can|were|restarted|learned|changed)\b|"
+            r"\byou['’](?:re|ve|d)\b|"
+            r"\b(?:blocking|restart) you\b", text,
+        )
         or re.search(
             r"\b(?:the |current |new )?(?:runtime|background[- ]worker|"
             r"evolution orchestrator|learning[_ ]memory)\b",

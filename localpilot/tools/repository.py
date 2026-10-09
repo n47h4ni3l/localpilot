@@ -140,27 +140,31 @@ class RepositoryReader:
             except OSError as exc:
                 rows.append(f"[unreadable] {exc}")
                 return
+            pending_directories: list[Path] = []
+            # Show this level before descendants so a small bound cannot hide
+            # the code directory behind a large documentation subtree.
             for item in entries:
                 if len(rows) >= max_entries:
                     return
                 relative = item.relative_to(self.root)
                 if self._is_sensitive(relative):
                     continue
-                indent_level = len(relative.parts) - len(root_relative.parts)
-                indent = "  " * max(0, indent_level - 1)
+                label = relative.as_posix()
                 if item.is_symlink():
-                    rows.append(f"{indent}{item.name} -> [symlink not followed]")
+                    rows.append(f"{label} -> [symlink not followed]")
                     continue
                 if item.is_dir():
-                    rows.append(f"{indent}{item.name}/")
+                    rows.append(f"{label}/")
                     if remaining > 0:
-                        visit(item, remaining - 1)
+                        pending_directories.append(item)
                 else:
-                    rows.append(f"{indent}{item.name}")
+                    rows.append(label)
+            for directory in pending_directories:
+                visit(directory, remaining - 1)
 
         visit(base, depth)
         if len(rows) >= max_entries:
-            rows.append(f"... output limited to {max_entries} entries")
+            rows.append(f"... output limited to {max_entries} entries; omitted paths remain unverified. Narrow the path or increase max_entries before claiming absence.")
         heading = "." if root_relative == Path(".") else root_relative.as_posix()
         return f"Repository tree: {heading}\n" + "\n".join(rows)
 

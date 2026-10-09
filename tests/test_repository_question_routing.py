@@ -7,6 +7,7 @@ import pytest
 from localpilot.agent import LocalPilotAgent
 from localpilot.agent_prompt_classification import _requires_information_authority_review
 from localpilot.config import Config
+from localpilot.tools.repository import RepositoryReader
 
 
 QUESTIONS = [
@@ -40,9 +41,20 @@ def test_mixed_actual_lookups_and_owner_web_prohibition_remain_effective():
     'LocalPilot, which branch and commit are you running from now?',
     'Can you use the public web autonomously?',
     'LocalPilot, what is your current learning progress and background worker status?',
+    "You've restarted; which branch and commit are loaded now?",
 ])
 def test_actual_self_status_still_uses_passive_route(prompt):
     assert LocalPilotAgent._is_operational_self_status_prompt(prompt)
+
+
+@pytest.mark.parametrize('prompt', [
+    'Our GitHub note says PR #909 passed on Friday. May I assure a client that current main passed? No current run results are available to you.',
+    'Current branch results were not supplied to you. Does a historical PR result establish present CI status?',
+])
+def test_incidental_you_does_not_turn_external_evidence_into_self_status(prompt):
+    assert not LocalPilotAgent._is_operational_self_status_prompt(prompt)
+    if 'github' in prompt.lower():
+        assert 'private GitHub' in LocalPilotAgent._evidence_requirements(prompt)
 
 
 @pytest.mark.parametrize('prompt', QUESTIONS)
@@ -65,3 +77,24 @@ def test_actual_ask_keeps_high_thinking_and_repository_reads(tmp_path, monkeypat
     assert all(think == cfg.model.think for think, _ in snapshots)
     assert agent.audit.latest('model_operational_self_status_route') is None
     assert any(m.get('role')=='tool' and m.get('tool_name')=='read_repository_file' for m in agent.messages)
+
+
+def test_small_tree_budget_exposes_root_code_directory_before_large_docs(tmp_path):
+    docs=tmp_path/'docs'
+    docs.mkdir()
+    for index in range(30):
+        (docs/f'{index}.md').write_text('docs',encoding='utf-8')
+    code=tmp_path/'localpilot'
+    code.mkdir()
+    (code/'safety.py').write_text('class SafetyPolicy: pass',encoding='utf-8')
+    tree=RepositoryReader(tmp_path).list_repository_tree(max_entries=20)
+    assert 'localpilot/' in tree and 'omitted paths remain unverified' in tree
+    assert len(tree.splitlines())<=22
+
+
+def test_unresolved_does_not_justify_global_repository_absence():
+    prompt=QUESTIONS[0]
+    bad='The repository contains no class, function or configuration that implements action authorization. UNRESOLVED'
+    assert 'unscoped_repository_absence_claim' in LocalPilotAgent._contextual_evidence_risks(prompt,bad,frozenset({'list_repository_tree'}))
+    safe='I did not find the definition in the returned tree listing; its implementation remains unverified.'
+    assert not LocalPilotAgent._contextual_evidence_risks(prompt,safe,frozenset({'list_repository_tree'}))

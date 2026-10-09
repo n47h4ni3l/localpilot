@@ -684,6 +684,12 @@ def _contextual_evidence_risks(
         )
     )
     risks: list[str] = []
+    if _is_repository_evidence_prompt(prompt) and re.search(
+        r"\b(?:repository|repo|codebase)\b.{0,50}\b(?:contains? no|has no|does not contain|doesn['’]?t contain)\b|"
+        r"\bno (?:source file|class|function|configuration)\b.{0,80}\b(?:repository|repo|declares?|defines?|implements?)\b",
+        answer,
+    ) and not re.search(r"\b(?:inspected (?:files|subset|range)|retrieved excerpt|returned (?:tree|listing)|limited (?:tree|listing))\b", answer):
+        risks.append("unscoped_repository_absence_claim")
     if (
         requires_primary_web
         and "fetch_public_https" not in successful_tools

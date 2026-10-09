@@ -99,6 +99,13 @@ def repository_answer_risks(
         key = next((g for g in (match.group("quoted"), match.group("upper"),
                                 match.group("snake")) if g), "")
         value = match.group("number")
+        # Acronyms like CPU, GPU and RAM can legitimately carry numbers in a
+        # repository discussion without naming a code constant. Require an
+        # assignment delimiter for bare all-caps names without underscores.
+        if match.group("upper") and "_" not in key and not re.search(
+            r"[:=]", match.group(0)
+        ):
+            continue
         start = content[max(0, match.start() - 65):match.start()]
         if re.search(
             r"\b(?:not|isn['’]?t|never|incorrect(?:ly)?|instead of|"

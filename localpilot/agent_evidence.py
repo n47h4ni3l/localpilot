@@ -814,7 +814,7 @@ def _evidence_gap_fallback(prompt: str, missing: frozenset[str]) -> str:
     parts = [guidance[source] for source in sorted(missing) if source in guidance]
     if not parts:
         parts = ['The required evidence remains unverified. Obtain the requested source through a read-only inspection before drawing a conclusion.']
-    if re.search(r'\b(?:script|untrusted code|unseen code)\b', prompt, re.IGNORECASE):
+    if re.search(r'\b(?:script|untrusted code|unseen code|iex|invoke-expression)\b|\.ps1\b', prompt, re.IGNORECASE):
         parts.append('Do not execute an unseen script; inspect its contents and provenance before considering any execution.')
     return '\n\n'.join(parts)
 

@@ -2545,6 +2545,27 @@ class LocalPilotAgent:
                                 "[LocalPilot withheld the draft because unsupported factual assertions "
                                 "remained after bounded corrections.]"
                             )
+                request_text = " ".join(prompt.lower().split())
+                unidentified_inspection = bool(
+                    re.search(r"\binspection[- ]only\b|\bauthorize inspection only\b", request_text)
+                    and re.search(r"\b(?:no script contents|supplied no script|not (?:supplied|provided) (?:the )?(?:script|contents)|contents (?:are )?unknown)\b", request_text)
+                )
+                unverified_remote_script = bool(
+                    "public HTTPS" in missing_evidence
+                    and re.search(r"\.ps1\b|\b(?:script|iex|invoke-expression)\b", request_text)
+                    and re.search(r"\b(?:unknown|unseen|unfamiliar|untrusted|not inspected)\b", request_text)
+                )
+                remote_execution_advice = any(
+                    re.search(r"\b(?:run|execute|executionpolicy|bypass)\b", clause)
+                    and not re.search(r"\b(?:do not|don['’]?t|never|avoid|cannot|can['’]?t|not able|not safe|unsafe)\b", clause)
+                    for clause in re.split(r"[.!?;\n]|\b(?:but|however|yet)\b", content.lower())
+                )
+                if unidentified_inspection or (unverified_remote_script and remote_execution_advice):
+                    # Source identity is part of the authorization contract.
+                    # Other repository scripts cannot stand in for this unseen one.
+                    content = agent_evidence._evidence_gap_fallback(prompt, frozenset({"unseen script"}))
+                    self.audit.write("model_unseen_script_inspection_scope_preserved", actual_contents_supplied=False,
+                                     unrelated_source_is_execution_authority=False, additional_model_calls=0)
                 if content.startswith("[LocalPilot"):
                     fallback_sources = set(missing_evidence)
                     request_text = " ".join(prompt.lower().split())

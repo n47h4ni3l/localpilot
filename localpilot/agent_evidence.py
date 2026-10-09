@@ -794,6 +794,7 @@ def _contextual_evidence_risks(
 def _evidence_gap_fallback(prompt: str, missing: frozenset[str]) -> str:
     """Bounded truthful next steps when no useful checked draft was produced."""
     guidance = {
+        'unseen script': 'The actual script contents and provenance remain unverified. Inspect the exact text, resolved paths, recursive deletion scope, and available backups or recovery without performing changes. Inspection permission does not authorize execution, deletion, or quarantine.',
         'private GitHub': 'The requested live GitHub status remains unverified. Inspect the checks for the exact current revision before reporting success.',
         'trusted repository': 'The requested implementation remains unverified. Read the relevant repository source before describing its functions or behavior.',
         'Windows/PC state': 'The requested current PC state and readings remain unverified. Obtain a fresh read-only observation before drawing a current-state conclusion.',
@@ -805,7 +806,7 @@ def _evidence_gap_fallback(prompt: str, missing: frozenset[str]) -> str:
     if not parts:
         parts = ['The required evidence remains unverified. Obtain the requested source through a read-only inspection before drawing a conclusion.']
     if re.search(r'\b(?:script|untrusted code|unseen code|iex|invoke-expression)\b|\.ps1\b', prompt, re.IGNORECASE):
-        parts.append('Do not execute an unseen script; inspect its contents and provenance before considering any execution.')
+        parts.append('Do not execute an unseen script or pipe downloaded text into an evaluator, especially with administrator privileges. Inspect the exact contents and provenance as text first. Execution or changes require separate authorization after review.')
     return '\n\n'.join(parts)
 
 

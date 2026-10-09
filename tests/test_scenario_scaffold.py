@@ -73,6 +73,12 @@ def test_live_machine_and_explicit_research_remain_available():
     assert LocalPilotAgent._is_scenario_question(
         "A service on my PC fails at startup. Please check its current status."
     ) is False
+    for actual_request in (
+        "A printer here keeps failing and needs troubleshooting.",
+        "A script in our repo changed overnight. Can you inspect it?",
+        "A server on my network keeps restarting. Please diagnose the current fault.",
+    ):
+        assert LocalPilotAgent._is_scenario_question(actual_request) is False
     assert LocalPilotAgent._evidence_requirements(
         "Check this PC's current storage and Defender status."
     ) == {"Windows/PC state"}

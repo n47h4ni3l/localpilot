@@ -456,6 +456,7 @@ class LocalPilotAgent:
             functions.append(schema)
         return functions
 
+    _is_scenario_question = staticmethod(agent_prompt_classification._is_scenario_question)
     _evidence_requirements = staticmethod(agent_prompt_classification._evidence_requirements)
 
     _forbidden_tools = staticmethod(agent_tools._forbidden_tools)
@@ -2732,9 +2733,22 @@ class LocalPilotAgent:
             )
 
         systemsense_diagnostic = interface == "systemsense_diagnostic"
+        # The owner may describe a *hypothetical* state using words like
+        # GitHub, Windows, runtime or CI. This is not a request to inspect the
+        # current machine. Preserve the high-reasoning path and the scenario's
+        # supplied premises instead of launching irrelevant local research.
+        explicitly_request_live_lookup = (
+            agent_prompt_classification._explicit_live_lookup_requested(prompt)
+        )
+        scenario_mode = bool(
+            not systemsense_diagnostic
+            and not explicitly_request_live_lookup
+            and self._is_scenario_question(prompt)
+        )
         self._emit_event("runtime.state", state="thinking", phase="operator")
         desktop_interface_question = bool(
             interface == "desktop"
+            and not scenario_mode
             and re.search(
                 r"\b(?:gui|window|desktop|buttons?|commands?|options?)\b",
                 prompt,
@@ -2742,13 +2756,22 @@ class LocalPilotAgent:
             )
         )
         operational_self_status = (
-            self._is_operational_self_status_prompt(prompt) or desktop_interface_question
+            (self._is_operational_self_status_prompt(prompt) or desktop_interface_question)
+            and not scenario_mode
         )
-        direct_conversation = self._is_bounded_conversational_prompt(prompt)
+        direct_conversation = self._is_bounded_conversational_prompt(prompt) and not scenario_mode
         temporal_web_research = self._is_temporal_web_prompt(prompt)
         live_local_information = self._is_live_local_information_prompt(prompt)
         implicit_machine_location = self._uses_implicit_machine_location(prompt)
         practical_troubleshooting = self._is_practical_troubleshooting_prompt(prompt)
+        if scenario_mode:
+            # Scenario classification is not a tool-permission change. It
+            # prevents a source-unavailable hypothetical from being treated
+            # as an actual machine or current GitHub-status investigation.
+            temporal_web_research = False
+            practical_troubleshooting = False
+            live_local_information = False
+            implicit_machine_location = False
         if systemsense_diagnostic:
             # This is an explicit evidence-only route. Do not let words inside
             # the internal diagnostic instruction accidentally classify it as
@@ -2765,7 +2788,7 @@ class LocalPilotAgent:
                 source="fresh_raw_systemsense_evidence",
                 durable_memory_retrieval_skipped=True,
             )
-        elif operational_self_status or direct_conversation or practical_troubleshooting:
+        elif scenario_mode or operational_self_status or direct_conversation or practical_troubleshooting:
             learning_context, retrieved_facts = "", []
             self.audit.write(
                 (
@@ -2799,6 +2822,7 @@ class LocalPilotAgent:
         systemsense_message: dict[str, Any] | None = None
         operational_status_message: dict[str, Any] | None = None
         direct_conversation_message: dict[str, Any] | None = None
+        scenario_message: dict[str, Any] | None = None
         troubleshooting_message: dict[str, Any] | None = None
         temporal_context_message: dict[str, Any] | None = None
         interface_context_message: dict[str, Any] | None = None
@@ -2834,6 +2858,7 @@ class LocalPilotAgent:
             self.systemsense.compact_context()
             if (
                 not systemsense_diagnostic
+                and not scenario_mode
                 and (operational_self_status or not (direct_conversation or practical_troubleshooting))
             )
             else ""
@@ -2841,6 +2866,33 @@ class LocalPilotAgent:
         if systemsense_context:
             systemsense_message = {"role": "system", "content": systemsense_context}
             self.messages.append(systemsense_message)
+        if scenario_mode:
+            scenario_message = {
+                "role": "system",
+                "content": (
+                    "ILLUSTRATIVE REASONING ROUTE: This is a scenario or a question about "
+                    "the consequences of explicitly supplied premises, not a live status "
+                    "request. Answer the central question using the stated facts and "
+                    "logical consequences. Do not inspect the owner\'s repository, device, "
+                    "GitHub account or private Library to prove the hypothetical premises. "
+                    "A missing local file or unrelated search result cannot make a "
+                    "stated scenario unresolved. Distinguish given facts from inferred "
+                    "consequences; do not turn a static code file into evidence of a "
+                    "live CI outcome. Do not invent measurements, versions, access "
+                    "permissions or actual interventions. For untrusted scripts, "
+                    "describe inspection, provenance and isolation precautions, and "
+                    "never advise execution merely because a file is readable. "
+                    "For missing current facts, identify which measurement would be "
+                    "required in the actual case. Answer directly and concisely."
+                ),
+            }
+            self.messages.append(scenario_message)
+            self.audit.write(
+                "model_illustrative_scenario_route",
+                query_digest=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                reason="premises_sufficient_without_current_machine_evidence",
+                local_tools_not_required=True,
+            )
         if operational_self_status:
             operational_status_message = {
                 "role": "system",
@@ -2970,7 +3022,7 @@ class LocalPilotAgent:
         location_requested_for_turn = bool(
             implicit_machine_location or recent_location_context
         )
-        if not systemsense_diagnostic and location_requested_for_turn:
+        if not systemsense_diagnostic and not scenario_mode and location_requested_for_turn:
             # Everything after this index belongs to the current local-context
             # turn. Location-bearing tool plumbing is scrubbed after synthesis
             # so approximate coordinates do not become durable chat context.
@@ -3055,6 +3107,7 @@ class LocalPilotAgent:
             owner_forbids_tools
             or operational_self_status
             or direct_conversation
+            or scenario_mode
             or systemsense_diagnostic
         ):
             evidence_requirements.clear()
@@ -3314,8 +3367,11 @@ class LocalPilotAgent:
                 hard_limit=hard_limit,
                 think=operator_think if answer_think is None else answer_think,
                 authority_review=(
-                    bool(retrieved_facts)
-                    or self._requires_information_authority_review(prompt)
+                    not scenario_mode
+                    and (
+                        bool(retrieved_facts)
+                        or self._requires_information_authority_review(prompt)
+                    )
                 ),
                 successful_tools=frozenset(successful_tools),
                 draft_content=draft_content,
@@ -3379,6 +3435,7 @@ class LocalPilotAgent:
                     not owner_forbids_tools
                     and not operational_self_status
                     and not direct_conversation
+                    and not scenario_mode
                     and tool_rounds_used < hard_tool_rounds
                 )
                 while True:
@@ -4240,6 +4297,11 @@ class LocalPilotAgent:
                     message
                     for message in self.messages
                     if id(message) != id(direct_conversation_message)
+                ]
+            if scenario_message is not None:
+                self.messages[:] = [
+                    message for message in self.messages
+                    if id(message) != id(scenario_message)
                 ]
             if troubleshooting_message is not None:
                 self.messages[:] = [

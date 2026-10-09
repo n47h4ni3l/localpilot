@@ -78,6 +78,8 @@ def test_live_machine_and_explicit_research_remain_available():
         "A service on my PC fails at startup. Please check its current status."
     ) is False
     for actual_request in (
+        "A filament has an unknown manufacturer drying profile. What temperature should I use?",
+        "A printer keeps failing and needs troubleshooting.",
         "A printer here keeps failing and needs troubleshooting.",
         "A script in our repo changed overnight. Can you inspect it?",
         "A server on my network keeps restarting. Please diagnose the current fault.",
@@ -108,7 +110,7 @@ def test_web_research_is_explicitly_available_not_mandatory_or_unsafe():
 
 
 def test_illustrative_printer_fault_is_not_forced_into_live_web_attribution():
-    prompt = "A printer keeps failing in a hypothetical test. What evidence would distinguish causes?"
+    prompt = "Suppose a printer keeps failing in a hypothetical test. What evidence would distinguish causes?"
     assert LocalPilotAgent._is_scenario_question(prompt)
     issues = LocalPilotAgent._response_behavior_issues(
         prompt, "Check the observations before concluding what caused the failure."

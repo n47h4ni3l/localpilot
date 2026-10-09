@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Small, non-promotional P1 direct-vs-LocalPilot sanity experiment.
+"""Fresh, non-promotional independent P1 direct-vs-LocalPilot experiment.
 
-One frozen Nestra weight digest; eight selected held-out cases; three independent
-repetitions per condition. Results are separate from the 684-cell P1 evaluation.
+Eight newly authored scenarios, three isolated repetitions per arm. Never
+resumes or overwrites the earlier 48 or 684 cases; exact P1 lineage is frozen.
 """
 from __future__ import annotations
 
@@ -22,16 +22,6 @@ if str(ROOT) not in sys.path:
 from training.scripts import run_eval_matrix as matrix
 
 ARMS = ("nestra_direct", "nestra_localpilot")
-TASK_IDS = (
-    "lp-paired-repo-001",
-    "lp-paired-debug-003",
-    "lp-paired-debug-008",
-    "lp-paired-tool-001",
-    "lp-paired-tool-003",
-    "lp-paired-evolution-002",
-    "lp-paired-epistemics-002",
-    "lp-paired-general-001",
-)
 REPEATS = 3
 SUITE = "Nestra Post Repair Independent Sanity v2"
 
@@ -122,6 +112,7 @@ def automatic_notes(report: dict) -> dict:
         by_arm[arm] = {
             "completed": len(cells),
             "execution_errors": sum(bool(c.get("error")) for c in cells),
+            "empty_responses": sum(not str(c.get("response", "")).strip() for c in cells),
             "localpilot_withheld_markers": sum(
                 "[LocalPilot" in str(c.get("response", "")) for c in cells
             ),
@@ -154,6 +145,11 @@ def main() -> int:
 
     state = matrix.original.repository_state(ROOT)
     matrix.require_evaluator_checkout(state, args.expected_evaluator_revision)
+    state["repair_revision"] = "4589eb3f5c70d1614decfabce027546720be3ee1"
+    state["runtime_tree"] = str(matrix.original._git(ROOT, "rev-parse", "HEAD:localpilot")).strip()
+    approved_tree = str(matrix.original._git(ROOT, "rev-parse", state["repair_revision"] + ":localpilot")).strip()
+    if state["runtime_tree"] != approved_tree:
+        raise RuntimeError("Runtime source differs from the approved scaffold repair")
     config = matrix.original.isolated_config(ROOT, model=args.model)
     output = args.output
     if args.resume:
@@ -182,6 +178,15 @@ def main() -> int:
                 raise RuntimeError("Frozen model digest changed during run")
             cell = matrix._run_cell(lookup[task_id], repetition, internal_arm, config, config, snapshot)
             cell["arm"] = arm
+            try:
+                cell["model_digest_after"] = identity(config.model.name)["digest"]
+                if cell["model_digest_after"] != report["model"]["digest"]:
+                    raise RuntimeError("Frozen model digest changed during cell")
+            except Exception as exc:
+                report["cells"].append(cell)
+                report["integrity_error"] = str(exc)
+                matrix.original.write_report(output, report)
+                raise
             gc.collect()
             report["cells"].append(cell)
             matrix.original.write_report(output, report)
@@ -190,6 +195,9 @@ def main() -> int:
             if errors >= 3:
                 print("Three runtime faults: stop and investigate before consuming more GPU time.", flush=True)
                 break
+    report["model_after"] = identity(config.model.name)
+    if report["model_after"]["digest"] != report["model"]["digest"]:
+        raise RuntimeError("Frozen model digest changed at final completion")
     if len(report["cells"]) == report["planned_cells"]:
         report["completed_at"] = datetime.now(UTC).isoformat()
     matrix.original.write_report(output, report)

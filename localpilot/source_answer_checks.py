@@ -25,7 +25,6 @@ _NAMED_NUMBER = re.compile(
     r"(?P<snake>[a-z][a-z0-9]*_[a-z0-9_]+)"
     r")\s*(?:=|:|\bis\b|\bequals?\b|\bdefaults?\s+to\b|\bcapped\s+at\b|"
     r"\blimited\s+to\b|\bset\s+to\b)\s*(?P<number>\d+(?:\.\d+)?)\b",
-    re.I,
 )
 
 

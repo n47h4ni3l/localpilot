@@ -157,7 +157,9 @@ def test_explicit_pc_evidence_precedes_stale_repository_memory(
         assert "Observation ID:" in snapshots[-1]
         assert agent.audit.latest("model_evidence_state")["tool_rounds"] <= budget
     else:
-        assert "direct-evidence requirement" in answer
+        assert answer == "Sensors are unavailable."
+        assert agent.audit.latest("model_evidence_acquisition_failed")["missing"] == ["Windows/PC state"]
+        assert "63" not in answer
     assert agent.audit.latest("model_learning_memory_verification_deferred")["target_count"] == 4
     assert agent.audit.latest("model_live_pc_evidence_priority")["tool_rounds"] == 0
 
@@ -408,8 +410,8 @@ def test_completed_memory_verification_cannot_bypass_outstanding_direct_source(
         failure = agent.audit.latest("model_evidence_acquisition_failed")
         assert failure["missing"] == [source]
         assert source in failure["attempted"] and source in failure["failed"]
-        assert "direct-evidence requirement" in answer
-        assert agent.audit.latest("model_same_context_postvalidation_complete") is None
+        assert "unverified" in answer
+        assert agent.audit.latest("model_same_context_postvalidation_complete")["accepted"]
 
 
 @pytest.mark.parametrize("location_supplied", [False, True])
@@ -497,7 +499,8 @@ def test_completed_memory_verification_at_ceiling_cannot_bypass_missing_source(t
     assert agent.audit.latest("model_learning_memory_direct_synthesis") is None
     assert not model_calls[0].get("tools")
     assert agent.audit.latest("model_evidence_acquisition_failed")["missing"] == ["public HTTPS"]
-    assert "direct-evidence requirement" in answer
+    assert "unverified" in answer
+    assert "reference" in answer or "public source" in answer
 
 
 def test_relevance_search_is_bounded_and_preserves_fact_authority_metadata(tmp_path):

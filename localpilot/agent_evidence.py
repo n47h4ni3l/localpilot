@@ -773,6 +773,24 @@ def _contextual_evidence_risks(
     return tuple(dict.fromkeys(risks))
 
 
+def _evidence_gap_fallback(prompt: str, missing: frozenset[str]) -> str:
+    """Bounded truthful next steps when no useful checked draft was produced."""
+    guidance = {
+        'private GitHub': 'The requested live GitHub status remains unverified. Inspect the checks for the exact current revision before reporting success.',
+        'trusted repository': 'The requested implementation remains unverified. Read the relevant repository source before describing its functions or behavior.',
+        'Windows/PC state': 'The requested current PC state and readings remain unverified. Obtain a fresh read-only observation before drawing a current-state conclusion.',
+        'public HTTPS': 'The requested public source content remains unverified. Retrieve and inspect it as text using a read-only source.',
+        'public web discovery': 'The requested current public information remains unverified. Use fresh read-only discovery and an authoritative source before relying on it.',
+        'local library': 'The requested library evidence remains unverified. Read the relevant passage and verify its source before relying on it.',
+    }
+    parts = [guidance[source] for source in sorted(missing) if source in guidance]
+    if not parts:
+        parts = ['The required evidence remains unverified. Obtain the requested source through a read-only inspection before drawing a conclusion.']
+    if re.search(r'\b(?:script|untrusted code|unseen code)\b', prompt, re.IGNORECASE):
+        parts.append('Do not execute an unseen script; inspect its contents and provenance before considering any execution.')
+    return '\n\n'.join(parts)
+
+
 def _evidence_gap_risks(content: str, missing: frozenset[str]) -> tuple[str, ...]:
     """Keep useful uncertainty without treating a disclaimer as claim evidence."""
     if not missing:

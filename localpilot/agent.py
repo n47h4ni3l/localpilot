@@ -3424,7 +3424,8 @@ class LocalPilotAgent:
                     and not self._contextual_evidence_risks(
                         prompt, candidate, frozenset(successful_tools), self.messages,
                         missing_evidence=frozenset(missing))]
-                draft_content = max(safe_drafts, key=len) if safe_drafts else None
+                draft_content = (max(safe_drafts, key=len) if safe_drafts else
+                                 agent_evidence._evidence_gap_fallback(prompt, frozenset(missing)))
             strip_transient_controls(reason="before_final_synthesis")
             return self._continue_high_reasoning_answer(
                 chat,

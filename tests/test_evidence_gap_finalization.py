@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from localpilot.agent import LocalPilotAgent
-from localpilot.agent_evidence import _evidence_gap_risks
+from localpilot.agent_evidence import _evidence_gap_risks, _evidence_gap_fallback
 from localpilot.config import Config
 
 
@@ -64,9 +64,10 @@ def test_unsafe_draft_is_corrected_without_executing_its_tool(tmp_path, monkeypa
         text = safe if not kwargs.get('tools') else unsafe
         return iter([SimpleNamespace(message=SimpleNamespace(content=text, thinking='', tool_calls=[]))])
     monkeypatch.setitem(sys.modules, 'ollama', SimpleNamespace(chat=chat))
-    assert agent.ask('Inspect PR #77 and establish whether current main checks passed.') == safe
-    assert len(calls) == 4
-    assert not calls[-1].get('tools')
+    prompt = 'Inspect PR #77 and establish whether current main checks passed.'
+    assert agent.ask(prompt) == _evidence_gap_fallback(prompt, frozenset({'private GitHub'}))
+    assert len(calls) == 3
+    assert agent.audit.latest('model_same_context_postvalidation_complete')['accepted']
 
 
 def test_unknown_script_executor_never_runs(tmp_path, monkeypatch):

@@ -86,4 +86,34 @@ class PostrepairSanityTests(unittest.TestCase):
             self.assertEqual(report['integrity_error'],'final identity unavailable')
             self.assertIsNone(report['completed_at'])
 
+    def test_completed_resume_clears_completion_marker_on_final_identity_failure(self):
+        sha='0'*40
+        cfg=sanity.matrix.original.isolated_config(sanity.ROOT,model='nestra:20b-p1')
+        tasks=sanity.selected_tasks()
+        with tempfile.TemporaryDirectory() as td:
+            output=Path(td)/'completed.json'
+            with patch.object(sanity,'identity',return_value={'digest':'p1'}):
+                report=sanity.setup_report(tasks,{'head':sha},cfg)
+            report['cells']=[{'task_id':task_id,'repeat':rep+1,'arm':arm,
+                             'model_digest_after':'p1','error':None,'response':'saved answer'}
+                            for task_id,rep,arm in sanity.plan(tasks)]
+            report['completed_at']='2026-10-09T06:00:00+00:00'
+            sanity.matrix.original.write_report(output,report)
+            with patch('sys.argv',['runner','--expected-evaluator-revision',sha,'--output',str(output),'--resume']), \
+                 patch.object(sanity.matrix.original,'repository_state',return_value={'head':sha,'clean':True}), \
+                 patch.object(sanity.matrix.original,'_git',return_value='tree'), \
+                 patch.object(sanity.matrix.original,'build_isolated_snapshot'), \
+                 patch.object(sanity.matrix,'_run_cell') as run, \
+                 patch.object(sanity,'identity',side_effect=[{'digest':'p1'},RuntimeError('final identity unavailable')]):
+                with self.assertRaisesRegex(RuntimeError,'final identity unavailable'):
+                    sanity.main()
+                run.assert_not_called()
+            failed=json.loads(output.read_text(encoding='utf-8'))
+            self.assertEqual(len(failed['cells']),48)
+            self.assertIsNone(failed['completed_at'])
+            self.assertEqual(failed['integrity_error'],'final identity unavailable')
+            with patch.object(sanity,'identity',return_value={'digest':'p1'}):
+                with self.assertRaisesRegex(RuntimeError,'cannot be resumed'):
+                    sanity.validate_resume(failed,tasks,{'head':sha},cfg)
+
 if __name__=='__main__': unittest.main()

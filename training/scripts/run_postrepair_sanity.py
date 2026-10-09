@@ -190,6 +190,7 @@ def main() -> int:
             except Exception as exc:
                 report["cells"].append(cell)
                 report["integrity_error"] = str(exc)
+                report["completed_at"] = None
                 matrix.original.write_report(output, report)
                 raise
             gc.collect()
@@ -206,6 +207,7 @@ def main() -> int:
             raise RuntimeError("Frozen model digest changed at final completion")
     except Exception as exc:
         report["integrity_error"] = str(exc)
+        report["completed_at"] = None
         matrix.original.write_report(output, report)
         raise
     if len(report["cells"]) == report["planned_cells"]:

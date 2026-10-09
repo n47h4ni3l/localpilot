@@ -2114,7 +2114,7 @@ def test_generation_limited_final_reasoning_continues_once_in_same_raw_context(
     assert calls[3]["think"] is False
     assert "tools" not in calls[2]
     assert "tools" not in calls[3]
-    assert calls[2]["options"]["num_predict"] == 4096
+    assert calls[2]["options"]["num_predict"] == 6144
     assert calls[3]["options"]["num_predict"] == 2048
     continuation_context = str(snapshots[3])
     assert "VERIFIED RAW EVIDENCE: blue" in continuation_context
@@ -2146,7 +2146,7 @@ def test_generation_limited_final_reasoning_continues_once_in_same_raw_context(
     assert first_final_runtime["context_tokens"] == 32768
     assert first_final_runtime["prompt_eval_count"] == 18752
     assert first_final_runtime["context_used_percent"] == 57.23
-    assert first_final_runtime["num_predict"] == 4096
+    assert first_final_runtime["num_predict"] == 6144
     assert first_final_runtime["eval_count"] == 4096
     assert first_final_runtime["reasoning_chars"] == 18611
     assert first_final_runtime["content_chars"] == 0

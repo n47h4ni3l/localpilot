@@ -112,12 +112,40 @@ def _is_scenario_question(prompt: str) -> bool:
     return False
 
 
+def _is_repository_evidence_prompt(prompt: str) -> bool:
+    """Explicit source explanations take priority over incidental status nouns."""
+    text = " ".join(str(prompt).lower().split())
+    source = re.search(r"\b(?:repository|repo|source code|codebase)\b", text) or (
+        re.search(r"\b(?:localpilot|your|yourself)\b", text)
+        and re.search(r"\b(?:implementation|implement(?:s|ed)?|architecture)\b", text)
+    )
+    intent = re.search(r"\b(?:explain|how|why|inspect|read|search|review|trace|cite|using|use|verify)\b", text)
+    evidence_request = re.search(
+        r"\b(?:localpilot|your|yourself|available|actual|evidence|cite|inspect|read|search|review|trace|verify)\b|"
+        r"\bfrom (?:the )?source code\b", text,
+    )
+    return bool(source and intent and evidence_request)
+
+
+def _requests_public_web_evidence(prompt: str) -> bool:
+    """Distinguish a lookup command from a source question about web permissions."""
+    text = " ".join(str(prompt).lower().split())
+    return bool(re.search(r"https://\S+", text) or re.search(
+        r"(?:^|[.;]|\b(?:and|also|please|now))\s*(?:search|browse|fetch|read|research|consult|look up|verify)\b"
+        r"[^.;]{0,80}\b(?:web|internet|primary sources?|online)\b", text,
+    ))
+
+
 def _evidence_requirements(prompt: str) -> set[str]:
     """Identify sources required by the owner, not incidental scenario nouns."""
     text = " ".join(str(prompt).lower().split())
     if _is_scenario_question(prompt) and not _explicit_live_lookup_requested(prompt):
         return set()
     requirements: set[str] = set()
+    repository_explanation = _is_repository_evidence_prompt(prompt)
+    actual_web_request = not repository_explanation or _requests_public_web_evidence(prompt)
+    if repository_explanation:
+        requirements.add("trusted repository")
     watch_process_investigation = is_systemsense_process_investigation_request(prompt)
     if is_systemsense_watch_report_request(prompt) or watch_process_investigation:
         requirements.add("SystemSense watch")
@@ -159,7 +187,7 @@ def _evidence_requirements(prompt: str) -> set[str]:
         "examine", "consult", "use", "list", "show", "find", "open", "current", "actual", "status", "latest",
     )
     asks_for_evidence = mentions(*action_terms)
-    if not forbids_public_web and asks_for_evidence and mentions(
+    if actual_web_request and not forbids_public_web and asks_for_evidence and mentions(
         "public web", "public internet", "the web", "online", "primary source"
     ):
         requirements.add("public HTTPS")
@@ -171,13 +199,17 @@ def _evidence_requirements(prompt: str) -> set[str]:
         requirements.add("local library")
 
     pr_number = re.search(r"\bpr\s*#?\s*\d+\b", text) is not None
-    if pr_number or mentions("github", "pull request"):
+    actual_github_request = not repository_explanation or bool(re.search(
+        r"\b(?:inspect|review|check|verify|read|list)\b.{0,40}\b(?:private github|github repository|github repo|pr|pull request)\b",
+        text,
+    ))
+    if pr_number or (actual_github_request and mentions("github", "pull request")):
         requirements.add("private GitHub")
     repo_context = mentions(
         "repository", "repo", "local repository", "trusted repository",
         "source code", "codebase", "localpilot", "github",
     )
-    if asks_for_evidence and repo_context and mentions("issue", "ci", "commit", "branch"):
+    if actual_github_request and asks_for_evidence and repo_context and mentions("issue", "ci", "commit", "branch"):
         requirements.add("private GitHub")
 
     local_repo_explicit = mentions(
@@ -211,6 +243,8 @@ def _evidence_requirements(prompt: str) -> set[str]:
 def _is_temporal_web_prompt(prompt: str) -> bool:
     """Recognize claims whose truth depends on both current discovery and a live source."""
     text = " ".join(str(prompt).lower().split())
+    if _is_repository_evidence_prompt(prompt) and not _requests_public_web_evidence(prompt):
+        return False
     temporal = bool(
         re.search(
             r"\b(?:latest|newest|current|today|as of (?:today|now|\d{4}))\b",
@@ -283,6 +317,8 @@ def _requires_information_authority_review(prompt: str) -> bool:
         return False
     if _is_operational_self_status_prompt(prompt):
         return False
+    if _is_repository_evidence_prompt(prompt):
+        return True
     return any(
         term in text
         for term in (
@@ -384,9 +420,18 @@ def _is_operational_self_status_prompt(prompt: str) -> bool:
     """Recognize live lifecycle requests, not illustrative scenarios."""
     if _is_scenario_question(prompt):
         return False
+    if _is_repository_evidence_prompt(prompt):
+        return False
     text = " ".join(str(prompt).lower().split())
     self_reference = bool(
-        re.search(r"\b(?:localpilot|you|your|yourself)\b", text)
+        re.search(r"\b(?:localpilot|your|yourself)\b", text)
+        or re.search(
+            r"\b(?:are|have|did|do|can|will|would) you\b|"
+            r"\byou (?:are|have|can|were|restarted|learned|changed|didn['’]?t)\b|"
+            r"\byou['’](?:re|ve|d)\b|"
+            r"\binternet access for you\b|"
+            r"\b(?:blocking|restart) you\b", text,
+        )
         or re.search(
             r"\b(?:the |current |new )?(?:runtime|background[- ]worker|"
             r"evolution orchestrator|learning[_ ]memory)\b",

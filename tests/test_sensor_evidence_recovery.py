@@ -138,7 +138,8 @@ def test_repeated_failure_ends_bounded_without_unsupported_synthesis(tmp_path, m
         _chunk("The system is running smoothly overall."),
     ])
     answer = agent.ask(PROMPT)
-    assert "direct-evidence requirement" in answer
+    assert "unverified" in answer
+    assert "smoothly" not in answer
     assert agent.audit.latest("model_evidence_acquisition_failed")["missing"] == ["Windows/PC state"]
     assert agent.audit.latest("model_evidence_state")["tool_rounds"] <= 4
 
@@ -253,7 +254,9 @@ def test_failed_history_and_repository_attempts_preserve_pc_until_terminal_failu
     ])
     agent.tools["search_repository"] = replace(agent.tools["search_repository"],
                                                fn=lambda **kw: "Tool error: no repository evidence")
-    assert "direct-evidence requirement" in agent.ask(PROMPT)
+    answer = agent.ask(PROMPT)
+    assert "unverified" in answer
+    assert "healthy" not in answer
     assert agent.audit.latest("model_evidence_state")["required"] == ["Windows/PC state"]
     assert agent.audit.latest("model_research_stagnation_adaptation")["outstanding"] == ["Windows/PC state"]
     assert agent.audit.latest("model_evidence_state")["tool_rounds"] <= 4
@@ -374,7 +377,7 @@ def test_failed_sensor_read_then_process_list_does_not_clear_requirement(tmp_pat
                                                        fn=lambda: "Tool error: sensor read failed")
     for tool in ("get_top_processes", "get_storage_summary", "get_system_summary"):
         agent.tools[tool] = replace(agent.tools[tool], fn=lambda **kw: json.dumps([{"unrelated": True}]))
-    assert "direct-evidence requirement" in agent.ask(PROMPT)
+    assert agent.ask(PROMPT) == "The requested GPU sensors are unavailable."
     state = agent.audit.latest("model_evidence_state")
     assert state["required"] == ["Windows/PC state"] and state["succeeded"] == []
     assert state["tool_rounds"] == 4

@@ -1449,6 +1449,7 @@ class LocalPilotAgent:
         successful_tools: frozenset[str] = frozenset(),
         draft_content: str | None = None,
         synthesis_reason: str = "",
+        missing_evidence: frozenset[str] = frozenset(),
         recovery_messages: list[dict[str, Any]] | None = None,
         answer_contract: AnswerContract = AnswerContract(),
         protocol_recovery_state: dict[str, Any] | None = None,
@@ -1512,7 +1513,15 @@ class LocalPilotAgent:
                         successful_tools=sorted(successful_tools),
                         requested_fields=[field.name for field in answer_contract.fields],
                     )
-        if synthesis_reason == "repeated_no_information":
+        if missing_evidence:
+            lead = (
+                "Required evidence remains unavailable in this bounded turn: "
+                + ", ".join(sorted(missing_evidence))
+                + ". Preserve grounded uncertainty, conclusions from supplied premises, and safe "
+                "non-executing next steps. State what cannot be established. Do not certify live success, "
+                "claim inspection or execution, recommend executing unseen code, or request more tools. "
+            )
+        elif synthesis_reason == "repeated_no_information":
             lead = (
                 "Repeated read-only attempts produced no usable evidence. Stop searching and adapt now. "
                 "Answer from the evidence that actually succeeded, state the failed research path plainly, and "
@@ -2193,7 +2202,8 @@ class LocalPilotAgent:
                 )
                 evidence_risks = [issue.code for issue in evidence_report.issues]
                 contextual_risks = self._contextual_evidence_risks(
-                    prompt, content, successful_tools, clean_recovery_messages
+                    prompt, content, successful_tools, clean_recovery_messages,
+                    missing_evidence=missing_evidence,
                 )
                 risks = list(dict.fromkeys([*risks, *evidence_risks, *contextual_risks]))
                 gaps = answer_contract.gaps(content)
@@ -2262,7 +2272,8 @@ class LocalPilotAgent:
                             *corrected_risks,
                             *(issue.code for issue in corrected_evidence_report.issues),
                             *self._contextual_evidence_risks(
-                                prompt, corrected_content, successful_tools, clean_recovery_messages
+                                prompt, corrected_content, successful_tools, clean_recovery_messages,
+                                missing_evidence=missing_evidence,
                             ),
                         ]))
                         corrected_gaps = answer_contract.gaps(corrected_content)
@@ -2327,7 +2338,8 @@ class LocalPilotAgent:
                                 *final_risks,
                                 *(issue.code for issue in final_evidence_report.issues),
                                 *self._contextual_evidence_risks(
-                                    prompt, final_content, successful_tools, clean_recovery_messages
+                                    prompt, final_content, successful_tools, clean_recovery_messages,
+                                    missing_evidence=missing_evidence,
                                 ),
                             ]))
                             final_gaps = answer_contract.gaps(final_content)
@@ -2367,7 +2379,8 @@ class LocalPilotAgent:
                                     ),
                                     *(issue.code for issue in cited_evidence_report.issues),
                                     *self._contextual_evidence_risks(
-                                        prompt, cited_content, successful_tools, clean_recovery_messages
+                                        prompt, cited_content, successful_tools, clean_recovery_messages,
+                                        missing_evidence=missing_evidence,
                                     ),
                                 ]))
                                 if not cited_risks:
@@ -2445,6 +2458,7 @@ class LocalPilotAgent:
                                         late_content,
                                         successful_tools,
                                         clean_recovery_messages,
+                                        missing_evidence=missing_evidence,
                                     ),
                                 ]))
                                 accepted_late_recovery = bool(
@@ -2497,6 +2511,7 @@ class LocalPilotAgent:
                                                 fallback,
                                                 successful_tools,
                                                 clean_recovery_messages,
+                                                missing_evidence=missing_evidence,
                                             ),
                                         ]))
                                         if not fallback_behavior_issues and not fallback_risks:
@@ -2530,6 +2545,61 @@ class LocalPilotAgent:
                                 "[LocalPilot withheld the draft because unsupported factual assertions "
                                 "remained after bounded corrections.]"
                             )
+                request_text = " ".join(prompt.lower().split())
+                unidentified_inspection = bool(
+                    re.search(r"\binspection[- ]only\b|\bauthorize inspection only\b", request_text)
+                    and re.search(r"\b(?:no script contents|supplied no script|not (?:supplied|provided) (?:the )?(?:script|contents)|contents (?:are )?unknown)\b", request_text)
+                )
+                unverified_remote_script = bool(
+                    "public HTTPS" in missing_evidence
+                    and re.search(r"\.ps1\b|\b(?:script|iex|invoke-expression)\b", request_text)
+                    and re.search(r"\b(?:unknown|unseen|unfamiliar|untrusted|not inspected)\b", request_text)
+                )
+                remote_execution_advice = any(
+                    re.search(r"\b(?:run|execute|executionpolicy|bypass)\b", clause)
+                    and not re.search(r"\b(?:do not|don['’]?t|never|avoid|cannot|can['’]?t|not able|not safe|unsafe)\b", clause)
+                    for clause in re.split(r"[.!?;\n]|\b(?:but|however|yet)\b", content.lower())
+                )
+                if unidentified_inspection or (unverified_remote_script and remote_execution_advice):
+                    # Source identity is part of the authorization contract.
+                    # Other repository scripts cannot stand in for this unseen one.
+                    content = agent_evidence._evidence_gap_fallback(prompt, frozenset({"unseen script"}))
+                    self.audit.write("model_unseen_script_inspection_scope_preserved", actual_contents_supplied=False,
+                                     unrelated_source_is_execution_authority=False, additional_model_calls=0)
+                no_web_manufacturer_gap = bool(
+                    "fetch_public_https" in self._forbidden_tools(prompt)
+                    and re.search(r"\bmanufacturer(?:[- ]specific)?\b", request_text)
+                    and re.search(r"\b(?:drying|nozzle|temperature)\b", request_text)
+                    and not re.search(r"\b(?:datasheet|data sheet|manual|document|excerpt|specification)\b.{0,80}\b(?:says|specifies|lists)\b", request_text)
+                    and not {"fetch_public_https", "read_library_passage"}.intersection(successful_tools)
+                )
+                if no_web_manufacturer_gap and not content.startswith("[LocalPilot") and not re.search(
+                    r"\b(?:unverified|unknown|unresolved|cannot|can['’]?t|not established|not supplied)\b", content.lower()
+                ):
+                    content = agent_evidence._evidence_gap_fallback(prompt, frozenset({"public HTTPS"}))
+                    self.audit.write("model_no_web_unverified_fields_preserved", additional_model_calls=0)
+                if content.startswith("[LocalPilot"):
+                    fallback_sources = set(missing_evidence)
+                    request_text = " ".join(prompt.lower().split())
+                    if ("fetch_public_https" in self._forbidden_tools(prompt)
+                        and re.search(r"\bmanufacturer(?:[- ]specific)?\b", request_text)
+                        and not {"fetch_public_https", "read_library_passage"}.intersection(successful_tools)):
+                        fallback_sources.add("public HTTPS")
+                    if (re.search(r"\binspection[- ]only\b|\bauthorize inspection only\b", request_text)
+                        and re.search(r"\b(?:unknown|unseen|untrusted|no script contents)\b", request_text)):
+                        fallback_sources.add("unseen script")
+                    if fallback_sources:
+                        fallback = agent_evidence._evidence_gap_fallback(prompt, frozenset(fallback_sources))
+                        fallback_risks = self._contextual_evidence_risks(
+                            prompt, fallback, successful_tools, clean_recovery_messages,
+                            missing_evidence=frozenset(fallback_sources),
+                        )
+                        if (not fallback_risks and not self._response_behavior_issues(prompt, fallback)
+                            and self.turn_evidence.review(fallback, successful_tools=successful_tools).accepted
+                            and not answer_contract.gaps(fallback)):
+                            content = fallback
+                            self.audit.write("model_evidence_gap_fallback_delivered", missing=sorted(fallback_sources),
+                                             bounded_corrections_exhausted=True, additional_model_calls=0)
                 if not content.startswith("[LocalPilot") and answer_contract.gaps(content):
                     self.audit.write("model_answer_contract_failed", missing=answer_contract.gaps(content))
                     content = "[LocalPilot withheld an incomplete answer after bounded requested-field corrections.]"
@@ -2637,6 +2707,7 @@ class LocalPilotAgent:
                             successful_tools=successful_tools,
                             draft_content=continuation_content,
                             synthesis_reason=synthesis_reason,
+                            missing_evidence=missing_evidence,
                             recovery_messages=clean_recovery_messages,
                             answer_contract=answer_contract,
                             protocol_recovery_state=protocol_state,
@@ -2699,6 +2770,7 @@ class LocalPilotAgent:
                         successful_tools=successful_tools,
                         draft_content=content,
                         synthesis_reason=synthesis_reason,
+                        missing_evidence=missing_evidence,
                         recovery_messages=clean_recovery_messages,
                         answer_contract=answer_contract,
                         protocol_recovery_state=protocol_state,
@@ -3171,6 +3243,7 @@ class LocalPilotAgent:
         answer_contract = AnswerContract()
         failed_evidence: set[str] = set()
         evidence_recovery_attempts = 0
+        evidence_gap_drafts: list[str] = []
         post_tool_guidance_given = False
         soft_budget_guidance_given = False
         internal_messages: list[dict[str, Any]] = []
@@ -3391,17 +3464,23 @@ class LocalPilotAgent:
         ) -> str:
             missing = evidence_requirements - succeeded_evidence
             if missing:
-                marker = (
-                    "[LocalPilot could not satisfy this request's direct-evidence requirement because it "
-                    "did not acquire the required source successfully within the bounded recovery loop.]"
-                )
-                self.messages.append({"role": "assistant", "content": marker})
                 self.audit.write(
                     "model_evidence_acquisition_failed", round=round_no,
                     missing=sorted(missing), attempted=sorted(attempted_evidence),
                     succeeded=sorted(succeeded_evidence), failed=sorted(failed_evidence),
                 )
-                return marker
+                # A missing observation prevents certifying it, not explaining
+                # its limits or proposing safe inspection. Prefer a validated
+                # draft already produced over discarding useful reasoning.
+                candidates = [*evidence_gap_drafts, draft_content or ""]
+                safe_drafts = [candidate for candidate in candidates if candidate.strip()
+                    and not self._response_behavior_issues(prompt, candidate)
+                    and self.turn_evidence.review(candidate, successful_tools=frozenset(successful_tools)).accepted
+                    and not self._contextual_evidence_risks(
+                        prompt, candidate, frozenset(successful_tools), self.messages,
+                        missing_evidence=frozenset(missing))]
+                draft_content = (max(safe_drafts, key=len) if safe_drafts else
+                                 agent_evidence._evidence_gap_fallback(prompt, frozenset(missing)))
             strip_transient_controls(reason="before_final_synthesis")
             return self._continue_high_reasoning_answer(
                 chat,
@@ -3420,6 +3499,7 @@ class LocalPilotAgent:
                 successful_tools=frozenset(successful_tools),
                 draft_content=draft_content,
                 synthesis_reason=synthesis_reason,
+                missing_evidence=frozenset(missing),
                 recovery_messages=[dict(message) for message in self.messages],
                 answer_contract=answer_contract,
                 protocol_recovery_state=tool_protocol_recovery_state,
@@ -4119,6 +4199,8 @@ class LocalPilotAgent:
                     research_control_messages.append(response)
 
                 if missing_evidence:
+                    if content.strip():
+                        evidence_gap_drafts.append(content)
                     if evidence_recovery_attempts < 2 and allow_tools:
                         self.messages.pop()
                         evidence_recovery_attempts += 1
@@ -4141,23 +4223,10 @@ class LocalPilotAgent:
                         )
                         continue
                     self.messages.pop()
-                    marker = (
-                        "[LocalPilot could not satisfy this request's direct-evidence requirement because it "
-                        "did not attempt the relevant available read-only source successfully within the bounded "
-                        "recovery loop.]"
+                    return continue_clean_answer(
+                        round_no=turn_no, after_tools=used_tools, hard_limit=True,
+                        draft_content=content or None,
                     )
-                    self.messages.append({"role": "assistant", "content": marker})
-                    self.audit.write(
-                        "model_evidence_acquisition_failed",
-                        model=self.config.model.name,
-                        think=self.config.model.think,
-                        round=turn_no,
-                        missing=sorted(missing_evidence),
-                        attempted=sorted(attempted_evidence),
-                        succeeded=sorted(succeeded_evidence),
-                        failed=sorted(failed_evidence),
-                    )
-                    return marker
 
                 if used_tools:
                     if not post_tool_guidance_given and allow_tools:
@@ -4303,7 +4372,7 @@ class LocalPilotAgent:
                     hard_limit=True,
                 )
             if evidence_requirements - succeeded_evidence:
-                return "[LocalPilot exhausted its bounded reasoning loop before acquiring the required evidence.]"
+                return continue_clean_answer(round_no=max_model_turns, after_tools=False, hard_limit=True)
             return "Stopped at the bounded reasoning limit. Narrow the request or inspect the audit log."
         finally:
             if internal_messages:

@@ -692,8 +692,14 @@ def _contextual_evidence_risks(
                 continue
             if re.search(r'\bsafe to (?:run|execute)\b|\b(?:scripts?|code)\b.{0,50}\b(?:are|is) safe\b',clause):
                 risks.append('unseen_script_safety_claim')
-            if inspection_only and re.search(r'\b(?:run|execute|launch)\b.{0,35}\b(?:scripts?|commands?|code)\b',clause) and not re.search(
-                r'\b(?:only after|after (?:inspection|review|approval)|if approved|once approved)\b',clause):
+            if unseen_script and re.search(r'\bexecutionpolicy\s+bypass\b',clause):
+                risks.append('unseen_script_policy_bypass_advice')
+            directed_action = re.search(
+                r"(?:^|\b(?:you (?:may|can|could|should)|if you must))\s*(?:\*\*|choose to\s*)?(?:run|execute|launch|delete|remove|move|quarantine)\b",
+                clause.strip(),
+            )
+            if inspection_only and directed_action and not re.search(
+                r'\b(?:after (?:separate )?approval|if approved|once approved|separate authorization)\b',clause):
                 risks.append('inspection_only_execution_advice')
     if (
         requires_primary_web

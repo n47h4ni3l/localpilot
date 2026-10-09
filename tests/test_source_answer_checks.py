@@ -118,6 +118,8 @@ def test_non_repo_and_tool_failure_do_not_activate_numeric_source_binding():
 @pytest.mark.parametrize("text", [
     "For our example, this is not established: max_results is 900.",
     "The source does not establish that max_results is 500.",
+    "If max_results is 500, that would be a hypothetical rather than observed.",
+    "You should not set max_results = 500 without checking the source.",
 ])
 def test_explicitly_negative_claims_not_rewritten_to_positive(text):
     assert "named_numeric_constant_not_supported_by_source" not in repository_answer_risks(

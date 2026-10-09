@@ -178,3 +178,99 @@ def test_cli_supports_manual_attestation_without_auto_reward():
             "--correctness", "6", "--evidence", "2", "--safety", "2",
             "--efficiency", "2", "--initiative", "1",
         ])
+
+
+
+def _create_candidate(memory, *, task_id="owner-fix-101", checks_passed=True,
+                      validation="passed", merged=True, url="https://github.com/n47h4ni3l/localpilot/pull/123"):
+    cycle = memory.start_cycle(
+        task_id=task_id,
+        branch="localpilot/candidate-" + task_id,
+        everyday_model="nestra:20b-p1",
+        developer_model="nestra:20b-p1",
+    )
+    memory.finish_cycle(
+        cycle, status="candidate_pending_validation", summary="Candidate submitted.",
+        reusable_lesson="", checks_passed=checks_passed, pushed=True,
+    )
+    memory.update_candidate_review(
+        cycle, validation_state=validation, merged=merged, pull_request_url=url,
+    )
+    return cycle
+
+
+def test_automatic_observations_are_idempotent_and_not_reward_scores(tmp_path):
+    from localpilot.learning import LearningMemory
+
+    learning = LearningMemory(tmp_path / "learning.sqlite3")
+    verified = _create_candidate(learning)
+    # Three weak signals must not turn into a verified outcome.
+    _create_candidate(learning, task_id="owner-fix-102", checks_passed=False)
+    _create_candidate(learning, task_id="owner-fix-103", merged=False)
+    _create_candidate(learning, task_id="lp-paired-debug-001")
+    _create_candidate(learning, task_id="owner-fix-104", url="https://example.org/unverified")
+    record = QualityFeedbackStore(tmp_path / "quality.sqlite3")
+    assert record.sync_verified_development_outcomes(learning.path) == 1
+    assert record.sync_verified_development_outcomes(learning.path) == 0
+    observed = record.recent_observations()
+    assert len(observed) == 1
+    assert observed[0]["source_id"] == verified
+    assert observed[0]["task_id"] == "owner-fix-101"
+    assert observed[0]["evidence_type"] == "ci_passed_and_pr_merged"
+    assert observed[0]["scope"] == "delivery_only_not_quality_score"
+    assert record.recent() == []
+    assert record.approved_lessons() == []
+    with sqlite3.connect(record.path) as db:
+        with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+            db.execute("DELETE FROM feedback_observations")
+        with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+            db.execute("UPDATE feedback_observations SET task_id='changed'")
+
+
+def test_agent_auto_collects_delivery_evidence_without_coaching(tmp_path):
+    from localpilot.learning import LearningMemory
+
+    cfg = Config()
+    cfg.systemsense.enabled = False
+    cfg.agent.feedback_coaching_enabled = False
+    learning_path = tmp_path / cfg.agent.data_dir / cfg.selfdev.learning_database
+    memory = LearningMemory(learning_path)
+    _create_candidate(memory)
+    agent = LocalPilotAgent(cfg, tmp_path)
+    store = QualityFeedbackStore(tmp_path / cfg.agent.data_dir / "quality-feedback.sqlite3")
+    assert len(store.recent_observations()) == 1
+    assert store.approved_lessons() == []
+    assert "Owner-approved coaching" not in str(agent.messages)
+    assert agent.audit.latest("quality_feedback_objective_evidence_collected")["scoring_performed"] is False
+    LocalPilotAgent(cfg, tmp_path)  # a repeated startup cannot duplicate the event
+    assert len(store.recent_observations()) == 1
+
+
+def test_auto_observations_respect_configuration_and_benchmark_isolation(tmp_path):
+    from localpilot.learning import LearningMemory
+    from training.scripts.run_eval_v1 import isolated_config
+
+    cfg = Config()
+    cfg.systemsense.enabled = False
+    cfg.agent.feedback_auto_observations_enabled = False
+    memory_path = tmp_path / cfg.agent.data_dir / cfg.selfdev.learning_database
+    learning = LearningMemory(memory_path)
+    _create_candidate(learning)
+    LocalPilotAgent(cfg, tmp_path)
+    assert not (tmp_path / cfg.agent.data_dir / "quality-feedback.sqlite3").exists()
+
+    (tmp_path / "localpilot.toml").write_text(
+        "[agent]\nfeedback_auto_observations_enabled = true\nfeedback_coaching_enabled = true\n",
+        encoding="utf-8",
+    )
+    isolated = isolated_config(tmp_path, model="nestra:20b-p1")
+    assert isolated.agent.feedback_auto_observations_enabled is False
+    assert isolated.agent.feedback_coaching_enabled is False
+
+
+def test_cli_observation_commands_are_read_only_to_scorecards():
+    parsed = build_parser().parse_args(["feedback", "observations"])
+    assert parsed.command == "feedback"
+    assert parsed.feedback_action == "observations"
+    parsed = build_parser().parse_args(["feedback", "sync"])
+    assert parsed.feedback_action == "sync"

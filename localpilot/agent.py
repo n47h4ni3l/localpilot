@@ -2748,6 +2748,7 @@ class LocalPilotAgent:
         self._emit_event("runtime.state", state="thinking", phase="operator")
         desktop_interface_question = bool(
             interface == "desktop"
+            and not scenario_mode
             and re.search(
                 r"\b(?:gui|window|desktop|buttons?|commands?|options?)\b",
                 prompt,
@@ -2857,6 +2858,7 @@ class LocalPilotAgent:
             self.systemsense.compact_context()
             if (
                 not systemsense_diagnostic
+                and not scenario_mode
                 and (operational_self_status or not (direct_conversation or practical_troubleshooting))
             )
             else ""
@@ -3020,7 +3022,7 @@ class LocalPilotAgent:
         location_requested_for_turn = bool(
             implicit_machine_location or recent_location_context
         )
-        if not systemsense_diagnostic and location_requested_for_turn:
+        if not systemsense_diagnostic and not scenario_mode and location_requested_for_turn:
             # Everything after this index belongs to the current local-context
             # turn. Location-bearing tool plumbing is scrubbed after synthesis
             # so approximate coordinates do not become durable chat context.

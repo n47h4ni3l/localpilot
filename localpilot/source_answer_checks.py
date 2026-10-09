@@ -103,7 +103,9 @@ def repository_answer_risks(
         if re.search(
             r"\b(?:not|isn['’]?t|never|incorrect(?:ly)?|instead of|"
             r"not (?:established|supported|confirmed)|"
-            r"does not (?:establish|prove)(?: that)?)\s*(?::|that)?\s*$",
+            r"does not (?:establish|prove)(?: that)?|"
+            r"should not (?:set|use|claim)|"
+            r"if|suppose|assuming|hypothetically)\s*(?::|that)?\s*$",
             start, re.I,
         ):
             continue

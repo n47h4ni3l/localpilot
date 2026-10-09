@@ -127,6 +127,19 @@ def test_explicitly_negative_claims_not_rewritten_to_positive(text):
     )
 
 
+def test_ordinary_hardware_acronyms_do_not_become_source_constant_assertions():
+    assert repository_answer_risks(
+        "Explain the repository implementation of the diagnostic path.",
+        "GPU is 99 percent utilised, according to the owner's example.",
+        [read()],
+    ) == ()
+    assert repository_answer_risks(
+        "Inspect repository implementation.",
+        "LIMIT = 900.",
+        [read()],
+    ) == ("named_numeric_constant_not_supported_by_source",)
+
+
 def test_agent_contextual_gate_applies_checks_to_delivered_answers():
     prompt = "Inspect repository source code, explain max_results and cite exact implementation locations."
     bad = "max_results is 500 (localpilot/tools/repository.py:41)."

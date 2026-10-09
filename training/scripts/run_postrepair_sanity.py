@@ -89,6 +89,11 @@ def setup_report(tasks: list[dict], state: dict, config: object) -> dict:
 
 
 def validate_resume(report: dict, tasks: list[dict], state: dict, config: object) -> None:
+    if "integrity_error" in report:
+        raise RuntimeError("Integrity failure cannot be resumed; preserve this report and start a fresh run")
+    if any(cell.get("model_digest_after", report.get("model", {}).get("digest")) != report.get("model", {}).get("digest")
+           for cell in report.get("cells", [])):
+        raise RuntimeError("Saved cell model digest differs; preserve this report and start a fresh run")
     if report.get("suite") != SUITE or report.get("arms") != list(ARMS) or report.get("repeats") != REPEATS:
         raise RuntimeError("Not a compatible scaffold-sanity report")
     if report.get("task_digest") != matrix.digest(tasks) or report.get("repository", {}).get("head") != state["head"]:
@@ -140,7 +145,7 @@ def main() -> int:
     if args.plan_only:
         print(json.dumps({"model": args.model, "tasks": len(tasks),
                           "arms": list(ARMS), "repeats": REPEATS,
-                          "model_calls": len(plan(tasks)), "task_ids": [task["id"] for task in tasks]}, indent=2))
+                          "planned_cells": len(plan(tasks)), "task_ids": [task["id"] for task in tasks]}, indent=2))
         return 0
 
     state = matrix.original.repository_state(ROOT)
@@ -195,9 +200,14 @@ def main() -> int:
             if errors >= 3:
                 print("Three runtime faults: stop and investigate before consuming more GPU time.", flush=True)
                 break
-    report["model_after"] = identity(config.model.name)
-    if report["model_after"]["digest"] != report["model"]["digest"]:
-        raise RuntimeError("Frozen model digest changed at final completion")
+    try:
+        report["model_after"] = identity(config.model.name)
+        if report["model_after"]["digest"] != report["model"]["digest"]:
+            raise RuntimeError("Frozen model digest changed at final completion")
+    except Exception as exc:
+        report["integrity_error"] = str(exc)
+        matrix.original.write_report(output, report)
+        raise
     if len(report["cells"]) == report["planned_cells"]:
         report["completed_at"] = datetime.now(UTC).isoformat()
     matrix.original.write_report(output, report)

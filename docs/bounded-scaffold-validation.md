@@ -1,0 +1,13 @@
+# Bounded scaffold validation
+
+New `run_eval_matrix.py` CLI reports use the recorded `bounded-visible-final-v1` generation policy: every direct/scaffold model call is capped at 3,072 generated tokens. A blank or length-limited direct attempt gets at most one completion with thinking disabled, a 3,072-token ceiling, and remaining-context headroom checked first. Both direct attempts remain in evidence, including the original failure. Scaffold tool/recovery turns and actual reasoning modes are still recorded separately. Common per-call caps do not equalize total model calls, tool work, latency, or reasoning policy; this remains a system comparison.
+
+Generation policy is part of resume identity. Historical reports without this policy cannot resume through the new CLI. The historical 48-cell runners retain their explicitly frozen protocol through the internal legacy API; their saved reports, blank answers, scores, and failures are never rewritten or excluded. New bounded calls verify the selected model digest before and after every model call; an integrity-failed report cannot resume after an alias is restored.
+
+Before another 684-cell run, use the separate `training/scripts/run_scaffold_validation.py`. It has six newly authored held-out tasks, one repetition per arm (12 cells), alternating arm order, exact clean evaluator revision, and frozen P1 lineage. It refuses all existing output files and supports no resume. The runtime tree, task digest, generation policy, all attempts, and delivered failures are recorded. Training files are removed from the tracked source snapshot; tools are repository-read-only, and Library, embeddings, self-development, feedback coaching, and automatic feedback observations are disabled. Results are never exported into learning or owner feedback.
+
+```powershell
+python training/scripts/run_scaffold_validation.py --expected-evaluator-revision FULL_COMMIT_SHA --output NEW_ABSOLUTE_REPORT_PATH
+```
+
+Inspect active model/training traffic before calls and preserve/restore any worker state used for isolation. Review actual terminal answers and traces against the included rubrics: historical versus current CI, unseen-script safety, source versus self-status routing, and owner no-web. Process completion and nonempty text are not a quality pass. A voluntary public-web probe is separate, uses only public read tools and fresh ephemeral state, and must retain source coverage and any failed/duplicate attempts.

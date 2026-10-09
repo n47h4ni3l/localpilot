@@ -70,6 +70,8 @@ def test_no_web_preserves_unknowns_without_fabricated_absence_search_or_settings
     assert {'source_absence_claim_without_access','library_search_claim_without_execution','operating_settings_without_primary_source'} <= set(risks)
     safe='I did not browse because you prohibited the public web. Manufacturer settings remain unverified; inspect a supplied technical data sheet before choosing operating settings.'
     assert not LocalPilotAgent._contextual_evidence_risks(prompt,safe,frozenset())
+    supplied='The manufacturer datasheet I supplied says dry at 80 C for 4 hours. Explain that drying recommendation without using the public web.'
+    assert not LocalPilotAgent._contextual_evidence_risks(supplied,'The supplied datasheet says 80 C for 4 hours; I did not independently verify it.',frozenset())
 
 
 @pytest.mark.parametrize('no_web', [False, True])

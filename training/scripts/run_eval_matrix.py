@@ -32,6 +32,27 @@ EXTRA_ROOT = ROOT / "training" / "evals_paired_v2"
 ARMS = ("base_direct", "base_localpilot", "nestra_localpilot")
 REPEATS = 3
 CELL_EVIDENCE: ContextVar[dict[str, Any] | None] = ContextVar("cell_evidence", default=None)
+BOUNDED_GENERATION_POLICY = {
+    "name": "bounded-visible-final-v2", "per_turn_tokens": 3072,
+    "direct_completion_tokens": 3072, "context_margin_tokens": 512,
+    "direct_completion_think": "low", "max_direct_completions": 1,
+}
+
+
+class EvaluatorIntegrityError(RuntimeError):
+    """A captured model call did not preserve the selected weight identity."""
+
+
+def _check_call_identity(model: str, expected: str | None, record: dict, phase: str) -> None:
+    if expected is None:
+        return
+    try:
+        actual = original.ollama_model_identity(model).get('digest')
+    except Exception as exc:
+        raise EvaluatorIntegrityError('Model identity unavailable during evaluation call') from exc
+    record['model_digest_' + phase] = actual
+    if actual != expected:
+        raise EvaluatorIntegrityError('Model digest changed during evaluation call')
 
 
 def evidence_json(value: Any) -> Any:
@@ -97,7 +118,8 @@ def _response_text(result: Any) -> str:
     return content
 
 
-def _direct(task: dict[str, Any], config: Any) -> str:
+def _direct(task: dict[str, Any], config: Any, *, generation_policy: dict | None = None,
+            expected_model_digest: str | None = None) -> str:
     from ollama import chat
     prompt, systems = original._task_prompt(task)
     messages = [
@@ -105,20 +127,52 @@ def _direct(task: dict[str, Any], config: Any) -> str:
         *systems,
         {"role": "user", "content": prompt},
     ]
-    response = chat(
-        model=config.model.name,
-        messages=messages,
-        think=config.model.think,
-        options={"temperature": config.model.temperature, "num_ctx": config.model.context_tokens},
-    )
     evidence = CELL_EVIDENCE.get()
+    options = {"temperature": config.model.temperature, "num_ctx": config.model.context_tokens}
+    if generation_policy:
+        options['num_predict'] = generation_policy['per_turn_tokens']
+    attempts = []
     if evidence is not None:
-        evidence["request_messages"] = messages
-        evidence["raw_response"] = response.model_dump(mode="json") if hasattr(response, "model_dump") else response
-    return _response_text(response)
+        evidence['request_messages'] = evidence_json(messages)
+        evidence['direct_attempts'] = attempts
+    def generate(context, think, settings, phase):
+        attempt = {'phase':phase, 'messages':evidence_json(context), 'think':think, 'options':dict(settings)}
+        attempts.append(attempt)
+        _check_call_identity(config.model.name, expected_model_digest, attempt, 'before')
+        result = chat(model=config.model.name, messages=context, think=think, options=settings)
+        attempt['raw_response'] = evidence_json(result)
+        if evidence is not None and phase == 'initial':
+            evidence['raw_response'] = attempt['raw_response']
+        _check_call_identity(config.model.name, expected_model_digest, attempt, 'after')
+        return result
+    response = generate(messages, config.model.think, options, 'initial')
+    content = _response_text(response)
+    raw = evidence_json(response)
+    if generation_policy and (not content.strip() or raw.get('done_reason') == 'length'):
+        # Preserve the original blank/length failure. Delivery recovery is a
+        # separate, bounded attempt, not a replacement of its raw evidence.
+        if evidence is not None:
+            evidence['initial_delivery_failure'] = {'empty':not content.strip(), 'done_reason':raw.get('done_reason')}
+        headroom = config.model.context_tokens - int(raw.get('prompt_eval_count') or 0) - int(raw.get('eval_count') or 0) - generation_policy['context_margin_tokens']
+        budget = min(generation_policy['direct_completion_tokens'], headroom)
+        if budget >= 256:
+            recovery = [*messages, {'role':'assistant', 'content':content,
+                                   'thinking':str(raw.get('message', {}).get('thinking') or '')},
+                        {'role':'user','content':
+                         "The preceding attempt produced a blank or generation-limited final answer. "
+                         "Give one concise complete final answer to my original request from the supplied premises. "
+                         "No tools or new observations are available. Preserve uncertainty, do not invent inspection "
+                         "or execution, and do not restart your reasoning. Original request:\n" + prompt}]
+            completed = generate(recovery, generation_policy['direct_completion_think'],
+                                 {**options,'num_predict':budget}, 'bounded_completion')
+            content = _response_text(completed)
+        elif evidence is not None:
+            evidence['completion_skipped'] = 'insufficient_context_headroom'
+    return content
 
 
-def _scaffold(task: dict[str, Any], config: Any, snapshot: Path, namespace: str) -> str:
+def _scaffold(task: dict[str, Any], config: Any, snapshot: Path, namespace: str, *,
+              generation_policy: dict | None = None, expected_model_digest: str | None = None) -> str:
     cfg = copy.deepcopy(config)
     # Each of the 450+ turns starts with genuinely empty memory and chat context.
     cfg.agent.data_dir = str(snapshot / "localpilot-data" / "paired-eval" / namespace)
@@ -133,6 +187,12 @@ def _scaffold(task: dict[str, Any], config: Any, snapshot: Path, namespace: str)
         evidence["model_turns"] = []
         def capture_stream(*args: Any, **kwargs: Any) -> Any:
             from ollama._utils import convert_function_to_tool
+            if generation_policy:
+                if kwargs.get('think') is False:
+                    kwargs['think'] = generation_policy['direct_completion_think']
+                requested = dict(kwargs.get('options') or {})
+                requested['num_predict'] = min(int(requested.get('num_predict') or generation_policy['per_turn_tokens']), generation_policy['per_turn_tokens'])
+                kwargs['options'] = requested
             settings = {k: copy.deepcopy(v) for k, v in kwargs.items() if k not in {"messages", "tools", "chat"}}
             if kwargs.get("tools") is not None:
                 settings["tools"] = [
@@ -145,8 +205,10 @@ def _scaffold(task: dict[str, Any], config: Any, snapshot: Path, namespace: str)
                     "settings": settings}
             evidence["model_turns"].append(turn)
             try:
+                _check_call_identity(cfg.model.name, expected_model_digest, turn, 'before')
                 result = stream(*args, **kwargs)
                 turn["response"] = evidence_json(result)
+                _check_call_identity(cfg.model.name, expected_model_digest, turn, 'after')
                 return result
             except Exception as exc:
                 turn["error"] = {"type": type(exc).__name__, "message": str(exc)}
@@ -165,16 +227,23 @@ def _scaffold(task: dict[str, Any], config: Any, snapshot: Path, namespace: str)
             evidence["audit_jsonl"] = audit_path.read_text(encoding="utf-8") if audit_path.exists() else ""
 
 
-def _run_cell(task: dict[str, Any], repetition: int, arm: str, base: Any, candidate: Any, snapshot: Path) -> dict[str, Any]:
+def _run_cell(task: dict[str, Any], repetition: int, arm: str, base: Any, candidate: Any, snapshot: Path, *,
+              generation_policy: dict | None = None, expected_model_digest: str | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     evidence: dict[str, Any] = {}
     token = CELL_EVIDENCE.set(evidence)
     try:
         if arm == "base_direct":
-            response = _direct(task, base)
+            response = (_direct(task, base) if generation_policy is None and expected_model_digest is None else
+                        _direct(task, base, generation_policy=generation_policy, expected_model_digest=expected_model_digest))
         else:
             config = base if arm == "base_localpilot" else candidate
-            response = _scaffold(task, config, snapshot, f"{task['id']}-{repetition}-{arm}")
+            namespace = f"{task['id']}-{repetition}-{arm}"
+            response = (_scaffold(task, config, snapshot, namespace) if generation_policy is None and expected_model_digest is None else
+                        _scaffold(task, config, snapshot, namespace,
+                                  generation_policy=generation_policy, expected_model_digest=expected_model_digest))
+        if any(turn.get('error', {}).get('type') == 'EvaluatorIntegrityError' for turn in evidence.get('model_turns', [])):
+            raise EvaluatorIntegrityError('A scaffold model call failed its frozen identity check')
         if not isinstance(response, str):
             raise RuntimeError("Model response is not text")
         error = None
@@ -192,7 +261,7 @@ def _run_cell(task: dict[str, Any], repetition: int, arm: str, base: Any, candid
     }
 
 
-def _initial_report(tasks: list[dict[str, Any]], state: dict[str, Any], base: Any, candidate: Any) -> dict[str, Any]:
+def _initial_report(tasks: list[dict[str, Any]], state: dict[str, Any], base: Any, candidate: Any, *, generation_policy: dict | None = None) -> dict[str, Any]:
     base_identity = original.ollama_model_identity(base.model.name)
     candidate_identity = original.ollama_model_identity(candidate.model.name)
     if not base_identity.get("digest") or not candidate_identity.get("digest"):
@@ -206,6 +275,7 @@ def _initial_report(tasks: list[dict[str, Any]], state: dict[str, Any], base: An
         "schema_version": 1, "suite": "Nestra Paired Evaluation v2",
         "run_id": uuid.uuid4().hex, "started_at": datetime.now(UTC).isoformat(),
         "completed_at": None, "repository": state,
+        "generation_policy": copy.deepcopy(generation_policy),
         "task_ids": [task["id"] for task in tasks],
         "task_digest": digest(tasks), "planned_cells": len(tasks) * REPEATS * len(ARMS),
         "repeats": REPEATS, "arms": list(ARMS),
@@ -223,7 +293,11 @@ def _initial_report(tasks: list[dict[str, Any]], state: dict[str, Any], base: An
     }
 
 
-def validate_resume(report: dict[str, Any], tasks: list[dict[str, Any]], state: dict[str, Any], base: Any, candidate: Any) -> None:
+def validate_resume(report: dict[str, Any], tasks: list[dict[str, Any]], state: dict[str, Any], base: Any, candidate: Any, *, generation_policy: dict | None = None) -> None:
+    if 'integrity_error' in report or any(c.get('error', {}).get('type') == 'EvaluatorIntegrityError' for c in report.get('cells', []) if c.get('error')):
+        raise RuntimeError('Integrity-failed report cannot resume; preserve it and start a fresh report')
+    if report.get('generation_policy') != generation_policy:
+        raise RuntimeError('Generation policy changed; cannot resume')
     if report.get("suite") != "Nestra Paired Evaluation v2" or report.get("repeats") != REPEATS:
         raise RuntimeError("Not a supported triplicate comparison report")
     if report.get("task_digest") != digest(tasks) or report.get("repository", {}).get("head") != state["head"]:
@@ -283,11 +357,11 @@ def main() -> int:
         if not output.is_file():
             raise RuntimeError("--resume requires an existing --output report")
         report = json.loads(output.read_text(encoding="utf-8"))
-        validate_resume(report, tasks, state, base, candidate)
+        validate_resume(report, tasks, state, base, candidate, generation_policy=BOUNDED_GENERATION_POLICY)
     else:
         if output.exists():
             raise RuntimeError("Refusing to overwrite an existing benchmark report")
-        report = _initial_report(tasks, state, base, candidate)
+        report = _initial_report(tasks, state, base, candidate, generation_policy=BOUNDED_GENERATION_POLICY)
         original.write_report(output, report)
     completed = {(c["task_id"], c["repeat"] - 1, c["arm"]) for c in report["cells"]}
     remaining = [key for key in plan(tasks) if key not in completed]
@@ -300,11 +374,18 @@ def main() -> int:
         original.build_isolated_snapshot(ROOT, snapshot)
         for position, (task_id, repetition, arm) in enumerate(remaining, start=1):
             print(f"[{position}/{len(remaining)}] {task_id} repeat {repetition+1} {arm}", flush=True)
-            result = _run_cell(task_by_id[task_id], repetition, arm, base, candidate, snapshot)
+            expected_digest = report['models']['base' if arm in {'base_direct','base_localpilot'} else 'candidate']['digest']
+            result = _run_cell(task_by_id[task_id], repetition, arm, base, candidate, snapshot,
+                               generation_policy=BOUNDED_GENERATION_POLICY, expected_model_digest=expected_digest)
             # SQLite context managers commit but may leave unreachable handles
             # until collection; release them before Windows snapshot deletion.
             gc.collect()
             report["cells"].append(result)
+            if result.get('error') and result['error']['type'] == 'EvaluatorIntegrityError':
+                report['integrity_error'] = result['error']['message']
+                report['completed_at'] = None
+                original.write_report(output, report)
+                raise EvaluatorIntegrityError(report['integrity_error'])
             original.write_report(output, report)
             if result["error"]:
                 errors += 1

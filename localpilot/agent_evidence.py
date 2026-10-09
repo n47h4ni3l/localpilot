@@ -29,6 +29,7 @@ from localpilot.agent_prompt_classification import (
 )
 from localpilot.agent_tools import _LIBRARY_TOOLS, _forbidden_tools
 from localpilot.tools.web import web_source_coverage
+from localpilot.source_answer_checks import repository_answer_risks
 
 
 def _response_behavior_issues(prompt: str, content: str) -> tuple[str, ...]:
@@ -819,6 +820,7 @@ def _contextual_evidence_risks(
                 re.IGNORECASE,
             ):
                 risks.append("latest_claim_primary_source_does_not_establish_recency")
+    risks.extend(repository_answer_risks(prompt, content, evidence_messages or []))
     risks.extend(_evidence_gap_risks(content, missing_evidence))
     risks.extend(_incomplete_web_source_risks(content, evidence_messages or []))
     return tuple(dict.fromkeys(risks))

@@ -12,9 +12,9 @@ from typing import Any
 
 _READ_HEADER = re.compile(r"^Repository file:\s+(.+?)\s+lines\s+\d+-\d+", re.I)
 _READ_LINE = re.compile(r"^(\d+):\s*(.*)$")
-_SEARCH_LINE = re.compile(r"^([^:\s][^:\n]*\.(?:py|toml|ps1|js|json|md|yml|yaml)):(\d+):\s*(.*)$", re.I)
+_SEARCH_LINE = re.compile(r"^([^:\s][^:\n]*\.(?:py|toml|ps1|js|json|md|yml|yaml|txt)):(\d+):\s*(.*)$", re.I)
 _SOURCE_REFERENCE = re.compile(
-    r"(?<![\w/])((?:[\w.-]+/)*[\w.-]+\.(?:py|toml|ps1|js|json|md|yml|yaml)):(\d+)\b",
+    r"(?<![\w/])((?:[\w.-]+/)*[\w.-]+\.(?:py|toml|ps1|js|json|md|yml|yaml|txt)):(\d+)\b",
     re.I,
 )
 # Match named, inspectable constants, not every numeral in natural language.

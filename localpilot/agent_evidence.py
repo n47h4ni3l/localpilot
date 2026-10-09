@@ -18,6 +18,7 @@ import re
 from typing import Any
 
 from localpilot.agent_prompt_classification import (
+    _explicit_live_lookup_requested,
     _is_scenario_question,
     _is_bounded_conversational_prompt,
     _is_operational_self_status_prompt,
@@ -132,7 +133,10 @@ def _response_behavior_issues(prompt: str, content: str) -> tuple[str, ...]:
     systemsense_diagnostic = request.startswith("systemsense diagnostic request")
     practical_troubleshooting = (
         False
-        if systemsense_diagnostic or _is_scenario_question(prompt)
+        if systemsense_diagnostic or (
+            _is_scenario_question(prompt)
+            and not _explicit_live_lookup_requested(prompt)
+        )
         else _is_practical_troubleshooting_prompt(prompt)
     )
     withheld_unreliable_troubleshooting = bool(

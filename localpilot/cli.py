@@ -505,6 +505,8 @@ def build_parser() -> argparse.ArgumentParser:
     revoke.add_argument("--attest", action="store_true", help="I authorize the revocation")
     feedback_sub.add_parser("list", help="List recent human-reviewed ratings")
     feedback_sub.add_parser("coaching", help="Show current owner-approved coaching")
+    feedback_sub.add_parser("observations", help="Show automatically captured, verified delivery evidence")
+    feedback_sub.add_parser("sync", help="Collect objective merged-PR evidence without awarding model scores")
     study = sub.add_parser(
         "study",
         help="Run benchmarked self-study; this does not train model weights",
@@ -708,6 +710,25 @@ def main() -> None:
                     args.rating_id, reason=args.reason, human_attested=args.attest
                 )
                 console.print(f"Coaching revoked (event #{event_id}); original rating retained.", markup=False)
+            elif action == "sync":
+                learning = root / config.agent.data_dir / config.selfdev.learning_database
+                number = store.sync_verified_development_outcomes(learning)
+                console.print(
+                    f"Collected {number} new verified delivery observations; "
+                    "no model scores or lessons were awarded.",
+                    markup=False,
+                )
+            elif action == "observations":
+                observations = store.recent_observations(limit=20)
+                if not observations:
+                    console.print("No verified delivery observations recorded.")
+                for record in observations:
+                    console.print(
+                        f"#{record['id']} {record['task_id']}: "
+                        f"CI passed and PR merged ({record['pull_request_url']}) — "
+                        "not independently rated for correctness or safety.",
+                        markup=False,
+                    )
             elif action == "coaching":
                 notes = store.approved_lessons(limit=10)
                 if not notes:

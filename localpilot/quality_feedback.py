@@ -82,6 +82,8 @@ class QualityFeedbackStore:
                 );
                 CREATE INDEX IF NOT EXISTS feedback_events_task
                     ON feedback_events(task_id, id);
+                CREATE UNIQUE INDEX IF NOT EXISTS feedback_one_rating_per_task
+                    ON feedback_events(task_id) WHERE kind='rating';
                 CREATE INDEX IF NOT EXISTS feedback_events_subject
                     ON feedback_events(subject_id, id);
                 CREATE TRIGGER IF NOT EXISTS feedback_events_no_update
@@ -218,8 +220,8 @@ class QualityFeedbackStore:
                       WHERE x.subject_id = r.id AND x.kind IN ('approve','revoke')
                   )
                 WHERE r.kind='rating'
-                ORDER BY a.id DESC LIMIT ?
-                """, (limit * 8,),
+                ORDER BY a.id DESC
+                """
             ).fetchall()
         output: list[tuple[str, str]] = []
         for row in rows:

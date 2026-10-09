@@ -823,7 +823,7 @@ def _evidence_gap_risks(content: str, missing: frozenset[str]) -> tuple[str, ...
             clause,
         ):
             # A supplied historical result remains a premise, not current status.
-            historical = re.search(r"\b(?:monday|yesterday|historical|previous|earlier)\b", clause)
+            historical = re.search(r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|yesterday|historical|previous|earlier|last (?:week|month|year))\b", clause)
             current = re.search(r"\b(?:today|now|current|latest)\b", clause)
             if not historical or current:
                 risks.append("live_ci_success_without_current_evidence")

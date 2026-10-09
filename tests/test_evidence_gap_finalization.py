@@ -54,6 +54,13 @@ def test_disclaimer_does_not_ground_another_assertion(answer, code):
     assert code in _evidence_gap_risks(answer, frozenset({'private GitHub', 'public HTTPS', 'trusted repository', 'Windows/PC state'}))
 
 
+@pytest.mark.parametrize('day', ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'])
+def test_supplied_historical_day_does_not_become_current_status(day):
+    missing=frozenset({'private GitHub'})
+    assert not _evidence_gap_risks(f'The CI checks were green on {day}; current status remains unverified.',missing)
+    assert 'live_ci_success_without_current_evidence' in _evidence_gap_risks(f'The CI checks were green on {day} and current main checks passed; current status is unverified.',missing)
+
+
 def test_unsafe_draft_is_corrected_without_executing_its_tool(tmp_path, monkeypatch):
     agent = agent_at(tmp_path)
     safe = "Current main checks are unverified. A workflow definition does not establish a successful run; inspect the exact revision's checks first."

@@ -206,9 +206,12 @@ def test_guard_sleep_prevention_sets_and_releases_the_windows_idle_sleep_request
         "if ('LocalPilot.PowerManagement' -as [type]) { "
         "$null=[LocalPilot.PowerManagement]::SetThreadExecutionState([uint32]2147483648) } }"
     )
+    # Windows CI can spend more than 20 seconds cold-starting PowerShell 7
+    # and compiling Add-Type with .NET. The subprocess must still execute the
+    # real SetThreadExecutionState checks above; only allow more startup time.
     subprocess.run(
         [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
-        check=True, capture_output=True, text=True, timeout=20,
+        check=True, capture_output=True, text=True, timeout=90,
     )
 
 

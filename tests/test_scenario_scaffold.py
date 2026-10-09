@@ -39,9 +39,13 @@ def test_illustrative_task_stays_high_reasoning_with_no_local_tools(prompt, monk
         record_inference=lambda *args, **kwargs: None,
     )
     calls = []
+    message_snapshots = []
 
     def fake_chat(**kwargs):
         calls.append(kwargs)
+        # Agent correctly scrubs turn-local system instructions after answering.
+        # Capture a true inference-time copy rather than its later mutated list.
+        message_snapshots.append([dict(message) for message in kwargs["messages"]])
         return iter([_chunk("Answer based on the supplied hypothetical premises, without invented live evidence.")])
 
     monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
@@ -54,7 +58,7 @@ def test_illustrative_task_stays_high_reasoning_with_no_local_tools(prompt, monk
     assert all(not call.get("tools") for call in calls)
     assert all(call.get("think") == config.model.think for call in calls)
     assert any(call["options"]["num_predict"] == _OPERATOR_NUM_PREDICT for call in calls)
-    assert all("ILLUSTRATIVE REASONING ROUTE" in str(call["messages"]) for call in calls)
+    assert all("ILLUSTRATIVE REASONING ROUTE" in str(messages) for messages in message_snapshots)
     assert "ILLUSTRATIVE REASONING ROUTE" not in str(agent.messages)
 
 

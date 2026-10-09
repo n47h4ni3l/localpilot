@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from localpilot.tools.web import canonical_public_web_url, _DEFAULT_MAX_CHARS
+
 
 RESEARCH_NOTEBOOK_TOOL = "update_research_notebook"
 MAX_EVIDENCE_REFS = 8
@@ -203,6 +205,8 @@ class TransientResearchNotebook:
             "Identical read-only observation already acquired earlier in this turn. "
             f"Reuse the raw result at {record.observation_id}/{record.result_id}; "
             "this duplicate call produced no new evidence."
+            + (' For an incomplete HTTPS excerpt, increase max_chars or use start_char to read new text; '
+               'fragments and tracking queries do not advance coverage.' if record.tool == 'fetch_public_https' else '')
         )
 
     def _known_references(self) -> set[str]:
@@ -294,6 +298,13 @@ class TransientResearchNotebook:
         old = prior.arguments
         if tool in {"search_repository", "search_public_web", "search_library"}:
             return cls._queries_similar(arguments.get("query", ""), old.get("query", ""))
+        if tool == 'fetch_public_https':
+            if canonical_public_web_url(arguments.get('url', '')) != canonical_public_web_url(old.get('url', '')):
+                return False
+            new_start, old_start = int(arguments.get('start_char', 0)), int(old.get('start_char', 0))
+            new_end = new_start + int(arguments.get('max_chars', _DEFAULT_MAX_CHARS))
+            old_end = old_start + int(old.get('max_chars', _DEFAULT_MAX_CHARS))
+            return old_start <= new_start and new_end <= old_end
         if tool == "read_repository_file":
             if str(arguments.get("path", "")).lower() != str(old.get("path", "")).lower():
                 return False

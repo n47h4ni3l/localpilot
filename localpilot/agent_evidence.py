@@ -28,6 +28,7 @@ from localpilot.agent_prompt_classification import (
     _requests_public_web_evidence,
 )
 from localpilot.agent_tools import _LIBRARY_TOOLS, _forbidden_tools
+from localpilot.tools.web import web_source_coverage
 
 
 def _response_behavior_issues(prompt: str, content: str) -> tuple[str, ...]:
@@ -692,6 +693,28 @@ def _contextual_evidence_risks(
         answer,
     ) and not re.search(r"\b(?:inspected (?:files|subset|range)|retrieved excerpt|returned (?:tree|listing)|limited (?:tree|listing))\b", answer):
         risks.append("unscoped_repository_absence_claim")
+    if 'fetch_public_https' not in successful_tools and re.search(
+        r"\bno (?:publicly[-‑– ]accessible |public |published )?(?:web|online|internet) (?:source|resource|documentation)\b", answer,
+    ) and not re.search(r"\b(?:this turn|permitted|authorized|prohibited|disabled|did not browse|required|needed)\b", answer):
+        risks.append('source_absence_claim_without_access')
+    if 'search_library' not in successful_tools and re.search(
+        r"\b(?:local[-‑– ]library|library) search\b.{0,80}\b(?:returned|found|produced|confirmed)\b|"
+        r"\b(?:i|we)\s+(?:have\s+)?(?:searched|queried)\b.{0,80}\blibrary\b", answer,
+    ):
+        risks.append('library_search_claim_without_execution')
+    if 'search_repository' not in successful_tools and re.search(
+        r"\b(?:i|we)\s+(?:have\s+)?(?:searched|queried)\b.{0,100}\b(?:repository|repo|codebase)\b", answer,
+    ):
+        risks.append('repository_search_claim_without_execution')
+    setting_pattern = r'\b\d+(?:\.\d+)?(?:\s*[–-]\s*\d+(?:\.\d+)?)?\s*°?\s*[cf]\b|\b\d+(?:\.\d+)?(?:\s*[–-]\s*\d+(?:\.\d+)?)?\s*(?:hours?|hrs?|h)\b'
+    stated_settings = re.findall(setting_pattern, answer)
+    supplied_numbers = set(re.findall(r'\d+(?:\.\d+)?', ' '.join(re.findall(setting_pattern, request))))
+    unsupported_settings = any(not set(re.findall(r'\d+(?:\.\d+)?', setting)).issubset(supplied_numbers) for setting in stated_settings)
+    if (re.search(r'\bmanufacturer(?:[- ]specific)?\b', request)
+        and re.search(r'\b(?:drying|nozzle|temperature)\b', request)
+        and not {'fetch_public_https','read_library_passage'}.intersection(successful_tools)
+        and unsupported_settings):
+        risks.append('operating_settings_without_primary_source')
     inspection_only = bool(re.search(r'\b(?:inspection[- ]only|authorize inspection only|inspection only)\b', request))
     unseen_script = bool(re.search(r'\bscript\b|\.ps1\b|\biex\b',request) and re.search(
         r'\b(?:unseen|untrusted|unfamiliar|unknown|no script contents|not (?:supplied|provided|inspected))\b',request))
@@ -797,6 +820,7 @@ def _contextual_evidence_risks(
             ):
                 risks.append("latest_claim_primary_source_does_not_establish_recency")
     risks.extend(_evidence_gap_risks(content, missing_evidence))
+    risks.extend(_incomplete_web_source_risks(content, evidence_messages or []))
     return tuple(dict.fromkeys(risks))
 
 
@@ -877,6 +901,45 @@ def _evidence_gap_risks(content: str, missing: frozenset[str]) -> tuple[str, ...
         ):
             risks.append("unverified_script_execution_or_safety_claim")
     return tuple(dict.fromkeys(risks))
+
+
+def _incomplete_web_source_risks(content: str, messages: list[dict[str, Any]]) -> tuple[str, ...]:
+    """A prefix/window is not evidence that a publisher supplied no information."""
+    reads = [str(message.get('content') or '') for message in messages
+             if message.get('role') == 'tool' and message.get('tool_name') == 'fetch_public_https'
+             and 'Tool error:' not in str(message.get('content') or '')
+             and not ('Identical read-only observation' in str(message.get('content') or '')
+                      and 'HTTPS source: ' not in str(message.get('content') or ''))]
+    if not reads:
+        return ()
+    coverage = [web_source_coverage(read) for read in reads]
+    groups: dict[str, list[dict]] = {}
+    for item in coverage:
+        if item:
+            groups.setdefault(item['digest'], []).append(item)
+    incomplete = any(item is None for item in coverage)
+    for windows in groups.values():
+        end = 0
+        for window in sorted(windows, key=lambda item: item['start']):
+            if window['start'] > end:
+                break
+            end = max(end, window['end'])
+        incomplete = incomplete or end < windows[0]['total']
+    if not incomplete:
+        return ()
+    for sentence in re.split(r'[.!?;\n]', content.lower()):
+        negative = re.search(
+            r"\b(?:manufacturer|publisher|documentation|source|page|site)\b.{0,50}"
+            r"\b(?:does not|doesn['’]?t|has not|hasn['’]?t|did not|didn['’]?t)\b.{0,35}"
+            r"\b(?:provide|publish|specify|list|recommend|include|contain)\b|"
+            r"\bno (?:published |manufacturer[- ](?:provided|recommended) )?"
+            r"(?:recommendation|nozzle temperature|printing temperature|specification)\b",
+            sentence,
+        )
+        scoped = re.search(r'\b(?:excerpt|retrieved portion|returned text|unverified|unresolved|could not verify|cannot verify)\b', sentence)
+        if negative and not scoped:
+            return ('absence_claim_from_incomplete_source',)
+    return ()
 
 
 def _library_citation_from_messages(

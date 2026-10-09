@@ -74,11 +74,14 @@ def _is_scenario_question(prompt: str) -> bool:
         return False
     if re.match(
         r"^(?:suppose|imagine|hypothetically|in (?:this|a) hypothetical|"
+        r"(?:nestra|ollama) (?:knows|returns|reports|encounters)\b|"
         r"consider (?:a|this) (?:hypothetical|scenario|case)|"
         r"you discover|you are given|"
-        r"(?:a|an|the|one|two|three) (?:(?:new|proposed|online|"
+        r"(?:a|an|the|one|two|three) (?:(?:new|proposed|online|public|"
+        r"unfamiliar|untrusted|missing|inherited|raw|empty|failed|"
         r"authenticated|existing|recent|historical|previous) )?(?:"
         r"user|owner|task|model|developer|assistant|contributor|architect|revision|"
+        r"adapter|readme|summary|function|polymer|filament|material|output|"
         r"script|service|worker|candidate|change|patch|test|repository|repo|"
         r"library|manual|document|source|tutorial|blog|support article|"
         r"diagnostic|windows diagnostic|log|hardware|driver|"
@@ -363,7 +366,9 @@ def _is_bounded_conversational_prompt(prompt: str) -> bool:
 
 
 def _is_operational_self_status_prompt(prompt: str) -> bool:
-    """Recognize questions answered by passive lifecycle and self-dev evidence."""
+    """Recognize live lifecycle requests, not illustrative scenarios."""
+    if _is_scenario_question(prompt):
+        return False
     text = " ".join(str(prompt).lower().split())
     self_reference = bool(
         re.search(r"\b(?:localpilot|you|your|yourself)\b", text)

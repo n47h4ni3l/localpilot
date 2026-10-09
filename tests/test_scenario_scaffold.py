@@ -171,3 +171,17 @@ def test_valid_conceptual_answer_is_not_rewritten_or_withheld(
     assert all(not call.get("tools") for call in calls)
     assert agent.audit.latest("model_evidence_acquisition_failed") is None
     assert agent.audit.latest("model_illustrative_scenario_route") is not None
+
+
+
+def test_explicit_live_research_retains_source_attribution_safeguards():
+    prompt = (
+        "Suppose a printer keeps failing. Please research official manufacturer "
+        "guidance and diagnose the fault."
+    )
+    assert LocalPilotAgent._is_scenario_question(prompt)
+    assert "public HTTPS" in LocalPilotAgent._evidence_requirements(prompt)
+    issues = LocalPilotAgent._response_behavior_issues(
+        prompt, "Simply increase nozzle temperature and keep printing."
+    )
+    assert "practical_troubleshooting_source_unattributed" in issues

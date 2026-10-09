@@ -18,6 +18,7 @@ from localpilot.doctor import doctor
 from localpilot.github_integration import GitHubIntegration
 from localpilot.implementation_backend import ClaudeCodeBackend
 from localpilot.learning import LearningMemory
+from localpilot.quality_feedback import QualityFeedbackStore, CATEGORIES
 from localpilot.mission import mission_context
 from localpilot.resource import ResourceGovernor
 from localpilot.evolution_reliability import CandidateRejectionError, CandidateRetryError, SelfDeveloper
@@ -480,6 +481,30 @@ def build_parser() -> argparse.ArgumentParser:
         default="general",
         help="Short topic used to retrieve the lesson for relevant future tasks",
     )
+    feedback = sub.add_parser(
+        "feedback", help="Record and review owner-verified quality outcomes; never trains weights"
+    )
+    feedback_sub = feedback.add_subparsers(dest="feedback_action")
+    record = feedback_sub.add_parser("record", help="Rate a verified real-world task")
+    record.add_argument("--task-id", required=True, help="Unique production task identifier, never an evaluation ID")
+    record.add_argument("--model", default=None, help="Model tag (defaults to configured operator model)")
+    record.add_argument("--topic", required=True, help="Short coaching category")
+    record.add_argument("--outcome", required=True, choices=["verified_success", "partial", "failed"])
+    record.add_argument("--evidence-ref", required=True, help="Opaque digest or evidence identifier, not a transcript")
+    record.add_argument("--note", required=True, help="Human review rationale (12-350 chars)")
+    for dimension in CATEGORIES:
+        record.add_argument("--" + dimension, required=True, type=int, choices=range(5))
+    record.add_argument("--attest", action="store_true", help="I independently reviewed the real outcome")
+    approve = feedback_sub.add_parser("approve", help="Approve high-quality coaching from an existing rating")
+    approve.add_argument("rating_id", type=int)
+    approve.add_argument("--lesson", required=True, help="Generalizable approved positive coaching, not a copied test answer")
+    approve.add_argument("--attest", action="store_true", help="I reviewed and approve the lesson")
+    revoke = feedback_sub.add_parser("revoke", help="Revoke previously approved coaching, preserving the audit trail")
+    revoke.add_argument("rating_id", type=int)
+    revoke.add_argument("--reason", required=True)
+    revoke.add_argument("--attest", action="store_true", help="I authorize the revocation")
+    feedback_sub.add_parser("list", help="List recent human-reviewed ratings")
+    feedback_sub.add_parser("coaching", help="Show current owner-approved coaching")
     study = sub.add_parser(
         "study",
         help="Run benchmarked self-study; this does not train model weights",
@@ -655,6 +680,53 @@ def main() -> None:
             "and relevant future implementation cycles. This is durable context "
             "learning, not a model-weight update."
         )
+    elif args.command == "feedback":
+        store = QualityFeedbackStore(root / config.agent.data_dir / "quality-feedback.sqlite3")
+        action = args.feedback_action or "list"
+        try:
+            if action == "record":
+                entry = store.record(
+                    task_id=args.task_id, model=args.model or config.model.name,
+                    topic=args.topic,
+                    scores={dimension: getattr(args, dimension) for dimension in CATEGORIES},
+                    outcome=args.outcome, evidence_ref=args.evidence_ref,
+                    review_note=args.note, human_attested=args.attest,
+                )
+                console.print(
+                    f"Owner feedback #{entry.id} saved: {entry.mean_score:.2f}/4 "
+                    f"({entry.outcome}); coaching eligible: {entry.eligible_for_coaching}.",
+                    markup=False,
+                )
+                console.print("Not trained. To make optional coaching available, explicitly approve a lesson.")
+            elif action == "approve":
+                event_id = store.approve_coaching(
+                    args.rating_id, lesson=args.lesson, human_attested=args.attest
+                )
+                console.print(f"Coaching approved (event #{event_id}). Enable [agent] feedback_coaching_enabled=true to use it.", markup=False)
+            elif action == "revoke":
+                event_id = store.revoke_coaching(
+                    args.rating_id, reason=args.reason, human_attested=args.attest
+                )
+                console.print(f"Coaching revoked (event #{event_id}); original rating retained.", markup=False)
+            elif action == "coaching":
+                notes = store.approved_lessons(limit=10)
+                if not notes:
+                    console.print("No approved, active coaching.")
+                for topic, lesson in notes:
+                    console.print(f"[{topic}] {lesson}", markup=False)
+            else:
+                ratings = store.recent(limit=20)
+                if not ratings:
+                    console.print("No verified production feedback recorded.")
+                for entry in ratings:
+                    console.print(
+                        f"#{entry.id} {entry.topic}: {entry.mean_score:.2f}/4 "
+                        f"{entry.outcome} ({entry.model}) evidence={entry.evidence_ref}",
+                        markup=False,
+                    )
+        except (ValueError, PermissionError) as exc:
+            console.print(f"Feedback refused: {exc}", markup=False)
+            raise SystemExit(1) from exc
     elif args.command == "library":
         library = LocalLibrary(
             config.library,

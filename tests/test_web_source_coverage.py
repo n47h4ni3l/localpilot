@@ -40,6 +40,11 @@ def test_fragments_tracking_and_duplicate_queries_share_cache_but_data_selectors
     assert key == _tool_cache_key('fetch_public_https', {**args, 'url':args['url']+'#printing'})
     assert key == _tool_cache_key('fetch_public_https', {**args, 'url':args['url']+'?utm_source=retry&_=123'})
     assert key != _tool_cache_key('fetch_public_https', {**args, 'url':args['url']+'?page=2'})
+    first = {**args, 'url':args['url']+'?part=printing&part=drying'}
+    reversed_values = {**args, 'url':args['url']+'?part=drying&part=printing'}
+    assert _tool_cache_key('fetch_public_https', first) != _tool_cache_key('fetch_public_https', reversed_values)
+    prior = ObservationRecord('obs-002', 'result-002', 'fetch_public_https', first, True)
+    assert not TransientResearchNotebook._semantically_similar('fetch_public_https', reversed_values, prior)
     assert key != _tool_cache_key('fetch_public_https', {**args, 'start_char':2000})
     assert _tool_cache_key('search_public_web', {'query':' Maker  ABS nozzle '}) == _tool_cache_key('search_public_web', {'query':'maker abs nozzle'})
     old = ObservationRecord('obs-001','result-001','fetch_public_https',args,True)

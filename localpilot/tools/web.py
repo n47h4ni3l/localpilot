@@ -343,7 +343,7 @@ def canonical_public_web_url(url: str) -> str:
     query = [(key, value) for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
              if not key.lower().startswith('utm_') and key.lower() not in {'gclid', 'fbclid', '_', 'cache_bust', 'cachebuster'}]
     return urllib.parse.urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path,
-                                   urllib.parse.urlencode(sorted(query)), ''))
+                                   urllib.parse.urlencode(sorted(query, key=lambda item: item[0])), ''))
 
 
 def web_source_coverage(result: str) -> dict | None:

@@ -687,9 +687,14 @@ def _contextual_evidence_risks(
     ) and not re.search(r"\b(?:this turn|permitted|authorized|prohibited|disabled|did not browse|required|needed)\b", answer):
         risks.append('source_absence_claim_without_access')
     if 'search_library' not in successful_tools and re.search(
-        r"\b(?:local[-‑– ]library|library) search\b.{0,80}\b(?:returned|found|produced|confirmed)\b", answer,
+        r"\b(?:local[-‑– ]library|library) search\b.{0,80}\b(?:returned|found|produced|confirmed)\b|"
+        r"\b(?:i|we)\s+(?:have\s+)?(?:searched|queried)\b.{0,80}\blibrary\b", answer,
     ):
         risks.append('library_search_claim_without_execution')
+    if 'search_repository' not in successful_tools and re.search(
+        r"\b(?:i|we)\s+(?:have\s+)?(?:searched|queried)\b.{0,100}\b(?:repository|repo|codebase)\b", answer,
+    ):
+        risks.append('repository_search_claim_without_execution')
     setting_pattern = r'\b\d+(?:\.\d+)?(?:\s*[–-]\s*\d+(?:\.\d+)?)?\s*°?\s*[cf]\b|\b\d+(?:\.\d+)?(?:\s*[–-]\s*\d+(?:\.\d+)?)?\s*(?:hours?|hrs?|h)\b'
     stated_settings = re.findall(setting_pattern, answer)
     supplied_numbers = set(re.findall(r'\d+(?:\.\d+)?', ' '.join(re.findall(setting_pattern, request))))

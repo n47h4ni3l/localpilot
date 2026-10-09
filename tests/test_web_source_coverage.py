@@ -72,6 +72,8 @@ def test_no_web_preserves_unknowns_without_fabricated_absence_search_or_settings
     assert not LocalPilotAgent._contextual_evidence_risks(prompt,safe,frozenset())
     supplied='The manufacturer datasheet I supplied says dry at 80 C for 4 hours. Explain that drying recommendation without using the public web.'
     assert not LocalPilotAgent._contextual_evidence_risks(supplied,'The supplied datasheet says 80 C for 4 hours; I did not independently verify it.',frozenset())
+    invented='I searched the available local-library and repository sources but no matching records were found. Manufacturer facts remain unverified.'
+    assert {'library_search_claim_without_execution','repository_search_claim_without_execution'} <= set(LocalPilotAgent._contextual_evidence_risks(prompt,invented,frozenset()))
 
 
 @pytest.mark.parametrize('no_web', [False, True])

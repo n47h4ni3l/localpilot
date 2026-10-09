@@ -4297,6 +4297,11 @@ class LocalPilotAgent:
                     for message in self.messages
                     if id(message) != id(direct_conversation_message)
                 ]
+            if scenario_message is not None:
+                self.messages[:] = [
+                    message for message in self.messages
+                    if id(message) != id(scenario_message)
+                ]
             if troubleshooting_message is not None:
                 self.messages[:] = [
                     message

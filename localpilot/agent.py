@@ -140,6 +140,32 @@ class LocalPilotAgent:
             embedding_batch_size=config.model.memory_embedding_batch_size,
             embedding_migration_limit=config.model.memory_embedding_migration_limit,
         )
+        # Collect objective, already validated development delivery facts on
+        # normal startup. Never convert them to model scores or coaching.
+        # Isolated evaluations and disabled self-development skip observation.
+        if (
+            config.agent.feedback_auto_observations_enabled is True
+            and config.selfdev.enabled is True
+        ):
+            try:
+                if self.memory.completed_task_ids():
+                    signals = QualityFeedbackStore(self.data_dir / "quality-feedback.sqlite3")
+                    newly_recorded = signals.sync_verified_development_outcomes(
+                        self.memory.path
+                    )
+                    if newly_recorded:
+                        self.audit.write(
+                            "quality_feedback_objective_evidence_collected",
+                            new_observations=newly_recorded,
+                            scoring_performed=False,
+                            promotion_allowed=False,
+                        )
+            except (OSError, ValueError, RuntimeError) as exc:
+                # Feedback cannot block normal operator sessions.
+                self.audit.write(
+                    "quality_feedback_objective_evidence_deferred",
+                    error_type=type(exc).__name__,
+                )
         self._last_stream_runtime: dict[str, Any] = {}
         self._event_sink = event_sink
         self._observation_sequence = 0

@@ -647,6 +647,8 @@ def _contextual_evidence_risks(
     content: str,
     successful_tools: frozenset[str],
     evidence_messages: list[dict[str, Any]] | None = None,
+    *,
+    missing_evidence: frozenset[str] = frozenset(),
 ) -> tuple[str, ...]:
     """Require the source a turn explicitly promised before accepting research claims."""
     request = " ".join(str(prompt).lower().split())
@@ -767,6 +769,85 @@ def _contextual_evidence_risks(
                 re.IGNORECASE,
             ):
                 risks.append("latest_claim_primary_source_does_not_establish_recency")
+    risks.extend(_evidence_gap_risks(content, missing_evidence))
+    return tuple(dict.fromkeys(risks))
+
+
+def _evidence_gap_fallback(prompt: str, missing: frozenset[str]) -> str:
+    """Bounded truthful next steps when no useful checked draft was produced."""
+    guidance = {
+        'private GitHub': 'The requested live GitHub status remains unverified. Inspect the checks for the exact current revision before reporting success.',
+        'trusted repository': 'The requested implementation remains unverified. Read the relevant repository source before describing its functions or behavior.',
+        'Windows/PC state': 'The requested current PC state and readings remain unverified. Obtain a fresh read-only observation before drawing a current-state conclusion.',
+        'public HTTPS': 'The requested public source content remains unverified. Retrieve and inspect it as text using a read-only source.',
+        'public web discovery': 'The requested current public information remains unverified. Use fresh read-only discovery and an authoritative source before relying on it.',
+        'local library': 'The requested library evidence remains unverified. Read the relevant passage and verify its source before relying on it.',
+    }
+    parts = [guidance[source] for source in sorted(missing) if source in guidance]
+    if not parts:
+        parts = ['The required evidence remains unverified. Obtain the requested source through a read-only inspection before drawing a conclusion.']
+    if re.search(r'\b(?:script|untrusted code|unseen code)\b', prompt, re.IGNORECASE):
+        parts.append('Do not execute an unseen script; inspect its contents and provenance before considering any execution.')
+    return '\n\n'.join(parts)
+
+
+def _evidence_gap_risks(content: str, missing: frozenset[str]) -> tuple[str, ...]:
+    """Keep useful uncertainty without treating a disclaimer as claim evidence."""
+    if not missing:
+        return ()
+    risks: list[str] = []
+    if not re.search(
+        r"\b(?:unverified|unknown|unresolved|unavailable|not available|not inspected|"
+        r"not verified|not checked|haven['’]?t (?:inspected|checked)|"
+        r"have not (?:inspected|checked)|cannot|can['’]?t|does not (?:prove|establish)|"
+        r"doesn['’]?t (?:prove|establish)|no (?:present|current|live|fresh|usable) (?:evidence|results?|readings?)|"
+        r"would need|need (?:fresh|current|revision))\b",
+        content, re.IGNORECASE,
+    ):
+        risks.append("missing_required_evidence_not_scoped")
+    # Inspect each assertion separately. "Unverified; but today's checks passed"
+    # must not be accepted merely because another clause contains a disclaimer.
+    for clause in re.split(r"[.!?;\n]|\b(?:but|however|yet)\b", content.lower()):
+        if re.search(
+            r"\b(?:(?:cannot|can['’]?t) (?:verify|confirm|establish|determine|certify|inspect|run|execute)|"
+            r"(?:does not|doesn['’]?t) (?:prove|establish|mean)|"
+            r"(?:do not|don['’]?t|never) (?:run|execute|claim|certify|assume|tell)|"
+            r"not (?:known|verified|checked|established|safe)|check whether|verify whether|"
+            r"if|would need)\b", clause,
+        ):
+            continue
+        if "private GitHub" in missing and re.search(
+            r"\b(?:ci|checks?|tests?|build|workflow|main|branch)\b.{0,70}"
+            r"\b(?:passed|passes|passing|green|successful|healthy)\b|"
+            r"\b(?:verified|confirmed)\b.{0,70}\b(?:ci|checks?|main|branch)\b",
+            clause,
+        ):
+            # A supplied historical result remains a premise, not current status.
+            historical = re.search(r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|yesterday|historical|previous|earlier|last (?:week|month|year))\b", clause)
+            current = re.search(r"\b(?:today|now|current|latest)\b", clause)
+            if not historical or current:
+                risks.append("live_ci_success_without_current_evidence")
+        if "trusted repository" in missing and re.search(
+            r"\b(?:localpilot|implementation|source code|codebase|module|function|class)\b.{0,70}"
+            r"\b(?:uses?|calls?|implements?|defines?|imports?|contains?|enforces?)\b|"
+            r"\b(?:i|we) (?:inspected|read|checked|verified)\b.{0,60}\b(?:repository|repo|code|file)\b",
+            clause,
+        ):
+            risks.append("implementation_claim_without_repository_read")
+        if "Windows/PC state" in missing and re.search(
+            r"\b(?:pc|computer|processor|cpu|system|defender|power plan)\b.{0,60}"
+            r"\b(?:healthy|running|enabled|disabled|overheating|normal|balanced|\d+\s*°?c)\b|"
+            r"\b(?:i|we) (?:checked|verified|measured)\b.{0,60}\b(?:pc|temperature|cpu|system)\b",
+            clause,
+        ):
+            risks.append("live_machine_claim_without_observation")
+        if re.search(
+            r"\b(?:i|we)\s+(?:have\s+)?(?:ran|executed|launched)\b.{0,80}\b(?:script|code|command|repair)\b|"
+            r"\b(?:script|code)\b.{0,50}\b(?:is safe|verified safe|safe to (?:run|execute))\b|"
+            r"\b(?:run|execute)\b.{0,120}\b(?:\biex\b|invoke-expression|as administrator)\b",
+            clause,
+        ):
+            risks.append("unverified_script_execution_or_safety_claim")
     return tuple(dict.fromkeys(risks))
 
 

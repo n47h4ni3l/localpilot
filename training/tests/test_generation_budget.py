@@ -30,7 +30,7 @@ def test_direct_blank_or_length_gets_one_bounded_completion_and_retains_first(fi
     monkeypatch.setitem(sys.modules,'ollama',SimpleNamespace(chat=chat))
     cell=matrix._run_cell(task,0,'base_direct',config(),config(),Path('.'),generation_policy=matrix.BOUNDED_GENERATION_POLICY)
     assert not cell['error'] and 'does not establish' in cell['response']
-    assert len(requests)==2 and requests[0]['think']=='high' and requests[1]['think'] is False
+    assert len(requests)==2 and requests[0]['think']=='high' and requests[1]['think']=='low'
     assert all(request['options']['num_predict']==3072 for request in requests)
     assert cell['evidence']['raw_response']==first
     assert len(cell['evidence']['direct_attempts'])==2
@@ -68,7 +68,7 @@ def test_scaffold_calls_share_cap_and_capture_actual_options():
     with tempfile.TemporaryDirectory() as tmp:
         cfg=matrix.original.isolated_config(Path(tmp),model='nestra:20b-p1')
         def ask(agent,*args,**kwargs):
-            agent._stream_chat_message(None,think='high',options={'num_predict':6144})
+            agent._stream_chat_message(None,think=False,options={'num_predict':6144})
             return 'Scoped final answer'
         requests=[]
         def stream(*args,**kwargs):
@@ -77,6 +77,7 @@ def test_scaffold_calls_share_cap_and_capture_actual_options():
         with patch.object(matrix.original.LocalPilotAgent,'ask',ask),patch.object(matrix.original.LocalPilotAgent,'_stream_chat_message',stream):
             cell=matrix._run_cell(task,0,'base_localpilot',cfg,cfg,Path(tmp),generation_policy=matrix.BOUNDED_GENERATION_POLICY)
         assert requests[0]['options']['num_predict']==3072
+        assert requests[0]['think']=='low'
         assert cell['evidence']['model_turns'][0]['settings']['options']['num_predict']==3072
         gc.collect()  # release temporary SQLite connections before Windows cleanup
 

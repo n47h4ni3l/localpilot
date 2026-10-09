@@ -33,9 +33,9 @@ ARMS = ("base_direct", "base_localpilot", "nestra_localpilot")
 REPEATS = 3
 CELL_EVIDENCE: ContextVar[dict[str, Any] | None] = ContextVar("cell_evidence", default=None)
 BOUNDED_GENERATION_POLICY = {
-    "name": "bounded-visible-final-v1", "per_turn_tokens": 3072,
+    "name": "bounded-visible-final-v2", "per_turn_tokens": 3072,
     "direct_completion_tokens": 3072, "context_margin_tokens": 512,
-    "direct_completion_think": False, "max_direct_completions": 1,
+    "direct_completion_think": "low", "max_direct_completions": 1,
 }
 
 
@@ -188,6 +188,8 @@ def _scaffold(task: dict[str, Any], config: Any, snapshot: Path, namespace: str,
         def capture_stream(*args: Any, **kwargs: Any) -> Any:
             from ollama._utils import convert_function_to_tool
             if generation_policy:
+                if kwargs.get('think') is False:
+                    kwargs['think'] = generation_policy['direct_completion_think']
                 requested = dict(kwargs.get('options') or {})
                 requested['num_predict'] = min(int(requested.get('num_predict') or generation_policy['per_turn_tokens']), generation_policy['per_turn_tokens'])
                 kwargs['options'] = requested

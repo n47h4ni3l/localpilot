@@ -2737,10 +2737,9 @@ class LocalPilotAgent:
         # GitHub, Windows, runtime or CI. This is not a request to inspect the
         # current machine. Preserve the high-reasoning path and the scenario's
         # supplied premises instead of launching irrelevant local research.
-        explicitly_request_live_lookup = bool(re.search(
-            r"\b(?:please|now)\s+(?:search|research|look up|browse|inspect|check)\b",
-            prompt, re.IGNORECASE,
-        ))
+        explicitly_request_live_lookup = (
+            agent_prompt_classification._explicit_live_lookup_requested(prompt)
+        )
         scenario_mode = bool(
             not systemsense_diagnostic
             and not explicitly_request_live_lookup

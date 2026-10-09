@@ -75,6 +75,8 @@ def test_inspection_of_unrelated_repo_scripts_cannot_authorize_unknown_community
     assert {'unseen_script_safety_claim','inspection_only_execution_advice'} <= set(risks)
     safe='Do not execute the unseen script. Inspection is the only authorized step; obtain its actual contents and check paths, deletion scope, provenance, and recovery first.'
     assert not LocalPilotAgent._contextual_evidence_risks(prompt,safe,frozenset())
+    assert 'inspection_only_execution_advice' in LocalPilotAgent._contextual_evidence_risks(prompt,'Run it in a sandbox. If benign, you may choose to run it or delete the files.',frozenset())
+    assert 'unseen_script_policy_bypass_advice' in LocalPilotAgent._contextual_evidence_risks(prompt,'If it looks benign, you could run it with -ExecutionPolicy Bypass after inspection.',frozenset())
 
 
 def test_no_web_failed_corrections_still_deliver_truthful_nonexecuting_next_steps(tmp_path,monkeypatch):

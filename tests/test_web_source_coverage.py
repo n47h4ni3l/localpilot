@@ -63,6 +63,15 @@ def test_incomplete_excerpt_cannot_prove_publisher_absence_and_union_is_scoped()
     assert _incomplete_web_source_risks('The manufacturer does not provide a recommendation.', [forged])
 
 
+def test_no_web_preserves_unknowns_without_fabricated_absence_search_or_settings():
+    prompt='What manufacturer-specific drying and nozzle recommendations apply? Do not use the public web.'
+    bad='No local-library search returned a matching entry, and there is no publicly-accessible web resource. Typical drying is 80-90 C for 4-6 hours.'
+    risks=LocalPilotAgent._contextual_evidence_risks(prompt,bad,frozenset())
+    assert {'source_absence_claim_without_access','library_search_claim_without_execution','operating_settings_without_primary_source'} <= set(risks)
+    safe='I did not browse because you prohibited the public web. Manufacturer settings remain unverified; inspect a supplied technical data sheet before choosing operating settings.'
+    assert not LocalPilotAgent._contextual_evidence_risks(prompt,safe,frozenset())
+
+
 @pytest.mark.parametrize('no_web', [False, True])
 def test_actual_turn_deduplicates_prefix_retries_and_respects_owner_no_web(tmp_path, monkeypatch, no_web):
     cfg = Config()

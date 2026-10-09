@@ -682,6 +682,19 @@ def _contextual_evidence_risks(
         )
     )
     risks: list[str] = []
+    if 'fetch_public_https' in _forbidden_tools(prompt) and re.search(
+        r"\bno (?:publicly[-‑– ]accessible |public |published )?(?:web|online|internet) (?:source|resource|documentation)\b", answer,
+    ) and not re.search(r"\b(?:this turn|permitted|authorized|prohibited|disabled|did not browse)\b", answer):
+        risks.append('source_absence_claim_without_access')
+    if not _LIBRARY_TOOLS.intersection(successful_tools) and re.search(
+        r"\b(?:local[-‑– ]library|library) search\b.{0,80}\b(?:returned|found|produced|confirmed)\b", answer,
+    ):
+        risks.append('library_search_claim_without_execution')
+    if (re.search(r'\bmanufacturer(?:[- ]specific)?\b', request)
+        and re.search(r'\b(?:drying|nozzle|temperature)\b', request)
+        and not {'fetch_public_https','read_library_passage'}.intersection(successful_tools)
+        and re.search(r'\b\d+(?:\s*[–-]\s*\d+)?\s*°?\s*c\b|\b\d+(?:\s*[–-]\s*\d+)?\s*(?:hours?|hrs?)\b', answer)):
+        risks.append('operating_settings_without_primary_source')
     if (
         requires_primary_web
         and "fetch_public_https" not in successful_tools

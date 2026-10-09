@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from urllib.parse import quote
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,6 +87,24 @@ class QualityFeedbackStore:
                     ON feedback_events(task_id) WHERE kind='rating';
                 CREATE INDEX IF NOT EXISTS feedback_events_subject
                     ON feedback_events(subject_id, id);
+
+                -- Observed CI/merge evidence is not a human quality grade and
+                -- cannot unlock positive coaching by itself.
+                CREATE TABLE IF NOT EXISTS feedback_observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL CHECK(source='local_development_cycles'),
+                    source_id INTEGER NOT NULL,
+                    task_id TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(source,source_id)
+                );
+                CREATE TRIGGER IF NOT EXISTS feedback_observations_no_update
+                    BEFORE UPDATE ON feedback_observations
+                    BEGIN SELECT RAISE(ABORT, 'quality feedback observations are append-only'); END;
+                CREATE TRIGGER IF NOT EXISTS feedback_observations_no_delete
+                    BEFORE DELETE ON feedback_observations
+                    BEGIN SELECT RAISE(ABORT, 'quality feedback observations are append-only'); END;
                 CREATE TRIGGER IF NOT EXISTS feedback_events_no_update
                     BEFORE UPDATE ON feedback_events
                     BEGIN SELECT RAISE(ABORT, 'quality feedback events are append-only'); END;
@@ -238,6 +257,95 @@ class QualityFeedbackStore:
             if len(output) >= limit:
                 break
         return output
+
+    def sync_verified_development_outcomes(self, learning_db: str | Path) -> int:
+        """Capture objective CI/merge evidence automatically, *without* assigning a score.
+
+        The learning ledger is maintained by LocalPilot's GitHub validation
+        workflow. A merged PR with passed checks establishes a delivery event,
+        not correctness, safety, generalization or a reward-worthy outcome.
+        Protected benchmark IDs are excluded; recorded observations are never
+        included by approved_lessons() or used to trigger model promotion.
+        """
+        source_path = Path(learning_db).resolve()
+        if not source_path.is_file():
+            return 0
+        # Open without write access: the feedback observer cannot mutate the
+        # existing training/learning lifecycle or its provenance.
+        uri = "file:" + quote(str(source_path).replace("\\", "/"), safe="/:") + "?mode=ro"
+        try:
+            with sqlite3.connect(uri, uri=True) as source:
+                source.row_factory = sqlite3.Row
+                rows = source.execute(
+                    """
+                    SELECT id, task_id, branch, developer_model, pull_request_url,
+                           checks_passed, pushed, validation_state, merged,
+                           local_repair_attempts, write_integrity_failure,
+                           rejection_reason
+                    FROM development_cycles
+                    WHERE merged=1 AND checks_passed=1 AND pushed=1
+                      AND validation_state='passed' AND pull_request_url IS NOT NULL
+                    ORDER BY id
+                    """
+                ).fetchall()
+        except sqlite3.DatabaseError:
+            # Older or partial databases are not evidence; do not guess.
+            return 0
+        added = 0
+        with self._connection() as destination:
+            for row in rows:
+                try:
+                    task_id = self._check_production_id(row["task_id"])
+                except ValueError:
+                    continue
+                link = str(row["pull_request_url"] or "")
+                if not re.fullmatch(
+                    r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*",
+                    link,
+                ):
+                    continue
+                # Prior local write-integrity/rejection warnings aren't silently
+                # converted into a positive outcome.
+                if str(row["write_integrity_failure"] or "").strip() or str(row["rejection_reason"] or "").strip():
+                    continue
+                payload = {
+                    "evidence_type": "ci_passed_and_pr_merged",
+                    "model": str(row["developer_model"] or "")[:100],
+                    "branch": str(row["branch"] or "")[:192],
+                    "pull_request_url": link,
+                    "local_repair_attempts": int(row["local_repair_attempts"] or 0),
+                    "checks_passed": True,
+                    "merged": True,
+                    "scope": "delivery_only_not_quality_score",
+                }
+                cursor = destination.execute(
+                    """
+                    INSERT OR IGNORE INTO feedback_observations(
+                        source,source_id,task_id,payload_json,created_at
+                    ) VALUES ('local_development_cycles',?,?,?,?)
+                    """,
+                    (int(row["id"]), task_id, json.dumps(payload, sort_keys=True), _utc_now()),
+                )
+                added += int(cursor.rowcount == 1)
+        return added
+
+    def recent_observations(self, *, limit: int = 20) -> list[dict]:
+        """Read objective observations, separate from human-assessed ratings."""
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT id,source_id,task_id,payload_json,created_at "
+                "FROM feedback_observations ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]), "source_id": int(row["source_id"]),
+                "task_id": str(row["task_id"]), "created_at": str(row["created_at"]),
+                **json.loads(row["payload_json"]),
+            }
+            for row in rows
+        ]
 
     def recent(self, *, limit: int = 10) -> list[FeedbackEntry]:
         if not 1 <= limit <= 50:

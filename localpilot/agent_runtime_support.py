@@ -19,8 +19,10 @@ _STREAM_RUNTIME_FIELDS = (
     "eval_duration",
 )
 
-_OPERATOR_NUM_PREDICT = 2048
-_FINAL_ANSWER_NUM_PREDICT = 4096
+# Give the model more room for multi-step diagnosis and a complete final answer.
+# Still bounded; generation_limit continuations remain a separately guarded step.
+_OPERATOR_NUM_PREDICT = 3072
+_FINAL_ANSWER_NUM_PREDICT = 6144
 _GENERATION_LIMIT_CONTINUATION_CEILING = 8192
 _GENERATION_LIMIT_CONTINUATION_MINIMUM = 256
 _TOOL_CALL_PROTOCOL_RETRY_LIMIT = 2

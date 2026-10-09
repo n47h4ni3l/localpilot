@@ -100,8 +100,12 @@ def repository_answer_risks(
                                 match.group("snake")) if g), "")
         value = match.group("number")
         start = content[max(0, match.start() - 65):match.start()]
-        if re.search(r"\b(?:not|isn['’]?t|never|incorrect(?:ly)?|instead of)\s*$",
-                     start, re.I):
+        if re.search(
+            r"\b(?:not|isn['’]?t|never|incorrect(?:ly)?|instead of|"
+            r"not (?:established|supported|confirmed)|"
+            r"does not (?:establish|prove)(?: that)?)\s*(?::|that)?\s*$",
+            start, re.I,
+        ):
             continue
         # The prompt may explicitly supply a worked example. Its numerical
         # premise is not a claim about the checked repository.

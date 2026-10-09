@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -160,7 +161,7 @@ class LocalPilotAgent:
                             scoring_performed=False,
                             promotion_allowed=False,
                         )
-            except (OSError, ValueError, RuntimeError) as exc:
+            except (OSError, ValueError, RuntimeError, sqlite3.DatabaseError) as exc:
                 # Feedback cannot block normal operator sessions.
                 self.audit.write(
                     "quality_feedback_objective_evidence_deferred",

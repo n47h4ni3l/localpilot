@@ -75,6 +75,14 @@ def test_live_machine_and_explicit_research_remain_available():
     assert LocalPilotAgent._evidence_requirements(
         "Inspect PR #184 and tell me its actual GitHub CI status."
     ) == {"private GitHub"}
+    # A hypothetical introductory clause does not cancel a subsequent
+    # explicit instruction to inspect the actual machine.
+    assert LocalPilotAgent._evidence_requirements(
+        "Suppose my PC is failing. Please inspect my PC now and verify the current disk state."
+    ) == {"Windows/PC state"}
+    assert LocalPilotAgent._is_scenario_question(
+        "Suppose my PC is failing. What would you check first?"
+    ) is True
 
 
 def test_web_research_is_explicitly_available_not_mandatory_or_unsafe():

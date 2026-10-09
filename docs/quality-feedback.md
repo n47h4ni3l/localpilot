@@ -10,6 +10,34 @@ optimizer, modify the tool permission boundary, or authorize model promotion.
 There is no model-facing "maximize points" instruction and Nestra cannot give
 herself a score through the ordinary model tool registry.
 
+## Automatic collection of objective results
+
+LocalPilot now collects **objective delivery evidence automatically** during
+ordinary startup when a self-development cycle has passed local checks,
+GitHub CI, and its pull request has been merged. The observer is enabled by
+default and records only an existing validated cycle ID, model, PR URL, and
+basic process facts—never prompts, reasoning traces, or scores.
+
+These are **evidence candidates**, not rewards. A successful merge is not
+proof that a response was safe, correct, useful or efficient. It never grants
+coaching, adjusts model weights or changes promotion permissions.
+New observations can be inspected with:
+
+~~~powershell
+localpilot feedback observations
+
+# Optional manual rescan; automatic collection normally needs no command
+localpilot feedback sync
+~~~
+
+Automatic evidence collection can be disabled with
+`feedback_auto_observations_enabled = false` under `[agent]`.
+It is always disabled inside isolated benchmark runs, irrespective of the
+owner's normal settings. The previous manual review commands remain
+available for genuinely validated real-world outcomes. Separate independent
+review of subjective quality remains necessary; the owner need not operate a
+five-dimension scoring form merely to collect routine task evidence.
+
 ## Workflow
 
 1. Complete a genuine owner task and independently verify the outcome,
@@ -62,8 +90,10 @@ existing [agent] section in localpilot.toml:
 feedback_coaching_enabled = true
 ~~~
 
-By default it is **false**, no feedback database is created during normal
-chat, and no reward information is added to prompts. The opt-in loader
+Coaching remains **false by default** and no reward information is added
+to prompts. The separate, automatic delivery-evidence observer may create
+the feedback database after a newly verified development outcome; it does not
+create any scores or coaching. The opt-in loader
 includes at most three currently approved lessons with an explicit warning
 that coaching **is not current factual evidence or permission for any
 tool action**.

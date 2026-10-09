@@ -308,7 +308,7 @@ def test_reasoning_only_turn_continues_in_same_high_context_with_explicit_contex
     assert "tools" not in calls[1]
     assert calls[0]["options"]["num_ctx"] == 32768
     assert calls[1]["options"]["num_ctx"] == 32768
-    assert calls[1]["options"]["num_predict"] == 4096
+    assert calls[1]["options"]["num_predict"] == 6144
     assert "private initial reasoning" in str(message_snapshots[1])
     assert "private initial reasoning" not in str(agent.messages)
     assert "private second reasoning" not in str(agent.messages)

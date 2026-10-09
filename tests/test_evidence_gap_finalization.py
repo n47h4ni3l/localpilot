@@ -106,6 +106,26 @@ def test_unidentified_inspection_scope_cannot_be_fulfilled_by_unrelated_safe_scr
     assert agent.audit.latest('model_unseen_script_inspection_scope_preserved')['unrelated_source_is_execution_authority'] is False
 
 
+def test_no_web_tool_arguments_are_not_a_delivered_manufacturer_answer(tmp_path,monkeypatch):
+    agent=agent_at(tmp_path)
+    def chat(**kwargs):
+        return iter([SimpleNamespace(message=SimpleNamespace(content='{"path":"", "query":"Fiberlogy"}',thinking='',tool_calls=[]))])
+    monkeypatch.setitem(sys.modules,'ollama',SimpleNamespace(chat=chat))
+    answer=agent.ask('What manufacturer-specific drying and nozzle settings apply? Do not use the public web.')
+    assert 'unverified' in answer and 'Retrieve and inspect' in answer
+    assert 'query' not in answer
+
+
+def test_no_web_preserves_supplied_manufacturer_premises(tmp_path,monkeypatch):
+    agent=agent_at(tmp_path)
+    answer='The supplied datasheet says dry at 80 C for 4 hours.'
+    def chat(**kwargs):
+        return iter([SimpleNamespace(message=SimpleNamespace(content=answer,thinking='',tool_calls=[]))])
+    monkeypatch.setitem(sys.modules,'ollama',SimpleNamespace(chat=chat))
+    prompt='The manufacturer datasheet I supplied says dry at 80 C for 4 hours. Explain that drying recommendation without using the public web.'
+    assert agent.ask(prompt)==answer
+
+
 def test_unsafe_draft_is_corrected_without_executing_its_tool(tmp_path, monkeypatch):
     agent = agent_at(tmp_path)
     safe = "Current main checks are unverified. A workflow definition does not establish a successful run; inspect the exact revision's checks first."

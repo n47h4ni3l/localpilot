@@ -418,7 +418,7 @@ def test_direct_open_ended_draft_recovers_natural_voice_before_claim_validation(
     assert "tension between initiative and accuracy" in answer
     assert "|---|" not in answer
     assert len(calls) == 2
-    assert calls[0]["options"]["num_predict"] == 2048
+    assert calls[0]["options"]["num_predict"] == 3072
     assert calls[-1]["think"] == "medium"
     assert calls[-1]["options"]["num_predict"] == 2048
     recovery = agent.audit.latest("model_same_context_behavior_recovery_complete")

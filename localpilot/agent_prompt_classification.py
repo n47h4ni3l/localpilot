@@ -427,8 +427,9 @@ def _is_operational_self_status_prompt(prompt: str) -> bool:
         re.search(r"\b(?:localpilot|your|yourself)\b", text)
         or re.search(
             r"\b(?:are|have|did|do|can|will|would) you\b|"
-            r"\byou (?:are|have|can|were|restarted|learned|changed)\b|"
+            r"\byou (?:are|have|can|were|restarted|learned|changed|didn['’]?t)\b|"
             r"\byou['’](?:re|ve|d)\b|"
+            r"\binternet access for you\b|"
             r"\b(?:blocking|restart) you\b", text,
         )
         or re.search(

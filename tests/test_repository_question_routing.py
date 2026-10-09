@@ -66,7 +66,7 @@ def test_actual_ask_keeps_high_thinking_and_repository_reads(tmp_path, monkeypat
     agent.governor = SimpleNamespace(sample=lambda interval: SimpleNamespace(background_allowed=False), apply_process_priority=lambda idle: None)
     (tmp_path / 'permissions.txt').write_text('Public read access does not authorize a local action.', encoding='utf-8')
     snapshots = []
-    answer = 'The inspected permissions.txt states that public read access does not authorize a local action. This file does not establish current action approval.'
+    answer = 'The inspected permissions.txt:1 states that public read access does not authorize a local action. This file does not establish current action approval.'
     def chat(**kwargs):
         snapshots.append((kwargs.get('think'), bool(kwargs.get('tools'))))
         call = SimpleNamespace(function=SimpleNamespace(name='read_repository_file', arguments={'path':'permissions.txt'}))

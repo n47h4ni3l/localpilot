@@ -2566,6 +2566,18 @@ class LocalPilotAgent:
                     content = agent_evidence._evidence_gap_fallback(prompt, frozenset({"unseen script"}))
                     self.audit.write("model_unseen_script_inspection_scope_preserved", actual_contents_supplied=False,
                                      unrelated_source_is_execution_authority=False, additional_model_calls=0)
+                no_web_manufacturer_gap = bool(
+                    "fetch_public_https" in self._forbidden_tools(prompt)
+                    and re.search(r"\bmanufacturer(?:[- ]specific)?\b", request_text)
+                    and re.search(r"\b(?:drying|nozzle|temperature)\b", request_text)
+                    and not re.search(r"\b(?:datasheet|data sheet|manual|document|excerpt|specification)\b.{0,80}\b(?:says|specifies|lists)\b", request_text)
+                    and not {"fetch_public_https", "read_library_passage"}.intersection(successful_tools)
+                )
+                if no_web_manufacturer_gap and not content.startswith("[LocalPilot") and not re.search(
+                    r"\b(?:unverified|unknown|unresolved|cannot|can['’]?t|not established|not supplied)\b", content.lower()
+                ):
+                    content = agent_evidence._evidence_gap_fallback(prompt, frozenset({"public HTTPS"}))
+                    self.audit.write("model_no_web_unverified_fields_preserved", additional_model_calls=0)
                 if content.startswith("[LocalPilot"):
                     fallback_sources = set(missing_evidence)
                     request_text = " ".join(prompt.lower().split())

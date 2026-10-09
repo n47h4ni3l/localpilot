@@ -81,7 +81,7 @@ def _is_scenario_question(prompt: str) -> bool:
         r"unfamiliar|untrusted|missing|inherited|raw|empty|failed|"
         r"authenticated|existing|recent|historical|previous) )?(?:"
         r"user|owner|task|model|developer|assistant|contributor|architect|revision|"
-        r"adapter|readme|summary|function|polymer|filament|material|output|"
+        r"adapter|readme|summary|function|polymer|filament|material|printer|output|"
         r"script|service|worker|candidate|change|patch|test|repository|repo|"
         r"library|manual|document|source|tutorial|blog|support article|"
         r"diagnostic|windows diagnostic|log|hardware|driver|"

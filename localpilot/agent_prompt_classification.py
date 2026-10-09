@@ -77,7 +77,12 @@ def _is_scenario_question(prompt: str) -> bool:
     # a hypothetical just because it starts with "a service" or "the model".
     # Explicit third-person scenarios ("A user asks ...") remain conceptual.
     if (
-        re.search(r"\b(?:my|our|this) (?:pc|computer|machine|system|laptop)\b", text)
+        re.search(
+            r"\b(?:my|our|this) (?:pc|computer|machine|system|laptop|"
+            r"printer|device|network|server|repository|repo|branch|workspace)\b|"
+            r"\b(?:here|at home|in my shop|on my desk|at my workplace)\b",
+            text,
+        )
         and not re.match(r"^(?:a|an|the) (?:user|owner|task)\b", text)
         and not re.match(r"^(?:suppose|imagine|hypothetically|in (?:a|this) hypothetical)\b", text)
     ):

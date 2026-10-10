@@ -42,7 +42,7 @@ from localpilot.config import Config
 from localpilot.fast_path import FastPathDecision, classify_fast_path
 from localpilot.learning import HumanLesson, KnowledgeFact, LearningMemory
 from localpilot.quality_feedback import QualityFeedbackStore
-from localpilot.guide_scaffold import GUIDE_FIRST_INSTRUCTIONS, guide_annotate_answer
+from localpilot.guide_scaffold import GUIDE_FIRST_INSTRUCTIONS
 from localpilot.machine_location import MachineLocation
 from localpilot.operator import CommandRunner
 from localpilot.research import (
@@ -1692,34 +1692,23 @@ class LocalPilotAgent:
             # visible answer exists, leave generation-exhaustion recovery below
             # intact; it is not a judgment of the draft's quality.
             if self.config.agent.scaffold_mode == "guide_first" and content.strip() and not calls:
-                advisory = self._contextual_evidence_risks(
-                    prompt, content, successful_tools, clean_recovery_messages,
-                    missing_evidence=missing_evidence,
-                )
-                gaps = answer_contract.gaps(content)
-                guided = guide_annotate_answer(
-                    content,
-                    missing_evidence=missing_evidence,
-                    source_issues=advisory,
-                    contract_gaps=gaps,
-                )
-                visible = self._visible_decline(self._strip_authority_meta(guided))
-                self.messages.append({"role": "assistant", "content": visible})
+                # No final-answer examination or transformation, including
+                # appended cautions. Evidence can guide Nestra *before* she
+                # answers; the owner receives exactly what she authored.
+                self.messages.append({"role": "assistant", "content": content})
                 self.audit.write(
                     "model_guide_first_answer_delivered",
                     round=round_no,
                     after_tools=after_tools,
                     content_chars=len(content),
-                    delivered_chars=len(visible),
-                    advisory_issue_codes=list(advisory),
-                    missing=sorted(missing_evidence),
-                    missing_contract_fields=gaps,
-                    draft_preserved=True,
-                    additional_correction_calls=0,
+                    delivered_chars=len(content),
+                    draft_preserved_byte_for_byte=True,
+                    answer_review_performed=False,
+                    correction_calls=0,
                     tools_executed_during_synthesis=0,
                     runtime_classification=runtime.get("runtime_classification"),
                 )
-                return visible
+                return content
 
             operational_self_status = self._is_operational_self_status_prompt(prompt)
             deterministic_operational_status_fallback = False
@@ -2901,7 +2890,7 @@ class LocalPilotAgent:
             prompt_chars=len(prompt),
             interface=interface,
         )
-        if fast_path.is_fast:
+        if fast_path.is_fast and self.config.agent.scaffold_mode == "strict":
             fast_answer = self._try_fast_path(chat, prompt, fast_path)
             if fast_answer is not None:
                 return fast_answer
@@ -2938,6 +2927,7 @@ class LocalPilotAgent:
         operational_self_status = (
             (self._is_operational_self_status_prompt(prompt) or desktop_interface_question)
             and not scenario_mode
+            and self.config.agent.scaffold_mode == "strict"
         )
         direct_conversation = self._is_bounded_conversational_prompt(prompt) and not scenario_mode
         temporal_web_research = self._is_temporal_web_prompt(prompt)
@@ -3291,6 +3281,11 @@ class LocalPilotAgent:
             or systemsense_diagnostic
         ):
             evidence_requirements.clear()
+        if self.config.agent.scaffold_mode == "guide_first":
+            # Source categories are planning suggestions, not mandatory
+            # tool-use obligations or conditions for delivering an answer.
+            # Nestra decides whether to research and when she has enough.
+            evidence_requirements.clear()
         attempted_evidence: set[str] = set()
         succeeded_evidence: set[str] = set()
         if (
@@ -3574,7 +3569,7 @@ class LocalPilotAgent:
             )
 
         try:
-            if desktop_interface_question:
+            if desktop_interface_question and self.config.agent.scaffold_mode == "strict":
                 interface_answer = (
                     "You’re using LocalPilot’s desktop chat. This conversation establishes that you can send "
                     "messages and receive replies. I do not receive a screenshot or a verified inventory of the "
@@ -3590,7 +3585,8 @@ class LocalPilotAgent:
                     content_chars=len(interface_answer),
                 )
                 return interface_answer
-            if operational_self_status and self._is_historical_autonomy_status_prompt(prompt):
+            if (operational_self_status and self.config.agent.scaffold_mode == "strict"
+                and self._is_historical_autonomy_status_prompt(prompt)):
                 operational_handover = self._deterministic_operational_status_fallback(prompt)
                 if operational_handover is not None:
                     self.messages.append({"role": "assistant", "content": operational_handover})

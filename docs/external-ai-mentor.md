@@ -90,3 +90,7 @@ should external mentorship be evaluated as an **additional** fourth arm,
 measuring benefit, latency, privacy and quota usage. Unit tests only use
 mocked network responses; they cannot guarantee provider account eligibility
 or prove answer-quality improvement.
+
+The free service is a remote programmatic chat interface, not a bypass of a
+website's interactive UI or an attempt to automate ChatGPT.com sessions.
+No local inference installation or additional model weights are involved.

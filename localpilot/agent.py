@@ -3364,7 +3364,7 @@ class LocalPilotAgent:
                 and "Windows/PC state" not in attempted_evidence
             )
 
-        if learning_context and not owner_forbids_tools:
+        if learning_context and not owner_forbids_tools and self.config.agent.scaffold_mode == "strict":
             try:
                 parsed_learning_context = json.loads(learning_context.split("\n", 1)[1])
                 verification_targets = list(
@@ -3412,10 +3412,10 @@ class LocalPilotAgent:
             except Exception as exc:
                 raw_result = f"Tool error: {type(exc).__name__}: {exc}"
             ok = (
-                            self._guide_tool_result_success(raw_result)
-                            if self.config.agent.scaffold_mode == "guide_first"
-                            else self._tool_result_success(raw_result)
-                        )
+                self._guide_tool_result_success(raw_result)
+                if self.config.agent.scaffold_mode == "guide_first"
+                else self._tool_result_success(raw_result)
+            )
             verification_all_succeeded = verification_all_succeeded and ok
             observation = research_notebook.add_observation(
                 tool=name,
@@ -3610,7 +3610,8 @@ class LocalPilotAgent:
                     )
                     return operational_handover
             if (
-                len(verification_targets) >= 3
+                self.config.agent.scaffold_mode == "strict"
+                and len(verification_targets) >= 3
                 and len(learning_verification_messages) == len(verification_targets)
                 and verification_all_succeeded
                 # Completed memory checks cannot discharge another source's obligation.
@@ -4052,10 +4053,10 @@ class LocalPilotAgent:
                             except Exception as exc:
                                 result = f"Tool error: {type(exc).__name__}: {exc}"
                             ok = (
-                                            self._guide_tool_result_success(result)
-                                            if self.config.agent.scaffold_mode == "guide_first"
-                                            else self._tool_result_success(result)
-                                        )
+                                self._guide_tool_result_success(result)
+                                if self.config.agent.scaffold_mode == "guide_first"
+                                else self._tool_result_success(result)
+                            )
                             if name == "fetch_public_https":
                                 public_web_fetches_used += 1
                             elif name == "search_library":

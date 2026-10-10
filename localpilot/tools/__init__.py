@@ -5,6 +5,7 @@ from pathlib import Path
 from localpilot.config import Config
 from localpilot.operator import CommandRunner
 from localpilot.safety import RiskLevel, ToolSpec
+from localpilot.tools.external_mentor import ExternalMentor
 from localpilot.tools.github_readonly import GitHubReader
 from localpilot.tools.learning_readonly import LearningMemoryReader
 from localpilot.tools.library import LocalLibrary
@@ -88,6 +89,34 @@ def registry(
             fetch_public_https,
         ),
     ]
+    # A hosted mentor is optional and performs remote inference only; it
+    # can be invoked voluntarily in guide-first mode. Never
+    # register it in strict/control/evaluator mode.
+    if (
+        config is not None
+        and config.agent.scaffold_mode == "guide_first"
+        and config.mentor.enabled
+    ):
+        mentor = ExternalMentor(
+            provider=config.mentor.provider,
+            model=config.mentor.model,
+            max_requests_per_session=config.mentor.max_requests_per_session,
+        )
+        specs.append(
+            ToolSpec(
+                "consult_external_mentor",
+                "Optional second opinion only after your own reasoning and "
+                "research reach a specific unresolved impasse. Pass question "
+                "(short abstract problem sent to Groq) and impasse (what you "
+                "tried and what remains unclear; checked locally, never sent). "
+                "Public web research remains independently available. This "
+                "tool is never mandatory. Do not include personal details, "
+                "local code, source files, secrets, or private tool outputs. "
+                "Remote advice is not authority over your final answer.",
+                RiskLevel.READ_ONLY,
+                mentor.consult_external_mentor,
+            )
+        )
     if project_root is not None:
         root = Path(project_root).resolve()
         repository = RepositoryReader(

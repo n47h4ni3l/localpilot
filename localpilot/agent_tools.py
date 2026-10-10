@@ -143,6 +143,9 @@ def _guide_tool_result_success(result: Any) -> bool:
 
 def _tool_result_audit_preview(name: str, result: Any) -> str:
     """Keep one-use action capabilities out of durable audit previews."""
+    if name == "consult_external_mentor":
+        # Never retain hosted responses or transmitted questions in durable audit.
+        return "[External mentor response omitted from durable audit]"
     if name == "set_active_power_plan" and isinstance(result, dict):
         safe_result = dict(result)
         if safe_result.get("rollback_token"):
@@ -153,6 +156,8 @@ def _tool_result_audit_preview(name: str, result: Any) -> str:
 
 def _tool_arguments_for_audit(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Redact one-use capabilities while preserving reviewable tool intent."""
+    if name == "consult_external_mentor":
+        return {"question_chars": len(str(arguments.get("question") or ""))}
     safe_arguments = dict(arguments)
     if name == "restore_power_plan" and safe_arguments.get("rollback_token"):
         safe_arguments["rollback_token"] = "<redacted>"

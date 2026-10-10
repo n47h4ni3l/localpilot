@@ -42,7 +42,7 @@ from localpilot.config import Config
 from localpilot.fast_path import FastPathDecision, classify_fast_path
 from localpilot.learning import HumanLesson, KnowledgeFact, LearningMemory
 from localpilot.quality_feedback import QualityFeedbackStore
-from localpilot.guide_scaffold import GUIDE_FIRST_SYSTEM_PROMPT
+from localpilot.guide_scaffold import GUIDE_FIRST_SYSTEM_PROMPT, EXTERNAL_MENTOR_INSTRUCTIONS
 from localpilot.machine_location import MachineLocation
 from localpilot.operator import CommandRunner
 from localpilot.research import (
@@ -98,6 +98,7 @@ class LocalPilotAgent:
         # active and defeat the purpose of a non-interfering scaffold.
         system_prompt = (
             GUIDE_FIRST_SYSTEM_PROMPT
+            + (EXTERNAL_MENTOR_INSTRUCTIONS if config.mentor.enabled else "")
             if config.agent.scaffold_mode == "guide_first"
             else SYSTEM_PROMPT
         )
@@ -2995,6 +2996,13 @@ class LocalPilotAgent:
             re.search(r"\bwithout (?:using )?(?:any )?tools\b", prompt, re.IGNORECASE)
         )
         forbidden_tool_names = self._forbidden_tools(prompt)
+        if (self.config.agent.scaffold_mode == "guide_first"
+                and "search_public_web" in forbidden_tool_names):
+            # Mentor consultations are outbound web requests even though
+            # the historical strict-mode forbidden-tool set is unchanged.
+            forbidden_tool_names = frozenset({
+                *forbidden_tool_names, "consult_external_mentor"
+            })
         learning_message: dict[str, Any] | None = None
         systemsense_message: dict[str, Any] | None = None
         operational_status_message: dict[str, Any] | None = None
@@ -3634,8 +3642,10 @@ class LocalPilotAgent:
                 allow_tools = (
                     not owner_forbids_tools
                     and not operational_self_status
-                    and not direct_conversation
-                    and not scenario_mode
+                    and (
+                        self.config.agent.scaffold_mode == "guide_first"
+                        or (not direct_conversation and not scenario_mode)
+                    )
                     and tool_rounds_used < hard_tool_rounds
                 )
                 while True:
@@ -3894,7 +3904,8 @@ class LocalPilotAgent:
                         args = sensor_request.tool_arguments(name, args)
                         spec = self.tools.get(name)
                         cache_key = self._tool_cache_key(name, args)
-                        cacheable = spec is not None and str(spec.risk) == "read_only"
+                        cacheable = (spec is not None and str(spec.risk) == "read_only"
+                                     and name != "consult_external_mentor")
                         if not (cacheable and cache_key in observation_cache):
                             unique_candidates.append((name, args))
 
@@ -3949,7 +3960,11 @@ class LocalPilotAgent:
                             and self.policy.permits_without_confirmation(spec.risk)
                         )
                         cache_key = self._tool_cache_key(name, args)
-                        cacheable = spec is not None and str(spec.risk) == "read_only"
+                        cacheable = (
+                            spec is not None
+                            and str(spec.risk) == "read_only"
+                            and name != "consult_external_mentor"
+                        )
                         cache_hit = cacheable and cache_key in observation_cache
                         stagnant_blocked = name in stagnant_tool_names
                         public_web_limit_blocked = (

@@ -113,17 +113,24 @@ def _tool_evidence_source(name: str) -> str | None:
 
 def _tool_result_success(result: Any) -> bool:
     text = str(result).strip().lower()
-    if not text or any(text.startswith(marker) for marker in _TOOL_FAILURE_MARKERS):
+    if not text:
         return False
-    # A successful source read can legitimately contain the words "Tool error:"
-    # or "No matches found." as *data*. The repository search's exact empty
-    # result is a valid executed search but not an acquired source excerpt.
-    if text == "no matches found." or (
-        text.startswith("repository search: ")
-        and text.splitlines()[1:] == ["no matches found."]
-    ):
-        return False
-    return True
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    # Repository sources prefix each returned source line with its number.
+    # An error-like string *inside* such a line remains legitimate evidence.
+    if lines[0].startswith("repository file: "):
+        return len(lines) > 1
+    if lines[0].startswith("repository search: "):
+        return len(lines) > 1 and lines[1:] != ["no matches found."]
+    # Other registered readers may wrap an actual error on their second
+    # line ("Private GitHub ...\nGitHub read failed: ...", or
+    # "Public web search ...\nNo bounded HTTPS results were found.").
+    # Check only the envelope, never an arbitrary occurrence deep in data.
+    return not any(
+        line.startswith(marker)
+        for line in lines[:2]
+        for marker in _TOOL_FAILURE_MARKERS
+    )
 
 
 def _tool_result_audit_preview(name: str, result: Any) -> str:

@@ -134,6 +134,10 @@ def test_hosted_advice_bounded_and_never_requires_local_model(
     else:
         assert payload["messages"][-1]["content"].startswith("How should")
         assert "tools" not in payload
+        if provider == "groq":
+            assert payload["max_tokens"] == 4096
+            assert payload["reasoning_effort"] == "high"
+            assert payload["include_reasoning"] is False
     assert "test-local-secret" not in request.data.decode()
     assert "invalidation triggers" not in request.data.decode()
     assert "indistinguishable" not in request.data.decode()

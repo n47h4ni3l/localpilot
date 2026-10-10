@@ -110,8 +110,14 @@ class ExternalMentor:
                     {"role": "user", "content": question},
                 ],
                 "stream": False,
-                "max_tokens": 1536,
+                "max_tokens": 4096 if self.provider == "groq" else 1536,
             }
+            if self.provider == "groq":
+                # The large hosted model can spend tokens on reasoning before
+                # emitting its helpful final guidance. Give it headroom and
+                # return advice, not its internal reasoning trace.
+                body["reasoning_effort"] = "high"
+                body["include_reasoning"] = False
         request = urllib.request.Request(
             _ENDPOINTS[self.provider],
             data=json.dumps(body).encode("utf-8"),

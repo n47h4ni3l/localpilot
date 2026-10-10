@@ -3325,7 +3325,7 @@ class LocalPilotAgent:
         library_grounding_attempted = False
         soft_tool_rounds = max(1, int(self.config.agent.research_soft_tool_rounds))
         hard_tool_rounds = max(soft_tool_rounds, int(self.config.agent.research_hard_tool_rounds))
-        if retrieved_facts:
+        if retrieved_facts and self.config.agent.scaffold_mode == "strict":
             soft_tool_rounds = min(soft_tool_rounds, _LEARNING_MEMORY_SOFT_TOOL_ROUNDS)
             hard_tool_rounds = min(
                 hard_tool_rounds,

@@ -56,7 +56,7 @@ def cards(study: Path, bundle: Path, key_path: Path) -> None:
     rows = load_cells(study, protocol)
     entries = list(protocol["plan"])
     random.SystemRandom().shuffle(entries)
-    key, out = {}, []
+    key, out, observed_sources = {}, [], []
     for index, entry in enumerate(entries, 1):
         card_id = f"card-{index:03}"
         row = rows.get(entry["id"])
@@ -70,9 +70,22 @@ def cards(study: Path, bundle: Path, key_path: Path) -> None:
         key[card_id] = {**entry, "collected": row is not None,
                         "cell_sha256": file_hash(study / "cells" / f"{entry['id']}.json") if row else None,
                         "response_sha256": digest(row["response"] if row else "")}
+        observed_sources.append({"card_id": card_id, "public_reads": [
+            {"result": event.get("result"), "error": event.get("error"),
+             "result_sha256": event.get("result_sha256")}
+            for event in (row or {}).get("tool_results", [])]})
     bundle.mkdir(parents=True)
     (bundle / "cards.jsonl").write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in out),
                                         encoding="utf-8")
+    # No arm, timing, requested settings or runtime IDs in this provenance
+    # companion. Read choices can still hint at an arm, hence arm_guess.
+    (bundle / "observed-sources.jsonl").write_text("".join(
+        json.dumps(s, ensure_ascii=False) + "\n" for s in observed_sources), encoding="utf-8")
+    for name, expected_hash in protocol.get("source_files", {}).items():
+        source = study / "sources" / f"{name}.json"
+        if file_hash(source) != expected_hash:
+            raise ValueError("Frozen offline reference changed")
+        save(bundle / "references" / f"{name}.json", read(source))
     save(key_path, {"protocol_sha256": file_hash(study / "protocol.json"), "cards": key})
     (bundle / "review-instructions.md").write_text(
         "# Independent offline review\n\n"
@@ -87,8 +100,9 @@ def cards(study: Path, bundle: Path, key_path: Path) -> None:
         "The executing author must not self-attest independent review. Record reviewer identity, "
         "independence, and an optional arm guess to assess blinding. Leave unknown grades blank. "
         "Some answer text may reveal an arm; no text is edited to improve blinding. Supplied-source "
-        "questions contain packets. Live-source references require review against the time of collection; "
-        "ask for a separate arm-blind source evidence packet if a live claim changed. Missing cells are "
+        "questions contain packets. references/ contains frozen harness captures; "
+        "observed-sources.jsonl contains arm-blind exact public read results and failures for each card. "
+        "Distinguish those origins and check live claims against the captured material. Missing cells are "
         "represented here as empty placeholders and excluded from collected-answer grade aggregates "
         "after unblinding. Their planned denominator remains in the report.\n", encoding="utf-8")
 
@@ -114,6 +128,10 @@ def summarize(study: Path, key_path: Path, grades_path: Path | None, destination
             seen.add(card_id)
             mapping = key["cards"][card_id]
             row = rows.get(mapping["id"])
+            entry = next(c for c in protocol["plan"] if c["id"] == mapping["id"])
+            task = next(t for t in protocol["tasks"] if t["id"] == entry["task_id"])
+            if card.get("question") != task["question"] or card.get("rubric") != task["rubric"]:
+                raise ValueError("Question/rubric changed after blind cards were exported")
             if (mapping["collected"] != (row is not None) or digest(card["response"]) != mapping["response_sha256"]
                     or (row and file_hash(study / "cells" / f"{mapping['id']}.json") != mapping["cell_sha256"])):
                 raise ValueError("Response/cell changed after blind cards were exported")

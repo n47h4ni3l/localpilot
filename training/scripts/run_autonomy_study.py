@@ -206,7 +206,8 @@ def prepare(output: Path, guide_revision: str) -> dict:
         "client_runtime": {"python": sys.version, "platform": sys.platform,
                            "ollama_library": importlib.metadata.version("ollama")},
         "evaluator_files": {str(p.relative_to(ROOT).as_posix()): file_hash(p) for p in
-            (Path(__file__), Path(__file__).with_name("autonomy_tasks.py"))},
+            (Path(__file__), Path(__file__).with_name("autonomy_tasks.py"),
+             Path(__file__).with_name("review_autonomy_study.py"))},
         "model": MODEL, "model_digest": P1_DIGEST, "lineage": lineage,
         "think": "high", "options": OPTIONS, "budgets": BUDGETS,
         "keep_alive": "30m", "transport": "streaming_all_arms", "boundary": BOUNDARY,

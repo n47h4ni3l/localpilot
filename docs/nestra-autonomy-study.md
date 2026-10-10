@@ -156,6 +156,11 @@ enter an offline summary. Empty/error deliveries remain collected cells;
 unattempted cells keep their planned denominator and are not passed off as
 model failures. Unknown token usage and missing grades remain explicit. Source
 and live results are separate, and two repetitions are not independent tasks.
+The blind bundle includes frozen harness references and a separate companion
+with the exact public reader results/failures, stripped of arm, timing and
+runtime identifiers. This lets the independent reviewer check source coverage
+and provenance without receiving the arm key. Read choices and answer wording
+can still hint at the arm; that limitation remains visible.
 
 The implementation review found and repaired Windows archive line-ending
 conversion, unbalanced ordering, incomplete-source risks, unmetered failed-call

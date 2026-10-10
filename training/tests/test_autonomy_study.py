@@ -203,6 +203,9 @@ def test_blind_cards_preserve_empty_failed_missing_cells_without_metadata(tmp_pa
     assert len(cards) == 48
     assert all(c["response"] == "" and c["accuracy"] is None for c in cards)
     assert all(not {"arm", "repeat", "seconds", "error", "turns", "tool_results"} & set(c) for c in cards)
+    sources = [json.loads(s) for s in (bundle / "observed-sources.jsonl").read_text().splitlines()]
+    assert len(sources) == 48
+    assert all(set(s) == {"card_id", "public_reads"} for s in sources)
     assert sum(c["collected"] for c in study.read(key_path)["cards"].values()) == 1
     summary = review.summarize(root, key_path, None, tmp_path / "summary.json")
     assert summary["planned"] == 48 and summary["collected"] == 1
@@ -378,3 +381,22 @@ def test_production_invariants_read_only_and_checkpoint_mismatch_is_visible(tmp_
     checkpoint.write_bytes(b"mismatched state")
     with pytest.raises(RuntimeError, match="checkpoint differs"):
         study.production_invariants(production, models, {"lineage": lineage})
+
+
+def test_blind_review_includes_frozen_reference_and_observed_read_without_arm_metadata(tmp_path):
+    root, protocol = _saved_study(tmp_path)
+    source = root / "sources" / "primary.json"
+    study.save(source, {"url": "https://example.org", "text": "frozen primary reference"})
+    protocol["source_files"] = {"primary": study.file_hash(source)}
+    study.save(root / "protocol.json", protocol)
+    cell_path = next((root / "cells").glob("*.json"))
+    row = study.read(cell_path)
+    row["tool_results"] = [{"tool": "fetch_public_https", "started_at": "arm-order-clue",
+                           "result": "exact bounded public evidence", "result_sha256": "hash"}]
+    study.save(cell_path, row)
+    bundle = tmp_path / "blind"
+    review.cards(root, bundle, tmp_path / "key.json")
+    assert study.read(bundle / "references" / "primary.json")["text"] == "frozen primary reference"
+    observed = (bundle / "observed-sources.jsonl").read_text()
+    assert "exact bounded public evidence" in observed
+    assert "arm-order-clue" not in observed and "fetch_public_https" not in observed

@@ -1364,6 +1364,41 @@ class LocalPilotAgent:
                 status_code=status_code,
             ) from None
 
+        if (
+            tool_calls
+            and tools
+            and self.config.agent.scaffold_mode == "guide_first"
+        ):
+            exposed = agent_tools._advertised_tool_names(tools)
+            recoverable = frozenset(
+                name
+                for name in exposed
+                if (spec := self.tools.get(name)) is not None
+                and str(spec.risk) == "read_only"
+                and self.policy.permits_without_confirmation(spec.risk)
+                # A remote paid/optional mentor must never be inferred from a
+                # malformed name. Nestra must call it by its exact name.
+                and name != "consult_external_mentor"
+            )
+            repaired_calls: list[Any] = []
+            for call in tool_calls:
+                original_name, _ = self._tool_call_parts(call)
+                repaired, reason = agent_tools._recover_readonly_tool_call(
+                    call, exposed=exposed, recoverable=recoverable,
+                )
+                repaired_calls.append(repaired)
+                if reason:
+                    repaired_name, _ = self._tool_call_parts(repaired)
+                    self.audit.write(
+                        "model_tool_name_transport_recovered",
+                        original_name=original_name,
+                        resolved_name=repaired_name,
+                        recovery_reason=reason,
+                        phase=phase,
+                        turn=turn_no,
+                    )
+            tool_calls = repaired_calls
+
         result: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
         if thinking_parts:
             result["thinking"] = "".join(thinking_parts)

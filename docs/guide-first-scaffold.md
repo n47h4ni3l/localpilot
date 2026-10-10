@@ -1,10 +1,10 @@
 # Guide-first scaffold (experimental)
 
 This branch introduces a **reversible alternative** to the old rigid LocalPilot
-postvalidation loop. Nestra P1 remains the reasoning agent. LocalPilot should
-supply research tools, private on-device context, useful memory and occasional
-verification notes rather than repeatedly attempting to regrade/rewrite answers
-or withholding a substantive explanation for an unverified line citation.
+postvalidation loop. Nestra P1 remains the reasoning agent. LocalPilot supplies
+research tools, private on-device context, useful memory and **pre-answer
+method guidance** only. It does not inspect, correct, append to or withhold
+her final answer based on unverifiable heuristics.
 
 ## Activation
 
@@ -25,18 +25,26 @@ different mode or runtime revision.
 
 | Concern | Strict comparison mode | Guide-first experiment |
 | --- | --- | --- |
-| Answer quality checks | Multiple corrective inference calls and possible complete withholding | A single model-authored draft is preserved; heuristic issues are advisory |
-| Missing source | Mandatory acquisition/recovery, may replace answer with generic fallback | Still attempts explicitly required live reads; if unavailable, retains useful draft and scopes live claims |
+| Answer quality checks | Multiple corrective inference calls and possible complete withholding | Nestra's answer is delivered byte-for-byte; no grading, warnings, rewrite or veto |
+| Missing source | Mandatory acquisition/recovery, may replace answer with generic fallback | Model decides which permitted research to attempt and communicates its own evidence limits |
 | Synthesis | Long final source-authority postcondition prompt | Short, supportive synthesis prompt |
-| Numeric/citation uncertainty | Reject if unsatisfied | Keep answer, append concise verification note for flagged specifics |
-| Research access | Controlled by the existing tool registry and research budget | Same tool registry and execution budget, more discretionary answer completion |
+| Numeric/citation uncertainty | Reject if unsatisfied | Teach source verification *before* answering; do not inspect or annotate the output |
+| Research access | Controlled by the existing tool registry and research budget | Same permission registry and hard budget; soft budget advises, without a mandatory notebook checkpoint |
 | Security/actions | Risk-class policy at execution | **Identical** hard execution policy, destructive confirmation, protected data/owner no-web limits |
 
-The guide-first code does **not** automatically correct a wrong numerical
-constant. It also cannot guarantee that a draft with a verification note is
-accurate. These known limitations are exactly why the mode is experimental.
-The verification note is not a citation and cannot substitute for an actual
-source. For high-stakes claims the owner should rely on checked evidence.
+Guide-first **never examines, rewrites, scores, appends warnings to, or withholds** a nonempty
+model-authored final response. Quality guidance goes into Nestra's context
+*before* she works, not into the answer afterward. As a result, unsupported
+numeric constants and high-confidence mistakes can appear in answers: this is
+an intentional tradeoff to measure fairly, not evidence they are correct.
+For consequential matters use primary-source verification and keep actual
+tool/action permissions at the execution boundary.
+
+Guide-first does not force source acquisition through the strict evaluator's
+`evidence_requirements` list and bypasses the deterministic fast-answer route
+for free-form conversation. Nestra can choose whether a read-only source
+would materially improve the answer, bounded by unchanged tool authority
+and hard budgets.
 
 The tool-result success classifier now treats quoted phrases such as
 `Tool error:` and `No matches found.` in a legitimate repository file as

@@ -113,8 +113,32 @@ def _tool_evidence_source(name: str) -> str | None:
 
 
 def _tool_result_success(result: Any) -> bool:
+    """Frozen strict-mode source classification (historical A/B control)."""
     text = str(result).strip().lower()
     return bool(text) and not any(marker in text for marker in _TOOL_FAILURE_MARKERS)
+
+
+def _guide_tool_result_success(result: Any) -> bool:
+    """Recognize real result failures without treating quoted source as errors."""
+    text = str(result).strip().lower()
+    if not text:
+        return False
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    # Repository sources prefix each returned source line with its number.
+    # An error-like string *inside* such a line remains legitimate evidence.
+    if lines[0].startswith("repository file: "):
+        return len(lines) > 1
+    if lines[0].startswith("repository search: "):
+        return len(lines) > 1 and lines[1:] != ["no matches found."]
+    # Other registered readers may wrap an actual error on their second
+    # line ("Private GitHub ...\nGitHub read failed: ...", or
+    # "Public web search ...\nNo bounded HTTPS results were found.").
+    # Check only the envelope, never an arbitrary occurrence deep in data.
+    return not any(
+        line.startswith(marker)
+        for line in lines[:2]
+        for marker in _TOOL_FAILURE_MARKERS
+    )
 
 
 def _tool_result_audit_preview(name: str, result: Any) -> str:

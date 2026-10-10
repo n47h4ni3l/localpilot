@@ -166,6 +166,9 @@ def isolated_config(root: Path, *, model: str | None = None) -> Config:
     cfg.model.memory_embeddings_enabled = False
     # Evaluation must not absorb scored production feedback even when configured.
     cfg.agent.feedback_coaching_enabled = False
+    # Historical primary evaluator semantics stay frozen unless a *new* A/B
+    # harness explicitly opts into guide-first behavior on a new run.
+    cfg.agent.scaffold_mode = "strict"
     cfg.agent.feedback_auto_observations_enabled = False
     cfg.library.enabled = False
     cfg.systemsense.enabled = False

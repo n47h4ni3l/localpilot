@@ -14,6 +14,9 @@ class AgentConfig:
     # Legacy compatibility input. New operator research uses an advisory soft
     # budget and a separate hard safety ceiling so the model can decide when
     # another observation is genuinely necessary.
+    # Experimental guide-first mode preserves useful drafts and offers advisory
+    # verification; strict remains available as the frozen comparison control.
+    scaffold_mode: str = "strict"
     max_tool_rounds: int = 12
     research_soft_tool_rounds: int = 12
     research_hard_tool_rounds: int = 24
@@ -416,6 +419,8 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ValueError(
             "model.memory_embedding_migration_limit must be between 1 and 5000"
         )
+    if cfg.agent.scaffold_mode not in {"strict", "guide_first"}:
+        raise ValueError("agent.scaffold_mode must be strict or guide_first")
     cfg.agent.research_soft_tool_rounds = int(cfg.agent.research_soft_tool_rounds)
     cfg.agent.research_hard_tool_rounds = int(cfg.agent.research_hard_tool_rounds)
     if cfg.agent.research_soft_tool_rounds < 1:

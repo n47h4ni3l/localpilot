@@ -14,6 +14,9 @@ class AgentConfig:
     # Legacy compatibility input. New operator research uses an advisory soft
     # budget and a separate hard safety ceiling so the model can decide when
     # another observation is genuinely necessary.
+    # Experimental guide-first mode preserves useful drafts and offers advisory
+    # verification; strict remains available as the frozen comparison control.
+    scaffold_mode: str = "strict"
     max_tool_rounds: int = 12
     research_soft_tool_rounds: int = 12
     research_hard_tool_rounds: int = 24

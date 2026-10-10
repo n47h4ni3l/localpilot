@@ -4432,9 +4432,13 @@ class LocalPilotAgent:
                         hard_limit=True,
                     )
 
-                if content.strip() and not self._looks_like_generic_reset(content):
-                    # Every visible draft gets the same late behavior/evidence gates. Passing
-                    # drafts are returned byte-for-byte without another model call.
+                if content.strip() and (
+                    self.config.agent.scaffold_mode == "guide_first"
+                    or not self._looks_like_generic_reset(content)
+                ):
+                    # In guide-first mode, Nestra's substantive final text is
+                    # delivered even if a heuristic calls it a "generic reset".
+                    # The strict control keeps the historical classifier.
                     self.messages.pop()
                     return continue_clean_answer(
                         round_no=turn_no,

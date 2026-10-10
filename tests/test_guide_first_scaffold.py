@@ -203,3 +203,74 @@ def test_guide_memory_verification_targets_are_not_compulsory(tmp_path, monkeypa
     assert agent.ask("Verify the declared dependency for Ollama streaming integration.") == answer
     assert agent.audit.latest("model_learning_memory_live_verification") is None
     assert agent.audit.latest("model_learning_memory_direct_synthesis") is None
+
+
+@pytest.mark.parametrize("draft", [
+    "  This deliberately unsupported statement is my answer.  \n",
+    "Hello! How can I help?",  # Historical reset classifier must not erase it.
+    "The proposed unsafe design runs the helper before its preview.\n",
+    "DECLINE: I choose not to answer.",
+])
+@pytest.mark.parametrize("after_tools", [False, True])
+def test_guide_does_not_inspect_final_content_or_call_a_verifier(
+    tmp_path, monkeypatch, draft, after_tools,
+):
+    agent = _agent(tmp_path)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Guide delivery invoked answer review or extra inference")
+
+    monkeypatch.setattr(agent.information_authority, "review", forbidden)
+    monkeypatch.setattr(agent.turn_evidence, "review", forbidden)
+    monkeypatch.setattr(agent, "_stream_chat_message", forbidden)
+    monkeypatch.setattr(agent, "_looks_like_generic_reset", forbidden)
+    assert agent._continue_high_reasoning_answer(
+        None, prompt="Inspect this supplied example as text only.",
+        round_no=1, after_tools=after_tools, draft_content=draft,
+        missing_evidence=frozenset({"public HTTPS", "trusted repository"}),
+    ) == draft
+
+
+def test_guide_optional_methods_do_not_supply_task_specific_answers():
+    assert "optional ways" in GUIDE_FIRST_INSTRUCTIONS
+    assert "not required steps or an answer format" in GUIDE_FIRST_INSTRUCTIONS
+    assert "You decide" in GUIDE_FIRST_INSTRUCTIONS
+    for answer in ("B@A", "421", "425", "RemoteSigned", "foreign_keys"):
+        assert answer not in GUIDE_FIRST_INSTRUCTIONS
+
+
+@pytest.mark.parametrize("risk", ["read_only", "reversible", "destructive"])
+def test_guidance_does_not_grant_tool_authorization(tmp_path, risk):
+    from localpilot.safety import RiskLevel
+
+    agents = [_agent(tmp_path / mode, mode) for mode in ("strict", "guide_first")]
+    for agent in agents:
+        agent.policy.auto_allow_read_only = False
+        agent.policy.auto_allow_reversible = False
+        agent.policy.require_confirmation_for_destructive = True
+        assert not agent.policy.permits_without_confirmation(RiskLevel(risk))
+
+
+def test_guide_ask_delivers_unsupported_first_answer_without_review(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    agent = _agent(tmp_path)
+    draft = "  My unsupported claim and unsafe suggestion remain my answer.\n"
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Guide ask invoked answer quality review")
+
+    monkeypatch.setattr(agent.information_authority, "review", forbidden)
+    monkeypatch.setattr(agent.turn_evidence, "review", forbidden)
+    calls = []
+
+    def chat(**kwargs):
+        calls.append(kwargs)
+        return iter([SimpleNamespace(message=SimpleNamespace(
+            content=draft, thinking="", tool_calls=[],
+        ))])
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=chat))
+    assert agent.ask("Explain this supplied hypothetical without taking any action.") == draft
+    assert len(calls) == 1

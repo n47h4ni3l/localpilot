@@ -4070,7 +4070,11 @@ class LocalPilotAgent:
                             and spec is not None
                             and permitted
                         ):
-                            ok = self._tool_result_success(result)
+                            ok = (
+                                self._guide_tool_result_success(result)
+                                if self.config.agent.scaffold_mode == "guide_first"
+                                else self._tool_result_success(result)
+                            )
                             if evidence_source == "Windows/PC state" and ok and sensor_request.active:
                                 missing_metrics, acquired_contract = sensor_request.evaluate(str(result))
                                 try:
@@ -4291,7 +4295,7 @@ class LocalPilotAgent:
                 thinking = str(response.get("thinking") or "")
                 missing_evidence = evidence_requirements - succeeded_evidence
 
-                if used_tools and controls_visible_at_call and all(
+                if used_tools and controls_visible_at_call and self.config.agent.scaffold_mode == "strict" and all(
                     id(response) != id(message) for message in internal_messages
                 ):
                     # This response was generated while checkpoint/recovery scaffolding was visible.
@@ -4342,8 +4346,7 @@ class LocalPilotAgent:
 
                 if used_tools:
                     if (self.config.agent.scaffold_mode == "guide_first"
-                        and content.strip()
-                        and not controls_visible_at_call):
+                        and content.strip()):
                         # Keep a model-generated explanation, not repeated
                         # model-on-model grading that can erase a good draft.
                         self.messages.pop()

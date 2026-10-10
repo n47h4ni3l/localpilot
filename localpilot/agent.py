@@ -3642,8 +3642,10 @@ class LocalPilotAgent:
                 allow_tools = (
                     not owner_forbids_tools
                     and not operational_self_status
-                    and not direct_conversation
-                    and not scenario_mode
+                    and (
+                        self.config.agent.scaffold_mode == "guide_first"
+                        or (not direct_conversation and not scenario_mode)
+                    )
                     and tool_rounds_used < hard_tool_rounds
                 )
                 while True:

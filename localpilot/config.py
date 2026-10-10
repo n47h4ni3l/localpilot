@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +54,16 @@ class ModelConfig:
     memory_semantic_min_similarity: float = 0.2
     memory_embedding_batch_size: int = 64
     memory_embedding_migration_limit: int = 512
+
+
+@dataclass(slots=True)
+class MentorConfig:
+    # Hosted inference is remote, opt-in, and disabled by default.
+    # Groq and OpenRouter free model tiers can avoid separately paid API usage.
+    enabled: bool = False
+    provider: str = "groq"
+    model: str = "openai/gpt-oss-120b"
+    max_requests_per_session: int = 3
 
 
 @dataclass(slots=True)
@@ -199,6 +210,7 @@ class SelfDevConfig:
 class Config:
     agent: AgentConfig = field(default_factory=AgentConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    mentor: MentorConfig = field(default_factory=MentorConfig)
     resource: ResourceConfig = field(default_factory=ResourceConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
@@ -275,6 +287,7 @@ def load_config(path: str | Path | None = None) -> Config:
             soft = max(1, int(cfg.agent.research_soft_tool_rounds))
             cfg.agent.research_hard_tool_rounds = max(soft + 4, soft * 2)
         _apply(cfg.model, raw.get("model", {}))
+        _apply(cfg.mentor, raw.get("mentor", {}))
         _apply(cfg.resource, raw.get("resource", {}))
         _apply(cfg.safety, raw.get("safety", {}))
         _apply(cfg.github, raw.get("github", {}))
@@ -419,6 +432,21 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ValueError(
             "model.memory_embedding_migration_limit must be between 1 and 5000"
         )
+    if not isinstance(cfg.mentor.enabled, bool):
+        raise ValueError("mentor.enabled must be a boolean")
+    cfg.mentor.provider = str(cfg.mentor.provider).strip().lower()
+    if cfg.mentor.provider not in {"groq", "openrouter", "openai"}:
+        raise ValueError("mentor.provider must be groq, openrouter, or openai")
+    cfg.mentor.model = str(cfg.mentor.model).strip()
+    if cfg.mentor.provider == "openrouter" and not cfg.mentor.model.endswith(":free"):
+        raise ValueError("mentor.model must end in :free when using OpenRouter")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:-]{1,99}", cfg.mentor.model):
+        raise ValueError("mentor.model must be a simple provider model identifier")
+    if isinstance(cfg.mentor.max_requests_per_session, bool):
+        raise ValueError("mentor.max_requests_per_session must be an integer")
+    cfg.mentor.max_requests_per_session = int(cfg.mentor.max_requests_per_session)
+    if not 1 <= cfg.mentor.max_requests_per_session <= 10:
+        raise ValueError("mentor.max_requests_per_session must be between 1 and 10")
     if cfg.agent.scaffold_mode not in {"strict", "guide_first"}:
         raise ValueError("agent.scaffold_mode must be strict or guide_first")
     cfg.agent.research_soft_tool_rounds = int(cfg.agent.research_soft_tool_rounds)

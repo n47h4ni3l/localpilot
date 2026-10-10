@@ -42,7 +42,7 @@ from localpilot.config import Config
 from localpilot.fast_path import FastPathDecision, classify_fast_path
 from localpilot.learning import HumanLesson, KnowledgeFact, LearningMemory
 from localpilot.quality_feedback import QualityFeedbackStore
-from localpilot.guide_scaffold import GUIDE_FIRST_SYSTEM_PROMPT
+from localpilot.guide_scaffold import GUIDE_FIRST_SYSTEM_PROMPT, EXTERNAL_MENTOR_INSTRUCTIONS
 from localpilot.machine_location import MachineLocation
 from localpilot.operator import CommandRunner
 from localpilot.research import (
@@ -98,6 +98,7 @@ class LocalPilotAgent:
         # active and defeat the purpose of a non-interfering scaffold.
         system_prompt = (
             GUIDE_FIRST_SYSTEM_PROMPT
+            + (EXTERNAL_MENTOR_INSTRUCTIONS if config.mentor.enabled else "")
             if config.agent.scaffold_mode == "guide_first"
             else SYSTEM_PROMPT
         )
@@ -2995,6 +2996,13 @@ class LocalPilotAgent:
             re.search(r"\bwithout (?:using )?(?:any )?tools\b", prompt, re.IGNORECASE)
         )
         forbidden_tool_names = self._forbidden_tools(prompt)
+        if (self.config.agent.scaffold_mode == "guide_first"
+                and "search_public_web" in forbidden_tool_names):
+            # Mentor consultations are outbound web requests even though
+            # the historical strict-mode forbidden-tool set is unchanged.
+            forbidden_tool_names = frozenset({
+                *forbidden_tool_names, "consult_external_mentor"
+            })
         learning_message: dict[str, Any] | None = None
         systemsense_message: dict[str, Any] | None = None
         operational_status_message: dict[str, Any] | None = None

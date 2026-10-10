@@ -145,7 +145,7 @@ def test_mutating_or_expensive_mentor_tools_are_never_recovered(tmp_path):
     agent = _agent(tmp_path)
     exposed = _advertised_tool_names(agent._functions())
     assert "read_repository_file" in exposed
-    assert "open_windows_app" not in exposed  # By default, not authorized for automatic use.
+    assert "open_windows_app" in exposed  # May be enabled, but never recover a mutated action name.
     raw = _call("open_windows_app<|channel|>commentary", {"app": "notepad"})
     repaired, reason = _recover_readonly_tool_call(
         raw, exposed=frozenset({"open_windows_app"}),

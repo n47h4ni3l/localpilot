@@ -3902,7 +3902,8 @@ class LocalPilotAgent:
                         args = sensor_request.tool_arguments(name, args)
                         spec = self.tools.get(name)
                         cache_key = self._tool_cache_key(name, args)
-                        cacheable = spec is not None and str(spec.risk) == "read_only"
+                        cacheable = (spec is not None and str(spec.risk) == "read_only"
+                                     and name != "consult_external_mentor")
                         if not (cacheable and cache_key in observation_cache):
                             unique_candidates.append((name, args))
 

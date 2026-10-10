@@ -57,7 +57,7 @@ def test_guide_preserves_good_first_draft_without_correction_or_withholding(tmp_
     assert "[LocalPilot withheld" not in delivered
     assert agent.audit.latest("model_guide_first_answer_delivered")["additional_correction_calls"] == 0
     assert "GUIDE-FIRST ASSISTANCE" in str(agent.messages)
-    assert "SafetyPolicy" in GUIDE_FIRST_INSTRUCTIONS if "SafetyPolicy" in GUIDE_FIRST_INSTRUCTIONS else True
+    assert "authorization" in GUIDE_FIRST_INSTRUCTIONS.lower()
 
 
 def test_missing_live_evidence_is_scoped_but_draft_is_not_lost(tmp_path):

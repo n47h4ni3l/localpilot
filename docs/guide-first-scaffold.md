@@ -34,7 +34,10 @@ different mode or runtime revision.
 
 Guide-first **never examines, rewrites, scores, appends warnings to, or withholds** a nonempty
 model-authored final response. Quality guidance goes into Nestra's context
-*before* she works, not into the answer afterward. As a result, unsupported
+*before* she works, not into the answer afterward. It uses a standalone
+research-mentor system prompt **instead of** the strict examiner's prompt:
+merely stacking a friendly instruction on top of mandatory old rules would
+leave the interference in place. As a result, unsupported
 numeric constants and high-confidence mistakes can appear in answers: this is
 an intentional tradeoff to measure fairly, not evidence they are correct.
 For consequential matters use primary-source verification and keep actual

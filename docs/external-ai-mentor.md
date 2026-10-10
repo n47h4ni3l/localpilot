@@ -1,8 +1,11 @@
 # Nestra's hosted AI mentor — optional, remote, and guidance-only
 
 Nestra remains the only local reasoning agent. A remote model runs on a
-provider's machines, not on the owner's GPU. Nestra may choose to send an
-abstract question, read non-authoritative advice and decide what to do.
+provider's machines, not on the owner's GPU. Nestra normally solves problems
+herself, including unrestricted public web research when useful. If she reaches
+a specific impasse despite her own investigation, she may choose to ask the
+hosted model for a second opinion. It is never an automatically required step.
+She then evaluates its non-authoritative advice and decides what to do.
 There is no second local model, local weight download, browser scripting,
 public message-board post, model fine-tuning, answer rewriting or remote
 tool authorization.
@@ -61,9 +64,17 @@ A ChatGPT subscription does not provide API credits.
 
 ## Privacy and control
 
-- Only the question argument (12-2,000 characters) is sent. Nestra does not
-  attach her chat history, memory, private source files, SystemSense results,
-  tool result transcripts or access to local tools.
+- The consultation accepts an abstract question (12-2,000 characters) and
+  a self-assessed impasse (24-600 characters) describing approaches she
+  considered and the unresolved issue. Only the abstract question is sent
+  remotely; the impasse stays local, is not logged verbatim and does not
+  certify that no other local solution exists. She can simply continue
+  working or answer without consulting a mentor.
+- There is no blanket internet prohibition on Nestra. Normal public research
+  tools remain available in guide-first conversations, including hypotheticals.
+  A **specific owner instruction** not to use the web is still respected.
+- Nestra does not attach her chat history, memory, private source files,
+  SystemSense results, tool result transcripts or access to local tools.
 - Obvious secrets, e-mail addresses, raw code blocks and local Windows user
   paths are blocked, but this **is not complete private-data detection**.
   Keep every outgoing question abstract and safe to disclose.
@@ -76,8 +87,8 @@ A ChatGPT subscription does not provide API credits.
 - The known endpoints are fixed, network requests are time bounded, remote
   HTTP redirects are rejected, responses are size-limited and non-authoritative.
   No remote model receives function tools.
-- Explicit owner no-web/no-tool restrictions still apply. Research assistance
-  is voluntary, never mandatory, and the final answer is Nestra's.
+- External advice is voluntary, never mandatory, and Nestra retains authorship
+  of her answer. Owner instructions and protected system boundaries still apply.
 - Remote advice isn't automatically stored in long-term learning, promoted
   as verified evidence or used as a grading oracle.
 

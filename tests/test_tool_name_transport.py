@@ -73,6 +73,61 @@ def test_does_not_guess_or_interpret_unrecognized_name(requested):
     assert recovered is original
 
 
+def test_observed_repository_namespace_alias_requires_exact_argument_signature():
+    allowed = frozenset({"search_repository"})
+    original = _call("repo_browser.search", {"query": "candidate", "max_results": 3})
+    repaired, reason = _recover_readonly_tool_call(
+        original, exposed=allowed, recoverable=allowed,
+    )
+    assert reason == "known_readonly_alias"
+    assert _tool_call_parts(repaired) == (
+        "search_repository", {"query": "candidate", "max_results": 3},
+    )
+    for arguments in ({"pattern": "candidate"}, {"query": "", "path": "."},
+                      {"query": "candidate", "command": "delete"}):
+        bad = _call("repo_browser.search", arguments)
+        unchanged, reason = _recover_readonly_tool_call(
+            bad, exposed=allowed, recoverable=allowed,
+        )
+        assert unchanged is bad and reason is None
+
+
+def test_explicit_owner_no_web_request_cannot_be_bypassed(tmp_path, monkeypatch):
+    agent = _agent(tmp_path)
+    seen = []
+    def fake_chat(**kwargs):
+        seen.append(kwargs.get("tools") or [])
+        return iter([_chunk(content="I can answer without internet.")])
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+    assert agent.ask("Explain the concept but do not use the web.") == (
+        "I can answer without internet."
+    )
+    assert seen and not any(
+        getattr(fn, "__name__", None) in {"search_public_web", "fetch_public_https"}
+        for fn in seen[0]
+    )
+    assert agent.audit.latest("model_tool_name_transport_recovered") is None
+
+
+def test_external_mentor_is_never_recovered_even_when_enabled(tmp_path):
+    cfg = Config()
+    cfg.agent.scaffold_mode = "guide_first"
+    cfg.mentor.enabled = True
+    cfg.systemsense.enabled = False
+    agent = LocalPilotAgent(cfg, tmp_path)
+    offered = agent._functions()
+    assert "consult_external_mentor" in _advertised_tool_names(offered)
+    raw = _call("consult_external_mentor<|channel|>commentary", {
+        "question": "What approach should I consider?", "impasse": "I am stuck.",
+    })
+    result = agent._stream_chat_message(
+        lambda **_: iter([_chunk(tool_calls=[raw])]),
+        think="high", tools=offered, phase="operator"
+    )
+    assert _tool_call_parts(result["tool_calls"][0])[0] == raw.function.name
+    assert agent.audit.latest("model_tool_name_transport_recovered") is None
+
+
 def test_missing_or_unadvertised_tools_never_recover():
     original = _call("read_repository_file<|channel|>commentary")
     for exposed, recoverable in [

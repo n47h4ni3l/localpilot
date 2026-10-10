@@ -42,7 +42,7 @@ from localpilot.config import Config
 from localpilot.fast_path import FastPathDecision, classify_fast_path
 from localpilot.learning import HumanLesson, KnowledgeFact, LearningMemory
 from localpilot.quality_feedback import QualityFeedbackStore
-from localpilot.guide_scaffold import GUIDE_FIRST_INSTRUCTIONS
+from localpilot.guide_scaffold import GUIDE_FIRST_SYSTEM_PROMPT
 from localpilot.machine_location import MachineLocation
 from localpilot.operator import CommandRunner
 from localpilot.research import (
@@ -93,11 +93,17 @@ class LocalPilotAgent:
             auto_allow_reversible=config.safety.auto_allow_reversible,
             require_confirmation_for_destructive=config.safety.require_confirmation_for_destructive,
         )
-        self.messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        if config.agent.scaffold_mode == "guide_first":
-            # Helpful guidance belongs to the model's context, not the hard
-            # tool-execution boundary (SafetyPolicy is unchanged).
-            self.messages.append({"role": "system", "content": GUIDE_FIRST_INSTRUCTIONS})
+        # Guide mode uses *only* the mentor prompt. Appending it behind the
+        # strict examiner prompt would leave conflicting mandatory instructions
+        # active and defeat the purpose of a non-interfering scaffold.
+        system_prompt = (
+            GUIDE_FIRST_SYSTEM_PROMPT
+            if config.agent.scaffold_mode == "guide_first"
+            else SYSTEM_PROMPT
+        )
+        self.messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt}
+        ]
         self.data_dir = (self.project_root / config.agent.data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.audit = AuditLog(self.data_dir / "audit.jsonl")

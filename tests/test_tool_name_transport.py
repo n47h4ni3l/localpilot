@@ -152,6 +152,13 @@ def test_mutating_or_expensive_mentor_tools_are_never_recovered(tmp_path):
         recoverable=frozenset({"read_repository_file"}),
     )
     assert repaired is raw and reason is None
+    # Verify the production parsing path, not only its isolated helper.
+    streamed = agent._stream_chat_message(
+        lambda **_: iter([_chunk(tool_calls=[raw])]),
+        think="high", tools=agent._functions(), phase="operator",
+    )
+    assert _tool_call_parts(streamed["tool_calls"][0])[0] == raw.function.name
+    assert agent.audit.latest("model_tool_name_transport_recovered") is None
 
 
 def test_stream_recovers_name_and_preserves_arguments_audit_and_original(tmp_path):

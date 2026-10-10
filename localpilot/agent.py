@@ -42,6 +42,7 @@ from localpilot.config import Config
 from localpilot.fast_path import FastPathDecision, classify_fast_path
 from localpilot.learning import HumanLesson, KnowledgeFact, LearningMemory
 from localpilot.quality_feedback import QualityFeedbackStore
+from localpilot.guide_scaffold import GUIDE_FIRST_INSTRUCTIONS, guide_annotate_answer
 from localpilot.machine_location import MachineLocation
 from localpilot.operator import CommandRunner
 from localpilot.research import (
@@ -93,6 +94,10 @@ class LocalPilotAgent:
             require_confirmation_for_destructive=config.safety.require_confirmation_for_destructive,
         )
         self.messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if config.agent.scaffold_mode == "guide_first":
+            # Helpful guidance belongs to the model's context, not the hard
+            # tool-execution boundary (SafetyPolicy is unchanged).
+            self.messages.append({"role": "system", "content": GUIDE_FIRST_INSTRUCTIONS})
         self.data_dir = (self.project_root / config.agent.data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
@@ -1662,6 +1667,41 @@ class LocalPilotAgent:
                     runtime = dict(self._last_stream_runtime)
                     content = str(response.get("content") or "")
                     calls = response.get("tool_calls") or []
+
+            # Guide-first replaces post-hoc answer policing with a bounded,
+            # informational check. No repeated correction calls, blanket
+            # withholding, or model-score based action privileges. If no
+            # visible answer exists, leave generation-exhaustion recovery below
+            # intact; it is not a judgment of the draft's quality.
+            if self.config.agent.scaffold_mode == "guide_first" and content.strip() and not calls:
+                advisory = self._contextual_evidence_risks(
+                    prompt, content, successful_tools, clean_recovery_messages,
+                    missing_evidence=missing_evidence,
+                )
+                gaps = answer_contract.gaps(content)
+                guided = guide_annotate_answer(
+                    content,
+                    missing_evidence=missing_evidence,
+                    source_issues=advisory,
+                    contract_gaps=gaps,
+                )
+                visible = self._visible_decline(self._strip_authority_meta(guided))
+                self.messages.append({"role": "assistant", "content": visible})
+                self.audit.write(
+                    "model_guide_first_answer_delivered",
+                    round=round_no,
+                    after_tools=after_tools,
+                    content_chars=len(content),
+                    delivered_chars=len(visible),
+                    advisory_issue_codes=list(advisory),
+                    missing=sorted(missing_evidence),
+                    missing_contract_fields=gaps,
+                    draft_preserved=True,
+                    additional_correction_calls=0,
+                    tools_executed_during_synthesis=0,
+                    runtime_classification=runtime.get("runtime_classification"),
+                )
+                return visible
 
             operational_self_status = self._is_operational_self_status_prompt(prompt)
             deterministic_operational_status_fallback = False
@@ -3475,18 +3515,22 @@ class LocalPilotAgent:
                     missing=sorted(missing), attempted=sorted(attempted_evidence),
                     succeeded=sorted(succeeded_evidence), failed=sorted(failed_evidence),
                 )
-                # A missing observation prevents certifying it, not explaining
-                # its limits or proposing safe inspection. Prefer a validated
-                # draft already produced over discarding useful reasoning.
-                candidates = [*evidence_gap_drafts, draft_content or ""]
-                safe_drafts = [candidate for candidate in candidates if candidate.strip()
-                    and not self._response_behavior_issues(prompt, candidate)
-                    and self.turn_evidence.review(candidate, successful_tools=frozenset(successful_tools)).accepted
-                    and not self._contextual_evidence_risks(
-                        prompt, candidate, frozenset(successful_tools), self.messages,
-                        missing_evidence=frozenset(missing))]
-                draft_content = (max(safe_drafts, key=len) if safe_drafts else
-                                 agent_evidence._evidence_gap_fallback(prompt, frozenset(missing)))
+                # In guide-first mode, absence of a source is an uncertainty
+                # to communicate, not a reason to discard the first useful
+                # answer or replace it with a deterministic withholding text.
+                if self.config.agent.scaffold_mode == "guide_first":
+                    candidates = [draft_content or "", *reversed(evidence_gap_drafts)]
+                    draft_content = next((draft for draft in candidates if draft.strip()), None)
+                else:
+                    candidates = [*evidence_gap_drafts, draft_content or ""]
+                    safe_drafts = [candidate for candidate in candidates if candidate.strip()
+                        and not self._response_behavior_issues(prompt, candidate)
+                        and self.turn_evidence.review(candidate, successful_tools=frozenset(successful_tools)).accepted
+                        and not self._contextual_evidence_risks(
+                            prompt, candidate, frozenset(successful_tools), self.messages,
+                            missing_evidence=frozenset(missing))]
+                    draft_content = (max(safe_drafts, key=len) if safe_drafts else
+                                     agent_evidence._evidence_gap_fallback(prompt, frozenset(missing)))
             strip_transient_controls(reason="before_final_synthesis")
             return self._continue_high_reasoning_answer(
                 chat,
@@ -4207,6 +4251,17 @@ class LocalPilotAgent:
                 if missing_evidence:
                     if content.strip():
                         evidence_gap_drafts.append(content)
+                    # The owner may still get the useful qualified answer
+                    # after a bounded failed source attempt; no endless
+                    # evidence-acquisition loop is needed.
+                    if (self.config.agent.scaffold_mode == "guide_first"
+                        and content.strip()
+                        and missing_evidence.issubset(attempted_evidence)):
+                        self.messages.pop()
+                        return continue_clean_answer(
+                            round_no=turn_no, after_tools=used_tools, hard_limit=True,
+                            draft_content=content,
+                        )
                     if evidence_recovery_attempts < 2 and allow_tools:
                         self.messages.pop()
                         evidence_recovery_attempts += 1
@@ -4235,6 +4290,15 @@ class LocalPilotAgent:
                     )
 
                 if used_tools:
+                    if (self.config.agent.scaffold_mode == "guide_first"
+                        and content.strip()
+                        and not controls_visible_at_call):
+                        # Keep a model-generated explanation, not repeated
+                        # model-on-model grading that can erase a good draft.
+                        self.messages.pop()
+                        return continue_clean_answer(
+                            round_no=turn_no, after_tools=True, draft_content=content,
+                        )
                     if not post_tool_guidance_given and allow_tools:
                         response["content"] = ""
                         if (

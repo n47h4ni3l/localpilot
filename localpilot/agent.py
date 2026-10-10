@@ -3653,7 +3653,10 @@ class LocalPilotAgent:
                             think=operator_think,
                             tools=(
                                 self._functions(
-                                    include_research_notebook=tool_rounds_used >= soft_tool_rounds,
+                                    include_research_notebook=(
+                                        tool_rounds_used >= soft_tool_rounds
+                                        and self.config.agent.scaffold_mode != "guide_first"
+                                    ),
                                     excluded_tools=dynamic_excluded_tools,
                                 )
                                 if allow_tools
@@ -3848,7 +3851,7 @@ class LocalPilotAgent:
                             requested_tools=requested,
                         )
                         missing_required = evidence_requirements - succeeded_evidence
-                        if missing_required:
+                        if missing_required and self.config.agent.scaffold_mode != "guide_first":
                             marker = (
                                 "[LocalPilot reached the hard research ceiling before successfully acquiring all "
                                 "required direct evidence. Missing: "
@@ -3887,7 +3890,8 @@ class LocalPilotAgent:
                         if not (cacheable and cache_key in observation_cache):
                             unique_candidates.append((name, args))
 
-                    if post_soft_budget and unique_candidates:
+                    if (post_soft_budget and unique_candidates
+                        and self.config.agent.scaffold_mode != "guide_first"):
                         authorized = (
                             len(unique_candidates) == 1
                             and research_notebook.authorizes(*unique_candidates[0])
@@ -4234,6 +4238,23 @@ class LocalPilotAgent:
                         and tool_rounds_used < hard_tool_rounds
                         and not soft_budget_guidance_given
                     ):
+                        if self.config.agent.scaffold_mode == "guide_first":
+                            add_internal(
+                                "The advisory research budget is nearly used. Prefer "
+                                "answering from adequate evidence already collected. "
+                                "If a fresh, distinct read-only observation materially "
+                                "changes your answer, you may request it within the "
+                                "hard ceiling; never repeat identical requests. "
+                                "Your final answer should preserve useful findings "
+                                "and identify unverified facts rather than withhold."
+                            )
+                            soft_budget_guidance_given = True
+                            self.audit.write(
+                                "model_guide_first_research_budget_advice",
+                                round=turn_no, tool_rounds=tool_rounds_used,
+                                hard_tool_rounds=hard_tool_rounds,
+                            )
+                            continue
                         add_internal(
                             "You have reached the advisory research soft budget. This is not a command to stop. "
                             "If the complete raw tool results already answer the owner's request, synthesize now. "

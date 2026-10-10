@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from localpilot.agent import LocalPilotAgent
-from localpilot.agent_tools import _tool_result_success
+from localpilot.agent_tools import _guide_tool_result_success as _tool_result_success
 from localpilot.config import Config, load_config
 from localpilot.guide_scaffold import GUIDE_FIRST_INSTRUCTIONS
 
@@ -164,3 +164,15 @@ def test_guide_exact_draft_preservation_even_with_unsupported_fact(tmp_path):
     )
     assert delivered == draft
     assert agent.audit.latest("model_guide_first_answer_delivered")["answer_review_performed"] is False
+
+
+def test_guide_source_classification_does_not_change_frozen_strict_control():
+    source = (
+        "Repository file: example.py lines 1-1\n"
+        "1: text = 'No matches found.'"
+    )
+    assert _tool_result_success(source)
+    assert not LocalPilotAgent._tool_result_success(source)
+    empty_read = "Repository file: example.py lines 50-60"
+    assert not _tool_result_success(empty_read)
+    assert LocalPilotAgent._tool_result_success(empty_read)

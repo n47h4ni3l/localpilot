@@ -4,6 +4,10 @@ This is an execution diagnosis of the completed autonomy study, not a new
 quality review or evidence of learned improvement. The original 48 cells,
 protocol, sources, strict runtime and model data remain untouched.
 
+Repair: [PR #199](https://github.com/n47h4ni3l/localpilot/pull/199).
+[CI checks for the final PR head](https://github.com/n47h4ni3l/localpilot/pull/199/checks)
+and the PR's validation record provide the exact tested revision and run links.
+
 ## Evidence identity and reproducibility
 
 - Main inspected: `b66c7239021d24045d65f988bdfeaacd5a415ab8` (PR #198).

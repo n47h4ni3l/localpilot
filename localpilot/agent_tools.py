@@ -72,7 +72,6 @@ _TOOL_FAILURE_MARKERS = (
     "local library root does not exist",
     "no indexed library passages matched",
     "library extraction failed",
-    "no matches found.",
 )
 
 
@@ -114,7 +113,17 @@ def _tool_evidence_source(name: str) -> str | None:
 
 def _tool_result_success(result: Any) -> bool:
     text = str(result).strip().lower()
-    return bool(text) and not any(marker in text for marker in _TOOL_FAILURE_MARKERS)
+    if not text or any(text.startswith(marker) for marker in _TOOL_FAILURE_MARKERS):
+        return False
+    # A successful source read can legitimately contain the words "Tool error:"
+    # or "No matches found." as *data*. The repository search's exact empty
+    # result is a valid executed search but not an acquired source excerpt.
+    if text == "no matches found." or (
+        text.startswith("repository search: ")
+        and text.splitlines()[1:] == ["no matches found."]
+    ):
+        return False
+    return True
 
 
 def _tool_result_audit_preview(name: str, result: Any) -> str:

@@ -1692,11 +1692,11 @@ class LocalPilotAgent:
                     content = str(response.get("content") or "")
                     calls = response.get("tool_calls") or []
 
-            # Guide-first replaces post-hoc answer policing with a bounded,
-            # informational check. No repeated correction calls, blanket
-            # withholding, or model-score based action privileges. If no
-            # visible answer exists, leave generation-exhaustion recovery below
-            # intact; it is not a judgment of the draft's quality.
+            # Guide-first never postvalidates a model-authored answer.
+            # It does not inspect claims, rewrite output, append annotations,
+            # withhold text, or increase tool/action privileges. If there is
+            # no visible answer, ordinary generation-exhaustion recovery below
+            # still applies; that is not an evaluation of the draft.
             if self.config.agent.scaffold_mode == "guide_first" and content.strip() and not calls:
                 # No final-answer examination or transformation, including
                 # appended cautions. Evidence can guide Nestra *before* she

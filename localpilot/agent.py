@@ -3960,7 +3960,11 @@ class LocalPilotAgent:
                             and self.policy.permits_without_confirmation(spec.risk)
                         )
                         cache_key = self._tool_cache_key(name, args)
-                        cacheable = spec is not None and str(spec.risk) == "read_only"
+                        cacheable = (
+                            spec is not None
+                            and str(spec.risk) == "read_only"
+                            and name != "consult_external_mentor"
+                        )
                         cache_hit = cacheable and cache_key in observation_cache
                         stagnant_blocked = name in stagnant_tool_names
                         public_web_limit_blocked = (

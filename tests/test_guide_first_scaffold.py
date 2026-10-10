@@ -58,6 +58,8 @@ def test_guide_preserves_good_first_draft_without_correction_or_withholding(tmp_
     assert agent.audit.latest("model_guide_first_answer_delivered")["answer_review_performed"] is False
     assert "GUIDE-FIRST ASSISTANCE" in str(agent.messages)
     assert "authorization" in GUIDE_FIRST_INSTRUCTIONS.lower()
+    assert "When discussing LocalPilot's own implementation" not in str(agent.messages)
+    assert "answer validator" not in str(agent.messages).lower().split("guide-first assistance:")[0]
 
 
 def test_missing_live_evidence_is_scoped_but_draft_is_not_lost(tmp_path):

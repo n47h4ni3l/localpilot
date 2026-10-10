@@ -133,6 +133,12 @@ def test_tool_failure_marker_inside_read_source_is_not_tool_error():
     )
     assert _tool_result_success(valid_read)
     assert not _tool_result_success("Tool error: permission denied")
+    assert not _tool_result_success(
+        "Private GitHub pull request (read-only).\nGitHub read failed: authentication required"
+    )
+    assert not _tool_result_success(
+        "Public web search: query\nNo bounded HTTPS results were found."
+    )
     assert not _tool_result_success("Repository search: 'missing'\nNo matches found.")
     assert _tool_result_success(
         "Repository search: 'No matches found.'\n"

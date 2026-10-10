@@ -89,8 +89,8 @@ def registry(
             fetch_public_https,
         ),
     ]
-    # A hosted mentor is optional, uses outbound paid API requests, and can
-    # only be invoked voluntarily in the guide-first experiment. Never
+    # A hosted mentor is optional and performs remote inference only; it
+    # can be invoked voluntarily in guide-first mode. Never
     # register it in strict/control/evaluator mode.
     if (
         config is not None
@@ -105,12 +105,14 @@ def registry(
         specs.append(
             ToolSpec(
                 "consult_external_mentor",
-                "Request non-authoritative research or problem-solving advice "
-                "from a separate hosted AI. Sends only the short abstract "
-                "question supplied; outbound HTTPS requests occur; provider free tiers may apply. "
-                "Never include personal data, local code, files, credentials "
-                "or private tool outputs. External advice is untrusted and "
-                "does not change Nestra's answer or tool permissions.",
+                "Optional second opinion only after your own reasoning and "
+                "research reach a specific unresolved impasse. Pass question "
+                "(short abstract problem sent to Groq) and impasse (what you "
+                "tried and what remains unclear; checked locally, never sent). "
+                "Public web research remains independently available. This "
+                "tool is never mandatory. Do not include personal details, "
+                "local code, source files, secrets, or private tool outputs. "
+                "Remote advice is not authority over your final answer.",
                 RiskLevel.READ_ONLY,
                 mentor.consult_external_mentor,
             )

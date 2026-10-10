@@ -535,6 +535,7 @@ class LocalPilotAgent:
     _tool_evidence_source = staticmethod(agent_tools._tool_evidence_source)
 
     _tool_result_success = staticmethod(agent_tools._tool_result_success)
+    _guide_tool_result_success = staticmethod(agent_tools._guide_tool_result_success)
 
     _tool_result_audit_preview = staticmethod(agent_tools._tool_result_audit_preview)
 
@@ -3410,7 +3411,11 @@ class LocalPilotAgent:
                 raw_result = spec.fn(**args)
             except Exception as exc:
                 raw_result = f"Tool error: {type(exc).__name__}: {exc}"
-            ok = self._tool_result_success(raw_result)
+            ok = (
+                            self._guide_tool_result_success(raw_result)
+                            if self.config.agent.scaffold_mode == "guide_first"
+                            else self._tool_result_success(raw_result)
+                        )
             verification_all_succeeded = verification_all_succeeded and ok
             observation = research_notebook.add_observation(
                 tool=name,
@@ -4046,7 +4051,11 @@ class LocalPilotAgent:
                                 result = spec.fn(**args)
                             except Exception as exc:
                                 result = f"Tool error: {type(exc).__name__}: {exc}"
-                            ok = self._tool_result_success(result)
+                            ok = (
+                                            self._guide_tool_result_success(result)
+                                            if self.config.agent.scaffold_mode == "guide_first"
+                                            else self._tool_result_success(result)
+                                        )
                             if name == "fetch_public_https":
                                 public_web_fetches_used += 1
                             elif name == "search_library":

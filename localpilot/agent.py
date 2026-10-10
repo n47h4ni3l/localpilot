@@ -52,6 +52,7 @@ from localpilot.research import (
     research_notebook_tool_schema,
 )
 from localpilot.resource import ResourceGovernor
+from localpilot.recent_reading import asks_about_recent_reading, recent_reading_context
 from localpilot.safety import SafetyPolicy
 from localpilot.systemsense import SystemSense, get_system_sense
 from localpilot.tools import registry
@@ -3007,6 +3008,7 @@ class LocalPilotAgent:
         learning_message: dict[str, Any] | None = None
         systemsense_message: dict[str, Any] | None = None
         operational_status_message: dict[str, Any] | None = None
+        recent_reading_message: dict[str, Any] | None = None
         direct_conversation_message: dict[str, Any] | None = None
         scenario_message: dict[str, Any] | None = None
         troubleshooting_message: dict[str, Any] | None = None
@@ -3040,6 +3042,18 @@ class LocalPilotAgent:
                 semantic_candidate_count=retrieval.semantic_candidates,
                 embedding_error_type=retrieval.error_type,
             )
+        if (self.config.agent.scaffold_mode == "guide_first"
+                and not systemsense_diagnostic and not scenario_mode
+                and asks_about_recent_reading(prompt)):
+            reading_context = recent_reading_context(self.data_dir)
+            if reading_context:
+                recent_reading_message = {"role": "system", "content": reading_context}
+                self.messages.append(recent_reading_message)
+                self.audit.write(
+                    "model_recent_reading_context_attached",
+                    query_digest=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                    context_chars=len(reading_context),
+                )
         systemsense_context = (
             self.systemsense.compact_context()
             if (
@@ -4549,6 +4563,15 @@ class LocalPilotAgent:
                     for message in self.messages
                     if id(message) != id(operational_status_message)
                 ]
+            if recent_reading_message is not None:
+                self.messages[:] = [
+                    message for message in self.messages
+                    if id(message) != id(recent_reading_message)
+                ]
+                self.audit.write(
+                    "model_recent_reading_context_scrubbed",
+                    retained_in_messages=False,
+                )
             if direct_conversation_message is not None:
                 self.messages[:] = [
                     message

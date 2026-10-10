@@ -176,3 +176,30 @@ def test_guide_source_classification_does_not_change_frozen_strict_control():
     empty_read = "Repository file: example.py lines 50-60"
     assert not _tool_result_success(empty_read)
     assert LocalPilotAgent._tool_result_success(empty_read)
+
+
+def test_guide_memory_verification_targets_are_not_compulsory(tmp_path, monkeypatch):
+    """Guide mode must not execute source reads before Nestra chooses tools."""
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    agent = _agent(tmp_path)
+    target = {
+        "tool": "read_repository_file",
+        "arguments": {"path": "pyproject.toml", "start_line": 1, "end_line": 20},
+        "source_uri": "repo://pyproject.toml",
+    }
+    context = "Memory guidance, not authority:\n" + json.dumps(
+        {"facts": [], "verification_targets": [target, target, target]}
+    )
+    monkeypatch.setattr(agent, "_learning_context", lambda prompt: (context, []))
+    answer = "I can inspect declared dependencies if needed; here is my analysis."
+    def fake_chat(**kwargs):
+        return iter([SimpleNamespace(message=SimpleNamespace(
+            content=answer, thinking="", tool_calls=[]
+        ))])
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+    assert agent.ask("Verify the declared dependency for Ollama streaming integration.") == answer
+    assert agent.audit.latest("model_learning_memory_live_verification") is None
+    assert agent.audit.latest("model_learning_memory_direct_synthesis") is None

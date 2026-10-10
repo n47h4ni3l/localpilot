@@ -74,7 +74,7 @@ def test_missing_live_evidence_is_scoped_but_draft_is_not_lost(tmp_path):
     assert delivered == draft
     assert "Verification note:" not in delivered
     assert "[LocalPilot withheld" not in delivered
-    assert agent.audit.latest("model_guide_first_answer_delivered")["missing"] == ["Windows/PC state"]
+    assert agent.audit.latest("model_guide_first_answer_delivered")["answer_review_performed"] is False
 
 
 def test_sourced_numeric_citation_issues_are_advice_not_automatic_refusal(tmp_path):

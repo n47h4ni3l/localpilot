@@ -12,7 +12,7 @@ import pytest
 from localpilot.agent import LocalPilotAgent
 from localpilot.agent_tools import _tool_result_success
 from localpilot.config import Config, load_config
-from localpilot.guide_scaffold import GUIDE_FIRST_INSTRUCTIONS, guide_annotate_answer
+from localpilot.guide_scaffold import GUIDE_FIRST_INSTRUCTIONS
 
 
 @pytest.mark.parametrize("value", ["guide_first", "strict"])
@@ -55,7 +55,7 @@ def test_guide_preserves_good_first_draft_without_correction_or_withholding(tmp_
     )
     assert delivered == draft
     assert "[LocalPilot withheld" not in delivered
-    assert agent.audit.latest("model_guide_first_answer_delivered")["additional_correction_calls"] == 0
+    assert agent.audit.latest("model_guide_first_answer_delivered")["answer_review_performed"] is False
     assert "GUIDE-FIRST ASSISTANCE" in str(agent.messages)
     assert "authorization" in GUIDE_FIRST_INSTRUCTIONS.lower()
 
@@ -71,8 +71,8 @@ def test_missing_live_evidence_is_scoped_but_draft_is_not_lost(tmp_path):
         draft_content=draft,
         missing_evidence=frozenset({"Windows/PC state"}),
     )
-    assert delivered.startswith(draft)
-    assert "couldn't verify the current Windows/PC state" in delivered
+    assert delivered == draft
+    assert "Verification note:" not in delivered
     assert "[LocalPilot withheld" not in delivered
     assert agent.audit.latest("model_guide_first_answer_delivered")["missing"] == ["Windows/PC state"]
 
@@ -91,9 +91,9 @@ def test_sourced_numeric_citation_issues_are_advice_not_automatic_refusal(tmp_pa
         }],
         successful_tools=frozenset({"read_repository_file"}),
     )
-    assert draft in delivered
-    assert "Verification note:" in delivered
-    assert agent.audit.latest("model_guide_first_answer_delivered")["draft_preserved"] is True
+    assert delivered == draft
+    assert "Verification note:" not in delivered
+    assert agent.audit.latest("model_guide_first_answer_delivered")["draft_preserved_byte_for_byte"] is True
 
 
 def test_guide_preserves_owner_supplied_hypothetical_without_live_tools(tmp_path):
@@ -138,15 +138,21 @@ def test_tool_failure_marker_inside_read_source_is_not_tool_error():
     )
 
 
-def test_guide_qualification_is_bounded_and_no_issue_means_byte_preservation():
-    text = "The available evidence establishes that the test is incomplete."
-    assert guide_annotate_answer(text) == text
-    out = guide_annotate_answer(
-        text,
-        source_issues={"named_numeric_constant_not_supported_by_source"},
-        missing_evidence={"private GitHub"},
-        contract_gaps={"requested_output"},
+def test_guide_is_method_coaching_not_a_postprocessor():
+    assert "research" in GUIDE_FIRST_INSTRUCTIONS.lower()
+    assert "owner's authorization" in GUIDE_FIRST_INSTRUCTIONS
+    from localpilot import guide_scaffold
+    assert not hasattr(guide_scaffold, "guide_annotate_answer")
+
+
+def test_guide_exact_draft_preservation_even_with_unsupported_fact(tmp_path):
+    agent = _agent(tmp_path)
+    draft = "  I think LIMIT = 900 (not source-verified).  \n"
+    delivered = agent._continue_high_reasoning_answer(
+        None, prompt="Inspect the repository and explain LIMIT.",
+        round_no=1, after_tools=True,
+        draft_content=draft,
+        missing_evidence=frozenset({"trusted repository"}),
     )
-    assert out.startswith(text)
-    assert out.count("Verification note:") == 1
-    assert len(out) < len(text) + 500
+    assert delivered == draft
+    assert agent.audit.latest("model_guide_first_answer_delivered")["answer_review_performed"] is False

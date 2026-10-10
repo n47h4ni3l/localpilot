@@ -64,19 +64,29 @@ class ExternalMentor:
         self._request_count = 0
         self._lock = Lock()
 
-    def consult_external_mentor(self, question: str) -> str:
-        """Ask an external hosted AI for non-authoritative method guidance.
+    def consult_external_mentor(self, question: str, impasse: str) -> str:
+        """Ask the hosted mentor only after your own investigation stalls.
 
-        Send only an abstract, non-sensitive question. Never copy local files,
-        tool results, private details, credentials, or chat history here.
+        question: A focused, non-sensitive abstract question for the mentor.
+        impasse: A brief private summary of your own approaches and the exact
+        unresolved obstacle. This is checked locally and is NEVER transmitted.
+        No hard-coded research steps or external consultations are mandatory.
         """
         question = str(question).strip()
         if not 12 <= len(question) <= _MAX_QUESTION_CHARS:
             raise ValueError("Mentor question must contain 12-2000 characters.")
+        impasse = str(impasse).strip()
+        if not 24 <= len(impasse) <= 600:
+            raise ValueError(
+                "Explain in 24-600 characters what you already considered "
+                "and which specific uncertainty prevents useful progress."
+            )
         if "```" in question:
             raise ValueError("Do not send raw code blocks to the external mentor.")
         if any(pattern.search(question) for pattern in _SECRET_PATTERNS):
             raise ValueError("Mentor question may contain personal or secret information; abstract it first.")
+        # The impasse is intentionally not placed in the remote request.
+        # It is a model self-assessment, not a verifier of Nestra's ability.
         env_name = _KEY_NAMES[self.provider]
         key = os.environ.get(env_name, "").strip()
         if not key:

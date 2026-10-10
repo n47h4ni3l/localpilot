@@ -2752,11 +2752,12 @@ class LocalPilotAgent:
                         prompt_eval_count=continuation_runtime.get("prompt_eval_count"),
                         num_predict=continuation_runtime.get("num_predict"),
                     )
-                    if continuation_content.strip() and not self._looks_like_generic_reset(
-                        continuation_content
+                    if continuation_content.strip() and (
+                        self.config.agent.scaffold_mode == "guide_first"
+                        or not self._looks_like_generic_reset(continuation_content)
                     ):
-                        # A continuation is still only a draft. Route it through the same
-                        # late behavior and evidence gates as every other visible answer.
+                        # Guide recovery preserves the model's text just like first-pass
+                        # delivery. Strict retains its historical draft review below.
                         return self._continue_high_reasoning_answer(
                             chat,
                             prompt=prompt,

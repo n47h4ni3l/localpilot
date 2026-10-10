@@ -179,6 +179,64 @@ def _tool_call_parts(call: Any) -> tuple[str, dict[str, Any]]:
     return str(getattr(fn, "name", "") or ""), dict(getattr(fn, "arguments", None) or {})
 
 
+# GPT-OSS/Ollama sometimes serializes a known tool's name with this channel
+# delimiter appended. This exact suffix is transport noise, not a new tool.
+_KNOWN_CHANNEL_SUFFIX = "<|channel|>commentary"
+
+
+def _advertised_tool_names(tools: list[Any] | None) -> frozenset[str]:
+    """Extract only tool names actually offered in this exact model request."""
+    names: set[str] = set()
+    for tool in tools or ():
+        if isinstance(tool, dict):
+            function = tool.get("function")
+            if not isinstance(function, dict):
+                function = tool
+            name = function.get("name")
+        else:
+            name = getattr(tool, "__name__", None)
+        if isinstance(name, str) and name:
+            names.add(name)
+    return frozenset(names)
+
+
+def _recover_readonly_tool_call(
+    call: Any, *, exposed: frozenset[str], recoverable: frozenset[str],
+) -> tuple[Any, str | None]:
+    """Recover only uniquely identified read-only calls; never infer arguments.
+
+    A name must resolve to a registered, policy-permitted READ_ONLY tool
+    that was explicitly advertised to the model on this request. Preserve
+    unsupported/ambiguous names verbatim for the ordinary unknown-tool path.
+    """
+    original, arguments = _tool_call_parts(call)
+    if original in exposed or not original or len(original) > 180:
+        return call, None
+    candidates: list[tuple[str, str]] = []
+    if original.endswith(_KNOWN_CHANNEL_SUFFIX) and original.count(_KNOWN_CHANNEL_SUFFIX) == 1:
+        candidates.append((original[:-len(_KNOWN_CHANNEL_SUFFIX)], "gpt_oss_channel_suffix"))
+    stripped = original.strip(" \t\r\n")
+    if stripped != original:
+        candidates.append((stripped, "surrounding_whitespace"))
+    # A case-only difference is safe when exactly one exposed tool matches.
+    case_matches = [name for name in exposed if name.casefold() == original.casefold()]
+    if len(case_matches) == 1:
+        candidates.append((case_matches[0], "case_only"))
+
+    matches = [(name, kind) for name, kind in candidates if name in exposed and name in recoverable]
+    if len({name for name, _ in matches}) != 1:
+        return call, None
+    target, kind = matches[0]
+    if isinstance(call, dict) and isinstance(call.get("function"), dict):
+        return {
+            **call,
+            "function": {**call["function"], "name": target},
+        }, kind
+    # Ollama may supply a typed ToolCall; use a plain wire-equivalent
+    # call without altering the original object or any supplied arguments.
+    return {"function": {"name": target, "arguments": arguments}}, kind
+
+
 def _tool_cache_key(name: str, args: dict[str, Any]) -> tuple[str, str]:
     args = dict(args)
     if name == "fetch_public_https":

@@ -73,7 +73,7 @@ def test_missing_key_and_sensitive_material_never_make_requests(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     mentor = ExternalMentor(model="openai/gpt-oss-120b", provider="groq")
     with pytest.raises(RuntimeError, match="GROQ_API_KEY"):
-        mentor.consult_external_mentor("How should I investigate a race condition?")
+        mentor.consult_external_mentor("How should I investigate a race condition?", impasse="I compared two potential causes but cannot identify a discriminating observation.")
     monkeypatch.setenv("GROQ_API_KEY", "test-local-secret")
     for question in (
         "What can I do about test@example.com appearing in an error report?",
@@ -81,7 +81,7 @@ def test_missing_key_and_sensitive_material_never_make_requests(monkeypatch):
         "Can I quote this snippet? " + chr(96)*3 + "py" + chr(96)*3,
     ):
         with pytest.raises(ValueError):
-            mentor.consult_external_mentor(question)
+            mentor.consult_external_mentor(question, impasse="I investigated locally and need another useful troubleshooting hypothesis.")
 
 
 @pytest.mark.parametrize("provider,model,key_name,endpoint", [
@@ -118,7 +118,8 @@ def test_hosted_advice_bounded_and_never_requires_local_model(
     monkeypatch.setattr(urllib.request, "build_opener", lambda *args: FakeOpener())
     mentor = ExternalMentor(provider=provider, model=model, max_requests_per_session=1)
     answer = mentor.consult_external_mentor(
-        "How should I debug a hypothetical cache invalidation bug?"
+        "How should I debug a hypothetical cache invalidation bug?",
+        impasse="I checked the invalidation triggers and two competing paths, but their behavior is indistinguishable."
     )
     assert "UNTRUSTED" in answer and "Compare two hypotheses" in answer
     request, timeout = captured[0]
@@ -134,11 +135,36 @@ def test_hosted_advice_bounded_and_never_requires_local_model(
         assert payload["messages"][-1]["content"].startswith("How should")
         assert "tools" not in payload
     assert "test-local-secret" not in request.data.decode()
+    assert "invalidation triggers" not in request.data.decode()
+    assert "indistinguishable" not in request.data.decode()
     with pytest.raises(RuntimeError, match="session request limit"):
-        mentor.consult_external_mentor("Could I ask an additional question about this?")
+        mentor.consult_external_mentor("Could I ask an additional question about this?", impasse="I have tested two ideas but the actual blocker remains unresolved.")
     assert len(captured) == 1
 
 
 def test_openrouter_rejects_paid_variant():
     with pytest.raises(ValueError, match="free model"):
         ExternalMentor(provider="openrouter", model="openai/gpt-oss-120b")
+
+def test_mentor_requires_self_assessed_blocker_before_any_network(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-local-secret")
+    mentor = ExternalMentor(model="openai/gpt-oss-120b")
+    with pytest.raises(TypeError, match="impasse"):
+        mentor.consult_external_mentor("What could I investigate next?")
+    with pytest.raises(ValueError, match="what you already considered"):
+        mentor.consult_external_mentor("What could I investigate next?", impasse="stuck")
+    assert mentor._request_count == 0
+
+
+def test_web_research_remains_available_without_a_blanket_restriction(tmp_path):
+    cfg = Config()
+    cfg.agent.scaffold_mode = "guide_first"
+    cfg.mentor.enabled = True
+    cfg.systemsense.enabled = False
+    agent = LocalPilotAgent(cfg, tmp_path)
+    names = {getattr(fn, "__name__", "") for fn in agent._functions()}
+    assert {"search_public_web", "fetch_public_https", "consult_external_mentor"}.issubset(names)
+    assert "consult_external_mentor" in agent.messages[0]["content"]
+    assert "not a required step" in agent.messages[0]["content"].lower()
+    assert "own reasoning" in agent.messages[0]["content"].lower()
+

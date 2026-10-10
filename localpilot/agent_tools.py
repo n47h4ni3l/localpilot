@@ -223,6 +223,15 @@ def _recover_readonly_tool_call(
     if len(case_matches) == 1:
         candidates.append((case_matches[0], "case_only"))
 
+    # One observed legacy namespace spelling with an independently verified
+    # compatible repository-search signature. Never translate arbitrary
+    # namespaces or infer/rename missing argument keys.
+    if (original == "repo_browser.search"
+            and isinstance(arguments.get("query"), str)
+            and bool(arguments["query"].strip())
+            and set(arguments) <= {"query", "path", "max_results"}):
+        candidates.append(("search_repository", "known_readonly_alias"))
+
     matches = [(name, kind) for name, kind in candidates if name in exposed and name in recoverable]
     if len({name for name, _ in matches}) != 1:
         return call, None

@@ -8,3 +8,5 @@ training/manifests/external_corpus_v1_manifest.json text eol=lf
 training/manifests/external_corpus_v1_acquisition_lock.json text eol=lf
 training/requirements-external-corpus-v1.txt text eol=lf
 training/scripts/launch_adapter_v1.sh text eol=lf
+training/sources/nestra_p1_selfdev_micro_candidates.jsonl text eol=lf
+training/sources/nestra_p1_selfdev_external_candidates.jsonl text eol=lf

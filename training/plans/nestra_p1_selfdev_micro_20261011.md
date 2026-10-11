@@ -125,6 +125,33 @@ configuration; do not weaken these gates. Do not accidentally resume Package 1
 optimizer/scheduler as though it were the new package, and do not modify
 historic packages or overwrite baseline GGUF/model tags.
 
+## Verified launcher wiring
+
+The historical Windows launcher has an explicit `ConfigName` allowlist. This
+branch adds **only** `nestra_p1_selfdev_micro.yaml` to that list. After the
+independent reviews, private leakage check and approved source-review builder,
+the hardware operator must run the **fresh** target-machine dry-run using:
+
+```bash
+python training/scripts/train_adapter.py \
+  --config training/configs/nestra_p1_selfdev_micro.yaml \
+  --dry-run \
+  --report training/reports/nestra_p1_selfdev_micro_20261011_dry_run.json
+```
+
+Do not switch config status until that exact dry-run passes. The existing
+guarded Windows entry point then uses the **actual** accepted mode names:
+
+```powershell
+.\training\scripts\start_guarded_adapter.ps1 -ConfigName nestra_p1_selfdev_micro.yaml -Mode Fresh -MemoryPolicy MonitorOnly
+```
+
+Before starting, obey its existing refusal if the broker, Ollama or background
+worker is still active; record their original states and restore afterward.
+Do not issue `-Mode Recover` for the new package's fresh run; that flag
+belongs to pinned historical checkpoint recovery. Keep the dry-run report
+path exactly as the launcher derives it from the configured output directory.
+
 ## Tests and stop/go
 
 - Baseline direct P1 vs candidate with identical fresh prompts/settings,

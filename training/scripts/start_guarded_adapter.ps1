@@ -5,7 +5,7 @@ param(
     [ValidateSet('MonitorOnly', 'CriticalOnly', 'Protective')]
     [string]$MemoryPolicy = 'MonitorOnly',
 
-    [ValidateSet('qlora_v1.yaml', 'qlora_v1_native_compile_endurance.yaml', 'qlora_v1_native_compile_recovery.yaml')]
+    [ValidateSet('qlora_v1.yaml', 'qlora_v1_native_compile_endurance.yaml', 'qlora_v1_native_compile_recovery.yaml', 'nestra_p1_selfdev_micro.yaml')]
     [string]$ConfigName = 'qlora_v1.yaml'
 )
 

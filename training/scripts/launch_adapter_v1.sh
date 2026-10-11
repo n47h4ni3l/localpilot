@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /mnt/e/LLM_HOME/src/localpilot
+# Keep the model, configuration, dry-run and reports in the invoking checkout.
+# A candidate worktree must never redirect training into production.
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd -- "$repo_root"
 source /home/natha/.venvs/localpilot-training/bin/activate
 source /etc/profile.d/rocdxg-amd-smi-lib.sh
 

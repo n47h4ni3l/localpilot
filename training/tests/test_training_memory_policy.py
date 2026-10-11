@@ -150,6 +150,48 @@ def test_training_launcher_defaults_to_observation_not_intervention() -> None:
     assert "estimated_optimizer_steps" in monitor
 
 
+@pytest.mark.parametrize("checkout,expected", [
+    (r"E:\LLM_HOME\src\localpilot", "/mnt/e/LLM_HOME/src/localpilot"),
+    (r"E:\LLM_HOME\experiments\candidate\checkout", "/mnt/e/LLM_HOME/experiments/candidate/checkout"),
+    (r"C:\Users\owner\Candidate Worktree", "/mnt/c/Users/owner/Candidate Worktree"),
+])
+def test_guard_resolves_the_actual_checkout_for_wsl(checkout, expected) -> None:
+    command = (
+        "$ErrorActionPreference='Stop'; $tokens=$null; $errors=$null; "
+        f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{GUARD}', [ref]$tokens, [ref]$errors); "
+        "$function=$ast.Find({param($node) "
+        "$node -is [System.Management.Automation.Language.FunctionDefinitionAst] "
+        "-and $node.Name -eq 'ConvertTo-WslCheckoutPath'}, $true); "
+        "if ($null -eq $function) { throw 'Missing checkout resolver' }; "
+        ". ([scriptblock]::Create($function.Extent.Text)); "
+        "ConvertTo-WslCheckoutPath -WindowsPath ([Console]::In.ReadToEnd() | ConvertFrom-Json)"
+    )
+    completed = subprocess.run(
+        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+        input=json.dumps(checkout), capture_output=True, text=True, check=True, timeout=20,
+    )
+    assert completed.stdout.strip() == expected
+
+
+@pytest.mark.parametrize("checkout", [r"\\server\share\checkout", "relative/checkout"])
+def test_guard_rejects_checkout_paths_without_a_local_drive(checkout) -> None:
+    command = (
+        "$ErrorActionPreference='Stop'; $tokens=$null; $errors=$null; "
+        f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{GUARD}', [ref]$tokens, [ref]$errors); "
+        "$function=$ast.Find({param($node) "
+        "$node -is [System.Management.Automation.Language.FunctionDefinitionAst] "
+        "-and $node.Name -eq 'ConvertTo-WslCheckoutPath'}, $true); "
+        ". ([scriptblock]::Create($function.Extent.Text)); "
+        "ConvertTo-WslCheckoutPath -WindowsPath ([Console]::In.ReadToEnd() | ConvertFrom-Json)"
+    )
+    completed = subprocess.run(
+        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+        input=json.dumps(checkout), capture_output=True, text=True, timeout=20,
+    )
+    assert completed.returncode != 0
+    assert "absolute local drive path" in completed.stderr
+
+
 @pytest.mark.parametrize("resources,accepted", [
     ({"offload_embeddings": False, "cpu_offload": "none"}, True),
     ({"offload_embeddings": True, "cpu_offload": "embeddings_only"}, False),

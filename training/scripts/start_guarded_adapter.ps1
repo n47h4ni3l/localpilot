@@ -19,6 +19,17 @@ $stopReason = $null
 $monitorError = $null
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+
+function ConvertTo-WslCheckoutPath {
+    param([Parameter(Mandatory = $true)][string]$WindowsPath)
+    if ($WindowsPath -notmatch '^([A-Za-z]):[\\/]') {
+        throw 'The guarded training checkout must use an absolute local drive path.'
+    }
+    $drive = $Matches[1].ToLowerInvariant()
+    return "/mnt/$drive/" + $WindowsPath.Substring(3).Replace('\', '/')
+}
+
+$wslRepoRoot = ConvertTo-WslCheckoutPath -WindowsPath $repoRoot
 $reportDir = Join-Path $repoRoot 'training\reports'
 $statusPath = Join-Path $reportDir 'adapter_v1_guard_status.json'
 $wslConfig = Join-Path $env:USERPROFILE '.wslconfig'
@@ -78,7 +89,7 @@ if (
 
 $wslArguments = @(
     '-d', 'LocalPilot-Training',
-    '--cd', '/mnt/e/LLM_HOME/src/localpilot',
+    '--cd', ('"' + $wslRepoRoot + '"'),
     '--', 'bash', 'training/scripts/launch_adapter_v1.sh', '--config', "training/configs/$ConfigName"
 )
 if ($Mode -eq 'Resume') { $wslArguments += '--resume' }

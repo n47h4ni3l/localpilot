@@ -183,6 +183,7 @@ class CandidateTools:
         cycle_id: int = 0,
         max_zip_members: int = 2000,
         max_zip_bytes: int = 1024 * 1024 * 1024,
+        allow_oversized_repair: bool = False,
     ) -> None:
         self.workspace = workspace.resolve()
         self.max_files = max(1, int(max_files))
@@ -210,6 +211,7 @@ class CandidateTools:
             raise RuntimeError(
                 "Recovered candidate exceeds the file-write limit."
             )
+        self.oversized_repair_paths: set[str] = set()
         for path in existing:
             relative = path.relative_to(self.workspace).as_posix()
             if relative in self.protected_paths:
@@ -229,9 +231,15 @@ class CandidateTools:
                     f"{relative}"
                 )
             if path.stat().st_size > 1_000_000:
-                raise ValueError(
-                    f"Recovered candidate file exceeds 1 MB: {relative}"
-                )
+                if not allow_oversized_repair:
+                    raise ValueError(
+                        f"Recovered candidate file exceeds 1 MB: {relative}"
+                    )
+                # Admit only an already changed, confined candidate file for
+                # bounded reading/replacement. Writes and delivery still need
+                # to satisfy the same size and content protections.
+                self.oversized_repair_paths.add(relative)
+                continue
             if suffix in _FRONTEND_SUFFIXES:
                 _validate_frontend_candidate(
                     Path(relative),
@@ -308,7 +316,8 @@ class CandidateTools:
         if not path.is_file():
             return f"File not found: {relative_path}"
         self.files_read.add(path)
-        return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return handle.read(max_chars)
 
     def validate_project_write(
         self,
@@ -527,6 +536,14 @@ class CandidateTools:
         import tomllib
 
         errors: list[str] = []
+        for path in self.files_written:
+            if path.is_file() and path.stat().st_size > 1_000_000:
+                errors.append(
+                    f"{path.relative_to(self.workspace).as_posix()}: "
+                    "candidate file exceeds 1 MB; replace it before validation"
+                )
+        if errors:
+            return "static_checks=failed\n" + "\n".join(sorted(errors)[:50])
         python_count = 0
         toml_count = 0
         frontend_count = 0
@@ -638,6 +655,7 @@ class SelfDeveloper:
         force: bool,
         protected_paths: Iterable[str] = (),
         existing_changed_paths: Iterable[str] = (),
+        allow_oversized_repair: bool = False,
     ) -> CandidateTools:
         resource_store = CandidateResourceStore(
             self.data_dir / "candidate-resources",
@@ -646,7 +664,7 @@ class SelfDeveloper:
             governor_check=lambda: self._check_resources(force, branch),
             audit=self.audit,
         )
-        return CandidateTools(
+        tools = CandidateTools(
             workspace,
             self.config.selfdev.candidate_file_hard_ceiling,
             protected_paths=protected_paths,
@@ -658,7 +676,19 @@ class SelfDeveloper:
             cycle_id=cycle_id,
             max_zip_members=self.config.selfdev.max_zip_members,
             max_zip_bytes=self.config.selfdev.max_zip_size_mb * 1024**2,
+            allow_oversized_repair=allow_oversized_repair,
         )
+        if tools.oversized_repair_paths:
+            self.audit.write(
+                "selfdev_oversized_candidate_repair",
+                branch=branch,
+                task_id=task_id,
+                cycle_id=cycle_id,
+                paths=sorted(tools.oversized_repair_paths),
+                candidate_preserved=True,
+                write_limit_bytes=1_000_000,
+            )
+        return tools
 
     def _emit(self, message: str) -> None:
         self.progress(message)
@@ -3335,6 +3365,7 @@ class SelfDeveloper:
                 force=force,
                 protected_paths=protected_paths,
                 existing_changed_paths=existing_changed_paths,
+                allow_oversized_repair=True,
             )
         except (PermissionError, RuntimeError, ValueError) as exc:
             summary = f"CI repair candidate failed safety validation: {exc}"
@@ -3405,6 +3436,8 @@ class SelfDeveloper:
                     f"Task: {task['title']}\n"
                     f"Acceptance: {acceptance}\n"
                     f"CI failed-step log:\n{failure_log[:16000]}\n"
+                    f"Oversized candidate files requiring bounded replacement before validation: "
+                    f"{json.dumps(sorted(tools.oversized_repair_paths))}\n"
                     "Reusable lessons:\n"
                     f"{json.dumps(lessons, ensure_ascii=False)}"
                 ),

@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "artifact_type": "external_corpus_manifest",
+  "name": "Nestra P1.2 source-derived verified 1000-target curriculum",
+  "status": "frozen_selection_pending_machine_tokenizer_and_holdout_audit",
+  "selection_method": "FNV-1a stable selection with source/split fixed quotas and exact assistant-target subset sum; all messages copied from preverified source records without paraphrasing",
+  "selection_seed": "p12-v1",
+  "data_path": "training/datasets/nestra_p12_verified_1000.jsonl",
+  "corpus_sha256": "219b0999f86eaa5afd88d768c2c5a030f2ee0f9e4b559c2a708ab5633ab519bc",
+  "records": 591,
+  "training_examples": 1000,
+  "split_counts": {
+    "train": 534,
+    "validation": 57
+  },
+  "training_example_counts": {
+    "train": 900,
+    "validation": 100,
+    "total": 1000
+  },
+  "quality_tier_counts": {
+    "A": 24,
+    "B": 567
+  },
+  "task_type_counts": {
+    "ai_llm_agent_systems": {
+      "records": 3,
+      "targets": 3,
+      "train": 3,
+      "validation": 0
+    },
+    "localpilot_architecture": {
+      "records": 3,
+      "targets": 3,
+      "train": 2,
+      "validation": 1
+    },
+    "debugging": {
+      "records": 3,
+      "targets": 3,
+      "train": 3,
+      "validation": 0
+    },
+    "epistemics_self_correction": {
+      "records": 3,
+      "targets": 3,
+      "train": 2,
+      "validation": 1
+    },
+    "evolution_experimental_reasoning": {
+      "records": 3,
+      "targets": 3,
+      "train": 3,
+      "validation": 0
+    },
+    "architecture_code_review": {
+      "records": 3,
+      "targets": 3,
+      "train": 3,
+      "validation": 0
+    },
+    "software_engineering": {
+      "records": 3,
+      "targets": 3,
+      "train": 2,
+      "validation": 1
+    },
+    "agent_planning_tool_use": {
+      "records": 3,
+      "targets": 3,
+      "train": 2,
+      "validation": 1
+    },
+    "code_generation": {
+      "records": 252,
+      "targets": 252,
+      "train": 228,
+      "validation": 24
+    },
+    "code_review": {
+      "records": 154,
+      "targets": 154,
+      "train": 140,
+      "validation": 14
+    },
+    "software_engineering_repair": {
+      "records": 16,
+      "targets": 16,
+      "train": 14,
+      "validation": 2
+    },
+    "agentic_code_execution": {
+      "records": 48,
+      "targets": 200,
+      "train": 180,
+      "validation": 20
+    },
+    "tool_use": {
+      "records": 67,
+      "targets": 175,
+      "train": 158,
+      "validation": 17
+    },
+    "multi_tool_use": {
+      "records": 30,
+      "targets": 179,
+      "train": 160,
+      "validation": 19
+    }
+  },
+  "source_snapshots": {
+    "external_source": "training/datasets/external_corpus_v1.jsonl",
+    "external_source_git_blob_sha": "23fe83a13a130335ab869577e544a581837087bd",
+    "external_v1_frozen_manifest": "training/manifests/external_corpus_v1_manifest.json",
+    "project_owned_seed": "training/datasets/corpus_v1_seed.jsonl",
+    "project_owned_seed_git_blob_sha": "e6781b83d562f9c4e2f13ec1b5954f2e1de2fd18"
+  },
+  "training_provenance": "Original per-record license, source revision, source path and message metadata preserved verbatim",
+  "heldout_rule": "No held-out task/answer used as training data; original external corpus had Eval-v1 leakage gating; recheck new and private holdouts before full run",
+  "caveats": [
+    "Source verification does not prove individual completion correctness",
+    "Only 24 Tier-A project-owned records; remaining records are licensed Tier-B external source examples",
+    "1000 counts assistant completion targets, not source JSONL records",
+    "A 1000-example subset of P1's source corpus may provide limited incremental skill gain",
+    "Training requires separate real-machine dry-run and full-run authorization; no new pilot"
+  ]
+}

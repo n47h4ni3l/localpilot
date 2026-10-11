@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "status": "pending_independent_source_review",
+  "candidate_sha256": "FILL_WITH_SHA256_REPORTED_BY_INSPECT",
+  "review_instructions": "One approval per candidate ID, only after comparing the answer to the immutable cited source, checking architecture accuracy and avoiding forced refusal/forced agreement. Do not approve on the basis of CI or automatic generation.",
+  "approvals": [
+    {
+      "id": "nestra-selfdev-micro-train-001",
+      "approved": false,
+      "reviewer": "FILL_REVIEWER_ID",
+      "rationale": "Explain why this target is appropriate and source-supported; include disagreement or risk notes if necessary.",
+      "source_commit": "417656c8bdb541ff4aba1ee91b5d6985842fc3b7",
+      "source_path": "ARCHITECTURE.md"
+    }
+  ]
+}

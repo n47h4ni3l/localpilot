@@ -90,7 +90,8 @@ def test_reviewed_data_but_not_original_candidates_can_become_tier_c():
 
 def test_changed_source_cannot_keep_a_valid_candidate_digest(tmp_path):
     records, digest = builder.read_candidates()
-    modified = copy.deepcopy(records)
+    # The override path is the local 64/12 file, not the combined 80 rows.
+    modified = copy.deepcopy(records[:76])
     modified[0]["messages"][1]["content"] += " EXTRA"
     staged = tmp_path / "staged.jsonl"
     staged.write_text("".join(json.dumps(r) + "\n" for r in modified), encoding="utf-8")

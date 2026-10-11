@@ -78,9 +78,11 @@ code editing and explanation (adjust only with documented verification rationale
 Source-ground claims must match current approved project architecture and
 verified PR/source evidence. All **80** staged examples, including four external
 licensed seeds, are mandatory inputs to the review builder and require an
-independent line-by-line quality/licence review. Current synthetic demonstrations are **unapproved Tier D**;
-they only become Tier C after independent source review and passing the builder's
-signed-off review / leakage gates. Do not claim these 76 staged rows are ready to train.
+independent line-by-line quality/licence review. They are all **unapproved Tier D**.
+Independently validated local synthetic examples become Tier C, while verified
+Apache-2.0 Self-Instruct human seed records become Tier B with their original
+external provenance retained. None of the 80 are trainable until review and
+the builder's source, quality and leakage checks pass.
 They MUST pass independent source, quality, boundary and duplication validation
 before inclusion; do not mislabel generated examples as CI-verified facts.
 Do not train on unreviewed synthetic outputs or any heldout cells. Prefer real

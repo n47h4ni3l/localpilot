@@ -20,7 +20,7 @@ MANIFEST = ROOT / "training/manifests/p12_corpus_manifest.json"
 
 
 def git_blob_sha1(contents: bytes) -> str:
-    prefix = f"blob {len(contents)}\\0".encode("ascii").replace(b"\\0", b"\0")
+    prefix = b"blob " + str(len(contents)).encode("ascii") + bytes([0])
     return hashlib.sha1(prefix + contents).hexdigest()
 
 
@@ -96,6 +96,13 @@ def build() -> tuple[bytes, dict]:
                       for k, v in sorted(source_counts.items())}
     if source_summary != selection["source_counts"]:
         raise RuntimeError("Source composition changed")
+
+    # The pinned Eval v1 one-way manifest is checked without exposing eval answers.
+    from training_common import find_manifest_leaks, load_eval_manifest
+    heldout = load_eval_manifest(ROOT / "training/manifests/eval_v1_manifest.json")
+    overlaps = find_manifest_leaks(rows, heldout)
+    if overlaps:
+        raise RuntimeError(f"Locked corpus collides with frozen Eval v1: {overlaps[:5]}")
 
     content = "".join(json.dumps(r, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
                       for r in rows).encode("utf-8")

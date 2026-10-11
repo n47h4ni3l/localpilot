@@ -60,12 +60,12 @@ reward coaching or previous 48-cell benchmark. Exclude the owner's real private
 conversations and raw thinking from training. Never publish heldout prompts,
 answers, scorecards or private diagnostic traces in the Git repository.
 
-A staging file already holds **64 concise train conversations** and **12 validation conversations**,
-with **18 independently authored unseen heldout scenarios** still to be prepared. Keep each training
+Two staged source files now hold **68 concise train conversations** (64 project-owned plus 4 Apache-2.0 Self-Instruct human seed examples) and **12 validation conversations**, with **18 independently authored unseen heldout scenarios** still to be prepared. Keep each training
 target short and independent, with mixed surface phrasings, context lengths,
 follow-up corrections and both evidence-available/evidence-unavailable cases.
-Use approximately these 64 train categories (adjust only with documented
-verification rationale):
+The 64 project-owned examples cover these categories, supplemented by four
+pinned Self-Instruct human seeds for factual correction, planning, bounded
+code editing and explanation (adjust only with documented verification rationale):
 
 - 12 benign conversational development, interests and non-personhood nuance
 - 10 accurate learning/memory vs adapter/weights distinctions
@@ -76,7 +76,9 @@ verification rationale):
 - 8 general engineering/tool-use rehearsal cases to resist narrow overfitting
 
 Source-ground claims must match current approved project architecture and
-verified PR/source evidence. Current synthetic demonstrations are **unapproved Tier D**;
+verified PR/source evidence. All **80** staged examples, including four external
+licensed seeds, are mandatory inputs to the review builder and require an
+independent line-by-line quality/licence review. Current synthetic demonstrations are **unapproved Tier D**;
 they only become Tier C after independent source review and passing the builder's
 signed-off review / leakage gates. Do not claim these 76 staged rows are ready to train.
 They MUST pass independent source, quality, boundary and duplication validation
@@ -108,8 +110,8 @@ placement and `torch_empty_cache_steps=None`. Start with conservative
 learning-rate investigation (for example 2e-5, subject to dry-run and review),
 not P1's old multi-day training schedule.
 
-For 64 training conversations, micro-batch 1 and accumulation 4, two to three
-epochs imply about 32-48 optimizer steps if each conversation expands to one
+For 68 training conversations, micro-batch 1 and accumulation 4, three
+epochs imply about 51 optimizer steps if each conversation expands to one
 target. The actual expanded native-target count controls the schedule.
 Prefer a **roughly 40-80 optimizer-step natural-completion run**; do not exceed
 **100 optimizer steps** without another owner decision. No silent extension,
@@ -190,7 +192,7 @@ CI passes; do not merge private holdouts or state that training succeeded
 without an actual local completion marker.
 
 **Approval:** The owner explicitly requested this bounded candidate training
-experiment in conversation on 11 October 2026. An exact, fresh PC dry-run,
+experiment including all four Self-Instruct seed examples in conversation on 11 October 2026. An exact, fresh PC dry-run,
 specification hashes and required programmatic run confirmation remain
 technical gates; do not invent them. Running the PC/GPU process requires an
 authorized Work/computer-control environment and cannot be accomplished by

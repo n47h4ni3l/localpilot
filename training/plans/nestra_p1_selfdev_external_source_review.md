@@ -1,8 +1,9 @@
 # External data selection: Self-Instruct, WildChat and Super-NaturalInstructions
 
-Status: **review-only supplement**, not training data. No change to the 64
-existing train rows, 12 validation rows, parent P1 adapter or 24-hour pilot
-budget until full independent review and a new frozen corpus identity.
+Status: **mandatory staged supplement awaiting independent approval**. The owner
+explicitly approved including all four Self-Instruct human seed examples,
+expanding the planned corpus from 64 to **68 train**, plus 12 validation.
+No alteration to P1 weights, parent adapter, validation holdouts or one-day time budget.
 
 ## Source reality versus search-result claims
 
@@ -49,17 +50,17 @@ licence reference and the source instruction/input/output.
 | `seed_task_37` | Make the specific requested code change | Confirm the example remains correct and does not imply uncontrolled live modification |
 | `seed_task_19` | Explain a technical distinction to a nonexpert | Confirm terminology and resist vague assertions |
 
-The **default decision is to keep the current 64 training examples**.
-A reviewer may select **at most four** of the source examples to replace
-the weakest existing generic engineering/rehearsal examples; do not
-increase training count, change the protected negative controls, or change
-the separate frozen validation/heldout sets. If any upstream example
-is poor, generic, low-quality or irrelevant after review, exclude it.
+**The owner has selected all four for inclusion.** This creates an 80-record
+staged corpus (68 train + 12 validation). All four are mandatory for a
+successful corpus build. A reviewer must still independently check factual
+accuracy, relevance and licensing; if a record is materially flawed, flag it
+and request a concrete correction rather than falsely declaring it approved.
+Any corrected record changes the review-bound SHA and requires a fresh review.
 
 These four additional rows are explicitly `Tier D`,
-`review_required`, and `candidate_only`. The existing
-`build_nestra_selfdev_micro.py` ignores this supplemental file and
-must continue to do so until explicitly extended to require:
+`review_required`, and `candidate_only`. The updated
+`build_nestra_selfdev_micro.py` **requires** this supplemental file and
+will not produce a trainable corpus without:
 - exact source revision, content and per-record ID verification;
 - independent quality/source/licence review;
 - candidate-to-review cryptographic binding;
@@ -72,7 +73,7 @@ builder if an external replacement is genuinely accepted.
 
 ## What to borrow from the Self-Instruct method
 
-Use the 64 currently reviewed-or-reviewable Nestra-specific seeds as
+Use the 68 currently staged Nestra and licensed Self-Instruct seeds as
 the source material. Optionally generate a *very small pool* of
 paraphrased challenge questions about (1) ordinary conversational
 growth versus adapter training, (2) actual isolated candidate work,
@@ -82,7 +83,7 @@ growth versus adapter training, (2) actual isolated candidate work,
 Filter new proposals for near-duplicate prompts, invented architecture,
 unsupported blanket prohibitions, misleading code-safety claims and
 unearned agreements. Have an independent reviewer check each kept
-example and replace, not expand, the 64-row corpus. Vary the premises,
+example and revise examples only after updated provenance review, retaining the 68-row budget. Vary the premises,
 not merely the surface wording. No live self-training feedback loop or
 weight update is implied by synthetic instruction generation.
 

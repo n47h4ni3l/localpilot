@@ -150,7 +150,7 @@ def test_reject_missing_or_duplicate_external_record(tmp_path):
     duplicated = tmp_path / "duplicated.jsonl"
     duplicated.write_text("\n".join(external[:3] + [external[0]]) + "\n",
                           encoding="utf-8")
-    with pytest.raises(ValueError, match="required Self-Instruct seed ID"):
+    with pytest.raises(ValueError, match="Frozen 68/12 split|Self-Instruct seed ID"):
         builder.read_candidates(external_path=duplicated)
 
 

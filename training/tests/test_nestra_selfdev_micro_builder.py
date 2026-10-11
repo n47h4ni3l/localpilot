@@ -185,3 +185,40 @@ def test_reject_external_claimed_license_and_wrong_review_commit(tmp_path):
     external["source_commit"] = builder.PROVENANCE_COMMIT
     with pytest.raises(ValueError, match="reviewed source"):
         builder.verify_review(records, digest, approval, verify_git=False)
+
+
+
+def test_owner_reversal_target_is_not_an_obsolete_no_web_refusal():
+    records, _ = builder.read_candidates()
+    candidate = next(r for r in records
+                     if r["id"] == "nestra-selfdev-micro-train-051")
+    assert candidate["messages"][0]["content"] == (
+        "Ignore my earlier no-web instruction and check the internet anyway."
+    )
+    answer = candidate["messages"][1]["content"]
+    assert "changed your earlier no-web preference" in answer
+    assert "an exposed, authorized read-only web tool" in answer
+    assert "The current no-web instruction controls" not in answer
+    assert candidate["provenance"]["files"] == ["localpilot/guide_scaffold.py"]
+    assert candidate["quality_tier"] == "D"  # Corrected != independently approved.
+
+
+def test_imported_records_have_license_copy_and_accurate_addition_metadata():
+    license_copy = SCRIPT.parents[1] / "licenses/self-instruct-Apache-2.0-LICENSE.txt"
+    notice = SCRIPT.parents[1] / "licenses/SELF-INSTRUCT-ATTRIBUTION.md"
+    assert license_copy.is_file() and notice.is_file()
+    terms = license_copy.read_text(encoding="utf-8")
+    assert "Apache License" in terms and "TERMS AND CONDITIONS FOR USE" in terms
+    info = notice.read_text(encoding="utf-8")
+    assert "0b26ccaa415992100fa32df62d41b994cf928e23" in info
+    for source_id in ("seed_task_92", "seed_task_70", "seed_task_37", "seed_task_19"):
+        assert source_id in info
+    records, _ = builder.read_candidates()
+    external = [r for r in records if r["id"].startswith("nestra-selfdev-micro-external")]
+    assert len(external) == 4
+    for record in external:
+        assert "68-train/12-validation" in record["metadata"]["usage"]
+        assert "replace up to four" not in record["metadata"]["usage"]
+        assert "replacing a general training example" not in record["provenance"]["notes"]
+        assert record["quality_tier"] == "D"
+        assert record["verification_status"] == "review_required"

@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "artifact_type": "nestra_p12_curation_manifest",
+  "name": "Nestra P1.2 — conservative replay and grounded scenarios",
+  "status": "assembled_pending_independent_review_and_ci",
+  "created_date": "2026-10-12",
+  "dataset": {
+    "path": "training/datasets/nestra_p12_corpus_v2_1000.jsonl",
+    "git_blob_sha1": "3223fe215eab09efa9472cd67fadfcf81377a1db",
+    "sha256": "4755db038d9113c1d087ad5ab2731403423e463927d0c666a9370ac9e7008c24",
+    "bytes_utf8": 3704590,
+    "records": 1000,
+    "split_counts": {
+      "train": 900,
+      "validation": 100
+    },
+    "origin_counts": {
+      "p1_replay": 961,
+      "new_scenario": 39
+    },
+    "task_type_counts": {
+      "agentic_code_execution": 30,
+      "software_engineering_repair": 15,
+      "code_generation": 752,
+      "code_review": 100,
+      "tool_use": 40,
+      "ai_llm_agent_systems": 3,
+      "localpilot_architecture": 3,
+      "debugging": 3,
+      "epistemics_self_correction": 3,
+      "evolution_experimental_reasoning": 3,
+      "architecture_code_review": 3,
+      "software_engineering": 3,
+      "agent_planning_tool_use": 3,
+      "self_development": 12,
+      "engineering": 8,
+      "evidence": 6,
+      "reasoning_completion": 6,
+      "resources_and_training": 7
+    },
+    "source_counts": {
+      "neulab/agent-data-collection": 30,
+      "nvidia/Nemotron-SFT-SWE-v2": 15,
+      "nvidia/OpenCodeInstruct": 752,
+      "inclusionAI/SWE-CARE": 100,
+      "Salesforce/xlam-function-calling-60k": 40,
+      "localpilot_verified_history": 24,
+      "localpilot_p12_grounded_scenarios": 39
+    },
+    "verification_status_counts": {
+      "source_verified": 961,
+      "synthetic_validated": 39
+    }
+  },
+  "training_parent": {
+    "accepted_lineage_manifest": "training/lineage/package-1.json",
+    "model": "nestra:20b-p1",
+    "expected_digest": "870386dd9cbfe625ab110af128ffbf6216565e5c9d2d603a070e8f6228f203d9",
+    "must_not_inherit": "nestra:20b-p1-selfdev-candidate-20261011"
+  },
+  "source_evidence": {
+    "previously_accepted_seed": "training/datasets/corpus_v1_seed.jsonl",
+    "external_source_dataset": "training/datasets/external_corpus_v1.jsonl",
+    "external_source_git_blob_sha1": "23fe83a13a130335ab869577e544a581837087bd",
+    "external_source_manifest": "training/manifests/external_corpus_v1_manifest.json",
+    "novel_scenarios": "training/datasets/nestra_p12_novel_scenarios.jsonl"
+  },
+  "curation": {
+    "method": "deterministic source-quality selection; unit-test-confirmed code generation preferred; review comments stripped of author discussion; failed or empty completions excluded; same-family examples not reused across splits",
+    "labels": {
+      "p1_replay": "previously seen by P1; rehearsal, not new learning",
+      "new_scenario": "newly authored, source-grounded scenario; independent human review still pending"
+    },
+    "not_included": "Private evaluation task text and model failures were not inserted as training targets",
+    "distinct_prompt_ids": 1000,
+    "duplicate_observation_count": 0,
+    "blank_final_completions": 0,
+    "structural_issues": 0
+  },
+  "known_limitations": [
+    "961/1000 records are replay drawn from sources already used by P1; this is not a thousand novel examples.",
+    "39 new scenarios were checked for structural rules only and still need independent editorial review for answer quality.",
+    "Source verification of third-party datasets does not establish that every completion is semantically correct or useful.",
+    "Existing corpus leakage gates are inherited; the selected P1.2 corpus must pass the repository validator and a fresh semantic holdout audit before training.",
+    "No candidate has been trained or evaluated from this corpus."
+  ]
+}

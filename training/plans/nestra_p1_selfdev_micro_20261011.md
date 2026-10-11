@@ -51,15 +51,17 @@ authorization.
 
 ## Frozen baseline and data partitions (before training)
 
-Freeze a fresh, private evaluation plan **before** writing targets and retain
+Freeze a fresh, private evaluation plan **before training or iteratively editing targets** and retain
 the raw pretraining baseline on the currently deployed P1 digest.
-Do not mix evaluation cases into the corpus, files Nestra may browse, retrieval,
+Use a distinct evaluator who has not viewed the candidate corpus to author and
+lock the private holdout; the corpus is already staged and is not evidence of
+independent holdout authorship. Do not mix evaluation cases into the corpus, files Nestra may browse, retrieval,
 reward coaching or previous 48-cell benchmark. Exclude the owner's real private
 conversations and raw thinking from training. Never publish heldout prompts,
 answers, scorecards or private diagnostic traces in the Git repository.
 
-Aim for **64 concise train conversations**, **12 validation conversations**,
-and **18 independently authored unseen heldout scenarios**. Keep each training
+A staging file already holds **64 concise train conversations** and **12 validation conversations**,
+with **18 independently authored unseen heldout scenarios** still to be prepared. Keep each training
 target short and independent, with mixed surface phrasings, context lengths,
 follow-up corrections and both evidence-available/evidence-unavailable cases.
 Use approximately these 64 train categories (adjust only with documented
@@ -74,8 +76,10 @@ verification rationale):
 - 8 general engineering/tool-use rehearsal cases to resist narrow overfitting
 
 Source-ground claims must match current approved project architecture and
-verified PR/source evidence. Synthetic demonstrations are **candidate Tier C**,
-and MUST pass independent source, quality, boundary and duplication validation
+verified PR/source evidence. Current synthetic demonstrations are **unapproved Tier D**;
+they only become Tier C after independent source review and passing the builder's
+signed-off review / leakage gates. Do not claim these 76 staged rows are ready to train.
+They MUST pass independent source, quality, boundary and duplication validation
 before inclusion; do not mislabel generated examples as CI-verified facts.
 Do not train on unreviewed synthetic outputs or any heldout cells. Prefer real
 verified project-owned positive/negative histories when possible; any Tier A/B

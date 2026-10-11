@@ -99,3 +99,27 @@ def test_reviewed_training_pairs_have_one_target_per_record():
     counts = {split: len(builder.expand_training_examples(reviewed, split))
               for split in ("train", "validation")}
     assert counts == {"train": 64, "validation": 12}
+
+
+
+def test_external_self_instruct_seeds_are_pinned_and_nontrainable():
+    source = SCRIPT.parents[1] / "sources" / "nestra_p1_selfdev_external_candidates.jsonl"
+    records = [json.loads(s) for s in source.read_text(encoding="utf-8").splitlines() if s.strip()]
+    assert len(records) == 4
+    assert {r["provenance"]["source_id"] for r in records} == {
+        "seed_task_92", "seed_task_70", "seed_task_37", "seed_task_19",
+    }
+    for record in records:
+        assert record["split"] == "train"
+        assert record["quality_tier"] == "D"
+        assert record["verification_status"] == "review_required"
+        assert record["metadata"]["candidate_only"] is True
+        assert record["license"] == "Apache-2.0"
+        assert record["provenance"]["upstream_commit"] == (
+            "0b26ccaa415992100fa32df62d41b994cf928e23"
+        )
+        assert record["provenance"]["upstream_path"] == "data/seed_tasks.jsonl"
+    original, _ = builder.read_candidates()
+    assert len(original) == 76  # External rows must not silently change training.
+    assert all(not r["id"].startswith("nestra-selfdev-micro-external")
+               for r in original)

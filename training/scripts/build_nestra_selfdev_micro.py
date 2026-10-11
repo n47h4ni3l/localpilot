@@ -26,10 +26,16 @@ from validate_dataset import validate_files  # noqa: E402
 from train_adapter import expand_training_examples  # noqa: E402
 
 STAGED = ROOT / "training/sources/nestra_p1_selfdev_micro_candidates.jsonl"
+EXTERNAL_STAGED = ROOT / "training/sources/nestra_p1_selfdev_external_candidates.jsonl"
 DATASET = ROOT / "training/datasets/nestra_p1_selfdev_micro.jsonl"
 MANIFEST = ROOT / "training/manifests/nestra_p1_selfdev_micro_manifest.json"
 EVAL_MANIFEST = ROOT / "training/manifests/eval_v1_manifest.json"
-REQUIRED_COUNTS = {"train": 64, "validation": 12}
+REQUIRED_COUNTS = {"train": 68, "validation": 12}
+LOCAL_COUNTS = {"train": 64, "validation": 12}
+EXTERNAL_COUNT = 4
+UPSTREAM_COMMIT = "0b26ccaa415992100fa32df62d41b994cf928e23"
+UPSTREAM_PATH = "data/seed_tasks.jsonl"
+EXTERNAL_SOURCE_IDS = frozenset({"seed_task_92", "seed_task_70", "seed_task_37", "seed_task_19"})
 PROVENANCE_COMMIT = "417656c8bdb541ff4aba1ee91b5d6985842fc3b7"
 
 
@@ -37,19 +43,29 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def read_candidates(path: Path = STAGED) -> tuple[list[dict], str]:
-    data = path.read_bytes()
-    records = [json.loads(line) for line in data.splitlines() if line.strip()]
+def read_candidates(
+    path: Path = STAGED, *, external_path: Path = EXTERNAL_STAGED,
+) -> tuple[list[dict], str]:
+    """Bind every candidate to both frozen inputs; four external rows are required."""
+    local_bytes = path.read_bytes()
+    external_bytes = external_path.read_bytes()
+    local = [json.loads(line) for line in local_bytes.splitlines() if line.strip()]
+    external = [json.loads(line) for line in external_bytes.splitlines() if line.strip()]
+    if (dict(Counter(r.get("split") for r in local)) != LOCAL_COUNTS
+            or len(external) != EXTERNAL_COUNT
+            or any(r.get("split") != "train" for r in external)):
+        raise ValueError("Required 64 local train, 12 validation, 4 external train records")
+    records = local + external
     ids = [r.get("id") for r in records]
     splits = Counter(r.get("split") for r in records)
     if dict(splits) != REQUIRED_COUNTS or len(ids) != len(set(ids)):
-        raise ValueError("The frozen 64/12 split, IDs or record count changed")
+        raise ValueError("Frozen 68/12 split, IDs or record count changed")
+    if {r.get("provenance", {}).get("source_id") for r in external} != EXTERNAL_SOURCE_IDS:
+        raise ValueError("Missing or substituted required Self-Instruct seed ID")
     prompts: set[str] = set()
     for record in records:
         if record.get("quality_tier") != "D" or record.get("verification_status") != "review_required":
             raise ValueError("Staging records must remain unapproved Tier D")
-        if record.get("source") != "project_owned_synthetic_candidate":
-            raise ValueError("Unexpected source authority")
         if record.get("metadata", {}).get("candidate_only") is not True:
             raise ValueError("Staging records must be explicitly non-trainable")
         messages = record.get("messages")
@@ -65,11 +81,31 @@ def read_candidates(path: Path = STAGED) -> tuple[list[dict], str]:
             raise ValueError("Duplicated prompt")
         prompts.add(prompt)
         evidence = record.get("provenance") or {}
-        if (evidence.get("reference") != f"github:commit/{PROVENANCE_COMMIT}"
-                or not isinstance(evidence.get("files"), list)
-                or len(evidence["files"]) != 1):
-            raise ValueError("Missing pinned candidate source reference")
-    return records, sha(data)
+        if record in local:
+            if (record.get("source") != "project_owned_synthetic_candidate"
+                    or evidence.get("reference") != f"github:commit/{PROVENANCE_COMMIT}"
+                    or not isinstance(evidence.get("files"), list)
+                    or len(evidence["files"]) != 1):
+                raise ValueError("Missing pinned LocalPilot candidate source")
+        else:
+            if (record.get("source") != "external_self_instruct_human_seed_candidate"
+                    or record.get("license") != "Apache-2.0"
+                    or evidence.get("repository") != "yizhongw/self-instruct"
+                    or evidence.get("upstream_commit") != UPSTREAM_COMMIT
+                    or evidence.get("upstream_path") != UPSTREAM_PATH
+                    or evidence.get("reference") != (
+                        f"github:yizhongw/self-instruct@{UPSTREAM_COMMIT}:"
+                        f"{UPSTREAM_PATH}#{evidence.get('source_id')}"
+                    )):
+                raise ValueError("Missing pinned licensed external source or provenance")
+    # Digest is length-delimited over both source-file byte sequences: a review
+    # cannot remain valid if either candidate file changes, even only metadata.
+    bound_bytes = (
+        b"nestra-micro-68-12-v1\n" + str(len(local_bytes)).encode("ascii")
+        + b"\n" + local_bytes + b"\n" + str(len(external_bytes)).encode("ascii")
+        + b"\n" + external_bytes
+    )
+    return records, sha(bound_bytes)
 
 
 def verify_review(
@@ -90,8 +126,7 @@ def verify_review(
                 or not isinstance(entry.get("reviewer"), str)
                 or len(entry["reviewer"].strip()) < 3
                 or not isinstance(entry.get("rationale"), str)
-                or len(entry["rationale"].strip()) < 25
-                or entry.get("source_commit") != PROVENANCE_COMMIT):
+                or len(entry["rationale"].strip()) < 25):
             raise ValueError(f"{rid}: missing explicit reviewer approval or reasoning")
         by_id[rid] = entry
     if set(by_id) != {r["id"] for r in records}:
@@ -100,10 +135,14 @@ def verify_review(
     verified_sources: set[str] = set()
     for record in records:
         approval = by_id[record["id"]]
-        source = record["provenance"]["files"][0]
-        if approval.get("source_path") != source:
+        external = record.get("source") == "external_self_instruct_human_seed_candidate"
+        evidence = record["provenance"]
+        source_commit = UPSTREAM_COMMIT if external else PROVENANCE_COMMIT
+        source = UPSTREAM_PATH if external else evidence["files"][0]
+        if (approval.get("source_path") != source
+                or approval.get("source_commit") != source_commit):
             raise ValueError(f"{record['id']}: reviewed source does not match provenance")
-        if verify_git and source not in verified_sources:
+        if verify_git and not external and source not in verified_sources:
             check = subprocess.run(
                 ["git", "cat-file", "-e", f"{PROVENANCE_COMMIT}:{source}"],
                 cwd=ROOT, capture_output=True, check=False,
@@ -111,21 +150,30 @@ def verify_review(
             if check.returncode:
                 raise ValueError(f"Missing immutable source blob for {source}")
             verified_sources.add(source)
+        # External source comparison is an independent reviewer duty: the
+        # upstream Git blob is not present in this checkout. Preserve the exact
+        # upstream commit, licence, source ID and reviewer attribution instead
+        # of misrepresenting the example as local synthetic material.
         converted = json.loads(json.dumps(record))
-        converted["quality_tier"] = "C"
-        converted["verification_status"] = "synthetic_validated"
-        converted["source"] = "project_owned_independently_reviewed_synthetic"
+        converted["quality_tier"] = "B" if external else "C"
+        converted["verification_status"] = "source_verified" if external else "synthetic_validated"
+        converted["source"] = (
+            "self_instruct_upstream_reviewed_seed"
+            if external else "project_owned_independently_reviewed_synthetic"
+        )
         converted["tags"] = [
-            item for item in converted.get("tags", []) if item != "candidate_unapproved"
+            item for item in converted.get("tags", [])
+            if item not in {"candidate_unapproved", "unapproved_external"}
         ]
         converted["metadata"] = {
             "candidate_sha256": candidate_sha,
             "reviewed_by": approval["reviewer"].strip(),
-            "review_source_commit": PROVENANCE_COMMIT,
-            "synthetic_validated": True,
+            "review_source_commit": source_commit,
+            "synthetic_validated": not external,
+            "source_verified": external,
         }
         converted["provenance"]["review"] = {
-            "source_commit": PROVENANCE_COMMIT,
+            "source_commit": source_commit,
             "source_path": source,
             "reviewer": approval["reviewer"].strip(),
             "rationale": approval["rationale"].strip(),

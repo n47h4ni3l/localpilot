@@ -8,9 +8,15 @@
       "id": "nestra-selfdev-micro-train-001",
       "approved": false,
       "reviewer": "FILL_REVIEWER_ID",
-      "rationale": "Explain why this target is appropriate and source-supported; include disagreement or risk notes if necessary.",
+      "rationale": "CHECK ACTUAL SOURCE, factual answer, authority and boundary. This is just an unapproved placeholder.",
       "source_commit": "417656c8bdb541ff4aba1ee91b5d6985842fc3b7",
       "source_path": "ARCHITECTURE.md"
     }
-  ]
+  ],
+  "instructions": "There must be 80 approvals, one for each 68 train and 12 validation record. Independently review all original P1+Self-Instruct targets. Each source_commit/source_path must match the individual record: local 417656c8... and local source file, or Self-Instruct 0b26ccaa... and data/seed_tasks.jsonl. A false or unsupported claim is a blocker; never auto-approve. Compute combined candidate_sha256 using python training/scripts/build_nestra_selfdev_micro.py --inspect.",
+  "expected_record_counts": {
+    "train": 68,
+    "validation": 12,
+    "external_train": 4
+  }
 }

@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "artifact_type": "external_corpus_manifest",
+  "name": "Nestra P1.2 curated source-verified 1000",
+  "created_date": "2026-10-11",
+  "parent_corpus": "training/datasets/external_corpus_v1.jsonl",
+  "parent_corpus_sha256": "08c14195697a73a7caccba3e0a10ff1282889bdd0fd5d9e54fea2cfe747ae504",
+  "parent_seed": "training/datasets/corpus_v1_seed.jsonl",
+  "shards": [
+    "training/datasets/p12_shards/part-01.jsonl",
+    "training/datasets/p12_shards/part-02.jsonl",
+    "training/datasets/p12_shards/part-03.jsonl",
+    "training/datasets/p12_shards/part-04.jsonl",
+    "training/datasets/p12_shards/part-05.jsonl",
+    "training/datasets/p12_shards/part-06.jsonl",
+    "training/datasets/p12_shards/part-07.jsonl",
+    "training/datasets/p12_shards/part-08.jsonl",
+    "training/datasets/p12_shards/part-09.jsonl",
+    "training/datasets/p12_shards/part-10.jsonl",
+    "training/datasets/p12_shards/part-11.jsonl",
+    "training/datasets/p12_shards/part-12.jsonl"
+  ],
+  "records": 1000,
+  "split_counts": {
+    "train": 898,
+    "validation": 102
+  },
+  "training_example_counts": {
+    "train": 2696,
+    "validation": 307,
+    "total": 3003
+  },
+  "corpus_sha256": "8eb2f9300eda78137fc6f1204d34beb0ec2d65059e4e374ec5d42ffa29655801",
+  "source_counts": {
+    "localpilot_verified_history": 24,
+    "nvidia/OpenCodeInstruct": 400,
+    "Salesforce/xlam-function-calling-60k": 180,
+    "nvidia/Nemotron-SFT-Agentic-v2": 190,
+    "neulab/agent-data-collection": 78,
+    "inclusionAI/SWE-CARE": 110,
+    "nvidia/Nemotron-SFT-SWE-v2": 18
+  },
+  "selection_note": "Deterministic high-scoring source-verified subset, not individually human-graded. No new answers generated, and no existing held-out responses included.",
+  "evaluation_exclusions": [
+    "training/evals/**",
+    "training/evals_paired_v2/**",
+    "48-cell held-out evaluation",
+    "private holdout material"
+  ],
+  "cumulative_lineage": "training/lineage/package-1.json",
+  "approved_production_model": "nestra:20b-p1"
+}

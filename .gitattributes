@@ -18,4 +18,6 @@ training/sources/p12_fresh_source_records.jsonl text eol=lf
 training/manifests/p12_fresh_acquisition_lock.json text eol=lf
 training/reports/p12_fresh_*.json text eol=lf
 training/licenses/p12_fresh/** text eol=lf
+# Preserve the pinned publisher cards verbatim, including Markdown line breaks.
+training/licenses/p12_fresh/cards/** whitespace=-blank-at-eol
 training/scripts/curate_p12_fresh.py text eol=lf

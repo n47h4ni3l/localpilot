@@ -1,0 +1,124 @@
+{
+  "artifact_type": "p12_fresh_acquisition_lock",
+  "date": "2026-10-12",
+  "files": [
+    {
+      "repo": "HuggingFaceTB/smoltalk",
+      "revision": "5feaf2fd3ffca7c237fc38d1861bc30365d48ffa",
+      "path": "README.md",
+      "url": "https://huggingface.co/datasets/HuggingFaceTB/smoltalk/resolve/5feaf2fd3ffca7c237fc38d1861bc30365d48ffa/README.md",
+      "bytes": 9723,
+      "sha256": "b6ff197df18e272fe15361db889638f9679b8443f299034137b5234acd8d3487",
+      "prefix_only": false
+    },
+    {
+      "repo": "HuggingFaceTB/smoltalk",
+      "revision": "5feaf2fd3ffca7c237fc38d1861bc30365d48ffa",
+      "path": "data/smol-magpie-ultra/train-00000-of-00006.parquet",
+      "url": "https://huggingface.co/datasets/HuggingFaceTB/smoltalk/resolve/5feaf2fd3ffca7c237fc38d1861bc30365d48ffa/data/smol-magpie-ultra/train-00000-of-00006.parquet",
+      "bytes": 232402904,
+      "sha256": "512cb90bf3c8a6772e97c43977d10177b2726118a107eaf8de4797a604e09df8",
+      "prefix_only": false
+    },
+    {
+      "repo": "HuggingFaceTB/smoltalk",
+      "revision": "5feaf2fd3ffca7c237fc38d1861bc30365d48ffa",
+      "path": "data/smol-rewrite/train-00000-of-00001.parquet",
+      "url": "https://huggingface.co/datasets/HuggingFaceTB/smoltalk/resolve/5feaf2fd3ffca7c237fc38d1861bc30365d48ffa/data/smol-rewrite/train-00000-of-00001.parquet",
+      "bytes": 38927074,
+      "sha256": "12c7df2f0ec53fa35c329c1d10243cbb744bb04b6c52823db8e464835747ccba",
+      "prefix_only": false
+    },
+    {
+      "repo": "HuggingFaceTB/smoltalk",
+      "revision": "5feaf2fd3ffca7c237fc38d1861bc30365d48ffa",
+      "path": "data/smol-summarize/train-00000-of-00001.parquet",
+      "url": "https://huggingface.co/datasets/HuggingFaceTB/smoltalk/resolve/5feaf2fd3ffca7c237fc38d1861bc30365d48ffa/data/smol-summarize/train-00000-of-00001.parquet",
+      "bytes": 119245090,
+      "sha256": "6fb82c0cb0b6bc4cc484057b035b59d83da8a32cd675379628bc7d295a139229",
+      "prefix_only": false
+    },
+    {
+      "repo": "HuggingFaceTB/smoltalk",
+      "revision": "5feaf2fd3ffca7c237fc38d1861bc30365d48ffa",
+      "path": "data/smol-constraints/train-00000-of-00001.parquet",
+      "url": "https://huggingface.co/datasets/HuggingFaceTB/smoltalk/resolve/5feaf2fd3ffca7c237fc38d1861bc30365d48ffa/data/smol-constraints/train-00000-of-00001.parquet",
+      "bytes": 16862908,
+      "sha256": "3369eaff911d3511ee21561a3b8607e1acfd773a6ade80f4759490ffdcce7ba4",
+      "prefix_only": false
+    },
+    {
+      "repo": "HuggingFaceTB/everyday-conversations-llama3.1-2k",
+      "revision": "14f543216b9ba42b6b951dc5bd199460d193b162",
+      "path": "README.md",
+      "url": "https://huggingface.co/datasets/HuggingFaceTB/everyday-conversations-llama3.1-2k/resolve/14f543216b9ba42b6b951dc5bd199460d193b162/README.md",
+      "bytes": 3033,
+      "sha256": "7c0b4d4c9c8de6651d3646d91e92638d46beb67f867f7200a996b72f2611d95a",
+      "prefix_only": false
+    },
+    {
+      "repo": "HuggingFaceTB/everyday-conversations-llama3.1-2k",
+      "revision": "14f543216b9ba42b6b951dc5bd199460d193b162",
+      "path": "data/train_sft-00000-of-00001.parquet",
+      "url": "https://huggingface.co/datasets/HuggingFaceTB/everyday-conversations-llama3.1-2k/resolve/14f543216b9ba42b6b951dc5bd199460d193b162/data/train_sft-00000-of-00001.parquet",
+      "bytes": 2050609,
+      "sha256": "4750214d12b4b92d07fca953e0b5cc59e313c575282d08b605c639aa87531daa",
+      "prefix_only": false
+    },
+    {
+      "repo": "bigcode/self-oss-instruct-sc2-exec-filter-50k",
+      "revision": "356bb069eee815daa6e23e9a282eeefe1490ad44",
+      "path": "README.md",
+      "url": "https://huggingface.co/datasets/bigcode/self-oss-instruct-sc2-exec-filter-50k/resolve/356bb069eee815daa6e23e9a282eeefe1490ad44/README.md",
+      "bytes": 1040,
+      "sha256": "21599c15086963e045f697ca56fe3eedbdb2240fe07b521d94dfb4ff4e7cd2a4",
+      "prefix_only": false
+    },
+    {
+      "repo": "bigcode/self-oss-instruct-sc2-exec-filter-50k",
+      "revision": "356bb069eee815daa6e23e9a282eeefe1490ad44",
+      "path": "data/train-00000-of-00001.parquet",
+      "url": "https://huggingface.co/datasets/bigcode/self-oss-instruct-sc2-exec-filter-50k/resolve/356bb069eee815daa6e23e9a282eeefe1490ad44/data/train-00000-of-00001.parquet",
+      "bytes": 90128158,
+      "sha256": "7bd6092e9940aedebe31f7049c460ba1549a920de5cb4b9bb36b0093cd51fc93",
+      "prefix_only": false
+    },
+    {
+      "repo": "Team-ACE/ToolACE",
+      "revision": "6bda777c88d21e5a204703c1ee45597a8fa4f734",
+      "path": "README.md",
+      "url": "https://huggingface.co/datasets/Team-ACE/ToolACE/resolve/6bda777c88d21e5a204703c1ee45597a8fa4f734/README.md",
+      "bytes": 1873,
+      "sha256": "4e82e47712cfdc0bc86b3b0c6b03f5f2f00a1ca54ccfa696276833743c85e460",
+      "prefix_only": false
+    },
+    {
+      "repo": "Team-ACE/ToolACE",
+      "revision": "6bda777c88d21e5a204703c1ee45597a8fa4f734",
+      "path": "data.json",
+      "url": "https://huggingface.co/datasets/Team-ACE/ToolACE/resolve/6bda777c88d21e5a204703c1ee45597a8fa4f734/data.json",
+      "bytes": 37154735,
+      "sha256": "ba12c083fca7e8da48c67ad5b895e495447da7c66e39a2e19742c082e6cb537e",
+      "prefix_only": false
+    },
+    {
+      "repo": "nvidia/Nemotron-SFT-Instruction-Following-Chat-v2",
+      "revision": "1a9454ed054b8544503ab8d8c0a519d141a44c5b",
+      "path": "README.md",
+      "url": "https://huggingface.co/datasets/nvidia/Nemotron-SFT-Instruction-Following-Chat-v2/resolve/1a9454ed054b8544503ab8d8c0a519d141a44c5b/README.md",
+      "bytes": 2761,
+      "sha256": "b65ea5e616771282978fc9c8e1bbb7a87984800d5c9c044d7a469a912bbb5bf6",
+      "prefix_only": false
+    },
+    {
+      "repo": "nvidia/Nemotron-SFT-Instruction-Following-Chat-v2",
+      "revision": "1a9454ed054b8544503ab8d8c0a519d141a44c5b",
+      "path": "data/reasoning_off.jsonl",
+      "url": "https://huggingface.co/datasets/nvidia/Nemotron-SFT-Instruction-Following-Chat-v2/resolve/1a9454ed054b8544503ab8d8c0a519d141a44c5b/data/reasoning_off.jsonl",
+      "bytes": 33548584,
+      "sha256": "e4da341067d31d7cd58e9df32dd01fe22c468cfa441351c0dbb512d212449137",
+      "prefix_only": true
+    }
+  ],
+  "source_bundle_sha256": "c112d2ae2c411f38ec9226ffd45b13db15d944c08823a9cf40c567e9ef6b72b2"
+}

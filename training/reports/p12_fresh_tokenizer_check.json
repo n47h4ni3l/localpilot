@@ -1,0 +1,33 @@
+{
+  "status": "pass",
+  "errors": [],
+  "candidate_sha256": "b24c2d039caacad1cb040284472a125c0c5477779d6b830d81a334283d0e6d47",
+  "records": 1000,
+  "expanded_examples": 1749,
+  "maximum_allowed": 1040,
+  "maximum_observed": 1040,
+  "training_supervised_tokens_by_task": {
+    "code_generation": 57197,
+    "source_summarization": 6983,
+    "general_conversation": 55257,
+    "constrained_completion": 3731,
+    "everyday_conversation": 9152,
+    "instruction_following_chat": 34124,
+    "text_rewriting": 12835,
+    "self_development": 6843,
+    "multi_tool_use": 23119
+  },
+  "runtime": {
+    "python": "3.12.3",
+    "transformers": "4.56.2"
+  },
+  "tokenizer_revision": "093fba6992ef5a7152481afec0bdfca1ac486998",
+  "tokenizer_file_sha256": {
+    "tokenizer.json": "0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3",
+    "tokenizer_config.json": "1dc1edbfd80613ee13e7882e7bdbd55426d08f88cf38c5de19785219a3ffb076",
+    "special_tokens_map.json": "c661c7dc897a8d9851446db24876bbc243e6ad2f58542e9147190e6654f92855",
+    "chat_template.jinja": "445c3a7c29d9cf61860179de179f60b6cf24834518b491016993eba63c8b1ecc"
+  },
+  "model_weights_loaded": false,
+  "private_holdout_read": false
+}

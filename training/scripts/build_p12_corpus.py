@@ -52,6 +52,31 @@ def build() -> tuple[bytes, dict]:
                 raise RuntimeError(f"Duplicate source ID: {record_id}")
             available[record_id] = item
 
+    # Fresh candidates retain original source rows and complete attribution.
+    # This proves provenance integrity, not independent semantic approval.
+    bundle = selection.get("source_record_bundle")
+    if bundle:
+        raw = (ROOT / bundle["path"]).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != bundle["sha256"]:
+            raise RuntimeError("Fresh source-record bundle changed")
+        envelopes = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        if len(envelopes) != len(ids) or {e["id"] for e in envelopes} != set(ids):
+            raise RuntimeError("Fresh provenance coverage differs from selection")
+        for envelope in envelopes:
+            original = json.dumps(envelope["raw"], ensure_ascii=False, sort_keys=True,
+                                  separators=(",", ":")).encode()
+            digest = hashlib.sha256(original).hexdigest()
+            row = available[envelope["id"]]
+            if digest != envelope["source_record_sha256"] or digest != row["provenance"]["source_record_sha256"]:
+                raise RuntimeError(f"Fresh source-record hash mismatch: {row['id']}")
+            if envelope["transformations"] != row["provenance"]["transformations"]:
+                raise RuntimeError(f"Fresh transformation notice differs: {row['id']}")
+        for relative, expected in selection["attribution_file_shas"].items():
+            if not relative.startswith("training/licenses/p12_fresh/"):
+                raise RuntimeError("Unexpected attribution path")
+            if hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() != expected:
+                raise RuntimeError(f"Attribution or license file changed: {relative}")
+
     rows = []
     normalized_prompts: set[str] = set()
     families: dict[str, str] = {}
@@ -120,7 +145,7 @@ def build() -> tuple[bytes, dict]:
         "source_counts": source_summary,
         "source_blob_shas": selection["source_blob_shas"],
         "parent_manifest": selection["parent_manifest"],
-        "notes": "50 author-curated source-informed examples are not independently scored; all others preserve existing source provenance. The selection does not use private P1.1 regression transcripts.",
+        "notes": selection.get("review_note", "Independent semantic approval remains pending; source integrity and execution checks are not training authorization."),
     }
     return content, corpus_manifest
 

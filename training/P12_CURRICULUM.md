@@ -1,99 +1,106 @@
-# Nestra P1.2 — locked 1,000-record capability curriculum
+# Nestra P1.2: fresh online 1,000-record curriculum
 
-Status: **corpus prepared for verification; no training or export started**.
+Status: **owner-requested candidate rebuild; independent semantic review
+pending; no training, export or promotion performed**.
 
-## Intent
+The accepted original P1 adapter remains the proposed continuation parent.
+The owner's 12 October request replaces the earlier mostly repeated P1 corpus
+with fresh online examples, including a small concrete self-improvement mix.
 
-Continue the **accepted original P1 adapter**, not the experimental P1.1
-candidate. The requested goal is preserved ordinary conversation, correct
-code, useful evidence/tool handling, capable self-development and reliably
-delivered final answers. The 51-step P1.1 candidate is retained separately
-for failure analysis, not promoted or used as the training parent.
+## Curriculum
 
-This curriculum emphasizes **completed outcomes** over repeated internal
-reasoning, confidence slogans or permission mantras. It does not include
-generated chain-of-thought supervision. It is deliberately not a duplicate of
-the failed P1.1 micro-training corpus.
-
-## Contents
-
-- `training/manifests/p12_selection.json`: locked source-ID selection,
-  exact Git blob identities, data composition and expected expansion counts.
-- `training/datasets/p12_curated_cases.jsonl`: 50 distinct source-informed,
-  author-written examples about completing answers, evidence use,
-  self-development, engineering and trainable lineage. These have **not**
-  received independent expert grading, and are explicitly marked
-  `synthetic_validated`, not `human_verified`.
-- `training/scripts/build_p12_corpus.py`: deterministic materializer. It
-  rejects changed source blobs, missing/duplicated IDs, duplicate prompts,
-  cross-split source families, empty terminal assistant answers, mismatched
-  source/split/expansion counts and any collision with the **frozen Eval v1**
-  hashed manifest. The builder never reads private P1.1 holdout answers.
-- `training/configs/qlora_p12_curated_1000.yaml`: proposed, P1-parented
-  QLoRA training configuration. Same pinned base/backend, native compile,
-  LoRA, optimizer, LR, batch, BF16, epochs and max sequence length as the
-  accepted P1 recovery recipe. The new corpus/output identity and
-  final-only checkpoint cadence are the intentional differences.
-
-| Source | Train records | Validation records | Total |
+| Capability | Records | Train | Validation |
 |---|---:|---:|---:|
-| Verified LocalPilot project-history seed | 20 | 4 | 24 |
-| New source-informed completion/self-development cases | 45 | 5 | 50 |
-| OpenCodeInstruct Python tasks with 10/10 recorded verifier score | 683 | 77 | 760 |
-| Nemotron agentic tool-use, error-free and completed traces | 136 | 14 | 150 |
-| Nemotron SWE issue/repair examples | 16 | 0 | 16 |
-| **Total** | **900** | **100** | **1,000** |
+| Code with executed source assertions | 200 | 180 | 20 |
+| Concrete self-improvement: failure, scoped repair, checks | 50 | 45 | 5 |
+| Completed native tool trajectories | 150 | 135 | 15 |
+| Everyday substantive conversation | 100 | 90 | 10 |
+| Instruction-following chat, reasoning off | 100 | 90 | 10 |
+| General conversation and practical tasks | 100 | 90 | 10 |
+| Completed text rewriting | 125 | 113 | 12 |
+| Source-grounded summaries | 125 | 112 | 13 |
+| Constrained completed responses | 50 | 45 | 5 |
+| **Total** | **1,000** | **900** | **100** |
 
-Some source entries are externally licensed; their per-record licence and
-source provenance are preserved. Automatic filtering and a prior source
-verifier score do not constitute a fresh independent semantic audit of every
-answer, and cannot establish that the model will not regress.
+Actual native expansion: **1577 train / 172
+validation assistant targets**, with **1185
+optimizer steps** at the original three epochs and effective batch four.
+The counts-derived recipe schedules one final checkpoint and no pilot.
 
-The 1,000 records expand to **1,604 train and 165 validation assistant
-targets** under LocalPilot's native-conversation expander. Three epochs at
-effective batch size four yield **1,203 optimizer steps**. One checkpoint
-is scheduled at step 1,203. There are **no early or periodic checkpoints**.
+Sources are BigCode's execution-filtered StarCoder2 self-alignment data;
+the newly generated Apache-licensed SmolTalk subsets; Hugging Face everyday
+conversations; NVIDIA instruction-following chat's reasoning-off release;
+and ToolACE. Each is downloaded from a pinned upstream training release.
+Only the stated SmolTalk components are imported; the heterogeneous full
+mixture is not assigned a blanket license.
 
-## Build and check locally
+## Concrete self-improvement
 
-From `E:\LLM_HOME\src\localpilot` after this branch is available:
+Fifty source-derived cases show actual confined CPU test evidence. One
+operator expression inside an implementation is changed; every test assertion
+is preserved. The mutant must fail and the restored implementation must pass,
+with all distinct assertions actually visited during execution. The prompt
+contains the objective, candidate, checks and observed failure. The answer
+delivers a corrected implementation and a concise measured outcome.
+These adaptations are Tier C, `synthetic_validated`, with semantic review
+pending. They are not verbatim upstream conversations or human-verified traces.
+They train concrete progress without adding hidden chain-of-thought targets.
+
+## Source and selection evidence
+
+The original selected rows are retained in
+`sources/p12_fresh_source_records.jsonl`. Dataset cards, full licenses,
+attribution and transformation notices are bundled under `licenses/p12_fresh/`.
+The acquisition lock identifies upstream revisions, immutable URLs, complete
+file hashes and the bounded NVIDIA prefix hash. Per-record row identities,
+source hashes and transformations are checked again during materialization.
+
+`scripts/curate_p12_fresh.py` selects deterministically from verified snapshots.
+It screens blank/incomplete trajectories, unsupported native tool syntax,
+hidden-reasoning markers, placeholders, unsupported action claims, numeric
+additions in text transformations, source-test failures, excessive context
+and close lexical/code duplicates against P1 and other selected examples.
+Known content defects discovered during inspection are rejected explicitly
+in `manifests/p12_fresh_content_rejections.json`.
+
+Every expanded example is rendered through the pinned cached Unsloth
+tokenizer without model weights. Over-1,040-token examples are rejected,
+with no truncation. The frozen Eval v1 check uses its one-way manifest;
+no evaluation answers or private holdout are read.
+
+The local acquisition workspace preserves downloaded sources, rejected IDs
+and reasons, and content-addressed intermediate phases. The lock and curation
+report bind those assets by hash. Intermediate attempts are not approved
+datasets. The initial PR audit is retained in
+`reviews/p12_initial_corpus_audit_20261012.md`; prior sources and Git history
+remain unchanged.
+
+## Reproduce materialization
 
 ```powershell
 python training/scripts/build_p12_corpus.py
 python training/scripts/build_p12_corpus.py --check
 python training/scripts/validate_dataset.py training/datasets/p12_corpus_1000.jsonl
+python -m unittest discover -s training/tests -p 'test_p12*.py' -v
 ```
 
-This creates the locked materialized dataset
-`training/datasets/p12_corpus_1000.jsonl` and a SHA-256-bound trainer
-manifest `training/manifests/p12_corpus_manifest.json`. The builder refuses
-to overwrite an existing different artifact. CI performs the same checks
-on a fresh checkout.
+The materializer refuses to overwrite an existing different corpus or trainer
+manifest. The selection binds the new candidate bytes and source bundle.
+Curation needs PyArrow and the tokenizer; normal materialization and CI need
+neither downloads nor model weights.
 
-The training specification remains `proposed` until a **full, real target-PC
-dry-run** validates GPU/environment, model and parent adapter hashes,
-tokenization and held-out leakage using the established P1 runner. No
-preliminary training pilot is requested.
+## Remaining review and training boundaries
 
-## Training and evaluation boundaries
+The original P1 base, adapter parent, LoRA, optimizer, learning rate, BF16,
+micro-batch, accumulation, three epochs and native compile settings are
+preserved. Only corpus identity and counts-derived checkpoint cadence change.
+P1, P1.1, their evidence and the production alias remain unchanged.
 
-1. Preserve `nestra:20b-p1`, its accepted Package-1 lineage/checkpoints,
-   the original GPT-OSS base, and the P1.1 failed candidate unchanged.
-2. Dry-run the new configuration using the **existing** P1 training
-   orchestration. Do not alter optimizer/LoRA settings or restart from P1.1.
-3. Train **once**, with only the natural final checkpoint. If interrupted,
-   restart that experiment from the beginning rather than treating an
-   incomplete adapter as finished.
-4. Use the proven adapter merge, GGUF conversion/quantization and **new
-   candidate Ollama tag**. Never overwrite P1 as an export shortcut.
-5. Compare frozen P1 against the new candidate with identical prompt
-   framing, decoding, seeds, context and final-turn budgets, including
-   previously observed non-final reasoning loops plus **fresh non-training**
-   cases. Separate model weaknesses from harness/template/runtime effects.
-   Retain empty/timeout/length outcomes. Promotion is a separate owner
-   decision after evidence review.
-
-No absolute non-regression claim is possible from corpus composition alone.
-In particular, training on the original verified external families does
-not prove freedom from overlap with any **private** holdout whose hashes
-are unavailable to this builder.
+Source, schema, assertion and tokenizer checks are integrity evidence. They
+are not independent semantic approval, complete decontamination or proof of
+improved model behavior. Remaining gates are an independent content review
+bound to the final corpus digest, separate private-holdout/similarity work,
+and an exact target-PC preflight. Any subsequently authorized training run
+needs paired P1/candidate conversation, final-answer, coding, tool and
+self-development evaluation with failures retained. Export and promotion
+remain separate owner decisions.

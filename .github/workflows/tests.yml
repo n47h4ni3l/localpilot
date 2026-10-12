@@ -31,4 +31,8 @@ jobs:
       - run: python training/scripts/build_localpilot_history_dataset.py --check
       - run: python training/scripts/validate_dataset.py training/datasets/external_corpus_v1.jsonl
       - run: python training/scripts/validate_external_corpus_v1.py
+      - run: python training/scripts/build_p12_corpus.py
+      - run: python training/scripts/build_p12_corpus.py --check
+      - run: python training/scripts/validate_dataset.py training/datasets/p12_corpus_1000.jsonl
+      - run: python -c "from training.scripts import train_adapter as t; t._validate_config(t.load_config(t.ROOT / 'training/configs/qlora_p12_curated_1000.yaml'))"
       - run: python training/scripts/audit_external_corpus_v1_leakage.py

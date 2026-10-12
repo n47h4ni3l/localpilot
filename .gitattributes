@@ -8,3 +8,16 @@ training/manifests/external_corpus_v1_manifest.json text eol=lf
 training/manifests/external_corpus_v1_acquisition_lock.json text eol=lf
 training/requirements-external-corpus-v1.txt text eol=lf
 training/scripts/launch_adapter_v1.sh text eol=lf
+training/datasets/corpus_v1_seed.jsonl text eol=lf
+training/datasets/p12_curated_cases.jsonl text eol=lf
+training/manifests/p12_selection.json text eol=lf
+training/scripts/build_p12_corpus.py text eol=lf
+training/configs/qlora_p12_curated_1000.yaml text eol=lf
+training/datasets/p12_fresh_candidates.jsonl text eol=lf
+training/sources/p12_fresh_source_records.jsonl text eol=lf
+training/manifests/p12_fresh_acquisition_lock.json text eol=lf
+training/reports/p12_fresh_*.json text eol=lf
+training/licenses/p12_fresh/** text eol=lf
+# Preserve the pinned publisher cards verbatim, including Markdown line breaks.
+training/licenses/p12_fresh/cards/** whitespace=-blank-at-eol
+training/scripts/curate_p12_fresh.py text eol=lf

@@ -1,0 +1,30 @@
+{
+  "artifact_type": "p12_fresh_content_rejections",
+  "date": "2026-10-12",
+  "decisions": [
+    {
+      "id": "p12-fresh-62a0e5079ae56916df37",
+      "reason": "The LCS prompt explicitly requires ValueError for None input, but the target checks falsiness first and returns 0.0. Its passing source assertions omit the required None case. Reject rather than rewriting and claiming source verification."
+    },
+    {
+      "id": "p12-fresh-a867ac5f7e93bf1b676c",
+      "reason": "The requested past-week weather analysis receives only two dated observations, yet the final answer reports a trend over the past week without stating the coverage limitation. The source's synthetic regression numbers are also not substantiated by the shown data."
+    },
+    {
+      "id": "p12-fresh-7695826e0644d7de763c",
+      "reason": "The target counts substring occurrences instead of strings containing the substring, and returns zero where the prompt requires exceptions. Its assertions encode those incorrect behaviors."
+    },
+    {
+      "id": "p12-fresh-a88f071426fc4c85dc45",
+      "reason": "The request removes trailing zeros, but str.strip removes leading zeros too. The source assertions omit a leading-zero input."
+    },
+    {
+      "id": "p12-fresh-b0c4f982860aa8ed6d0a",
+      "reason": "The containment target returns true on a single matching segment instead of proving all requested segments are present."
+    },
+    {
+      "id": "p12-fresh-69b5ccdc57c787996c4e",
+      "reason": "The argument-order wrapper is tested only through addition, which is commutative and cannot distinguish correct from incorrect argument ordering."
+    }
+  ]
+}

@@ -43,7 +43,7 @@ receives one controlled operator mutation inside a function. The original
 assertions run unchanged and must fail against the mutant and pass against
 the corrected implementation. The prompt shows the objective, candidate,
 checks and observed failure; the answer supplies the corrected implementation
-and measured test outcome. These are Tier C, `synthetic_validated`, with
+and a brief repair explanation. Actual execution outcomes remain in metadata. These are Tier C, `synthetic_validated`, with
 independent semantic review pending. No model-generated hidden reasoning or
 production mutation is involved.
 

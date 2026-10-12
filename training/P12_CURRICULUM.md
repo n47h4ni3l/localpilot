@@ -41,7 +41,8 @@ operator expression inside an implementation is changed; every test assertion
 is preserved. The mutant must fail and the restored implementation must pass,
 with all distinct assertions actually visited during execution. The prompt
 contains the objective, candidate, checks and observed failure. The answer
-delivers a corrected implementation and a concise measured outcome.
+delivers a corrected implementation and a concise explanation; measured
+execution receipts remain in metadata.
 These adaptations are Tier C, `synthetic_validated`, with semantic review
 pending. They are not verbatim upstream conversations or human-verified traces.
 They train concrete progress without adding hidden chain-of-thought targets.

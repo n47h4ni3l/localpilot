@@ -349,7 +349,7 @@ def make_self_improvement(raw, tree, asserts, passed):
                       f"Objective: {raw['instruction']}\n\nCurrent candidate:\n```python\n{candidate}\n```\n\n"
                       f"Regression checks (unchanged):\n```python\n{tests}\n```\n\nObserved test result: {observed['stdout'].strip()} (exit 1).\n"
                       "Return the corrected implementation and a brief explanation of the repair.")
-            answer=f"```python\n{ast.unparse(clean)}\n```\n\nThe operator `{type(replacement).__name__}` was corrected to `{type(operator).__name__}` in one implementation expression to restore the specified behavior. The tests were preserved. All {len(asserts)} distinct assertion statements passed during execution."
+            answer=f"```python\n{ast.unparse(clean)}\n```\n\nThe operator `{type(replacement).__name__}` was corrected to `{type(operator).__name__}` in one implementation expression to restore the specified behavior. The test setup and expectations are preserved."
             return [{'role':'user','content':question},{'role':'assistant','content':answer}], {'mutation':type(operator).__name__+'->'+type(replacement).__name__,'changed_expressions':1,'tests_preserved':True,'failed_execution':observed,'passed_execution':verified,'assertions':len(asserts),'candidate_sha256':digest(candidate),'tests_sha256':digest(tests),'original_test_ast_sha256':digest(original_checks)}
     raise ValueError('no_discriminating_mutation')
 
@@ -474,6 +474,7 @@ def main():
                         metadata['self_improvement_evidence']=evidence
                         task_type='self_development'
                         transformations.append('controlled_operator_mutation_and_executed_fail_repair')
+                        transformations.append('repair_explanation_without_unobserved_execution_claim')
                 elif category=='multi_tool_use':
                     native,tools=native_toolace(raw)
                     metadata['native_messages']=native

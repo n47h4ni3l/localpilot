@@ -41,6 +41,12 @@ def build() -> tuple[bytes, dict]:
     ids = selection["selection_ids"]
     if len(ids) != 1000 or len(set(ids)) != 1000:
         raise RuntimeError("Selection must contain exactly 1,000 unique record IDs")
+    rejected_path = ROOT / "training/manifests/p12_fresh_content_rejections.json"
+    if rejected_path.exists():
+        rejected = json.loads(rejected_path.read_text(encoding="utf-8"))
+        excluded = {item["id"] for item in rejected["decisions"]}
+        if excluded.intersection(ids):
+            raise RuntimeError("Selection includes an explicitly rejected content record")
 
     available: dict[str, dict] = {}
     for relative, sha in selection["source_blob_shas"].items():

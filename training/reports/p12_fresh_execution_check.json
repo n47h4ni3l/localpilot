@@ -1,6 +1,6 @@
 {
   "status": "pass",
-  "candidate_sha256": "b24c2d039caacad1cb040284472a125c0c5477779d6b830d81a334283d0e6d47",
+  "candidate_sha256": "c2e5fda2bbb23e1e5f571655b6d02448ff4c43d14a0171b460ab43ed2207d35f",
   "code_records_reexecuted": 200,
   "self_improvement_cases_reexecuted": 50,
   "errors": [],
@@ -178,18 +178,6 @@
       }
     },
     {
-      "id": "p12-fresh-4645ca58466cab366f3d",
-      "task": "code_generation",
-      "result": {
-        "exit_code": 0,
-        "stdout": "Input: num=30, step=2\nShifted value: 7\n",
-        "stderr": "",
-        "executed_assertions": 3,
-        "expected_assertions": 3,
-        "all_assertions_executed": true
-      }
-    },
-    {
       "id": "p12-fresh-7236f0af53eaa3e77cd0",
       "task": "code_generation",
       "result": {
@@ -210,18 +198,6 @@
         "stderr": "",
         "executed_assertions": 5,
         "expected_assertions": 5,
-        "all_assertions_executed": true
-      }
-    },
-    {
-      "id": "p12-fresh-b4e77c1b253d968d2edd",
-      "task": "code_generation",
-      "result": {
-        "exit_code": 0,
-        "stdout": "",
-        "stderr": "",
-        "executed_assertions": 4,
-        "expected_assertions": 4,
         "all_assertions_executed": true
       }
     },
@@ -390,6 +366,18 @@
       }
     },
     {
+      "id": "p12-fresh-1bb3940be9acd5b1b9e4",
+      "task": "code_generation",
+      "result": {
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "executed_assertions": 10,
+        "expected_assertions": 10,
+        "all_assertions_executed": true
+      }
+    },
+    {
       "id": "p12-fresh-95ef4d5ce8dfb0f2c302",
       "task": "code_generation",
       "result": {
@@ -398,18 +386,6 @@
         "stderr": "",
         "executed_assertions": 6,
         "expected_assertions": 6,
-        "all_assertions_executed": true
-      }
-    },
-    {
-      "id": "p12-fresh-de10b8e171f7c6526441",
-      "task": "code_generation",
-      "result": {
-        "exit_code": 0,
-        "stdout": "",
-        "stderr": "",
-        "executed_assertions": 3,
-        "expected_assertions": 3,
         "all_assertions_executed": true
       }
     },
@@ -426,9 +402,17 @@
       }
     },
     {
-      "id": "p12-fresh-0df3ed4ab6e8ec7bf32f",
-      "task": "code_generation",
-      "result": {
+      "id": "p12-fresh-7ac33790a31669bcc5a4",
+      "task": "self_development",
+      "failed": {
+        "exit_code": 1,
+        "stdout": "AssertionError: \n",
+        "stderr": "",
+        "executed_assertions": 1,
+        "expected_assertions": 3,
+        "all_assertions_executed": false
+      },
+      "passed": {
         "exit_code": 0,
         "stdout": "",
         "stderr": "",
@@ -581,18 +565,6 @@
         "all_assertions_executed": false
       },
       "passed": {
-        "exit_code": 0,
-        "stdout": "",
-        "stderr": "",
-        "executed_assertions": 3,
-        "expected_assertions": 3,
-        "all_assertions_executed": true
-      }
-    },
-    {
-      "id": "p12-fresh-b0c4f982860aa8ed6d0a",
-      "task": "code_generation",
-      "result": {
         "exit_code": 0,
         "stdout": "",
         "stderr": "",
@@ -971,16 +943,8 @@
     },
     {
       "id": "p12-fresh-1d8b58eb7dc043cef64d",
-      "task": "self_development",
-      "failed": {
-        "exit_code": 1,
-        "stdout": "AssertionError: \n",
-        "stderr": "",
-        "executed_assertions": 1,
-        "expected_assertions": 5,
-        "all_assertions_executed": false
-      },
-      "passed": {
+      "task": "code_generation",
+      "result": {
         "exit_code": 0,
         "stdout": "",
         "stderr": "",
@@ -1058,7 +1022,7 @@
       }
     },
     {
-      "id": "p12-fresh-d982bfa48cbeeee38ec1",
+      "id": "p12-fresh-0e3d0385050a9a6d6d3b",
       "task": "code_generation",
       "result": {
         "exit_code": 0,
@@ -1070,14 +1034,14 @@
       }
     },
     {
-      "id": "p12-fresh-0e3d0385050a9a6d6d3b",
+      "id": "p12-fresh-05d7e20b93465935ad31",
       "task": "code_generation",
       "result": {
         "exit_code": 0,
         "stdout": "",
         "stderr": "",
-        "executed_assertions": 3,
-        "expected_assertions": 3,
+        "executed_assertions": 4,
+        "expected_assertions": 4,
         "all_assertions_executed": true
       }
     },
@@ -1119,6 +1083,18 @@
     },
     {
       "id": "p12-fresh-ec511f7ca330ec86f6a7",
+      "task": "code_generation",
+      "result": {
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "executed_assertions": 7,
+        "expected_assertions": 7,
+        "all_assertions_executed": true
+      }
+    },
+    {
+      "id": "p12-fresh-c105ecb332ec75518236",
       "task": "code_generation",
       "result": {
         "exit_code": 0,
@@ -1250,6 +1226,26 @@
       }
     },
     {
+      "id": "p12-fresh-b2fa46450d197dff2626",
+      "task": "self_development",
+      "failed": {
+        "exit_code": 1,
+        "stdout": "AssertionError: \n",
+        "stderr": "",
+        "executed_assertions": 1,
+        "expected_assertions": 3,
+        "all_assertions_executed": false
+      },
+      "passed": {
+        "exit_code": 0,
+        "stdout": "Error: Input must be a list of integers.\nError: Input must be a list of integers.\n",
+        "stderr": "",
+        "executed_assertions": 3,
+        "expected_assertions": 3,
+        "all_assertions_executed": true
+      }
+    },
+    {
       "id": "p12-fresh-7d358e97bb8280560b0e",
       "task": "code_generation",
       "result": {
@@ -1258,18 +1254,6 @@
         "stderr": "",
         "executed_assertions": 3,
         "expected_assertions": 3,
-        "all_assertions_executed": true
-      }
-    },
-    {
-      "id": "p12-fresh-7695826e0644d7de763c",
-      "task": "code_generation",
-      "result": {
-        "exit_code": 0,
-        "stdout": "",
-        "stderr": "",
-        "executed_assertions": 7,
-        "expected_assertions": 7,
         "all_assertions_executed": true
       }
     },
@@ -1330,18 +1314,6 @@
       }
     },
     {
-      "id": "p12-fresh-23019ec4a82716abbef4",
-      "task": "code_generation",
-      "result": {
-        "exit_code": 0,
-        "stdout": "",
-        "stderr": "",
-        "executed_assertions": 4,
-        "expected_assertions": 4,
-        "all_assertions_executed": true
-      }
-    },
-    {
       "id": "p12-fresh-3c0ec29d451f8888f718",
       "task": "code_generation",
       "result": {
@@ -1379,16 +1351,8 @@
     },
     {
       "id": "p12-fresh-9f136a5c164022dbaefd",
-      "task": "self_development",
-      "failed": {
-        "exit_code": 1,
-        "stdout": "AssertionError: \n",
-        "stderr": "",
-        "executed_assertions": 1,
-        "expected_assertions": 3,
-        "all_assertions_executed": false
-      },
-      "passed": {
+      "task": "code_generation",
+      "result": {
         "exit_code": 0,
         "stdout": "",
         "stderr": "",
@@ -1566,6 +1530,18 @@
       }
     },
     {
+      "id": "p12-fresh-d41a1ecfb25a6122061d",
+      "task": "code_generation",
+      "result": {
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "executed_assertions": 3,
+        "expected_assertions": 3,
+        "all_assertions_executed": true
+      }
+    },
+    {
       "id": "p12-fresh-cf713c59f11e7fb48699",
       "task": "code_generation",
       "result": {
@@ -1607,18 +1583,6 @@
       "result": {
         "exit_code": 0,
         "stdout": "",
-        "stderr": "",
-        "executed_assertions": 3,
-        "expected_assertions": 3,
-        "all_assertions_executed": true
-      }
-    },
-    {
-      "id": "p12-fresh-5d46bff895eb67ca35ef",
-      "task": "code_generation",
-      "result": {
-        "exit_code": 0,
-        "stdout": "1\n2\n3\n4\n5\n6\n7\n8\n9\n",
         "stderr": "",
         "executed_assertions": 3,
         "expected_assertions": 3,
@@ -2098,9 +2062,17 @@
       }
     },
     {
-      "id": "p12-fresh-bf7f6c86ed46eb7ab4fe",
-      "task": "code_generation",
-      "result": {
+      "id": "p12-fresh-3a808b91cc57324431d3",
+      "task": "self_development",
+      "failed": {
+        "exit_code": 1,
+        "stdout": "AssertionError: \n",
+        "stderr": "",
+        "executed_assertions": 2,
+        "expected_assertions": 3,
+        "all_assertions_executed": false
+      },
+      "passed": {
         "exit_code": 0,
         "stdout": "",
         "stderr": "",
@@ -2254,6 +2226,18 @@
       }
     },
     {
+      "id": "p12-fresh-b4bca622bf784b6c40a2",
+      "task": "code_generation",
+      "result": {
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "executed_assertions": 6,
+        "expected_assertions": 6,
+        "all_assertions_executed": true
+      }
+    },
+    {
       "id": "p12-fresh-2a4d3ac58f7c8cb4603a",
       "task": "code_generation",
       "result": {
@@ -2262,6 +2246,18 @@
         "stderr": "",
         "executed_assertions": 5,
         "expected_assertions": 5,
+        "all_assertions_executed": true
+      }
+    },
+    {
+      "id": "p12-fresh-74598910730ac9e31584",
+      "task": "code_generation",
+      "result": {
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "executed_assertions": 3,
+        "expected_assertions": 3,
         "all_assertions_executed": true
       }
     },
@@ -2350,6 +2346,18 @@
         "stderr": "",
         "executed_assertions": 4,
         "expected_assertions": 4,
+        "all_assertions_executed": true
+      }
+    },
+    {
+      "id": "p12-fresh-8e8efd55580748c7b3a1",
+      "task": "code_generation",
+      "result": {
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "executed_assertions": 3,
+        "expected_assertions": 3,
         "all_assertions_executed": true
       }
     },
@@ -2606,18 +2614,6 @@
       }
     },
     {
-      "id": "p12-fresh-2588d9daf87c18bbe633",
-      "task": "code_generation",
-      "result": {
-        "exit_code": 0,
-        "stdout": "",
-        "stderr": "",
-        "executed_assertions": 3,
-        "expected_assertions": 3,
-        "all_assertions_executed": true
-      }
-    },
-    {
       "id": "p12-fresh-22d73c0e142fd7f07fb6",
       "task": "self_development",
       "failed": {
@@ -2694,6 +2690,26 @@
         "stderr": "",
         "executed_assertions": 5,
         "expected_assertions": 5,
+        "all_assertions_executed": true
+      }
+    },
+    {
+      "id": "p12-fresh-450498903138cd123935",
+      "task": "self_development",
+      "failed": {
+        "exit_code": 1,
+        "stdout": "AssertionError: \n",
+        "stderr": "",
+        "executed_assertions": 1,
+        "expected_assertions": 3,
+        "all_assertions_executed": false
+      },
+      "passed": {
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "executed_assertions": 3,
+        "expected_assertions": 3,
         "all_assertions_executed": true
       }
     },
@@ -2978,6 +2994,18 @@
       }
     },
     {
+      "id": "p12-fresh-56613855c97ad6bc21bf",
+      "task": "code_generation",
+      "result": {
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "executed_assertions": 3,
+        "expected_assertions": 3,
+        "all_assertions_executed": true
+      }
+    },
+    {
       "id": "p12-fresh-a7288af874af6d22600b",
       "task": "self_development",
       "failed": {
@@ -3058,7 +3086,7 @@
       }
     },
     {
-      "id": "p12-fresh-122cb3ffe2ee81c0638c",
+      "id": "p12-fresh-1f0bbb5986641b92c270",
       "task": "code_generation",
       "result": {
         "exit_code": 0,
@@ -3070,7 +3098,7 @@
       }
     },
     {
-      "id": "p12-fresh-1f0bbb5986641b92c270",
+      "id": "p12-fresh-2b5d820c136bd34db596",
       "task": "code_generation",
       "result": {
         "exit_code": 0,
@@ -3078,6 +3106,18 @@
         "stderr": "",
         "executed_assertions": 3,
         "expected_assertions": 3,
+        "all_assertions_executed": true
+      }
+    },
+    {
+      "id": "p12-fresh-9ab5c3eb4548a702deee",
+      "task": "code_generation",
+      "result": {
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "executed_assertions": 5,
+        "expected_assertions": 5,
         "all_assertions_executed": true
       }
     },
@@ -3107,18 +3147,6 @@
     },
     {
       "id": "p12-fresh-8c21fdf4a127f13e7735",
-      "task": "code_generation",
-      "result": {
-        "exit_code": 0,
-        "stdout": "",
-        "stderr": "",
-        "executed_assertions": 3,
-        "expected_assertions": 3,
-        "all_assertions_executed": true
-      }
-    },
-    {
-      "id": "p12-fresh-a88f071426fc4c85dc45",
       "task": "code_generation",
       "result": {
         "exit_code": 0,
@@ -3206,18 +3234,6 @@
       }
     },
     {
-      "id": "p12-fresh-69b5ccdc57c787996c4e",
-      "task": "code_generation",
-      "result": {
-        "exit_code": 0,
-        "stdout": "",
-        "stderr": "",
-        "executed_assertions": 4,
-        "expected_assertions": 4,
-        "all_assertions_executed": true
-      }
-    },
-    {
       "id": "p12-fresh-4561f65b09ca8dc9d441",
       "task": "code_generation",
       "result": {
@@ -3231,16 +3247,8 @@
     },
     {
       "id": "p12-fresh-a2e275830de8434dcf96",
-      "task": "self_development",
-      "failed": {
-        "exit_code": 1,
-        "stdout": "AssertionError: \n",
-        "stderr": "",
-        "executed_assertions": 2,
-        "expected_assertions": 4,
-        "all_assertions_executed": false
-      },
-      "passed": {
+      "task": "code_generation",
+      "result": {
         "exit_code": 0,
         "stdout": "",
         "stderr": "",
@@ -3375,16 +3383,8 @@
     },
     {
       "id": "p12-fresh-2b56405fb1363ceecf7d",
-      "task": "self_development",
-      "failed": {
-        "exit_code": 1,
-        "stdout": "AssertionError: \n",
-        "stderr": "",
-        "executed_assertions": 2,
-        "expected_assertions": 4,
-        "all_assertions_executed": false
-      },
-      "passed": {
+      "task": "code_generation",
+      "result": {
         "exit_code": 0,
         "stdout": "",
         "stderr": "",

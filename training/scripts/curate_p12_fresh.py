@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import symtable
 import sys
 import warnings
 
@@ -232,6 +233,8 @@ def executable_code(response):
     asserts=[n for n in ast.walk(tree) if isinstance(n,ast.Assert)]
     if len(asserts)<3 or not any(isinstance(n,ast.FunctionDef) for n in tree.body):
         raise ValueError('insufficient_executable_tests')
+    if len({ast.dump(n,include_attributes=False) for n in asserts})<3:
+        raise ValueError('insufficient_explicit_assertion_diversity')
     for node in ast.walk(tree):
         if isinstance(node,(ast.Import,ast.ImportFrom)):
             modules=[a.name for a in node.names] if isinstance(node,ast.Import) else [node.module or '']
@@ -286,9 +289,20 @@ def run_code(tree):
 
 MUTATIONS={ast.Lt:ast.LtE,ast.LtE:ast.Lt,ast.Gt:ast.GtE,ast.GtE:ast.Gt,ast.Eq:ast.NotEq,ast.NotEq:ast.Eq,ast.Add:ast.Sub,ast.Sub:ast.Add,ast.Mult:ast.Add,ast.And:ast.Or,ast.Or:ast.And}
 def make_self_improvement(raw, tree, asserts, passed):
-    test_names={n.name for n in tree.body if isinstance(n,ast.FunctionDef) and n.name.startswith('test_')}
+    test_names={n.name for n in tree.body if isinstance(n,ast.FunctionDef) and n.name.startswith('test') and any(isinstance(x,ast.Assert) for x in ast.walk(n))}
+    table=symtable.symtable(ast.unparse(tree),'<source-helper>','exec')
+    globals_used={symbol.get_name() for child in table.get_children() if child.get_name() not in test_names for symbol in child.get_symbols() if symbol.is_global() and symbol.is_referenced()}
+    def is_implementation(node):
+        if isinstance(node,(ast.Import,ast.ImportFrom)):
+            return True
+        if isinstance(node,ast.FunctionDef):
+            return node.name not in test_names
+        if isinstance(node,(ast.Assign,ast.AnnAssign)):
+            assigned={n.id for n in ast.walk(node) if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Store)}
+            return bool(assigned & globals_used)
+        return False
     def is_test(node):
-        return isinstance(node,ast.Assert) or isinstance(node,ast.FunctionDef) and node.name in test_names or not isinstance(node,ast.FunctionDef) and any(isinstance(n,ast.Assert) for n in ast.walk(node)) or isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id in test_names
+        return not is_implementation(node)
     clean=copy.deepcopy(tree)
     clean.body=[n for n in clean.body if not is_test(n)]
     test_tree=copy.deepcopy(tree)
@@ -346,6 +360,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--raw-root',type=Path,required=True)
     parser.add_argument('--tokenizer',type=Path,required=True)
+    parser.add_argument('--reuse-noncoding', action='store_true', help='Keep hash-bound, previously verified noncoding records while rebuilding the coding/self-improvement component.')
     args=parser.parse_args()
     import pyarrow.parquet as pq
     from transformers import AutoTokenizer
@@ -356,9 +371,27 @@ def main():
     files=acquisition['files']
     tokenizer=AutoTokenizer.from_pretrained(args.tokenizer,local_files_only=True)
     pools=defaultdict(list)
+    reused_rows=[]
+    reused_envelopes=[]
+    if args.reuse_noncoding:
+        current=[json.loads(x) for x in (root/'training/datasets/p12_fresh_candidates.jsonl').read_bytes().splitlines()]
+        original_envelopes={e['id']:e for e in (json.loads(x) for x in (root/'training/sources/p12_fresh_source_records.jsonl').read_bytes().splitlines())}
+        for row in current:
+            if row['task_type'] in {'code_generation','self_development'}:
+                continue
+            envelope=original_envelopes[row['id']]
+            if digest(envelope['raw'])!=row['provenance']['source_record_sha256']:
+                raise RuntimeError('Cached noncoding provenance mismatch')
+            lengths=[len(_tokenized_example(tokenizer,e,1040)[0]) for e in expand_training_examples([row])]
+            if max(lengths)!=row['metadata']['native_max_tokens']:
+                raise RuntimeError('Cached noncoding tokenizer mismatch')
+            reused_rows.append(row)
+            reused_envelopes.append(envelope)
     for asset in files:
         relative=asset['path']
         if relative.endswith('README.md'):
+            continue
+        if args.reuse_noncoding and not asset['repo'].startswith('bigcode/'):
             continue
         path=args.raw_root/'raw'/asset['repo'].replace('/','--')/relative
         if digest(path.read_bytes())!=asset['sha256']:
@@ -398,6 +431,18 @@ def main():
     code_passes=0
     for category in QUOTAS:
         if category=='self_development':
+            continue
+        if args.reuse_noncoding and category!='code_generation':
+            group=[r for r in reused_rows if r['task_type']==category]
+            if len(group)!=QUOTAS[category]:
+                raise RuntimeError('Cached category count changed')
+            for row in group:
+                if not diversity.add(prompt(row)):
+                    raise RuntimeError('Cached noncoding near-duplicate after code rebuild')
+            selected.extend(group)
+            ids={r['id'] for r in group}
+            envelopes.extend(e for e in reused_envelopes if e['id'] in ids)
+            stats[category]['reused_verified_candidate_records']=len(group)
             continue
         pool=sorted(pools[category],key=lambda x:x[0])
         count=0

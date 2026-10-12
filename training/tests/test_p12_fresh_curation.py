@@ -19,6 +19,29 @@ def local_runner(tree):
         return {'exit_code':1,'stdout':'AssertionError:','stderr':''}
 
 class FreshCurationRegressionTests(unittest.TestCase):
+    def test_test_setup_and_assertion_order_are_preserved(self):
+        source='''INCREMENT=1
+def offset(x):
+    return x+INCREMENT
+value=offset(1)
+assert value==2
+value=offset(2)
+assert value==3
+value=offset(3)
+assert value==4
+'''
+        tree=ast.parse(source)
+        assertions=[n for n in ast.walk(tree) if isinstance(n,ast.Assert)]
+        with patch.object(curator,'run_code',local_runner):
+            messages,evidence=curator.make_self_improvement({'instruction':'Add one to x.'},tree,assertions,{'exit_code':0})
+        blocks=re.findall(r'```python\n(.*?)```',messages[0]['content'],re.S)
+        checks=ast.parse(blocks[1])
+        expected=ast.Module(body=tree.body[2:],type_ignores=[])
+        self.assertEqual(ast.dump(checks,include_attributes=False),ast.dump(expected,include_attributes=False))
+        implementation=ast.parse(blocks[0])
+        self.assertIsInstance(implementation.body[0],ast.Assign)
+        self.assertEqual(evidence['passed_execution']['exit_code'],0)
+
     def test_mutation_changes_one_expression_and_preserves_test_helpers(self):
         # CPython AST operator objects can be shared; changing every reference
         # would corrupt both additions and the test helper's comparisons.

@@ -25,16 +25,17 @@
   },
   "selection_stats": {
     "code_generation": {
-      "considered": 42442,
-      "rejected_insufficient_executable_tests": 41714,
+      "considered": 44738,
+      "rejected_insufficient_executable_tests": 43979,
       "rejected_unterminated string literal (detected at line 24) (<unknown>, line 24)": 1,
-      "rejected_no_discriminating_mutation": 64,
-      "rejected_unsupported_execution_shape": 30,
+      "rejected_no_discriminating_mutation": 53,
+      "rejected_unsupported_execution_shape": 28,
       "rejected_fresh_code_tests_failed": 69,
       "accepted_self_development": 50,
-      "rejected_unconfined_import": 139,
-      "rejected_reasoning_identity_refusal_or_credentials": 87,
+      "rejected_unconfined_import": 136,
+      "rejected_reasoning_identity_refusal_or_credentials": 93,
       "rejected_prior_or_selected_near_duplicate": 7,
+      "rejected_insufficient_explicit_assertion_diversity": 39,
       "rejected_(unicode error) 'unicodeescape' codec can't decode bytes in position 2-3": 1,
       "rejected_unconfined_attribute": 4,
       "rejected_invalid syntax (<unknown>, line 27)": 1,
@@ -49,7 +50,7 @@
       "rejected_invalid syntax (<unknown>, line 17)": 1,
       "rejected_expected an indented block after 'for' statement on line 21 (<unknown>, line 21)": 1,
       "rejected_invalid syntax (<unknown>, line 11)": 4,
-      "rejected_invalid syntax (<unknown>, line 13)": 1,
+      "rejected_invalid syntax (<unknown>, line 13)": 2,
       "rejected_invalid syntax (<unknown>, line 14)": 1,
       "rejected_'": 2,
       "rejected_expected an indented block after function definition on line 17 (<unknown>, line 17)": 1,
@@ -84,11 +85,56 @@
       "rejected_cannot assign to function call here. Maybe you meant '==' instead of '='? (<unknown>, line 8)": 2,
       "rejected_p12-fresh-a83c46ab16dd9373bdae": 1,
       "rejected_invalid syntax (<unknown>, line 9)": 1,
-      "rejected_p12-fresh-8918ef38f18ba779f40b": 1,
       "rejected_unterminated string literal (detected at line 21) (<unknown>, line 21)": 1,
       "rejected_unexpected character after line continuation character (<unknown>, line 12)": 1,
-      "rejected_expected an indented block after function definition on line 19 (<unknown>, line 21)": 1
+      "rejected_expected an indented block after function definition on line 19 (<unknown>, line 21)": 1,
+      "rejected_expected an indented block after function definition on line 13 (<unknown>, line 13)": 1,
+      "rejected_expected an indented block after function definition on line 21 (<unknown>, line 23)": 1
     },
+    "multi_tool_use": {
+      "reused_verified_candidate_records": 150
+    },
+    "everyday_conversation": {
+      "reused_verified_candidate_records": 100
+    },
+    "instruction_following_chat": {
+      "reused_verified_candidate_records": 100
+    },
+    "general_conversation": {
+      "reused_verified_candidate_records": 100
+    },
+    "text_rewriting": {
+      "reused_verified_candidate_records": 125
+    },
+    "source_summarization": {
+      "reused_verified_candidate_records": 125
+    },
+    "constrained_completion": {
+      "reused_verified_candidate_records": 50
+    }
+  },
+  "selected_records": 1000,
+  "source_pool_counts": {
+    "general_conversation": 68257,
+    "text_rewriting": 53342,
+    "source_summarization": 96356,
+    "constrained_completion": 34424,
+    "everyday_conversation": 2260,
+    "code_generation": 50661,
+    "multi_tool_use": 11300,
+    "instruction_following_chat": 5953
+  },
+  "executed_passing_code_candidates": 313,
+  "rejections_sha256": "6c8bd1cc1e72b6fd8165f240a9b7b51ca8f6298178a4f20afb61f6f9c5838509",
+  "rejection_count": 44488,
+  "candidate_sha256": "c2e5fda2bbb23e1e5f571655b6d02448ff4c43d14a0171b460ab43ed2207d35f",
+  "source_bundle_sha256": "da912572fc54cb92966caf0ae52b4d164d936ea0eeb40ffb0bbed43a270de2a4",
+  "all_selected_native_tokens_within": 1040,
+  "private_holdout_read": false,
+  "model_weights_loaded": false,
+  "training_started": false,
+  "parent_noncoding_candidate_sha256": "b24c2d039caacad1cb040284472a125c0c5477779d6b830d81a334283d0e6d47",
+  "previous_noncoding_selection_stats": {
     "multi_tool_use": {
       "considered": 7008,
       "rejected_tool_schema_context": 2611,
@@ -1326,30 +1372,14 @@
       "rejected_constraint_failed_bullet_count": 1
     }
   },
-  "selected_records": 1000,
-  "source_pool_counts": {
-    "general_conversation": 68257,
-    "text_rewriting": 53342,
-    "source_summarization": 96356,
-    "constrained_completion": 34424,
-    "everyday_conversation": 2260,
-    "code_generation": 50661,
-    "multi_tool_use": 11300,
-    "instruction_following_chat": 5953
-  },
-  "executed_passing_code_candidates": 325,
-  "rejections_sha256": "cf711b2d8ef3de5db6c867a3243c70822a922e518fec83410a45914e061d8ba8",
-  "rejection_count": 55269,
-  "candidate_sha256": "b24c2d039caacad1cb040284472a125c0c5477779d6b830d81a334283d0e6d47",
-  "source_bundle_sha256": "c112d2ae2c411f38ec9226ffd45b13db15d944c08823a9cf40c567e9ef6b72b2",
-  "all_selected_native_tokens_within": 1040,
-  "private_holdout_read": false,
-  "model_weights_loaded": false,
-  "training_started": false,
-  "serialization_check": "Native schema property ordering checked after canonical JSONL serialization; metadata corrected, targets unchanged.",
   "runtime": {
     "python": "3.12.3",
     "transformers": "4.56.2",
     "pyarrow": "25.0.1"
-  }
+  },
+  "additional_selection_requirements": [
+    "At least three syntactically distinct source assertion expressions",
+    "Original test setup and assertion order preserved",
+    "Native tokenization after canonical JSON serialization"
+  ]
 }

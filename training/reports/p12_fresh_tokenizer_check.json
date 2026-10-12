@@ -1,20 +1,20 @@
 {
   "status": "pass",
   "errors": [],
-  "candidate_sha256": "b24c2d039caacad1cb040284472a125c0c5477779d6b830d81a334283d0e6d47",
+  "candidate_sha256": "c2e5fda2bbb23e1e5f571655b6d02448ff4c43d14a0171b460ab43ed2207d35f",
   "records": 1000,
   "expanded_examples": 1749,
   "maximum_allowed": 1040,
   "maximum_observed": 1040,
   "training_supervised_tokens_by_task": {
-    "code_generation": 57197,
+    "code_generation": 56970,
     "source_summarization": 6983,
     "general_conversation": 55257,
     "constrained_completion": 3731,
     "everyday_conversation": 9152,
     "instruction_following_chat": 34124,
     "text_rewriting": 12835,
-    "self_development": 6843,
+    "self_development": 6696,
     "multi_tool_use": 23119
   },
   "runtime": {

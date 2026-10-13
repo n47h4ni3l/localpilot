@@ -151,6 +151,7 @@ def test_workspace_failure_then_success_preserves_attempt_and_uses_same_experime
     monkeypatch.setattr(developer, "_repair_failed_candidate", lambda **kwargs: None)
     monkeypatch.setattr(developer, "_load_next_task", lambda: None)
     monkeypatch.setattr(developer, "_select_developer_model", lambda: DeveloperModelSelection("fake", 1, 1.0, "fits"))
+    monkeypatch.setattr(developer, "_review_task_repository", lambda *args, **kwargs: {"status": "source_anchored"})
     calls = []
 
     def workspace(branch):

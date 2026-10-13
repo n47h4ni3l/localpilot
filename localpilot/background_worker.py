@@ -357,7 +357,7 @@ class BackgroundWorker:
                     )
                 if result_status in {
                     "error", "paused", "failed", "crashed", "sync_blocked",
-                    "candidate_needs_work", "preparation_failed",
+                    "candidate_needs_work", "preparation_failed", "needs_research",
                 }:
                     retry_delay = max(self.interval_seconds, self.retry_backoff_seconds)
                     next_deadline = max(next_deadline, now + retry_delay)

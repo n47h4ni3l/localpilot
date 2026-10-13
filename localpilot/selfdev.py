@@ -1246,6 +1246,18 @@ class SelfDeveloper:
         force: bool,
     ) -> dict[str, Any]:
         """Choose a measured capability-growth question from current evidence."""
+        for task in self.memory.preparation_recovery_tasks():
+            task_id = str(task["id"])
+            if self.opportunities.status_for_task(task_id) not in {
+                None, "proposed", "selected", "active", "superseded", "preparation_failed",
+            }:
+                continue
+            self.opportunities.update(task_id, "selected")
+            self.audit.write(
+                "capability_preparation_resumed", task_id=task_id,
+                source="unstarted_experiment", prior_attempts_preserved=True,
+            )
+            return task
         for _attempt in range(self.config.selfdev.max_queued_opportunities):
             queued = self.opportunities.next_task()
             if queued is None:
@@ -1509,9 +1521,16 @@ class SelfDeveloper:
         )
         return checkpoint, candidate, task, workspace
 
+    def _candidate_destination(self, branch: str) -> Path:
+        # Branch identity stays readable in Git and durable memory. Repeating
+        # the full slug and timestamp in the folder exceeded Windows MAX_PATH.
+        identity = hashlib.sha256(branch.encode("utf-8")).hexdigest()[:24]
+        return self.data_dir / "candidates" / f"c-{identity}"
+
     def _candidate_workspace(self, branch: str) -> tuple[Path, bool]:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        destination = self.data_dir / "candidates" / f"{stamp}-{branch.split('/')[-1]}"
+        destination = self._candidate_destination(branch)
+        if destination.exists():
+            raise RuntimeError("Candidate destination already exists; preserved for inspection.")
         if self.github.is_git_repo() and self.github.clean_worktree():
             result = self.github.create_candidate_worktree(branch, destination)
             if result.ok:
@@ -3922,9 +3941,28 @@ class SelfDeveloper:
         self.memory.record_experiment(task)
         slug = "".join(char if char.isalnum() else "-" for char in task["id"].lower()).strip("-")[:40]
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        branch = f"localpilot/candidate-{slug}-{stamp}"
+        branch = f"localpilot/candidate-{slug}-{stamp}-{uuid.uuid4().hex[:8]}"
         self._emit(f"Creating candidate for: {task['title']}")
-        workspace, is_worktree = self._candidate_workspace(branch)
+        preparation_id = self.memory.start_candidate_preparation(
+            str(task["id"]), branch, self._candidate_destination(branch),
+        )
+        try:
+            workspace, is_worktree = self._candidate_workspace(branch)
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            self.memory.finish_candidate_preparation(preparation_id, error=detail)
+            self.audit.write(
+                "candidate_preparation_failed", task_id=task["id"], branch=branch,
+                workspace=str(self._candidate_destination(branch)),
+                preparation_id=preparation_id, error=detail[:16000],
+                prior_attempts_preserved=True,
+            )
+            return EvolutionResult(
+                "preparation_failed", branch, self._candidate_destination(branch),
+                "Candidate preparation failed before the experiment started. "
+                "Evidence was preserved; automatic preparation retries are limited to three. " + detail,
+            )
+        self.memory.finish_candidate_preparation(preparation_id)
         cycle_id = self.memory.start_cycle(
             task_id=str(task["id"]),
             branch=branch,

@@ -26,6 +26,12 @@ from localpilot.selfdev import (
 from localpilot.selfdev_results import CyclePaused, EvolutionResult
 
 
+class CandidateQuarantinedError(RuntimeError):
+    def __init__(self, cycle_id: int, branch: str, workspace: Path, reason: str):
+        super().__init__(reason)
+        self.cycle_id, self.branch, self.workspace = cycle_id, branch, workspace
+
+
 class SelfDeveloper(_BaseSelfDeveloper):
     """Production self-development entry point with lifecycle reliability guards.
 
@@ -61,6 +67,36 @@ class SelfDeveloper(_BaseSelfDeveloper):
             return super().run_once(force=force)
         finally:
             lease.release()
+
+    def _run_once(self, *, force: bool = False) -> EvolutionResult:
+        try:
+            result = super()._run_once(force=force)
+        except CandidateQuarantinedError as exc:
+            result = EvolutionResult("quarantined", exc.branch, exc.workspace, str(exc), False)
+        return self._finalize_candidate_quarantine(result)
+
+    def _finalize_candidate_quarantine(self, result: EvolutionResult) -> EvolutionResult:
+        if not result.branch:
+            return result
+        candidate = self.memory.candidate_for_branch(result.branch)
+        if candidate is None or candidate.status != "quarantined":
+            return result
+        checkpoint = self.checkpoints.load()
+        archive = None
+        if checkpoint is not None and checkpoint.cycle_id == candidate.cycle_id and checkpoint.branch == candidate.branch:
+            source = self.checkpoints.path
+            archive = source.with_name(f"{source.stem}.cycle-{candidate.cycle_id}.{uuid.uuid4().hex}.quarantined.json")
+            if source.resolve().parent != archive.resolve().parent:
+                raise RuntimeError("Quarantine archive must stay beside its checkpoint")
+            source.rename(archive)
+        self._active_checkpoint = None
+        self.audit.write(
+            "selfdev_candidate_quarantined", cycle_id=candidate.cycle_id,
+            branch=candidate.branch, workspace=candidate.workspace,
+            reason=result.summary[:4000], checkpoint_archive=str(archive) if archive else None,
+            files_preserved=True, requires_owner_review=True,
+        )
+        return EvolutionResult("quarantined", result.branch, result.workspace, result.summary, False)
 
     @staticmethod
     def _normalize_recovery_checkpoint(checkpoint):
@@ -539,6 +575,9 @@ class SelfDeveloper(_BaseSelfDeveloper):
                     review_passes=repair_count,
                     review_status=review_status,
                 )
+                if result.status == ImplementationStatus.CONFINEMENT_VIOLATION:
+                    self.memory.quarantine_candidate(cycle_id, reason=result.summary)
+                    raise CandidateQuarantinedError(cycle_id, branch, workspace, result.summary)
                 raise RuntimeError(
                     f"implementation backend {result.status.value}: {result.summary}"
                 )

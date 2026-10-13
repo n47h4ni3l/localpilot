@@ -115,6 +115,7 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self._chat_process: subprocess.Popen[Any] | None = None
         self._chat_process_created_at: float | None = None
+        self._exit_after_chat_close = False
         self._broker_runtime_state = "restarting"
         self._update_thread: threading.Thread | None = None
         self._update_handoff_started = False
@@ -266,14 +267,21 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
 
     def _focus_chat(self) -> None:
         """Raise the existing window without replacing its conversation/draft."""
+        self._chat_window_action(close=False)
+
+    def _request_chat_close(self) -> bool:
+        """Ask the owned chat to close through its normal draft/reply guard."""
+        return self._chat_window_action(close=True)
+
+    def _chat_window_action(self, *, close: bool) -> bool:
         process = self._chat_process
         if process is None or os.name != "nt":
-            return
+            return False
         try:
             created_at = getattr(self, "_chat_process_created_at", None)
             owner = psutil.Process(process.pid)
             if created_at is None or abs(owner.create_time() - created_at) >= 0.001:
-                return
+                return False
             identities = {process.pid: created_at}
             # Windows venv pythonw is a redirector. Its real Python child owns
             # the Form; browser/render subprocesses are not desktop windows.
@@ -290,7 +298,10 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
             user32 = ctypes.windll.user32
             callback_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
 
+            acted = False
+
             def visit(hwnd: int, _parameter: int) -> bool:
+                nonlocal acted
                 window_pid = ctypes.c_ulong()
                 user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(window_pid))
                 identity = identities.get(window_pid.value)
@@ -304,14 +315,21 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
                             return True
                     except psutil.Error:
                         return True
-                    user32.ShowWindow(ctypes.c_void_p(hwnd), 9)  # SW_RESTORE
-                    user32.SetForegroundWindow(ctypes.c_void_p(hwnd))
+                    if close:
+                        # WM_CLOSE invokes WebView's normal admission check.
+                        # Never terminate the child or focus an idle chat on Exit.
+                        acted = bool(user32.PostMessageW(ctypes.c_void_p(hwnd), 0x0010, 0, 0))
+                    else:
+                        user32.ShowWindow(ctypes.c_void_p(hwnd), 9)  # SW_RESTORE
+                        user32.SetForegroundWindow(ctypes.c_void_p(hwnd))
+                        acted = True
                     return False
                 return True
 
             user32.EnumWindows(callback_type(visit), 0)
+            return acted
         except (AttributeError, OSError, psutil.Error):
-            pass
+            return False
 
     def _watch_chat_process(self) -> None:
         process = self._chat_process
@@ -324,15 +342,18 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
         self._chat_process_created_at = None
         self._opening_chat = False
         self.state_store.update(companion_state=None)
+        if getattr(self, "_exit_after_chat_close", False):
+            self.close()
+            return
         self.runtime_state = self._broker_runtime_state
         self._draw()
 
     def close(self) -> None:
         process = self._chat_process
         if process is not None and process.poll() is None:
-            # A running composer may contain a draft even without an active
-            # broker request. Let the chat close normally before the owner exits.
-            self._focus_chat()
+            # The chat decides whether its composer/reply can close safely.
+            # Finish the avatar exit only after the chat has exited naturally.
+            self._exit_after_chat_close = self._request_chat_close()
             return
         self._chat_process = None
         self.state_store.update(companion_state=None)

@@ -133,7 +133,7 @@ def test_failed_updater_spawn_keeps_chat_available():
     assert calls == ["opened"]
 
 
-def test_avatar_close_preserves_a_live_chat_process_and_draft():
+def test_avatar_exit_requests_guarded_close_without_focusing_or_terminating_chat():
     app = native_avatar_companion.NativeAvatarCompanion.__new__(native_avatar_companion.NativeAvatarCompanion)
 
     class LiveChat:
@@ -145,14 +145,79 @@ def test_avatar_close_preserves_a_live_chat_process_and_draft():
 
     app._chat_process = LiveChat()
     calls = []
-    app._focus_chat = lambda: calls.append("focus-existing")
+    app._focus_chat = lambda: pytest.fail("Exit must not open/focus the chat")
+    app._request_chat_close = lambda: calls.append("request-safe-close") or True
     app.close()
-    assert calls == ["focus-existing"]
+    assert calls == ["request-safe-close"]
+    assert app._exit_after_chat_close is True
+    app.close()
+    assert calls == ["request-safe-close", "request-safe-close"]  # Retry after a draft/reply veto.
+
+
+def test_avatar_exit_finishes_only_after_chat_exits_naturally(monkeypatch):
+    app = native_avatar_companion.NativeAvatarCompanion.__new__(native_avatar_companion.NativeAvatarCompanion)
+    app._chat_process = SimpleNamespace(poll=lambda: 0)
+    app._chat_process_created_at = 10.0
+    app._stop = threading.Event()
+    app._exit_after_chat_close = True
+    calls = []
+    app.state_store = SimpleNamespace(update=lambda **values: calls.append(values))
+    monkeypatch.setattr(native_avatar_companion._avatar.NativeAvatarApp, "close", lambda self: calls.append("avatar-exited"))
+    app._draw = lambda: pytest.fail("A completed Exit must not redraw the avatar")
+    app._watch_chat_process()
+    assert app._chat_process is None
+    assert calls.count("avatar-exited") == 1
+    assert calls[-1] == "avatar-exited"
+
+
+@pytest.mark.parametrize("busy", [False, True, None])
+def test_avatar_exit_uses_actual_chat_admission_and_preserves_busy_or_unknown_composer(tmp_path, monkeypatch, busy):
+    app = native_avatar_companion.NativeAvatarCompanion.__new__(native_avatar_companion.NativeAvatarCompanion)
+    process = SimpleNamespace(done=False, poll=lambda: 0 if process.done else None)
+    app._chat_process = process
+    app._stop = threading.Event()
+    app._exit_after_chat_close = False
+    app._broker_runtime_state = "idle"
+    app.root = SimpleNamespace(after=lambda *args: None)
+    app.state_store = SimpleNamespace(update=lambda **values: None)
+    app._draw = lambda: None
+    app._focus_chat = lambda: pytest.fail("Exit must not focus an idle chat")
+    window = SimpleNamespace(
+        evaluate_js=lambda script: busy if "return Boolean" in script else None,
+        destroy=lambda: setattr(process, "done", True),
+    )
+    bridge = webview_app.WindowBridge(window, tmp_path, None, avatar_external=True)
+    monkeypatch.setattr(webview_app, "active_foreground_turns", lambda data: ())
+    exited = []
+    monkeypatch.setattr(native_avatar_companion._avatar.NativeAvatarApp, "close", lambda self: exited.append(True))
+
+    def normal_close_message():
+        bridge.mark_native_close()
+        bridge._closing_thread.join(timeout=2)
+        return True
+
+    app._request_chat_close = normal_close_message
+    app.close()
+    app._watch_chat_process()
+    assert process.done is (busy is False)
+    assert bool(exited) is (busy is False)
+
+
+def test_failed_close_dispatch_keeps_avatar_and_allows_another_exit_attempt():
+    app = native_avatar_companion.NativeAvatarCompanion.__new__(native_avatar_companion.NativeAvatarCompanion)
+    app._chat_process = SimpleNamespace(poll=lambda: None)
+    calls = []
+    app._request_chat_close = lambda: calls.append("request") or False
+    app.close()
+    app.close()
+    assert not app._exit_after_chat_close
+    assert calls == ["request", "request"]
 
 
 @pytest.mark.skipif(native_avatar_companion.os.name != "nt", reason="Windows exact-window focus")
 @pytest.mark.parametrize("owner_reused", [False, True])
-def test_focus_follows_verified_venv_python_child_and_excludes_browser_windows(tmp_path, monkeypatch, owner_reused):
+@pytest.mark.parametrize("action", ["focus", "close"])
+def test_window_action_follows_verified_venv_python_child_and_excludes_browser_windows(tmp_path, monkeypatch, owner_reused, action):
     root = tmp_path.resolve()
     chat = SimpleNamespace(pid=101, create_time=lambda: 20.0, cmdline=lambda: ["pythonw.exe", "-m", "localpilot.webview_app", "--root", str(root)])
     browser = SimpleNamespace(pid=102, create_time=lambda: 30.0, cmdline=lambda: ["msedgewebview2.exe", "--root", str(root)])
@@ -177,6 +242,7 @@ def test_focus_follows_verified_venv_python_child_and_excludes_browser_windows(t
         IsWindowVisible=lambda hwnd: False,
         ShowWindow=lambda hwnd, command: calls.append(("restore", hwnd.value)),
         SetForegroundWindow=lambda hwnd: calls.append(("focus", hwnd.value)),
+        PostMessageW=lambda hwnd, message, wparam, lparam: calls.append(("close", hwnd.value, message)) or 1,
     )
     monkeypatch.setattr(native_avatar_companion.psutil, "Process", lambda pid: processes[pid])
     monkeypatch.setattr(native_avatar_companion.ctypes, "windll", SimpleNamespace(user32=user32))
@@ -184,8 +250,12 @@ def test_focus_follows_verified_venv_python_child_and_excludes_browser_windows(t
     app._chat_process = SimpleNamespace(pid=100)
     app._chat_process_created_at = 10.0
     app.project_root = root
-    app._focus_chat()
-    assert calls == ([] if owner_reused else [("restore", 1001), ("focus", 1001)])
+    if action == "focus":
+        app._focus_chat()
+    else:
+        assert app._request_chat_close() is not owner_reused
+    expected = [("close", 1001, 0x0010)] if action == "close" else [("restore", 1001), ("focus", 1001)]
+    assert calls == ([] if owner_reused else expected)
 
 
 def test_main_acquires_owner_before_broker_and_draws_avatar_before_initial_chat(tmp_path, monkeypatch):

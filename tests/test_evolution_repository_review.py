@@ -7,7 +7,7 @@ import pytest
 from localpilot.config import Config
 from localpilot.evolution import capability_task_id, legacy_capability_task_id, parse_capability_proposals
 from localpilot.evolution_repository_review import (
-    _finish_review_after_inspection, backlog_repository_context, objective_fingerprint, review_objective,
+    _finish_review_after_inspection, _source_read_tool, backlog_repository_context, objective_fingerprint, review_objective,
     review_sources_unchanged, validate_repository_review,
 )
 from localpilot.github_integration import CommandResult, MainSyncResult
@@ -124,6 +124,8 @@ def test_exhausted_inspection_synthesizes_review_with_actual_transport_controls(
     assert "tools" not in sent and sent["think"] is False
     assert sent["options"]["temperature"] == 0.0
     assert sent["format"]["required"] == ["repository_review"]
+    excerpt_schema = sent["format"]["properties"]["repository_review"]["properties"]["source_evidence"]["items"]["properties"]["excerpt"]
+    assert excerpt_schema["minLength"] == 10 and excerpt_schema["maxLength"] == 500
     assert "return query.split()" in next(m["content"] for m in sent["messages"] if m["role"] == "tool")
     assert "Do not call tools" in sent["messages"][-1]["content"]
     assert any(args == (False, "repository-review") for args, _ in checks)
@@ -175,6 +177,25 @@ def test_resource_pause_prevents_synthesis_without_hiding_the_pause(tmp_path, mo
     monkeypatch.setattr(dev, "_developer_chat", lambda *args, **kwargs: pytest.fail("paused review must not infer"))
     with pytest.raises(CyclePaused, match="memory above background limit"):
         _finish_review_after_inspection(dev, None, "tool-call limit", [], model="fake", force=False)
+
+
+@pytest.mark.parametrize("requested,expected", [(200, 12000), (20000, 20000), (1000000, 100000)])
+def test_repository_review_read_is_substantial_but_bounded(tmp_path, requested, expected):
+    tracked = repository(tmp_path)
+    path = tmp_path / "localpilot/search.py"
+    path.write_text("# Header\n" * 150 + "def search(query):\n    return query.split()\n" +
+                    "# Other source\n" * 6000 + "def later_search(query):\n    return query\n" +
+                    "# Other source\n" * 4000)
+    tools = CandidateTools(tmp_path, readable_paths=tracked)
+    returned = _source_read_tool(tools)("localpilot/search.py", max_chars=requested)
+    assert len(returned) == expected and "def search(query):" in returned
+    if expected == 100000:
+        assert "def later_search(query):" in returned
+    assert tools.source_read_prefixes[path.resolve()] == returned
+    result = validate_repository_review(json.dumps(payload()), root=tmp_path, tracked_paths=tracked,
+                                        inspected_sources=tools.source_read_prefixes)
+    assert result["status"] == "source_anchored"
+    assert not result["performance_verified"] and not result["objective_completed"]
 
 
 @pytest.mark.parametrize("case,code", [

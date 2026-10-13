@@ -150,7 +150,8 @@ def _review_format() -> dict[str, Any]:
         "objective_kind": {"type": "string", "enum": sorted(_KINDS)},
         **{name: {"type": "string"} for name in ("current_behavior", "remaining_gap", "proposed_change")},
         "source_evidence": {"type": "array", "minItems": 1, "maxItems": 8, "items": {
-            "type": "object", "properties": {"path": {"type": "string"}, "excerpt": {"type": "string"}},
+            "type": "object", "properties": {"path": {"type": "string"},
+                                                "excerpt": {"type": "string", "minLength": 10, "maxLength": 500}},
             "required": ["path", "excerpt"], "additionalProperties": False,
         }},
         "change_plan": _GROUNDING_PLAN_FORMAT["properties"]["change_plan"],
@@ -158,6 +159,17 @@ def _review_format() -> dict[str, Any]:
     return {"type": "object", "properties": {"repository_review": {
         "type": "object", "properties": fields, "required": list(fields), "additionalProperties": False,
     }}, "required": ["repository_review"], "additionalProperties": False}
+
+
+def _source_read_tool(tools: Any) -> Any:
+    def read_project_file(relative_path: str, max_chars: int = 24000) -> str:
+        """Read committed source with implementation context (12000 to 100000 characters).
+
+        Short requests still return 12000 characters so imports alone do not
+        hide the feature definitions. Quote exact returned source, not a summary.
+        """
+        return tools.read_project_file(relative_path, max_chars=max(12000, min(int(max_chars), 100000)))
+    return read_project_file
 
 
 def _finish_review_after_inspection(
@@ -224,9 +236,13 @@ def review_objective(
         "\"remaining_gap\": \"specific limitation or opportunity for this objective\", "
         "\"proposed_change\": \"specific change to test\", "
         "\"source_evidence\": [{\"path\": \"candidate-relative source path\", "
-        "\"excerpt\": \"exact short source excerpt you inspected\"}], "
+        "\"excerpt\": \"exact source excerpt of 10 to 500 characters you inspected\"}], "
         "\"change_plan\": {}}}. change_plan must contain these lists: "
-        + ", ".join(_GROUNDING_PLAN_FIELDS) + ". Use exact existing module:Symbol anchors, "
+        + ", ".join(_GROUNDING_PLAN_FIELDS) + ". Include a source path you inspected in referenced_paths "
+        "and an exact module:Class or module:function from that file in referenced_symbols. "
+        "Class methods must use module:Class.method, not module.method. "
+        "Inspect the relevant feature definition and body; imports alone do not describe its behavior. "
+        "Use exact existing module:Symbol anchors, "
         "section.field config names and existing test contracts. Use empty lists for irrelevant claims; "
         "planned_subsystems is empty when reusing an existing feature. Source evidence must cite code, "
         "tests or configuration, not a backlog, stored proposal or documentation alone. "
@@ -239,7 +255,7 @@ def review_objective(
     for attempt in range(2):
         raw = developer._tool_stage(
             chat=chat, model=developer_model, messages=messages,
-            functions=[tools.list_project_files, tools.read_project_file],
+            functions=[tools.list_project_files, _source_read_tool(tools)],
             rounds=max(2, min(developer.config.selfdev.research_tool_rounds, 3)),
             force=force, branch="repository-review", stage="repository_review",
         )

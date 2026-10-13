@@ -8,6 +8,8 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from localpilot.background_worker import BackgroundWorker, WorkerLock, request_worker_stop
 from localpilot.config import Config
 
@@ -162,7 +164,8 @@ def test_cycle_failure_is_logged_and_next_cycle_still_runs(tmp_path):
     assert any(row["event"] == "background_worker_cycle_end" for row in rows)
 
 
-def test_paused_cycle_uses_cooldown_before_retry(tmp_path):
+@pytest.mark.parametrize("status", ["paused", "preparation_failed"])
+def test_paused_cycle_uses_cooldown_before_retry(tmp_path, status):
     starts: list[float] = []
     now = 0.0
 
@@ -176,7 +179,7 @@ def test_paused_cycle_uses_cooldown_before_retry(tmp_path):
 
     def cycle():
         starts.append(monotonic())
-        return SimpleNamespace(status="paused")
+        return SimpleNamespace(status=status)
 
     worker = BackgroundWorker(
         tmp_path,

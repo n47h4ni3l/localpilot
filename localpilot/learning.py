@@ -333,6 +333,18 @@ class LearningMemory:
                 );
                 CREATE INDEX IF NOT EXISTS experiments_status_idx
                     ON capability_experiments(status, id DESC);
+                CREATE TABLE IF NOT EXISTS candidate_preparations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL,
+                    branch TEXT NOT NULL UNIQUE,
+                    workspace TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'preparing',
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS preparations_task_idx
+                    ON candidate_preparations(task_id, id DESC);
                 CREATE TABLE IF NOT EXISTS mission_frontiers (
                     task_id TEXT PRIMARY KEY,
                     mission_alignment TEXT NOT NULL,
@@ -1466,6 +1478,47 @@ class LearningMemory:
                 }
             )
         return normalize_evolution_task(task)
+
+    def preparation_recovery_tasks(self, limit: int = 48) -> list[dict]:
+        """Recover only proposals that never acquired a candidate cycle.
+
+        A process interruption or checkout failure is not an experiment result.
+        Keep every preparation attempt, and stop automatic retries after three.
+        The cycles check also closes the start-cycle / attach-experiment crash gap.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT e.task_id FROM capability_experiments e
+                WHERE e.status = 'proposed' AND e.cycle_id IS NULL AND e.branch IS NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM development_cycles c WHERE c.task_id = e.task_id
+                  )
+                  AND (SELECT COUNT(*) FROM candidate_preparations p
+                       WHERE p.task_id = e.task_id) < 3
+                ORDER BY e.id DESC LIMIT ?
+                """,
+                (max(1, min(int(limit), 48)),),
+            ).fetchall()
+        return [task for row in rows if (task := self.experiment_task(row["task_id"])) is not None]
+
+    def start_candidate_preparation(self, task_id: str, branch: str, workspace: Path) -> int:
+        with self._connect() as connection:
+            now = _now()
+            cursor = connection.execute(
+                """INSERT INTO candidate_preparations
+                   (task_id, branch, workspace, created_at, updated_at) VALUES (?, ?, ?, ?, ?)""",
+                (task_id, branch, str(workspace.resolve()), now, now),
+            )
+            return int(cursor.lastrowid)
+
+    def finish_candidate_preparation(self, preparation_id: int, *, error: str = "") -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE candidate_preparations SET status = ?, error = ?, updated_at = ?
+                   WHERE id = ? AND status = 'preparing'""",
+                ("failed" if error else "prepared", error[:16000], _now(), preparation_id),
+            )
 
     def attach_experiment_cycle(self, task_id: str, cycle_id: int, branch: str) -> None:
         with self._connect() as connection:

@@ -440,6 +440,13 @@ class OpportunityLedger:
         task = selected.get("task")
         return dict(task) if isinstance(task, dict) else None
 
+    def status_for_task(self, task_id: str) -> str | None:
+        for entry in reversed(self._read()):
+            task = entry.get("task")
+            if isinstance(task, dict) and str(task.get("id")) == str(task_id):
+                return str(entry.get("status") or "")
+        return None
+
     def update(self, task_id: str, status: str, outcome: str = "") -> None:
         entries = self._read()
         changed = False

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -132,6 +133,10 @@ class GitHubIntegration:
         self.config = config
 
     def _run(self, args: list[str], cwd: Path | None = None, timeout: int = 30) -> CommandResult:
+        # Git for Windows defaults to MAX_PATH even when Python supports longer
+        # paths. Scope this to our command; never change the user's Git settings.
+        if os.name == "nt" and args and args[0] == "git":
+            args = ["git", "-c", "core.longpaths=true", *args[1:]]
         completed = subprocess.run(
             args,
             cwd=str(cwd or self.root),

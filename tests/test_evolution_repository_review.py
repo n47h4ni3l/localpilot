@@ -7,13 +7,13 @@ import pytest
 from localpilot.config import Config
 from localpilot.evolution import capability_task_id, legacy_capability_task_id, parse_capability_proposals
 from localpilot.evolution_repository_review import (
-    backlog_repository_context, objective_fingerprint, review_objective,
+    _finish_review_after_inspection, backlog_repository_context, objective_fingerprint, review_objective,
     review_sources_unchanged, validate_repository_review,
 )
 from localpilot.github_integration import CommandResult, MainSyncResult
 from localpilot.learning import LearningMemory
 from localpilot.resource import ResourceState
-from localpilot.selfdev import CandidateTools, DeveloperModelSelection, SelfDeveloper
+from localpilot.selfdev import CandidateTools, CyclePaused, DeveloperModelSelection, SelfDeveloper
 
 
 def task():
@@ -93,6 +93,88 @@ def test_fenced_review_uses_existing_json_parser_without_relaxing_evidence(tmp_p
     assert result["status"] == "source_anchored"
     assert validate_repository_review(raw, root=tmp_path, tracked_paths=tracked,
                                        inspected_sources={})["status"] == "needs_research"
+
+
+def test_exhausted_inspection_synthesizes_review_with_actual_transport_controls(tmp_path, monkeypatch):
+    import ollama
+    from localpilot import selfdev_model_selection
+
+    dev = developer(tmp_path, monkeypatch); calls = []; checks = []
+    monkeypatch.setattr(dev, "_check_resources", lambda *args, **kwargs: checks.append((args, kwargs)))
+    monkeypatch.setattr(selfdev_model_selection, "running_ollama_models", lambda: set())
+
+    def stage(**kwargs):
+        content = kwargs["functions"][1]("localpilot/search.py")
+        kwargs["messages"].extend([
+            {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "read_project_file"}}]},
+            {"role": "tool", "content": content},
+        ])
+        return "repository_review stopped at its tool-call limit."
+
+    def chat(**kwargs):
+        calls.append(kwargs)
+        assert kwargs["stream"] is True
+        return iter([{"message": {"content": json.dumps(payload())}}])
+
+    monkeypatch.setattr(dev, "_tool_stage", stage)
+    monkeypatch.setattr(ollama, "chat", chat)
+    result = review_objective(dev, task(), developer_model="fake", force=False)
+    assert result["status"] == "source_anchored" and len(calls) == 1
+    sent = calls[0]
+    assert "tools" not in sent and sent["think"] is False
+    assert sent["options"]["temperature"] == 0.0
+    assert sent["format"]["required"] == ["repository_review"]
+    assert "return query.split()" in next(m["content"] for m in sent["messages"] if m["role"] == "tool")
+    assert "Do not call tools" in sent["messages"][-1]["content"]
+    assert any(args == (False, "repository-review") for args, _ in checks)
+    assert any(kwargs.get("during_inference") for _, kwargs in checks)
+    assert not result["objective_completed"] and not result["performance_verified"]
+
+
+def test_complete_review_does_not_spend_an_extra_synthesis_call(tmp_path, monkeypatch):
+    dev = developer(tmp_path, monkeypatch)
+    raw = "```json\n" + json.dumps(payload()) + "\n```"
+    monkeypatch.setattr(dev, "_developer_chat", lambda *args, **kwargs: pytest.fail("review already returned"))
+    assert _finish_review_after_inspection(dev, None, raw, [], model="fake", force=False) == raw
+
+
+@pytest.mark.parametrize("case,code", [("unread", "source_not_inspected"),
+                                      ("invented", "source_excerpt_not_inspected")])
+def test_synthesis_cannot_replace_inspected_source_evidence(tmp_path, monkeypatch, case, code):
+    dev = developer(tmp_path, monkeypatch); calls = []
+    monkeypatch.setattr(dev, "_check_resources", lambda *args, **kwargs: None)
+    value = payload()
+    if case == "invented":
+        value["repository_review"]["source_evidence"][0]["excerpt"] = "return imaginary_ranker(query)"
+
+    def stage(**kwargs):
+        if case == "invented": kwargs["functions"][1]("localpilot/search.py")
+        return "repository_review stopped at its tool-call limit."
+
+    def chat(*args, **kwargs):
+        calls.append(kwargs)
+        return {"content": json.dumps(value)}
+
+    monkeypatch.setattr(dev, "_tool_stage", stage)
+    monkeypatch.setattr(dev, "_developer_chat", chat)
+    result = review_objective(dev, task(), developer_model="fake", force=False)
+    assert result["status"] == "needs_research" and len(calls) == 2
+    assert code in {issue["code"] for issue in result["issues"]}
+    # Both failed attempts remain evidence and the unchanged objective is held.
+    assert review_objective(dev, task(), developer_model="fake", force=False) == result
+    assert len(calls) == 2
+    with sqlite3.connect(dev.memory.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM evolution_repository_reviews").fetchone()[0] == 2
+
+
+def test_resource_pause_prevents_synthesis_without_hiding_the_pause(tmp_path, monkeypatch):
+    dev = developer(tmp_path, monkeypatch)
+    def paused(*args, **kwargs):
+        raise CyclePaused("memory above background limit")
+    monkeypatch.setattr(dev, "_check_resources", paused)
+    monkeypatch.setattr(dev, "_developer_chat", lambda *args, **kwargs: pytest.fail("paused review must not infer"))
+    with pytest.raises(CyclePaused, match="memory above background limit"):
+        _finish_review_after_inspection(dev, None, "tool-call limit", [], model="fake", force=False)
 
 
 @pytest.mark.parametrize("case,code", [

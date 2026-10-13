@@ -144,6 +144,46 @@ def review_held_for_current_objective(developer: Any, task: dict[str, Any]) -> b
     return review is not None and review.get("status") == "needs_research"
 
 
+def _review_format() -> dict[str, Any]:
+    from localpilot.selfdev_model_selection import _GROUNDING_PLAN_FORMAT
+    fields = {
+        "objective_kind": {"type": "string", "enum": sorted(_KINDS)},
+        **{name: {"type": "string"} for name in ("current_behavior", "remaining_gap", "proposed_change")},
+        "source_evidence": {"type": "array", "minItems": 1, "maxItems": 8, "items": {
+            "type": "object", "properties": {"path": {"type": "string"}, "excerpt": {"type": "string"}},
+            "required": ["path", "excerpt"], "additionalProperties": False,
+        }},
+        "change_plan": _GROUNDING_PLAN_FORMAT["properties"]["change_plan"],
+    }
+    return {"type": "object", "properties": {"repository_review": {
+        "type": "object", "properties": fields, "required": list(fields), "additionalProperties": False,
+    }}, "required": ["repository_review"], "additionalProperties": False}
+
+
+def _finish_review_after_inspection(
+    developer: Any, chat: Any, raw: str, messages: list[dict], *, model: str, force: bool,
+) -> str:
+    try:
+        if isinstance(_json_object(raw).get("repository_review"), dict):
+            return raw
+    except (ValueError, json.JSONDecodeError):
+        pass
+    # Tool-stage exhaustion returns a status string. Reserve one tool-free
+    # synthesis call so inspected evidence can become a machine-readable review.
+    # The same wall-clock, resource and streaming guards apply to this call.
+    developer._check_resources(force, "repository-review")
+    response = developer._developer_chat(
+        chat, force=force, branch="repository-review", model=model,
+        messages=[*messages, {"role": "user", "content": (
+            "The source-inspection turns are finished. Do not call tools. Using only the source already "
+            "returned in this conversation, return the complete repository_review JSON now. "
+            "Do not invent symbols, excerpts, measurements, or completed objectives."
+        )}], format=_review_format(), options={"temperature": 0.0}, think=False, _request_think=False,
+    )
+    developer.audit.write("evolution_repository_review_synthesis", model=model, tool_free=True)
+    return developer._content(response)
+
+
 def review_objective(
     developer: Any, task: dict[str, Any], *, developer_model: str, force: bool,
 ) -> dict[str, Any]:
@@ -202,6 +242,9 @@ def review_objective(
             functions=[tools.list_project_files, tools.read_project_file],
             rounds=max(2, min(developer.config.selfdev.research_tool_rounds, 3)),
             force=force, branch="repository-review", stage="repository_review",
+        )
+        raw = _finish_review_after_inspection(
+            developer, chat, raw, messages, model=developer_model, force=force,
         )
         review = validate_repository_review(
             raw, root=developer.root, tracked_paths=readable, inspected_sources=tools.source_read_prefixes,

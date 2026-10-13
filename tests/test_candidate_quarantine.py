@@ -115,3 +115,30 @@ def test_quarantine_refuses_missing_or_merged_cycle(tmp_path):
     developer.memory.update_candidate_review(cycle, validation_state="passed", merged=True, pull_request_url="merged-pr")
     with pytest.raises(ValueError):
         developer.memory.quarantine_candidate(cycle, reason="Already merged")
+
+
+def test_reconciliation_cannot_overwrite_a_quarantine_committed_after_its_read(tmp_path, monkeypatch):
+    developer, cycle, branch, task = fixture(tmp_path)
+    original_connect = developer.memory._connect
+    raced = []
+
+    class Connection:
+        def __init__(self):
+            self.connection = original_connect()
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+
+        def execute(self, sql, parameters=()):
+            if "SET validation_state = ?" in sql and not raced:
+                raced.append(True)
+                developer.memory.quarantine_candidate(cycle, reason="Confinement observed concurrently")
+            return self.connection.execute(sql, parameters)
+
+    monkeypatch.setattr(developer.memory, "_connect", Connection)
+    developer.memory.update_candidate_review(cycle, validation_state="failed", merged=False, pull_request_url="old-pr")
+    assert raced and developer.memory.candidate_for_cycle(cycle).status == "quarantined"

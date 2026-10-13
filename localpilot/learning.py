@@ -607,6 +607,7 @@ class LearningMemory:
         if not reason:
             raise ValueError("Quarantine requires a concrete safety failure.")
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT * FROM development_cycles WHERE id = ?", (cycle_id,)
             ).fetchone()
@@ -780,7 +781,7 @@ class LearningMemory:
                 """
                 UPDATE development_cycles
                 SET validation_state = ?, merged = ?, pull_request_url = ?, status = ?
-                WHERE id = ?
+                WHERE id = ? AND status != 'quarantined' AND validation_state != 'rejected_by_human'
                 """,
                 (validation_state, int(merged), pull_request_url, status, cycle_id),
             )

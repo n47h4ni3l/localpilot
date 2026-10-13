@@ -345,6 +345,16 @@ class LearningMemory:
                 );
                 CREATE INDEX IF NOT EXISTS preparations_task_idx
                     ON candidate_preparations(task_id, id DESC);
+                CREATE TABLE IF NOT EXISTS evolution_repository_reviews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL,
+                    objective_fingerprint TEXT NOT NULL,
+                    revision TEXT NOT NULL,
+                    review_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS repository_reviews_objective_idx
+                    ON evolution_repository_reviews(task_id, objective_fingerprint, revision, id DESC);
                 CREATE TABLE IF NOT EXISTS mission_frontiers (
                     task_id TEXT PRIMARY KEY,
                     mission_alignment TEXT NOT NULL,
@@ -1502,6 +1512,50 @@ class LearningMemory:
             ).fetchall()
         return [task for row in rows if (task := self.experiment_task(row["task_id"])) is not None]
 
+    def record_repository_review(self, task_id: str, fingerprint: str, revision: str, review: dict) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO evolution_repository_reviews
+                   (task_id, objective_fingerprint, revision, review_json, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (task_id[:200], fingerprint, revision[:100], json.dumps(review, ensure_ascii=False), _now()),
+            )
+
+    def repository_review(self, task_id: str, fingerprint: str, revision: str) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT review_json FROM evolution_repository_reviews
+                   WHERE task_id = ? AND objective_fingerprint = ? AND revision = ?
+                   ORDER BY id DESC LIMIT 1""", (task_id, fingerprint, revision),
+            ).fetchone()
+        return json.loads(row["review_json"]) if row is not None else None
+
+    def objective_history(self, target: str, limit: int = 64) -> list[dict]:
+        """Bounded full-objective lookback, including terminal history outside the queue."""
+        limit = max(1, min(int(limit), 64))
+        fields = "task_id, title, capability_target, question, observed_limitation, hypothesis, metric, baseline, success_criterion, measurement_method"
+        with self._connect() as connection:
+            rows = [*connection.execute(
+                f"SELECT {fields} FROM capability_experiments WHERE capability_target = ? COLLATE NOCASE ORDER BY id DESC LIMIT ?",
+                (target, limit),
+            ).fetchall(), *connection.execute(
+                f"SELECT {fields} FROM capability_experiments WHERE status IN ('validated', 'rejected_by_human') ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall(), *connection.execute(
+                f"SELECT {fields} FROM capability_experiments ORDER BY id DESC LIMIT ?", (limit,),
+            ).fetchall()]
+        tasks = {}
+        for row in rows:
+            tasks[row["task_id"]] = {
+                "id": row["task_id"], "title": row["title"], "capability_target": row["capability_target"],
+                "question": row["question"], "observed_limitation": row["observed_limitation"],
+                "hypothesis": row["hypothesis"], "evaluation": {
+                    "metric": row["metric"], "baseline": row["baseline"],
+                    "success_criterion": row["success_criterion"], "measurement_method": row["measurement_method"],
+                },
+            }
+        return list(tasks.values())
+
     def start_candidate_preparation(self, task_id: str, branch: str, workspace: Path) -> int:
         with self._connect() as connection:
             now = _now()
@@ -1733,11 +1787,13 @@ class LearningMemory:
             ).fetchall()
             frontiers = connection.execute(
                 """
-                SELECT task_id, mission_alignment, current_frontier,
-                       why_high_leverage, capability_unlocked, next_frontier,
-                       updated_at
-                FROM mission_frontiers
-                ORDER BY updated_at DESC LIMIT ?
+                SELECT f.task_id, f.mission_alignment, f.current_frontier,
+                       f.why_high_leverage, f.capability_unlocked, f.next_frontier,
+                       f.updated_at, COALESCE(e.status, 'unverified') AS experiment_status,
+                       CASE WHEN e.status = 'validated' THEN 'validated_objective'
+                            ELSE 'unverified_objective' END AS evidence_state
+                FROM mission_frontiers f LEFT JOIN capability_experiments e ON e.task_id = f.task_id
+                ORDER BY f.updated_at DESC LIMIT ?
                 """,
                 (limit,),
             ).fetchall()

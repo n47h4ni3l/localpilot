@@ -164,7 +164,7 @@ def test_cycle_failure_is_logged_and_next_cycle_still_runs(tmp_path):
     assert any(row["event"] == "background_worker_cycle_end" for row in rows)
 
 
-@pytest.mark.parametrize("status", ["paused", "preparation_failed"])
+@pytest.mark.parametrize("status", ["paused", "preparation_failed", "needs_research"])
 def test_paused_cycle_uses_cooldown_before_retry(tmp_path, status):
     starts: list[float] = []
     now = 0.0

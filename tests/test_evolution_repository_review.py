@@ -85,6 +85,16 @@ def test_existing_feature_is_a_baseline_not_a_completion_veto(tmp_path):
     assert not review_sources_unchanged(review, tmp_path)
 
 
+def test_fenced_review_uses_existing_json_parser_without_relaxing_evidence(tmp_path):
+    tracked = repository(tmp_path)
+    raw = "```json\n" + json.dumps(payload()) + "\n```"
+    result = validate_repository_review(raw, root=tmp_path, tracked_paths=tracked,
+                                        inspected_sources={tmp_path / "localpilot/search.py": (tmp_path / "localpilot/search.py").read_text()})
+    assert result["status"] == "source_anchored"
+    assert validate_repository_review(raw, root=tmp_path, tracked_paths=tracked,
+                                       inspected_sources={})["status"] == "needs_research"
+
+
 @pytest.mark.parametrize("case,code", [
     ("backlog", "not_repository_source"), ("circular_proposal", "not_repository_source"),
     ("uninspected", "source_not_inspected"), ("false_excerpt", "source_excerpt_not_inspected"),

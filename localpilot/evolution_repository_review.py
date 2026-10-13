@@ -9,7 +9,7 @@ from typing import Any, Iterable
 
 from localpilot.evolution import normalize_evolution_task
 from localpilot.evolution_orchestrator import opportunity_similarity
-from localpilot.selfdev_response_parsing import parse_grounding_plan
+from localpilot.selfdev_response_parsing import _json_object, parse_grounding_plan
 from localpilot.study import RepositoryGroundingValidator
 
 
@@ -67,7 +67,7 @@ def validate_repository_review(
     evidence: list[str] = []
     hashes: dict[str, str] = {}
     try:
-        payload = json.loads(raw)
+        payload = _json_object(raw)
         review = payload["repository_review"]
         if not isinstance(review, dict):
             raise ValueError("repository_review must be an object")

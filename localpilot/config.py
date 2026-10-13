@@ -16,8 +16,8 @@ class AgentConfig:
     # budget and a separate hard safety ceiling so the model can decide when
     # another observation is genuinely necessary.
     # Experimental guide-first mode preserves useful drafts and offers advisory
-    # verification; strict remains available as the frozen comparison control.
-    scaffold_mode: str = "strict"
+    # verification; only advisory Guide-only delivery is supported.
+    scaffold_mode: str = "guide_first"
     max_tool_rounds: int = 12
     research_soft_tool_rounds: int = 12
     research_hard_tool_rounds: int = 24
@@ -447,8 +447,8 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg.mentor.max_requests_per_session = int(cfg.mentor.max_requests_per_session)
     if not 1 <= cfg.mentor.max_requests_per_session <= 10:
         raise ValueError("mentor.max_requests_per_session must be between 1 and 10")
-    if cfg.agent.scaffold_mode not in {"strict", "guide_first"}:
-        raise ValueError("agent.scaffold_mode must be strict or guide_first")
+    if cfg.agent.scaffold_mode != "guide_first":
+        raise ValueError("agent.scaffold_mode must be guide_first; the strict path has been retired")
     cfg.agent.research_soft_tool_rounds = int(cfg.agent.research_soft_tool_rounds)
     cfg.agent.research_hard_tool_rounds = int(cfg.agent.research_hard_tool_rounds)
     if cfg.agent.research_soft_tool_rounds < 1:

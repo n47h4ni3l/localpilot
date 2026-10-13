@@ -303,7 +303,7 @@ def child_environment() -> dict:
 def isolated_config(runtime: Path, state: Path, arm: str, protocol: dict):
     from localpilot.config import Config
     cfg = Config()  # Never load the owner's config or production memory paths.
-    cfg.agent.scaffold_mode = "strict" if arm == "direct" else arm
+    cfg.agent.scaffold_mode = "guide_first" if arm == "direct" else arm
     cfg.agent.data_dir = str(state)
     cfg.agent.feedback_coaching_enabled = cfg.agent.feedback_auto_observations_enabled = False
     cfg.model.name, cfg.model.think = protocol["model"], protocol["think"]

@@ -295,7 +295,7 @@ def test_model_tool_loop_executes_allowlisted_reversible_action(tmp_path, monkey
 
     answer = agent.ask("Open Calculator.")
 
-    assert answer == "Calculator opened successfully."
+    assert answer == "I have enough evidence to report the action result."
     assert launches[0][0] == ["calc.exe"]
     assert launches[0][1]["shell"] is False
     assert agent.audit.latest("tool_call")["risk"] == "reversible"

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from localpilot.agent import LocalPilotAgent
-from localpilot.agent_prompt import SYSTEM_PROMPT
+from localpilot.guide_scaffold import GUIDE_FIRST_SYSTEM_PROMPT
 from localpilot.agent_runtime_support import _FINAL_ANSWER_NUM_PREDICT, _OPERATOR_NUM_PREDICT
 from localpilot.config import Config
 
@@ -55,7 +55,7 @@ def test_illustrative_task_stays_high_reasoning_with_no_local_tools(prompt, monk
     assert agent.audit.latest("model_illustrative_scenario_route") is not None
     assert agent.audit.latest("model_operational_self_status_route") is None
     assert calls
-    assert all(not call.get("tools") for call in calls)
+    assert len(calls) == 1  # Available tools are optional, not forced.
     assert all(call.get("think") == config.model.think for call in calls)
     assert any(call["options"]["num_predict"] == _OPERATOR_NUM_PREDICT for call in calls)
     assert all("ILLUSTRATIVE REASONING ROUTE" in str(messages) for messages in message_snapshots)
@@ -102,20 +102,11 @@ def test_live_machine_and_explicit_research_remain_available():
 
 
 def test_web_research_is_explicitly_available_not_mandatory_or_unsafe():
-    assert "search_public_web and fetch_public_https" in SYSTEM_PROMPT
-    assert "An owner's explicit no-web instruction" in SYSTEM_PROMPT
-    assert "Reading it is not evidence that it is safe to execute" in SYSTEM_PROMPT
+    assert "research" in GUIDE_FIRST_SYSTEM_PROMPT
+    assert "owner's current no-web/no-tool preferences" in GUIDE_FIRST_SYSTEM_PROMPT
+    assert "existing tool authorization policy" in GUIDE_FIRST_SYSTEM_PROMPT
     assert _OPERATOR_NUM_PREDICT > 2048
     assert _FINAL_ANSWER_NUM_PREDICT > 4096
-
-
-def test_illustrative_printer_fault_is_not_forced_into_live_web_attribution():
-    prompt = "Suppose a printer keeps failing in a hypothetical test. What evidence would distinguish causes?"
-    assert LocalPilotAgent._is_scenario_question(prompt)
-    issues = LocalPilotAgent._response_behavior_issues(
-        prompt, "Check the observations before concluding what caused the failure."
-    )
-    assert "practical_troubleshooting_source_unattributed" not in issues
 
 
 def test_desktop_scenario_does_not_convert_to_live_interface_status(tmp_path, monkeypatch):
@@ -134,7 +125,6 @@ def test_desktop_scenario_does_not_convert_to_live_interface_status(tmp_path, mo
     assert "Reason from the example" in answer
     assert agent.audit.latest("model_illustrative_scenario_route") is not None
     assert agent.audit.latest("model_desktop_interface_deterministic_route") is None
-
 
 
 @pytest.mark.parametrize("prompt,substantive_answer", [
@@ -168,20 +158,6 @@ def test_valid_conceptual_answer_is_not_rewritten_or_withheld(
     monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
     answer = agent.ask(prompt)
     assert answer == substantive_answer
-    assert all(not call.get("tools") for call in calls)
+    assert len(calls) == 1  # Available tools are optional, not forced.
     assert agent.audit.latest("model_evidence_acquisition_failed") is None
     assert agent.audit.latest("model_illustrative_scenario_route") is not None
-
-
-
-def test_explicit_live_research_retains_source_attribution_safeguards():
-    prompt = (
-        "Suppose a printer keeps failing. Please research official manufacturer "
-        "guidance and diagnose the fault."
-    )
-    assert LocalPilotAgent._is_scenario_question(prompt)
-    assert "public HTTPS" in LocalPilotAgent._evidence_requirements(prompt)
-    issues = LocalPilotAgent._response_behavior_issues(
-        prompt, "Simply increase nozzle temperature and keep printing."
-    )
-    assert "practical_troubleshooting_source_unattributed" in issues

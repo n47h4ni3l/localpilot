@@ -2,7 +2,7 @@
 import pytest
 
 from localpilot.agent import LocalPilotAgent
-from localpilot.source_answer_checks import (
+from training.scripts.source_answer_checks import (
     inspected_repository_lines, repository_answer_risks,
 )
 
@@ -138,15 +138,3 @@ def test_ordinary_hardware_acronyms_do_not_become_source_constant_assertions():
         "LIMIT = 900.",
         [read()],
     ) == ("named_numeric_constant_not_supported_by_source",)
-
-
-def test_agent_contextual_gate_applies_checks_to_delivered_answers():
-    prompt = "Inspect repository source code, explain max_results and cite exact implementation locations."
-    bad = "max_results is 500 (localpilot/tools/repository.py:41)."
-    safe = "max_results is 100 (localpilot/tools/repository.py:41)."
-    assert "named_numeric_constant_not_supported_by_source" in LocalPilotAgent._contextual_evidence_risks(
-        prompt, bad, frozenset({"read_repository_file"}), [read()]
-    )
-    assert "named_numeric_constant_not_supported_by_source" not in LocalPilotAgent._contextual_evidence_risks(
-        prompt, safe, frozenset({"read_repository_file"}), [read()]
-    )

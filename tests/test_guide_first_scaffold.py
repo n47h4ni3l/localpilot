@@ -1,4 +1,4 @@
-"""A/B regression coverage for Nestra guide-first assistance.
+"""Regression coverage for Nestra guide-first assistance.
 
 These tests use a mocked final draft, not a claim that a local P1 inference
 comparison has been run. Tool authorisation is never changed by scaffold_mode.
@@ -10,12 +10,13 @@ from pathlib import Path
 import pytest
 
 from localpilot.agent import LocalPilotAgent
-from localpilot.agent_tools import _guide_tool_result_success as _tool_result_success
+from localpilot.agent_tools import _tool_result_success as _tool_result_success
 from localpilot.config import Config, load_config
+from localpilot.safety import SafetyPolicy
 from localpilot.guide_scaffold import GUIDE_FIRST_INSTRUCTIONS
 
 
-@pytest.mark.parametrize("value", ["guide_first", "strict"])
+@pytest.mark.parametrize("value", ["guide_first"])
 def test_scaffold_modes_can_be_selected_from_config(value, tmp_path: Path):
     config_path = tmp_path / "localpilot.toml"
     config_path.write_text(f'[agent]\nscaffold_mode = "{value}"\n', encoding="utf-8")
@@ -29,14 +30,14 @@ def test_unknown_scaffold_mode_is_rejected(tmp_path: Path):
         load_config(config_path)
 
 
-def test_historical_evaluators_remain_strict(tmp_path: Path):
+def test_evaluators_use_guide_only(tmp_path: Path):
     from training.scripts.run_eval_v1 import isolated_config
 
     (tmp_path / "localpilot.toml").write_text(
         '[agent]\nscaffold_mode = "guide_first"\n', encoding="utf-8"
     )
     config = isolated_config(tmp_path, model="nestra:20b-p1")
-    assert config.agent.scaffold_mode == "strict"
+    assert config.agent.scaffold_mode == "guide_first"
 
 
 def _agent(tmp_path: Path, mode: str = "guide_first") -> LocalPilotAgent:
@@ -111,12 +112,12 @@ def test_guide_preserves_owner_supplied_hypothetical_without_live_tools(tmp_path
 
 
 def test_guide_lacks_any_action_authority_and_respects_no_web(tmp_path):
-    strict = _agent(tmp_path / "strict", "strict")
+    default = Config()
     guide = _agent(tmp_path / "guide", "guide_first")
-    assert type(strict.policy) is type(guide.policy)
-    assert strict.policy.auto_allow_read_only == guide.policy.auto_allow_read_only
-    assert strict.policy.auto_allow_reversible == guide.policy.auto_allow_reversible
-    assert strict.policy.require_confirmation_for_destructive == guide.policy.require_confirmation_for_destructive
+    assert type(guide.policy) is SafetyPolicy
+    assert default.safety.auto_allow_read_only == guide.policy.auto_allow_read_only
+    assert default.safety.auto_allow_reversible == guide.policy.auto_allow_reversible
+    assert default.safety.require_confirmation_for_destructive == guide.policy.require_confirmation_for_destructive
     assert "search_public_web" in guide._forbidden_tools(
         "Please don't use the internet for this answer."
     )
@@ -166,16 +167,16 @@ def test_guide_exact_draft_preservation_even_with_unsupported_fact(tmp_path):
     assert agent.audit.latest("model_guide_first_answer_delivered")["answer_review_performed"] is False
 
 
-def test_guide_source_classification_does_not_change_frozen_strict_control():
+def test_source_classification_uses_one_envelope_aware_path():
     source = (
         "Repository file: example.py lines 1-1\n"
         "1: text = 'No matches found.'"
     )
     assert _tool_result_success(source)
-    assert not LocalPilotAgent._tool_result_success(source)
+    assert LocalPilotAgent._tool_result_success(source)
     empty_read = "Repository file: example.py lines 50-60"
     assert not _tool_result_success(empty_read)
-    assert LocalPilotAgent._tool_result_success(empty_read)
+    assert not LocalPilotAgent._tool_result_success(empty_read)
 
 
 def test_guide_memory_verification_targets_are_not_compulsory(tmp_path, monkeypatch):
@@ -220,8 +221,8 @@ def test_guide_does_not_inspect_final_content_or_call_a_verifier(
     def forbidden(*args, **kwargs):
         pytest.fail("Guide delivery invoked answer review or extra inference")
 
-    monkeypatch.setattr(agent.information_authority, "review", forbidden)
-    monkeypatch.setattr(agent.turn_evidence, "review", forbidden)
+    assert not hasattr(agent, "information_authority")
+    assert not hasattr(agent, "turn_evidence")
     monkeypatch.setattr(agent, "_stream_chat_message", forbidden)
     monkeypatch.setattr(agent, "_looks_like_generic_reset", forbidden)
     assert agent._continue_high_reasoning_answer(
@@ -243,7 +244,7 @@ def test_guide_optional_methods_do_not_supply_task_specific_answers():
 def test_guidance_does_not_grant_tool_authorization(tmp_path, risk):
     from localpilot.safety import RiskLevel
 
-    agents = [_agent(tmp_path / mode, mode) for mode in ("strict", "guide_first")]
+    agents = [_agent(tmp_path)]
     for agent in agents:
         agent.policy.auto_allow_read_only = False
         agent.policy.auto_allow_reversible = False
@@ -261,8 +262,8 @@ def test_guide_ask_delivers_unsupported_first_answer_without_review(tmp_path, mo
     def forbidden(*args, **kwargs):
         pytest.fail("Guide ask invoked answer quality review")
 
-    monkeypatch.setattr(agent.information_authority, "review", forbidden)
-    monkeypatch.setattr(agent.turn_evidence, "review", forbidden)
+    assert not hasattr(agent, "information_authority")
+    assert not hasattr(agent, "turn_evidence")
     calls = []
 
     def chat(**kwargs):

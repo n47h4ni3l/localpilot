@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from localpilot.agent import LocalPilotAgent, SYSTEM_PROMPT
+from localpilot.agent import LocalPilotAgent, GUIDE_FIRST_SYSTEM_PROMPT
 from localpilot.behavior_eval import SCENARIOS, score_response, summarize_scores
 
 
@@ -9,9 +9,9 @@ def _scenario(name: str):
 
 
 def test_operator_prompt_protects_initiative_without_weakening_claim_authority():
-    assert "Protect the spark; constrain the blast radius" in SYSTEM_PROMPT
-    assert "choose the most useful obvious next step" in SYSTEM_PROMPT
-    assert "consequential factual assertions must remain grounded" in SYSTEM_PROMPT
+    assert "You own the reasoning" in GUIDE_FIRST_SYSTEM_PROMPT
+    assert "optional ways" in GUIDE_FIRST_SYSTEM_PROMPT
+    assert "Your final answer is yours" in GUIDE_FIRST_SYSTEM_PROMPT
 
 
 def test_open_ended_behavior_rubric_rewards_decision_and_penalizes_menu_deferral():

@@ -15,14 +15,12 @@ from localpilot.tools import registry
 from localpilot.tools.external_mentor import ExternalMentor
 
 
-def test_disabled_in_strict_and_default_configs():
+def test_disabled_by_default_and_enabled_only_by_owner_opt_in():
     cfg = Config()
     assert cfg.mentor.provider == "groq"
     assert cfg.mentor.model == "openai/gpt-oss-120b"
     assert "consult_external_mentor" not in registry(config=cfg)
     cfg.mentor.enabled = True
-    assert "consult_external_mentor" not in registry(config=cfg)
-    cfg.agent.scaffold_mode = "guide_first"
     assert "consult_external_mentor" in registry(config=cfg)
 
 

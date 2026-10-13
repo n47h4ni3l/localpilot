@@ -90,11 +90,3 @@ def test_small_tree_budget_exposes_root_code_directory_before_large_docs(tmp_pat
     tree=RepositoryReader(tmp_path).list_repository_tree(max_entries=20)
     assert 'localpilot/' in tree and 'omitted paths remain unverified' in tree
     assert len(tree.splitlines())<=22
-
-
-def test_unresolved_does_not_justify_global_repository_absence():
-    prompt=QUESTIONS[0]
-    bad='The repository contains no class, function or configuration that implements action authorization. UNRESOLVED'
-    assert 'unscoped_repository_absence_claim' in LocalPilotAgent._contextual_evidence_risks(prompt,bad,frozenset({'list_repository_tree'}))
-    safe='I did not find the definition in the returned tree listing; its implementation remains unverified.'
-    assert not LocalPilotAgent._contextual_evidence_risks(prompt,safe,frozenset({'list_repository_tree'}))

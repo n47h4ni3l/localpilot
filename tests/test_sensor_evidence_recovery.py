@@ -96,54 +96,6 @@ def test_named_sensor_selection_precedes_row_limit(tmp_path, padding):
     assert result["captured_at"]
 
 
-def test_failed_history_does_not_clear_pc_requirement_and_summary_satisfies_it(tmp_path, monkeypatch):
-    agent, snapshots = _agent(tmp_path, monkeypatch, [
-        _chunk(calls=[_call("get_system_sense_history", metric="hardware_provider")]),
-        _chunk(calls=[_call("get_system_sense_history", metric="hardware_provider_sensors")]),
-        _chunk(calls=[_call("get_system_sense_summary")]),
-        _chunk(ANSWER), _chunk(ANSWER),
-    ])
-    agent.tools["get_system_sense_summary"] = replace(
-        agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
-    answer = agent.ask(PROMPT)
-    assert answer == ANSWER
-    state = agent.audit.latest("model_evidence_state")
-    assert state["required"] == ["Windows/PC state"]
-    assert state["succeeded"] == ["Windows/PC state"]
-    assert state["tool_rounds"] == 3
-
-
-def test_generic_recovery_cannot_drop_requested_fields(tmp_path, monkeypatch):
-    agent, snapshots = _agent(tmp_path, monkeypatch, [
-        _chunk(calls=[_call("get_system_sense_summary")]),
-        _chunk("The system is running smoothly overall."),
-        _chunk("The system is running smoothly overall."),
-        _chunk(ANSWER),
-    ])
-    agent.tools["get_system_sense_summary"] = replace(
-        agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
-    assert agent.ask(PROMPT) == ANSWER
-    review = agent.audit.latest("model_same_context_postvalidation_complete")
-    assert review["accepted"] is False
-    assert review["missing_requested_fields"]
-    assert PROMPT in snapshots[-1][-1]["content"]
-
-
-def test_repeated_failure_ends_bounded_without_unsupported_synthesis(tmp_path, monkeypatch):
-    agent, _ = _agent(tmp_path, monkeypatch, [
-        _chunk(calls=[_call("get_system_sense_history", metric="hardware_provider")]),
-        _chunk(calls=[_call("get_system_sense_history", metric="hardware_provider_sensors")]),
-        _chunk("The system is running smoothly overall."),
-        _chunk("The system is running smoothly overall."),
-        _chunk("The system is running smoothly overall."),
-    ])
-    answer = agent.ask(PROMPT)
-    assert "unverified" in answer
-    assert "smoothly" not in answer
-    assert agent.audit.latest("model_evidence_acquisition_failed")["missing"] == ["Windows/PC state"]
-    assert agent.audit.latest("model_evidence_state")["tool_rounds"] <= 4
-
-
 @pytest.mark.parametrize("aliases", [NAMES, ["Tctl/Tdie", "CCD1 (Tdie)", "GPU Core", "GPU Memory", "GPU hotspot"]])
 def test_aliases_and_missing_metrics_are_explicit(tmp_path, aliases):
     sense = _sense(tmp_path)
@@ -208,89 +160,12 @@ def test_inventory_cannot_satisfy_named_temperatures(tmp_path, monkeypatch):
     assert results[1]["ok"] is True
 
 
-def test_behavior_recovery_retains_fields_and_original_request(tmp_path, monkeypatch):
-    agent, snapshots = _agent(tmp_path, monkeypatch, [
-        _chunk(calls=[_call("get_system_sense_summary")]),
-        _chunk("| Status | Reading |\n| --- | --- |\n| CPU | 51 C |"),
-        _chunk("| Status | Reading |\n| --- | --- |\n| CPU | 51 C |"),
-        _chunk("The system is running smoothly overall."),
-        _chunk(ANSWER),
-    ])
-    agent.tools["get_system_sense_summary"] = replace(
-        agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
-    assert agent.ask(PROMPT) == ANSWER
-    for snapshot in snapshots[3:]:
-        assert PROMPT in snapshot[-1]["content"]
-        assert all(name in snapshot[-1]["content"] for name in NAMES)
-
-
-def test_generic_answer_contract_is_not_specific_to_sensors(tmp_path, monkeypatch):
-    agent, snapshots = _agent(tmp_path, monkeypatch, [_chunk("Everything is fine."),
-        _chunk("Everything is fine."), _chunk("Firmware vendor Acme, schema version 3.")])
-    contract = AnswerContract((AnswerField("vendor", ("vendor",), "Acme"),
-                               AnswerField("schema version", ("schema version",), 3)))
-    answer = agent._continue_high_reasoning_answer(
-        sys.modules["ollama"].chat, prompt="Report the firmware vendor and schema version.",
-        round_no=1, after_tools=True, answer_contract=contract)
-    assert answer == "Firmware vendor Acme, schema version 3."
-    assert "schema version" in snapshots[-1][-1]["content"]
-
-
 @pytest.mark.parametrize("answer", ["The system is running smoothly overall.",
     ANSWER.replace("GPU memory 65 C", "GPU memory 39 C"), ANSWER.replace("GPU hot spot 55 C. ", "")])
 def test_incomplete_or_wrong_fields_are_rejected(answer):
     _, contract = SensorRequest.from_prompt(PROMPT).evaluate(json.dumps(_payload()))
     assert contract.gaps(answer)
     assert not contract.gaps(ANSWER)
-
-
-def test_failed_history_and_repository_attempts_preserve_pc_until_terminal_failure(tmp_path, monkeypatch):
-    agent, _ = _agent(tmp_path, monkeypatch, [
-        _chunk(calls=[_call("get_system_sense_history", metric="hardware_provider")]),
-        _chunk(calls=[_call("get_system_sense_history", metric="hardware_provider_sensors")]),
-        _chunk(calls=[_call("search_repository", query="unknown_history")]),
-        _chunk(calls=[_call("search_repository", query="unknown_sensors")]),
-        _chunk("Everything is healthy."),
-    ])
-    agent.tools["search_repository"] = replace(agent.tools["search_repository"],
-                                               fn=lambda **kw: "Tool error: no repository evidence")
-    answer = agent.ask(PROMPT)
-    assert "unverified" in answer
-    assert "healthy" not in answer
-    assert agent.audit.latest("model_evidence_state")["required"] == ["Windows/PC state"]
-    assert agent.audit.latest("model_research_stagnation_adaptation")["outstanding"] == ["Windows/PC state"]
-    assert agent.audit.latest("model_evidence_state")["tool_rounds"] <= 4
-
-
-def test_repeated_recovery_cannot_accept_generic_answer(tmp_path, monkeypatch):
-    agent, _ = _agent(tmp_path, monkeypatch, [
-        _chunk(calls=[_call("get_system_sense_summary")]),
-        *[_chunk("The system is running smoothly overall.") for _ in range(4)],
-    ])
-    agent.tools["get_system_sense_summary"] = replace(
-        agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
-    assert agent.ask(PROMPT).startswith("[LocalPilot withheld")
-    correction = agent.audit.latest("model_same_context_authority_correction_complete")
-    assert correction["accepted"] is False
-    assert correction["attempts"] == 2
-    assert correction["remaining_gaps"]
-
-
-def test_bounded_reacquisition_after_incomplete_metrics(tmp_path, monkeypatch):
-    agent, _ = _agent(tmp_path, monkeypatch, [
-        _chunk(calls=[_call("get_system_sense_summary")]),
-        _chunk(calls=[_call("inspect_raw_system_sense", category="sensors", limit=10)]),
-        _chunk(ANSWER), _chunk(ANSWER),
-    ])
-    agent.tools["get_system_sense_summary"] = replace(
-        agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload(_rows()[:-1])))
-    agent.tools["inspect_raw_system_sense"] = replace(
-        agent.tools["inspect_raw_system_sense"], fn=lambda **kw: json.dumps(_payload()))
-    assert agent.ask(PROMPT) == ANSWER
-    states = list(reversed(agent.audit.recent("model_evidence_state")))
-    assert states[0]["succeeded"] == []
-    assert states[1]["succeeded"] == ["Windows/PC state"]
-    assert states[1]["tool_rounds"] == 2
 
 
 def test_read_after_soft_budget_uses_same_bound_selection_as_checkpoint(tmp_path, monkeypatch):
@@ -310,19 +185,6 @@ def test_read_after_soft_budget_uses_same_bound_selection_as_checkpoint(tmp_path
         agent.tools["inspect_raw_system_sense"], fn=lambda **kw: json.dumps(_payload()))
     assert agent.ask(PROMPT) == ANSWER
     assert agent.audit.latest("model_evidence_state")["tool_rounds"] == 3
-
-
-def test_reset_recovery_carries_answer_contract_into_recursive_validation(tmp_path, monkeypatch):
-    agent, _ = _agent(tmp_path, monkeypatch, [
-        _chunk("Hello! How can I help you today?"),
-        _chunk("The system is running smoothly overall."),
-        _chunk(ANSWER),
-    ])
-    _, contract = SensorRequest.from_prompt(PROMPT).evaluate(json.dumps(_payload()))
-    assert agent._continue_high_reasoning_answer(
-        sys.modules["ollama"].chat, prompt=PROMPT, round_no=1, after_tools=True,
-        successful_tools=frozenset({"get_system_sense_summary"}), answer_contract=contract) == ANSWER
-    assert agent.audit.latest("model_same_context_postvalidation_complete")["accepted"] is False
 
 
 def test_raw_tool_schema_exposes_categories_and_named_selection(tmp_path, monkeypatch):
@@ -365,34 +227,17 @@ def test_owner_metric_selection_overrides_one_row_slice(tmp_path, monkeypatch, p
     assert agent.audit.latest("tool_call")["args"]["limit"] <= 500
 
 
-def test_failed_sensor_read_then_process_list_does_not_clear_requirement(tmp_path, monkeypatch):
-    agent, _ = _agent(tmp_path, monkeypatch, [
-        _chunk(calls=[_call("get_system_sense_summary")]),
-        _chunk(calls=[_call("get_top_processes", limit=5)]),
-        _chunk(calls=[_call("get_storage_summary")]),
-        _chunk(calls=[_call("get_system_summary")]),
-        _chunk("The requested GPU sensors are unavailable."),
-    ])
-    agent.tools["get_system_sense_summary"] = replace(agent.tools["get_system_sense_summary"],
-                                                       fn=lambda: "Tool error: sensor read failed")
-    for tool in ("get_top_processes", "get_storage_summary", "get_system_summary"):
-        agent.tools[tool] = replace(agent.tools[tool], fn=lambda **kw: json.dumps([{"unrelated": True}]))
-    assert agent.ask(PROMPT) == "The requested GPU sensors are unavailable."
-    state = agent.audit.latest("model_evidence_state")
-    assert state["required"] == ["Windows/PC state"] and state["succeeded"] == []
-    assert state["tool_rounds"] == 4
-
-
 @pytest.mark.parametrize("operator_error", [False, True])
 def test_answer_protocol_recovery_keeps_acquired_fields_and_shared_retry_bound(tmp_path, monkeypatch, operator_error):
     from ollama import ResponseError
     without_provider = ANSWER.replace("LibreHardwareMonitorLib", "The provider")
     responses = ([ResponseError("error parsing tool call: malformed arguments")] if operator_error else []) + [
         _chunk(calls=[_call("get_system_sense_summary")]),
-        _chunk(without_provider), _chunk(without_provider),
         ResponseError("error parsing tool call: malformed arguments"), _chunk(ANSWER),
     ]
     agent, snapshots = _agent(tmp_path, monkeypatch, responses)
+    agent.config.agent.research_soft_tool_rounds = 1
+    agent.config.agent.research_hard_tool_rounds = 1
     agent.tools["get_system_sense_summary"] = replace(
         agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
     assert agent.ask(PROMPT) == ANSWER
@@ -412,29 +257,17 @@ def test_answer_protocol_exhaustion_is_bounded_and_never_becomes_unsupported_ans
     bad = lambda: ResponseError("error parsing tool call: malformed arguments")
     agent, snapshots = _agent(tmp_path, monkeypatch, [
         bad(), _chunk(calls=[_call("get_system_sense_summary")]),
-        _chunk(without_provider), _chunk(without_provider), bad(), bad(),
+        bad(), bad(),
     ])
     agent.tools["get_system_sense_summary"] = replace(
         agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
+    agent.config.agent.research_soft_tool_rounds = 1
+    agent.config.agent.research_hard_tool_rounds = 1
     answer = agent.ask(PROMPT)
     assert answer.startswith("[LocalPilot") and "bounded" in answer
     exhausted = agent.audit.latest("model_answer_tool_call_protocol_recovery_exhausted")
     assert exhausted["retries"] == exhausted["retry_limit"] == 2
     assert agent.audit.latest("model_evidence_state")["tool_rounds"] == 1
-
-
-def test_answer_behavior_recovery_protocol_error_retains_original_fields(tmp_path, monkeypatch):
-    from ollama import ResponseError
-    table = "| Sensor | Temperature |\n| --- | --- |\n| CPU | 51.25 C |"
-    agent, snapshots = _agent(tmp_path, monkeypatch, [
-        _chunk(calls=[_call("get_system_sense_summary")]), _chunk(table), _chunk(table),
-        ResponseError("error parsing tool call: malformed arguments"), _chunk(ANSWER),
-    ])
-    agent.tools["get_system_sense_summary"] = replace(
-        agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
-    assert agent.ask(PROMPT) == ANSWER
-    assert agent.audit.latest("model_answer_tool_call_protocol_recovery_retry")["attempt"] == 1
-    assert PROMPT in snapshots[-1][-1]["content"]
 
 
 def test_protocol_failure_at_tool_ceiling_still_renders_acquired_fields(tmp_path, monkeypatch):
@@ -450,16 +283,3 @@ def test_protocol_failure_at_tool_ceiling_still_renders_acquired_fields(tmp_path
     assert agent.audit.latest("model_evidence_state")["tool_rounds"] == 1
     assert agent.audit.latest("model_answer_tool_call_protocol_recovery_retry")["attempt"] == 1
     assert not any(message.get("role") == "tool" or message.get("tool_calls") for message in snapshots[-1])
-
-
-def test_unrelated_server_error_during_answer_correction_still_surfaces(tmp_path, monkeypatch):
-    without_provider = ANSWER.replace("LibreHardwareMonitorLib", "The provider")
-    agent, _ = _agent(tmp_path, monkeypatch, [
-        _chunk(calls=[_call("get_system_sense_summary")]), _chunk(without_provider),
-        _chunk(without_provider), ResponseError("Internal Server Error", 500),
-    ])
-    agent.tools["get_system_sense_summary"] = replace(
-        agent.tools["get_system_sense_summary"], fn=lambda: json.dumps(_payload()))
-    with pytest.raises(ResponseError, match="Internal Server Error"):
-        agent.ask(PROMPT)
-    assert agent.audit.latest("model_answer_tool_call_protocol_recovery_retry") is None

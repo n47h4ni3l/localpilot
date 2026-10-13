@@ -19,3 +19,19 @@ tools/WindowsInstaller/obj/
 Thumbs.db
 .localpilot-release.json
 dist/
+
+# Isolated local test scratch; never source or training evidence.
+.pytest-runs/
+
+# Owner-machine generated P1.2 runs, immutable receipts and corpus build outputs.
+# Keep the canonical recipe, builder, source locks and selection in version control.
+training/configs/qlora_p12_curated_1000_attempt*.yaml
+training/configs/qlora_p12_currentprod_*.yaml
+training/datasets/p12_corpus_1000.jsonl
+training/manifests/p12_corpus_manifest.json
+training/lineage/package-*-production-*.json
+training/lineage/package-3.json
+training/scripts/start_guarded_p12_*.ps1
+training/scripts/start_p12_after_restart_*.ps1
+training/scripts/start_p12_currentprod_*.ps1
+training/scripts/restore_p12_optional_apps_*.ps1

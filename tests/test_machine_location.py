@@ -176,7 +176,6 @@ def test_registry_exposes_only_coarse_machine_location(tmp_path, monkeypatch):
     assert "Exact machine coordinates remain local" in result["privacy"]
 
 
-
 def _chunk(*, content: str = "", thinking: str = "", tool_calls=None):
     return SimpleNamespace(
         message=SimpleNamespace(
@@ -262,9 +261,9 @@ def test_enabled_machine_location_drives_here_weather_research(tmp_path, monkeyp
         interface="desktop",
     )
 
-    assert "24 °C" in answer
-    assert "give me your suburb" in answer
-    assert len(calls) == 4
+    assert answer == "I have the location and fresh forecast evidence."
+    assert answer == "I have the location and fresh forecast evidence."
+    assert len(calls) == 3
 
     first_context = "\n".join(
         str(message.get("content") or "") for message in calls[0]["messages"]

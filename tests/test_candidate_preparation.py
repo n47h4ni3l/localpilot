@@ -122,6 +122,22 @@ def test_abandoned_proposal_does_not_resume(tmp_path, monkeypatch):
     assert developer.audit.latest("capability_preparation_resumed") is None
 
 
+@pytest.mark.parametrize("source", ["queue", "model"])
+def test_selection_interruption_keeps_proposal_recoverable(tmp_path, monkeypatch, source):
+    developer = developer_at(tmp_path)
+    if source == "queue":
+        developer.opportunities.enqueue(task(), score=10)
+    monkeypatch.setattr(developer.github, "tracked_project_paths", lambda: set())
+    monkeypatch.setattr(developer, "_tool_stage", lambda **kwargs: json.dumps({"proposals": [task()]}))
+    monkeypatch.setattr(developer.opportunities, "update", lambda *args: (_ for _ in ()).throw(RuntimeError("interrupted")))
+    with pytest.raises(RuntimeError, match="interrupted"):
+        developer._discover_capability_task(developer_model="fake", force=True)
+    reopened = developer_at(tmp_path)
+    expected = reopened.memory.latest_experiment()
+    assert expected is not None and expected.cycle_id is None
+    assert reopened._discover_capability_task(developer_model="must-not-load", force=False)["id"] == expected.task_id
+
+
 def test_workspace_failure_then_success_preserves_attempt_and_uses_same_experiment(tmp_path, monkeypatch):
     developer = developer_at(tmp_path)
     original = task()

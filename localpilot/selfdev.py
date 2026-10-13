@@ -1264,6 +1264,7 @@ class SelfDeveloper:
                 break
             task_id = str(queued.get("id") or "")
             if task_id and self.memory.experiment_for_task(task_id) is None:
+                self.memory.record_experiment(queued)
                 self.opportunities.update(task_id, "selected")
                 self.audit.write(
                     "capability_opportunity_selected",
@@ -1420,8 +1421,8 @@ class SelfDeveloper:
             )
         proposal = select_capability_proposal(item[0] for item in eligible)
         task = next(item[1] for item in eligible if item[0] == proposal)
-        self.opportunities.update(str(task["id"]), "selected")
         self.memory.record_experiment(task)
+        self.opportunities.update(str(task["id"]), "selected")
         fields = evolution_status_fields(task)
         self.audit.write(
             "capability_discovery",

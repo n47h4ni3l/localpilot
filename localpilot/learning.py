@@ -601,6 +601,35 @@ class LearningMemory:
                 (cycle_id,),
             )
 
+    def quarantine_candidate(self, cycle_id: int, *, reason: str) -> None:
+        """Retain an unsafe candidate for review without retrying it automatically."""
+        reason = str(reason).strip()[:4000]
+        if not reason:
+            raise ValueError("Quarantine requires a concrete safety failure.")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM development_cycles WHERE id = ?", (cycle_id,)
+            ).fetchone()
+            if row is None or row["merged"]:
+                raise ValueError("Only an existing unmerged candidate can be quarantined.")
+            if row["status"] == "quarantined":
+                return
+            if row["validation_state"] == "rejected_by_human":
+                raise ValueError("Preserve an explicit human rejection.")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS candidate_quarantines ("
+                "cycle_id INTEGER PRIMARY KEY, reason TEXT NOT NULL, "
+                "prior_record_json TEXT NOT NULL, created_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO candidate_quarantines VALUES (?, ?, ?, ?)",
+                (cycle_id, reason, json.dumps(dict(row), sort_keys=True), _now()),
+            )
+            connection.execute(
+                "UPDATE development_cycles SET status = 'quarantined' WHERE id = ?",
+                (cycle_id,),
+            )
+
     def finish_cycle(
         self,
         cycle_id: int,
@@ -621,7 +650,7 @@ class LearningMemory:
                 UPDATE development_cycles
                 SET status = ?, summary = ?, reusable_lesson = ?, checks_passed = ?,
                     pushed = ?, validation_state = ?, finished_at = ?
-                WHERE id = ?
+                WHERE id = ? AND status != 'quarantined'
                 """,
                 (
                     status,
@@ -642,6 +671,7 @@ class LearningMemory:
                 SELECT id, task_id, branch FROM development_cycles
                 WHERE pushed = 1
                   AND validation_state != 'rejected_by_human'
+                  AND status != 'quarantined'
                   AND NOT (merged = 1 AND validation_state = 'passed')
                   AND NOT (
                     status = 'policy_blocked'
@@ -693,6 +723,7 @@ class LearningMemory:
                 FROM development_cycles
                 WHERE pushed = 1
                   AND validation_state = 'failed'
+                  AND status != 'quarantined'
                   AND merged = 0
                   AND NOT (
                     status = 'policy_blocked'
@@ -734,7 +765,10 @@ class LearningMemory:
                 """,
                 (cycle_id,),
             ).fetchone()
-            if existing is not None and existing["validation_state"] == "rejected_by_human":
+            if existing is not None and (
+                existing["validation_state"] == "rejected_by_human"
+                or existing["status"] == "quarantined"
+            ):
                 return
             if (
                 existing is not None
@@ -762,12 +796,12 @@ class LearningMemory:
         return {str(row["task_id"]) for row in rows}
 
     def rejected_task_ids(self) -> set[str]:
-        """Return tasks with an explicit, terminal human rejection."""
+        """Return tasks held out of automatic discovery after rejection or quarantine."""
         with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT DISTINCT task_id FROM development_cycles
-                WHERE validation_state = 'rejected_by_human'
+                WHERE validation_state = 'rejected_by_human' OR status = 'quarantined'
                 """
             ).fetchall()
         return {str(row["task_id"]) for row in rows}
@@ -780,6 +814,7 @@ class LearningMemory:
                 WHERE (
                     pushed = 1
                     AND validation_state != 'rejected_by_human'
+                    AND status != 'quarantined'
                     AND NOT (merged = 1 AND validation_state = 'passed')
                     AND NOT (
                         status = 'policy_blocked'
@@ -804,6 +839,7 @@ class LearningMemory:
                 SELECT 1 FROM development_cycles
                 WHERE NOT (merged = 1 AND validation_state = 'passed')
                   AND validation_state != 'rejected_by_human'
+                  AND status != 'quarantined'
                   AND NOT (
                     status = 'policy_blocked'
                     AND retried_by_cycle_id IS NOT NULL
@@ -979,6 +1015,7 @@ class LearningMemory:
                 """
                 SELECT id FROM development_cycles
                 WHERE id != ? AND validation_state != 'rejected_by_human'
+                  AND status != 'quarantined'
                   AND NOT (merged = 1 AND validation_state = 'passed')
                   AND NOT (
                     status = 'policy_blocked'

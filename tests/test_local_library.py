@@ -253,7 +253,7 @@ def test_agent_function_surface_can_hide_owner_prohibited_web_tools(tmp_path):
     assert "read_library_passage" in after_discovery_names
 
 
-def test_explicit_library_turn_routes_first_observation_to_library(tmp_path, monkeypatch):
+def test_explicit_library_turn_advertises_library_and_respects_no_web(tmp_path, monkeypatch):
     config = Config()
     config.agent.data_dir = "data"
     config.library.enabled = True
@@ -270,7 +270,7 @@ def test_explicit_library_turn_routes_first_observation_to_library(tmp_path, mon
             for function in kwargs["tools"]
         }
         assert {"get_library_summary", "search_library", "read_library_passage"} <= names
-        assert "search_repository" not in names
+        assert "search_repository" in names  # Other permitted readers remain optional.
         assert "fetch_public_https" not in names
         raise RuntimeError("first tool surface inspected")
 
@@ -278,3 +278,25 @@ def test_explicit_library_turn_routes_first_observation_to_library(tmp_path, mon
 
     with pytest.raises(RuntimeError, match="first tool surface inspected"):
         agent.ask("Consult the local library before answering, and do not use the public web.")
+
+
+def test_pdf_surrogates_are_repaired_in_derived_cache_without_source_changes(tmp_path, monkeypatch):
+    root, library = _library(tmp_path)
+    source = root / "manual.pdf"
+    source.write_bytes(b"immutable source fixture")
+    original = source.read_bytes()
+    class Reader:
+        is_encrypted = False
+        pages = [SimpleNamespace(extract_text=lambda: "Café \ud83d\ude00 and isolated \udf83 text")]
+    monkeypatch.setitem(sys.modules, "pypdf", SimpleNamespace(PdfReader=lambda *a, **k: Reader()))
+    # Retain the existing failed-cache row so the unchanged-source retry is tested.
+    stat = source.stat()
+    with library._connect() as db:
+        db.execute("INSERT INTO library_documents(path,size,mtime_ns,kind,page_count,source_digest,indexed_at,error) VALUES(?,?,?,?,?,?,?,?)",
+                   ("manual.pdf", stat.st_size, stat.st_mtime_ns, ".pdf", 0, "", "old", "UnicodeEncodeError: surrogates not allowed"))
+    result = library.refresh_index()
+    assert result["indexed"] == 1 and result["failed"] == 0
+    text = library.read_library_passage("manual.pdf")
+    assert "Café 😀" in text and "isolated � text" in text
+    assert source.read_bytes() == original
+    assert library.refresh_index()["unchanged"] == 1

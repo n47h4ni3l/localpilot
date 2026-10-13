@@ -167,6 +167,11 @@ class LocalLibrary:
 
     @staticmethod
     def _passages(text: str) -> Iterator[str]:
+        # PDF extractors can return UTF-16 surrogate code units. Combine valid
+        # pairs and replace isolated units before SQLite encodes derived text.
+        text = text.encode("utf-16-le", errors="surrogatepass").decode(
+            "utf-16-le", errors="replace"
+        )
         normalized = LocalLibrary._normalize_text(text)
         cursor = 0
         while cursor < len(normalized):
@@ -228,7 +233,7 @@ class LocalLibrary:
             prior = {
                 str(row["path"]): row
                 for row in connection.execute(
-                    "SELECT path, size, mtime_ns FROM library_documents"
+                    "SELECT path, size, mtime_ns, error FROM library_documents"
                 )
             }
             if not truncated:
@@ -246,6 +251,7 @@ class LocalLibrary:
                     row is not None
                     and int(row["size"]) == source.size
                     and int(row["mtime_ns"]) == source.mtime_ns
+                    and not str(row["error"]).startswith("UnicodeEncodeError:")
                 ):
                     unchanged += 1
                     continue

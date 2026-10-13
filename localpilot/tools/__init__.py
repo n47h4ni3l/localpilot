@@ -91,10 +91,9 @@ def registry(
     ]
     # A hosted mentor is optional and performs remote inference only; it
     # can be invoked voluntarily in guide-first mode. Never
-    # register it in strict/control/evaluator mode.
+    # register it only when the owner enables it.
     if (
         config is not None
-        and config.agent.scaffold_mode == "guide_first"
         and config.mentor.enabled
     ):
         mentor = ExternalMentor(

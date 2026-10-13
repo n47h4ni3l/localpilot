@@ -4,8 +4,8 @@ import subprocess
 
 import pytest
 
-from localpilot.authority import InformationAuthorityVerifier
 from localpilot.study import RepositoryGroundingValidator
+from localpilot.repository_source import repository_source_fingerprint
 
 
 def _write(root, relative, content="source\n"):
@@ -23,16 +23,15 @@ def test_tracked_source_edit_delete_and_untracked_add_invalidate(tmp_path):
     _git(tmp_path, "init", "--quiet")
     path = _write(tmp_path, "localpilot/component.py", "class Original: pass\n")
     _git(tmp_path, "add", "localpilot/component.py")
-    verifier = InformationAuthorityVerifier(tmp_path)
-    original = verifier._repository_fingerprint()
+    original = repository_source_fingerprint(tmp_path)
     path.write_text("class Revised: pass\n", encoding="utf-8")
-    revised = verifier._repository_fingerprint()
+    revised = repository_source_fingerprint(tmp_path)
     assert revised != original
     path.unlink()
-    deleted = verifier._repository_fingerprint()
+    deleted = repository_source_fingerprint(tmp_path)
     assert deleted != revised and "localpilot/component.py" not in dict(deleted)
     _write(tmp_path, "localpilot/new_component.py", "class Added: pass\n")
-    added = verifier._repository_fingerprint()
+    added = repository_source_fingerprint(tmp_path)
     assert added != deleted and "localpilot/new_component.py" in dict(added)
 
 
@@ -48,7 +47,7 @@ def test_git_metadata_keeps_tracked_inputs_and_excludes_ignored_untracked_data(t
     _write(tmp_path, "training/reports/scorecard.json")
     _write(tmp_path, "weights.safetensors")
     _git(tmp_path, "add", "training/outputs", "training/reports", "weights.safetensors")
-    names = set(dict(InformationAuthorityVerifier(tmp_path)._repository_fingerprint()))
+    names = set(dict(repository_source_fingerprint(tmp_path)))
     assert names == {".gitignore", "fixtures/source.custom", "docs/new guide.md"}
     assert names == RepositoryGroundingValidator(root=tmp_path).live_evidence_index()["paths"]
 
@@ -64,7 +63,7 @@ def test_source_distribution_contract_when_git_is_unavailable(tmp_path, monkeypa
     _write(tmp_path, "tests/fixtures/expected.txt")
     _write(tmp_path, "training/outputs/run/config.json")
     _write(tmp_path, "unknown.payload")
-    names = set(dict(InformationAuthorityVerifier(tmp_path)._repository_fingerprint()))
+    names = set(dict(repository_source_fingerprint(tmp_path)))
     assert names == {"training/manifests/accepted.json", "tests/fixtures/expected.txt"}
 
 
@@ -77,7 +76,7 @@ def test_source_selector_does_not_follow_linked_files_or_directories(tmp_path, m
         Path, "is_symlink",
         lambda path: path in {linked_file, linked_child.parent} or original(path),
     )
-    assert [path for path, _ in InformationAuthorityVerifier(tmp_path)._repository_fingerprint()] == [
+    assert [path for path, _ in repository_source_fingerprint(tmp_path)] == [
         source.relative_to(tmp_path).as_posix(),
     ]
 
@@ -91,7 +90,7 @@ def test_source_selector_prunes_windows_junctions(tmp_path, monkeypatch):
         lambda path, *args, **kwargs: tmp_path.parent / "external" if path == junction
         else original(path, *args, **kwargs),
     )
-    assert set(dict(InformationAuthorityVerifier(tmp_path)._repository_fingerprint())) == {"source.py"}
+    assert set(dict(repository_source_fingerprint(tmp_path))) == {"source.py"}
 
 
 @pytest.mark.parametrize("relative", [
@@ -106,12 +105,11 @@ def test_source_selector_prunes_windows_junctions(tmp_path, monkeypatch):
 ])
 def test_generated_state_additions_and_changes_do_not_invalidate(tmp_path, relative):
     _write(tmp_path, "localpilot/component.py", "class Source: pass\n")
-    verifier = InformationAuthorityVerifier(tmp_path)
-    baseline = verifier._repository_fingerprint()
+    baseline = repository_source_fingerprint(tmp_path)
     artifact = _write(tmp_path, relative, "first generated value\n")
-    assert verifier._repository_fingerprint() == baseline
+    assert repository_source_fingerprint(tmp_path) == baseline
     artifact.write_text("second generated value\n", encoding="utf-8")
-    assert verifier._repository_fingerprint() == baseline
+    assert repository_source_fingerprint(tmp_path) == baseline
     index = RepositoryGroundingValidator(root=tmp_path).live_evidence_index()
     assert relative not in index["paths"]
 
@@ -129,12 +127,11 @@ def test_generated_state_additions_and_changes_do_not_invalidate(tmp_path, relat
 ])
 def test_source_configuration_docs_schema_fixtures_and_manifests_are_truth(tmp_path, relative):
     path = _write(tmp_path, relative, "# source\n")
-    verifier = InformationAuthorityVerifier(tmp_path)
-    baseline = verifier._repository_fingerprint()
+    baseline = repository_source_fingerprint(tmp_path)
     assert relative in dict(baseline)
     assert relative in RepositoryGroundingValidator(root=tmp_path).live_evidence_index()["paths"]
     path.write_text("# changed source\n", encoding="utf-8")
-    assert verifier._repository_fingerprint() != baseline
+    assert repository_source_fingerprint(tmp_path) != baseline
 
 
 def test_generated_payloads_are_not_opened_even_with_multigigabyte_metadata(tmp_path, monkeypatch):
@@ -158,7 +155,7 @@ def test_generated_payloads_are_not_opened_even_with_multigigabyte_metadata(tmp_
 
     monkeypatch.setattr(Path, "stat", metadata)
     monkeypatch.setattr(Path, "open", read)
-    fingerprint = InformationAuthorityVerifier(tmp_path)._repository_fingerprint()
+    fingerprint = repository_source_fingerprint(tmp_path)
     assert "source.py" in dict(fingerprint)  # No file-size limit for legitimate source.
     assert "training/outputs/checkpoint-123/adapter_model.safetensors" not in dict(fingerprint)
     assert source in opened
@@ -167,8 +164,7 @@ def test_generated_payloads_are_not_opened_even_with_multigigabyte_metadata(tmp_
 def test_fingerprint_order_and_paths_are_deterministic(tmp_path, monkeypatch):
     for relative in ("zeta/module.py", "alpha/schema.json", "README.md"):
         _write(tmp_path, relative)
-    verifier = InformationAuthorityVerifier(tmp_path)
-    expected = verifier._repository_fingerprint()
+    expected = repository_source_fingerprint(tmp_path)
     original_walk = os.walk
 
     def reverse_walk(*args, **kwargs):
@@ -177,33 +173,19 @@ def test_fingerprint_order_and_paths_are_deterministic(tmp_path, monkeypatch):
             children.reverse()
 
     monkeypatch.setattr(os, "walk", reverse_walk)
-    assert verifier._repository_fingerprint() == expected
+    assert repository_source_fingerprint(tmp_path) == expected
     assert [name for name, _ in expected] == sorted(name for name, _ in expected)
     assert all("\\" not in name and not name.startswith("/") for name, _ in expected)
 
 
-def test_authority_cache_reuses_generated_changes_and_rebuilds_for_source_truth(tmp_path, monkeypatch):
-    import localpilot.authority as authority
 
-    _write(tmp_path, "anchor.py", "class Anchor: pass\n")
-    monkeypatch.setattr(authority, "_GROUNDING_PLAN", {
-        "referenced_paths": ["anchor.py"], "referenced_symbols": ["anchor:Anchor"],
-    })
-    verifier = InformationAuthorityVerifier(tmp_path)
-    report, index = verifier._ground_truth()
-    assert report.grounded and index is not None
-    _write(tmp_path, "training/outputs/generated.py", "this is not Python source!\n")
-    same_report, same_index = verifier._ground_truth()
-    assert same_report is report and same_index is index
-    added = _write(tmp_path, "new.py", "class New: pass\n")
-    _, new_index = verifier._ground_truth()
-    assert new_index is not index and "new:New" in new_index["symbols"]
-    added.write_text("class Revised: pass\n", encoding="utf-8")
-    _, changed_index = verifier._ground_truth()
-    assert "new:Revised" in changed_index["symbols"] and "new:New" not in changed_index["symbols"]
-    added.unlink()
-    _, deleted_index = verifier._ground_truth()
-    assert "new.py" not in deleted_index["paths"]
-    _write(tmp_path, "anchor.py", "class Renamed: pass\n")
-    failed_report, failed_index = verifier._ground_truth()
-    assert not failed_report.grounded and failed_index is None
+
+def test_nested_standalone_source_does_not_inherit_parent_git_ignores(tmp_path):
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    _git(parent, "init", "--quiet")
+    _write(parent, ".gitignore", "nested/\n")
+    nested = parent / "nested"
+    _write(nested, "source.py", "class Nested: pass\n")
+    assert set(dict(repository_source_fingerprint(nested))) == {"source.py"}
+    assert RepositoryGroundingValidator(root=nested).live_evidence_index()["paths"] == {"source.py"}

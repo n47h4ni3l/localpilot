@@ -74,6 +74,15 @@ def _git_paths(root: Path) -> tuple[set[str], set[str]] | None:
     """Use Git's tracked/ignore metadata only; never read artifact contents."""
     groups = []
     try:
+        top = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            check=True, capture_output=True, timeout=10,
+            creationflags=hidden_process_creation_flags(),
+        )
+        if Path(os.fsdecode(top.stdout).strip()).resolve() != root.resolve():
+            # A standalone source tree nested in another checkout must not
+            # inherit that parent's ignore rules or source membership.
+            return None
         for arguments in (("--cached",), ("--others", "--exclude-standard")):
             result = subprocess.run(
                 ["git", "-C", str(root), "ls-files", "-z", *arguments],
@@ -120,3 +129,23 @@ def repository_source_files(root: Path) -> tuple[Path, ...]:
                 continue
             selected.append(path)
     return tuple(sorted(selected, key=lambda path: path.relative_to(root).as_posix()))
+
+
+def repository_source_fingerprint(root: Path) -> tuple[tuple[str, str], ...]:
+    """Hash the bounded source contract without opening generated model payloads.
+
+    This source-integrity utility is independent of model-answer evaluation.
+    """
+    import hashlib
+
+    records: list[tuple[str, str]] = []
+    for path in repository_source_files(root):
+        try:
+            digest = hashlib.sha256()
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError:
+            continue
+        records.append((path.relative_to(root).as_posix(), digest.hexdigest()))
+    return tuple(records)

@@ -181,15 +181,9 @@ def test_stream_recovers_name_and_preserves_arguments_audit_and_original(tmp_pat
     assert "arguments" not in event and "args" not in event
 
 
-def test_strict_comparison_control_is_untouched(tmp_path):
-    agent = _agent(tmp_path, "strict")
-    request = _call("read_repository_file<|channel|>commentary", {"path": "README.md"})
-    result = agent._stream_chat_message(
-        lambda **_: iter([_chunk(tool_calls=[request])]),
-        think="high", tools=agent._functions(), phase="operator", turn_no=1
-    )
-    assert _tool_call_parts(result["tool_calls"][0])[0] == request.function.name
-    assert agent.audit.latest("model_tool_name_transport_recovered") is None
+def test_retired_scaffold_mode_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="strict has been retired"):
+        _agent(tmp_path, "strict")
 
 
 def test_model_without_advertised_tools_cannot_recover(tmp_path):

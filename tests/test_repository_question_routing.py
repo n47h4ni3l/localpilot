@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 from localpilot.agent import LocalPilotAgent
-from localpilot.agent_prompt_classification import _requires_information_authority_review
 from localpilot.config import Config
 from localpilot.tools.repository import RepositoryReader
 
@@ -22,7 +21,6 @@ def test_repository_explanation_requires_source_instead_of_passive_status(prompt
     assert not LocalPilotAgent._is_operational_self_status_prompt(prompt)
     assert LocalPilotAgent._evidence_requirements(prompt) == {'trusted repository'}
     assert not LocalPilotAgent._is_temporal_web_prompt(prompt)
-    assert _requires_information_authority_review(prompt)
 
 
 def test_mixed_actual_lookups_and_owner_web_prohibition_remain_effective():
@@ -90,11 +88,3 @@ def test_small_tree_budget_exposes_root_code_directory_before_large_docs(tmp_pat
     tree=RepositoryReader(tmp_path).list_repository_tree(max_entries=20)
     assert 'localpilot/' in tree and 'omitted paths remain unverified' in tree
     assert len(tree.splitlines())<=22
-
-
-def test_unresolved_does_not_justify_global_repository_absence():
-    prompt=QUESTIONS[0]
-    bad='The repository contains no class, function or configuration that implements action authorization. UNRESOLVED'
-    assert 'unscoped_repository_absence_claim' in LocalPilotAgent._contextual_evidence_risks(prompt,bad,frozenset({'list_repository_tree'}))
-    safe='I did not find the definition in the returned tree listing; its implementation remains unverified.'
-    assert not LocalPilotAgent._contextual_evidence_risks(prompt,safe,frozenset({'list_repository_tree'}))

@@ -1,8 +1,9 @@
 [agent]
+scaffold_mode = "guide_first"
 name = "LocalPilot"
 data_dir = "localpilot-data"
-# Advisory point after which every unique observation requires one compact,
-# bare-current-turn-ID next-observation checkpoint. It is stripped before synthesis.
+# Advisory point for selecting the most useful next observation.
+# The guide never requires a notebook checkpoint or grades the final answer.
 research_soft_tool_rounds = 12
 # Hard safety ceiling for unique operator tool rounds. Exact duplicate read-only
 # observations reuse the current-turn cache and do not consume another round.

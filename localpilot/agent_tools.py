@@ -113,12 +113,6 @@ def _tool_evidence_source(name: str) -> str | None:
 
 
 def _tool_result_success(result: Any) -> bool:
-    """Frozen strict-mode source classification (historical A/B control)."""
-    text = str(result).strip().lower()
-    return bool(text) and not any(marker in text for marker in _TOOL_FAILURE_MARKERS)
-
-
-def _guide_tool_result_success(result: Any) -> bool:
     """Recognize real result failures without treating quoted source as errors."""
     text = str(result).strip().lower()
     if not text:

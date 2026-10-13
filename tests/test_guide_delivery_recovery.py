@@ -66,9 +66,9 @@ def test_high_reasoning_empty_final_continuation_preserves_exact_guide_draft(
     def forbidden_review(*args, **kwargs):
         pytest.fail("Guide recovery examined the model's answer")
 
-    monkeypatch.setattr(agent.information_authority, "review", forbidden_review)
-    monkeypatch.setattr(agent.turn_evidence, "review", forbidden_review)
-    monkeypatch.setattr(agent, "_response_behavior_issues", forbidden_review)
+    assert not hasattr(agent, "information_authority")
+    assert not hasattr(agent, "turn_evidence")
+    monkeypatch.setattr(agent, "_response_behavior_issues", forbidden_review, raising=False)
     original_reset_classifier = agent._looks_like_generic_reset
 
     def reset_classifier(text):

@@ -85,7 +85,7 @@ def test_absent_or_invalid_progress_is_scoped_to_record_store(tmp_path):
     assert "passages_read" not in record and record["progress"] == {}
 
 
-@pytest.mark.parametrize("mode", ["guide_first", "strict"])
+@pytest.mark.parametrize("mode", ["guide_first"])
 def test_real_ask_receives_progress_only_in_guide_and_scrubs_after_delivery(
     tmp_path, monkeypatch, mode,
 ):

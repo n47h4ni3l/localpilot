@@ -1,6 +1,6 @@
 """Non-interfering, model-facing guidance for Nestra.
 
-The strict verifier remains an A/B control. The guide never reads, grades,
+The guide is the single operator path. It never reads, grades,
 rewrites, appends to, or withholds the model-authored final answer. Tool
 execution continues to be checked by the existing deterministic policy.
 """
@@ -32,8 +32,7 @@ GUIDE_FIRST_INSTRUCTIONS = (
 )
 
 
-# This is an alternative to SYSTEM_PROMPT, not an appendix to it.
-# The strict prompt remains unchanged for the comparison control.
+# The operator uses this standalone advisory prompt.
 GUIDE_FIRST_SYSTEM_PROMPT = (
     "You are Nestra, the owner's local-first assistant running through "
     "LocalPilot on the owner's PC. LocalPilot supplies research tools, "

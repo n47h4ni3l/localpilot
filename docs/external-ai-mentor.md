@@ -31,9 +31,9 @@ Edit the owner's existing localpilot.toml:
     model = "openai/gpt-oss-120b"
     max_requests_per_session = 3
 
-Default config has mentor.enabled = false; guide-first is opt-in and strict
-remains the benchmark control. Only enable mentor after the guide-only test
-is recorded so extra inference does not contaminate that comparison.
+Default config has mentor.enabled = false. Guide-only is the single operator path.
+Keep the hosted mentor disabled in model comparisons unless the study explicitly
+measures mentorship as an additional condition.
 
 ## Alternative: free OpenRouter models
 
@@ -94,10 +94,8 @@ A ChatGPT subscription does not provide API credits.
 
 ## Evaluation / rollout
 
-First merge and locally test guide-first PR #196 independently, while keeping
-its original strict control. Use identical P1 checkpoint, prompts and budgets
-in direct / strict / guide-first arms. Only after recording that comparison
-should external mentorship be evaluated as an **additional** fourth arm,
+Use identical model weights, prompts and budgets when comparing the normal
+Guide-only path with optional mentorship. Mentorship is an **additional** condition,
 measuring benefit, latency, privacy and quota usage. Unit tests only use
 mocked network responses; they cannot guarantee provider account eligibility
 or prove answer-quality improvement.

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "name": "Nestra P1.2 -- fresh online 1000-record continuation (final checkpoint only)",
-  "status": "proposed",
-  "status_note": "Owner-requested fresh online corpus rebuild, with 50 concrete self-improvement cases. Accepted P1 parent and original hyperparameters preserved; counts and final checkpoint derived from actual expansion. Independent semantic review, privacy/holdout audit and exact target-PC dry-run remain required. No training started.",
+  "status": "approved_after_dry_run",
+  "status_note": "Owner approved the rebuilt exact corpus and explicitly authorized PR 205 merge and P1.2 training. Exact target-PC dry-run passed all 30 checks on 2026-10-12. Accepted original P1 parent, 3 epochs and final checkpoint at 1185 retained. No independent semantic review is claimed; quality evaluation and promotion remain separate.",
   "backend": {
     "name": "unsloth",
     "compile_mode": "native",

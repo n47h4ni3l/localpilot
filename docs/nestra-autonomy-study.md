@@ -1,4 +1,10 @@
-# Nestra autonomy and the next controlled study
+# Nestra autonomy: historical study record
+
+**Retired 2026-10-13:** the strict operator and executable comparison launcher
+were removed. This document preserves the original protocol and diagnosis; its
+launch instructions describe historical work. Existing artifacts remain readable
+with `training/scripts/review_autonomy_study.py`. Future operator evaluations use
+the Guide-only route.
 
 Decision recorded 2026-10-10. Learned correctness belongs to Nestra's P1
 weights and the existing approved training/learning processes. Guidance can
@@ -39,7 +45,7 @@ The new guide runs from its separately recorded committed revision.
 
 ## Study requirements
 
-Eight independently authored fresh tasks × two repetitions × three arms =
+Eight independently authored fresh tasks Ã— two repetitions Ã— three arms =
 48 cells. Supplied-source interpretation and live-source research are separate
 strata, reported separately. Match complete question bytes and P1 digest,
 checkpoint lineage, seed schedule, reasoning, temperature, context and

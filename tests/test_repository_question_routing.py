@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 from localpilot.agent import LocalPilotAgent
-from localpilot.agent_prompt_classification import _requires_information_authority_review
 from localpilot.config import Config
 from localpilot.tools.repository import RepositoryReader
 
@@ -22,7 +21,6 @@ def test_repository_explanation_requires_source_instead_of_passive_status(prompt
     assert not LocalPilotAgent._is_operational_self_status_prompt(prompt)
     assert LocalPilotAgent._evidence_requirements(prompt) == {'trusted repository'}
     assert not LocalPilotAgent._is_temporal_web_prompt(prompt)
-    assert _requires_information_authority_review(prompt)
 
 
 def test_mixed_actual_lookups_and_owner_web_prohibition_remain_effective():

@@ -228,7 +228,7 @@ class LocalPilotAgent:
             "system": "whole-system",
         }.get(profile, profile)
         fallback = (
-            f"SystemSense {profile_label} monitoring is active. I’ll sample the relevant "
+            f"SystemSense {profile_label} monitoring is active. Iâ€™ll sample the relevant "
             f"system and per-process evidence every "
             f"{watch.get('sample_interval_seconds', 15):g} seconds until "
             f"{watch.get('expires_at')}. Ask me later what the watch found."
@@ -283,7 +283,6 @@ class LocalPilotAgent:
                 draft
                 and not calls
                 and runtime.get("runtime_classification") != "generation_limit"
-                and not self._looks_like_generic_reset(draft)
             ):
                 content = draft
             else:

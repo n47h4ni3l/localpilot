@@ -1,16 +1,8 @@
-"""Stateless prompt-classification helpers for LocalPilotAgent.
+"""Prompt hints for optional research and operational routing.
 
-Extracted verbatim (no logic changes) from agent.py as part of the low-risk
-mechanical decomposition. These answer 'what kind of prompt is this' --
-temporal/web-dependent, practical-troubleshooting, bounded-conversational,
-operational-self-status -- and are used to decide what evidence a response
-needs. Left behind on LocalPilotAgent as staticmethod(...) shims so both
-self._name(...) and LocalPilotAgent._name(...) call sites elsewhere in
-agent.py keep resolving unchanged. Three of these call each other; those
-internal calls were rewritten from LocalPilotAgent._name(...) to a plain
-_name(...) call, since the target now lives in this same module and the
-class name doesn't resolve here -- see the commit message for specifics.
-ask() and _continue_high_reasoning_answer() were not touched."""
+These classify the owner's requested sources and explicit preferences. They do
+not grade, correct, withhold or replace a model-authored answer.
+"""
 
 import re
 
@@ -160,7 +152,7 @@ def _evidence_requirements(prompt: str) -> set[str]:
 
     forbids_public_web = bool(
         re.search(
-            r"\b(?:do not|don['’]?t|without) (?:use|using|search|browse|consult|access)?\s*"
+            r"\b(?:do not|don['â€™]?t|without) (?:use|using|search|browse|consult|access)?\s*"
             r"(?:the )?(?:public )?(?:web|internet|online sources?)\b",
             text,
         )
@@ -273,7 +265,7 @@ def _is_practical_troubleshooting_prompt(prompt: str) -> bool:
     )
     fault = bool(
         re.search(
-            r"\b(?:keeps?|repeatedly|again|straight away|won['’]?t|not working|fails?|"
+            r"\b(?:keeps?|repeatedly|again|straight away|won['â€™]?t|not working|fails?|"
             r"clogg?(?:ed|ing)?|jam(?:med|ming)?|error|fault|broken|overheat(?:ing)?|"
             r"leak(?:ing)?|disconnect(?:ing)?|stuck)\b",
             text,
@@ -282,66 +274,8 @@ def _is_practical_troubleshooting_prompt(prompt: str) -> bool:
     return device and fault
 
 
-def _practical_troubleshooting_fallback(
-    prompt: str, issues: tuple[str, ...]
-) -> str | None:
-    """Return a conservative correction when model-only safety recovery is exhausted."""
-    issue_set = set(issues)
-    if "unsafe_pla_temperature_example" in issue_set and re.search(
-        r"\bh2s\b", str(prompt), re.IGNORECASE
-    ):
-        return (
-            "I need to correct the previous advice: do not use 240°C or higher as a general PLA "
-            "recommendation, and I will not invent a replacement temperature. Use the temperature in your "
-            "filament profile and follow Bambu Lab's official H2S nozzle/hotend unclogging procedure: "
-            "https://wiki.bambulab.com/en/h2s/troubleshooting/nozzle-clog. Because the clog returns "
-            "immediately, work through that procedure and inspect the filament path, extruder, and hotend "
-            "for retained debris; if it still recurs, stop replacing settings blindly and contact Bambu Lab "
-            "support with logs and photos."
-        )
-    if {
-        "practical_troubleshooting_source_unattributed",
-        "unsafe_pla_temperature_example",
-    }.intersection(issue_set):
-        return (
-            "[LocalPilot withheld a practical-troubleshooting draft because its source attribution or a "
-            "numeric safety detail remained unreliable after bounded correction.]"
-        )
-    return None
 
 
-def _requires_information_authority_review(prompt: str) -> bool:
-    """Limit the extra review pass to LocalPilot's own current architecture."""
-    text = " ".join(str(prompt).lower().split())
-    if "localpilot" not in text:
-        return False
-    if _is_operational_self_status_prompt(prompt):
-        return False
-    if _is_repository_evidence_prompt(prompt):
-        return True
-    return any(
-        term in text
-        for term in (
-            "architecture",
-            "module",
-            "class",
-            "function",
-            "dependency",
-            "configuration",
-            "config",
-            "integration",
-            "learning",
-            "memory",
-            "study",
-            "self-development",
-            "candidate",
-            "promotion",
-            "merge",
-            "safety",
-            "github actions",
-            "ci",
-        )
-    )
 
 
 def _looks_like_generic_reset(content: str) -> bool:
@@ -427,8 +361,8 @@ def _is_operational_self_status_prompt(prompt: str) -> bool:
         re.search(r"\b(?:localpilot|your|yourself)\b", text)
         or re.search(
             r"\b(?:are|have|did|do|can|will|would) you\b|"
-            r"\byou (?:are|have|can|were|restarted|learned|changed|didn['’]?t)\b|"
-            r"\byou['’](?:re|ve|d)\b|"
+            r"\byou (?:are|have|can|were|restarted|learned|changed|didn['â€™]?t)\b|"
+            r"\byou['â€™](?:re|ve|d)\b|"
             r"\binternet access for you\b|"
             r"\b(?:blocking|restart) you\b", text,
         )

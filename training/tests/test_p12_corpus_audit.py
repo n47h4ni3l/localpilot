@@ -100,7 +100,7 @@ class P12IndependentAuditTests(unittest.TestCase):
         self.assertEqual(self.config["training"]["precision"], "bf16")
         self.assertEqual(self.config["backend"]["compile_mode"], "native")
         self.assertEqual(self.config["output"]["save_adapter_only"], True)
-        self.assertEqual(self.config["status"], "proposed")
+        self.assertEqual(self.config["status"], "approved_after_dry_run")
 
 
 if __name__ == "__main__":

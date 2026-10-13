@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from training.scripts.run_autonomy_study import ARMS, digest, file_hash, read, save
+from training.scripts.autonomy_study_artifacts import ARMS, digest, file_hash, read, save
 
 
 def load_cells(study: Path, protocol: dict) -> dict:

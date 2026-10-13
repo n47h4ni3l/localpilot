@@ -15,6 +15,8 @@ from typing import Any, Callable, Iterable
 
 import psutil
 
+from localpilot import evolution_repository_review
+
 from localpilot.audit import AuditLog
 from localpilot.candidate_resources import CandidateResourceStore
 from localpilot.checkpoint import CheckpointStore, EvolutionCheckpoint, task_fingerprint
@@ -24,6 +26,7 @@ from localpilot.evolution import (
     EvolutionClass,
     capability_proposal_score,
     capability_task_id,
+    legacy_capability_task_id,
     evolution_status_fields,
     normalize_evolution_task,
     parse_capability_proposals,
@@ -247,6 +250,7 @@ class CandidateTools:
                 )
         self.files_written = existing
         self.files_read: set[Path] = set()
+        self.source_read_prefixes: dict[Path, str] = {}
         self.directories_created: set[Path] = set()
         self.write_count = 0
         self.failed_write_attempts: list[str] = []
@@ -292,6 +296,12 @@ class CandidateTools:
 
     def list_project_files(self, max_results: int = 160) -> str:
         max_results = max(1, min(int(max_results), 300))
+        if self.readable_paths is not None:
+            # Discovery/review already has an allowlist of committed files.
+            # Avoid walking environments, private data and old worktrees.
+            rows = [relative for relative in sorted(self.readable_paths) if not
+                    any(part in _IGNORE_NAMES for part in Path(relative).parts)]
+            return "\n".join(rows[:max_results])
         rows: list[str] = []
         for path in self.workspace.rglob("*"):
             if not path.is_file():
@@ -317,7 +327,10 @@ class CandidateTools:
             return f"File not found: {relative_path}"
         self.files_read.add(path)
         with path.open("r", encoding="utf-8", errors="replace") as handle:
-            return handle.read(max_chars)
+            content = handle.read(max_chars)
+        if len(content) > len(self.source_read_prefixes.get(path, "")):
+            self.source_read_prefixes[path] = content
+        return content
 
     def validate_project_write(
         self,
@@ -1207,11 +1220,16 @@ class SelfDeveloper:
         return self.memory.experiment_task(task_id)
 
     def _load_next_task(self) -> dict[str, Any] | None:
+        completed = self.memory.completed_task_ids()
+        rejected = self.memory.rejected_task_ids()
+        tasks = [task for task in self._backlog_tasks() if
+                 str(task.get("id")) in completed | rejected or not
+                 evolution_repository_review.review_held_for_current_objective(self, task)]
         task = choose_next_task(
-            self._backlog_tasks(),
-            self.memory.completed_task_ids(),
+            tasks,
+            completed,
             self.memory.pending_task_ids(),
-            self.memory.rejected_task_ids(),
+            rejected,
         )
         return normalize_evolution_task(task) if task else None
 
@@ -1234,6 +1252,7 @@ class SelfDeveloper:
                 "hypothesis": normalized["hypothesis"],
                 "evaluation": normalized["evaluation"],
                 "expected_complexity": normalized["expected_complexity"],
+                "repository_review": normalized.get("repository_review"),
             },
             ensure_ascii=False,
             indent=2,
@@ -1246,12 +1265,30 @@ class SelfDeveloper:
         force: bool,
     ) -> dict[str, Any]:
         """Choose a measured capability-growth question from current evidence."""
+        for task in self.memory.preparation_recovery_tasks():
+            task_id = str(task["id"])
+            status = self.opportunities.status_for_task(task_id)
+            if status == "needs_research":
+                if evolution_repository_review.review_held_for_current_objective(self, task):
+                    continue
+                status = "selected"
+            if status not in {
+                None, "proposed", "selected", "active", "superseded", "preparation_failed", "paused", "deferred",
+            }:
+                continue
+            self.opportunities.update(task_id, "selected")
+            self.audit.write(
+                "capability_preparation_resumed", task_id=task_id,
+                source="unstarted_experiment", prior_attempts_preserved=True,
+            )
+            return task
         for _attempt in range(self.config.selfdev.max_queued_opportunities):
             queued = self.opportunities.next_task()
             if queued is None:
                 break
             task_id = str(queued.get("id") or "")
             if task_id and self.memory.experiment_for_task(task_id) is None:
+                self.memory.record_experiment(queued)
                 self.opportunities.update(task_id, "selected")
                 self.audit.write(
                     "capability_opportunity_selected",
@@ -1277,6 +1314,15 @@ class SelfDeveloper:
             readable_paths=readable,
         )
         evidence_context = {
+            "evidence_policy": (
+                "Stored proposals/frontiers are unverified objectives, not proof of current capabilities. "
+                "Completed history applies to the original objective; existing features remain eligible for "
+                "materially different improvements supported by source evidence and a measured evaluation contract."
+            ),
+            "backlog_repository_state": evolution_repository_review.backlog_repository_context(
+                self._backlog_tasks(), readable, self.memory.completed_task_ids(),
+                self.memory.rejected_task_ids(), self.memory.pending_task_ids(),
+            ),
             "mission": mission_context(),
             "durable_memory": self.memory.discovery_context(),
             "durable_opportunity_queue": self.opportunities.context(),
@@ -1382,6 +1428,19 @@ class SelfDeveloper:
         for candidate in proposals:
             task = normalize_evolution_task(candidate.task(capability_task_id(candidate)))
             prior = self.memory.experiment_for_task(str(task["id"]))
+            if prior is None:
+                legacy = self.memory.experiment_task(legacy_capability_task_id(candidate))
+                if legacy is not None and evolution_repository_review.same_historical_objective(
+                    task, legacy, self.config.selfdev.opportunity_similarity_threshold,
+                ):
+                    prior = self.memory.experiment_for_task(str(legacy["id"]))
+            if prior is None:
+                for historical in self.memory.objective_history(str(task["capability_target"])):
+                    if evolution_repository_review.same_historical_objective(
+                        task, historical, self.config.selfdev.opportunity_similarity_threshold,
+                    ):
+                        prior = self.memory.experiment_for_task(str(historical["id"]))
+                        break
             duplicate, similarity = self.opportunities.duplicate(task)
             if prior is None and duplicate is None:
                 self.opportunities.enqueue(
@@ -1408,8 +1467,8 @@ class SelfDeveloper:
             )
         proposal = select_capability_proposal(item[0] for item in eligible)
         task = next(item[1] for item in eligible if item[0] == proposal)
-        self.opportunities.update(str(task["id"]), "selected")
         self.memory.record_experiment(task)
+        self.opportunities.update(str(task["id"]), "selected")
         fields = evolution_status_fields(task)
         self.audit.write(
             "capability_discovery",
@@ -1422,6 +1481,13 @@ class SelfDeveloper:
             novel_proposals=len(eligible),
         )
         return task
+
+    def _review_task_repository(
+        self, task: dict[str, Any], *, developer_model: str, force: bool,
+    ) -> dict[str, Any]:
+        return evolution_repository_review.review_objective(
+            self, task, developer_model=developer_model, force=force,
+        )
 
     def _reject_checkpoint(self, reason: str) -> None:
         self.checkpoints.clear()
@@ -1509,9 +1575,16 @@ class SelfDeveloper:
         )
         return checkpoint, candidate, task, workspace
 
+    def _candidate_destination(self, branch: str) -> Path:
+        # Branch identity stays readable in Git and durable memory. Repeating
+        # the full slug and timestamp in the folder exceeded Windows MAX_PATH.
+        identity = hashlib.sha256(branch.encode("utf-8")).hexdigest()[:24]
+        return self.data_dir / "candidates" / f"c-{identity}"
+
     def _candidate_workspace(self, branch: str) -> tuple[Path, bool]:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        destination = self.data_dir / "candidates" / f"{stamp}-{branch.split('/')[-1]}"
+        destination = self._candidate_destination(branch)
+        if destination.exists():
+            raise RuntimeError("Candidate destination already exists; preserved for inspection.")
         if self.github.is_git_repo() and self.github.clean_worktree():
             result = self.github.create_candidate_worktree(branch, destination)
             if result.ok:
@@ -3918,13 +3991,44 @@ class SelfDeveloper:
 
         task = normalize_evolution_task(task)
         self._active_task_id = str(task["id"])
+        try:
+            review = self._review_task_repository(task, developer_model=developer_model, force=force)
+        except CyclePaused as exc:
+            return EvolutionResult("paused", None, None, f"Repository verification paused: {exc}")
+        if review["status"] != "source_anchored":
+            return EvolutionResult(
+                "needs_research", None, None,
+                "The objective needs more current repository evidence before candidate preparation. "
+                "The idea and verification results are preserved; existing features remain eligible for improvement. "
+                + "; ".join(item["detail"] for item in review["issues"][:5]),
+            )
+        task["repository_review"] = review
         self.opportunities.update(self._active_task_id, "active")
         self.memory.record_experiment(task)
         slug = "".join(char if char.isalnum() else "-" for char in task["id"].lower()).strip("-")[:40]
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        branch = f"localpilot/candidate-{slug}-{stamp}"
+        branch = f"localpilot/candidate-{slug}-{stamp}-{uuid.uuid4().hex[:8]}"
         self._emit(f"Creating candidate for: {task['title']}")
-        workspace, is_worktree = self._candidate_workspace(branch)
+        preparation_id = self.memory.start_candidate_preparation(
+            str(task["id"]), branch, self._candidate_destination(branch),
+        )
+        try:
+            workspace, is_worktree = self._candidate_workspace(branch)
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            self.memory.finish_candidate_preparation(preparation_id, error=detail)
+            self.audit.write(
+                "candidate_preparation_failed", task_id=task["id"], branch=branch,
+                workspace=str(self._candidate_destination(branch)),
+                preparation_id=preparation_id, error=detail[:16000],
+                prior_attempts_preserved=True,
+            )
+            return EvolutionResult(
+                "preparation_failed", branch, self._candidate_destination(branch),
+                "Candidate preparation failed before the experiment started. "
+                "Evidence was preserved; automatic preparation retries are limited to three. " + detail,
+            )
+        self.memory.finish_candidate_preparation(preparation_id)
         cycle_id = self.memory.start_cycle(
             task_id=str(task["id"]),
             branch=branch,

@@ -19,6 +19,22 @@ _LOW_SIGNAL_WORDS = {
     "is", "it", "of", "on", "or", "that", "the", "this", "to", "with",
     "add", "build", "create", "implement", "improve", "localpilot", "system",
 }
+_OBJECTIVE_NOISE = {
+    "can", "could", "will", "would", "should", "new", "current", "latest",
+    "revision", "timestamp", "commit", "version", "candidate", "experiment",
+    "reduce", "reduced", "reducing", "lower", "lowering", "cut", "decrease",
+    "improved", "improving", "increase", "increased", "increasing",
+}
+_OBJECTIVE_ALIASES = {
+    "missed": "miss", "missing": "miss", "omitted": "miss", "omission": "miss",
+    "tuning": "tune", "tuned": "tune", "adjust": "tune", "adjusted": "tune",
+    "adjusting": "tune", "optimize": "tune", "optimizing": "tune",
+    "reranker": "rerank", "reranking": "rerank", "weighting": "weight",
+    "cached": "cache", "caching": "cache",
+    "stable": "fixed", "applicable": "relevant", "stored": "durable",
+    "persistent": "durable", "identify": "detect", "identifying": "detect",
+    "detecting": "detect",
+}
 
 
 def _utc_now() -> str:
@@ -43,24 +59,115 @@ def _jaccard(left: frozenset[str], right: frozenset[str]) -> float:
     return len(left & right) / len(left | right)
 
 
-def opportunity_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
-    """Compare capability intent while ignoring generic implementation wording."""
+def _objective_terms(value: Any) -> frozenset[str]:
+    text = _bounded_text(value).lower()
+    metadata_value = r"(?:[a-f0-9]{7,}|\d{4}-\d{2}-\d{2}[^\s,;]*|v?\d+(?:\.\d+)*)"
+    text = re.sub(
+        rf"\b(?:commit|revision|sha|version|timestamp)\s*[:=]?\s*{metadata_value}(?=$|[\s,;])",
+        " ",
+        text,
+    )
+    text = re.sub(r"\b\d{4}-\d{2}-\d{2}(?:t\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:z|[+-]\d{2}:\d{2})?)?\b", " ", text)
+    words = set()
+    for word in _WORD.findall(text):
+        if (
+            len(word) <= 2
+            or word in _LOW_SIGNAL_WORDS | _OBJECTIVE_NOISE
+            or word.isdigit()
+            or re.fullmatch(r"[a-f0-9]{7,}", word)
+        ):
+            continue
+        if word.endswith("ies"):
+            word = word[:-3] + "y"
+        elif word.endswith("s") and not word.endswith("ss"):
+            word = word[:-1]
+        word = _OBJECTIVE_ALIASES.get(word, word)
+        if word not in _LOW_SIGNAL_WORDS | _OBJECTIVE_NOISE:
+            words.add(word)
+    return frozenset(words)
 
-    left_target = _terms(left.get("capability_target"))
-    right_target = _terms(right.get("capability_target"))
-    left_intent = _terms(
-        " ".join(
-            _bounded_text(left.get(key))
-            for key in ("question", "observed_limitation", "hypothesis")
+
+def _materially_different(left: frozenset[str], right: frozenset[str]) -> bool:
+    # One concrete failure or algorithm can define a different experiment.
+    # Require a replacement after normalizing paraphrases and removing context;
+    # merely appending wording or metadata does not establish a new objective.
+    return bool(left - right) and bool(right - left)
+
+
+def _objective_agreement(left: frozenset[str], right: frozenset[str]) -> float:
+    # Shorter paraphrases can retain the complete objective without repeating
+    # all the original explanatory context.
+    if not left or not right:
+        return 0.0
+    return len(left & right) / min(len(left), len(right))
+
+
+def opportunity_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
+    """Compare objectives, permitting measured improvements to the same feature.
+
+    Capability vocabulary is context, not proof of a duplicate. A distinct
+    limitation or mechanism can reuse the same evaluation contract; titles,
+    metric labels, and revision metadata do not establish a distinct objective.
+    Incomplete legacy proposals remain conservative until their objective can
+    be compared. Current source grounding is checked separately by discovery.
+    """
+
+    objective_keys = ("question", "observed_limitation", "hypothesis")
+    measurement_keys = ("metric", "baseline", "success_criterion", "measurement_method")
+    left_target = _objective_terms(left.get("capability_target"))
+    right_target = _objective_terms(right.get("capability_target"))
+    target_score = _jaccard(left_target, right_target)
+    left_objective = {key: _objective_terms(left.get(key)) for key in objective_keys}
+    right_objective = {key: _objective_terms(right.get(key)) for key in objective_keys}
+    left_evaluation = left.get("evaluation") if isinstance(left.get("evaluation"), dict) else {}
+    right_evaluation = right.get("evaluation") if isinstance(right.get("evaluation"), dict) else {}
+    complete = all(left_objective.values()) and all(right_objective.values()) and all(
+        _bounded_text(evaluation.get(key))
+        for evaluation in (left_evaluation, right_evaluation)
+        for key in measurement_keys
+    )
+    intent_score = _jaccard(
+        frozenset().union(*left_objective.values()),
+        frozenset().union(*right_objective.values()),
+    )
+    legacy_score = 0.45 * target_score + 0.55 * intent_score
+    if not complete:
+        # Missing fields cannot serve as evidence of a distinct mechanism. Keep
+        # a weighted fallback over the available objective agreements; the
+        # target alone contributes 0.45 and cannot establish a duplicate.
+        comparable_agreements = [
+            _objective_agreement(left_objective[key], right_objective[key])
+            for key in objective_keys
+            if left_objective[key] and right_objective[key]
+        ]
+        available_score = max(comparable_agreements, default=0.0)
+        return round(max(legacy_score, 0.45 * target_score + 0.55 * available_score), 6)
+
+    objective_score = sum(
+        _objective_agreement(left_objective[key], right_objective[key])
+        for key in objective_keys
+    ) / len(objective_keys)
+
+    shared_context = left_target | right_target
+    left_limitation = left_objective["observed_limitation"] - shared_context
+    right_limitation = right_objective["observed_limitation"] - shared_context
+    # Remove the shared problem/outcome from the hypothesis so a new mechanism
+    # is not swamped by repeated wording for the same desired improvement.
+    hypothesis_context = shared_context | left_limitation | right_limitation
+    left_hypothesis = left_objective["hypothesis"] - hypothesis_context
+    right_hypothesis = right_objective["hypothesis"] - hypothesis_context
+    distinct_objective = any(
+        _materially_different(first, second)
+        for first, second in (
+            (left_limitation, right_limitation),
+            (left_hypothesis, right_hypothesis),
         )
     )
-    right_intent = _terms(
-        " ".join(
-            _bounded_text(right.get(key))
-            for key in ("question", "observed_limitation", "hypothesis")
-        )
-    )
-    return round(0.45 * _jaccard(left_target, right_target) + 0.55 * _jaccard(left_intent, right_intent), 6)
+    if distinct_objective:
+        # Shared descriptive context cannot outweigh a different objective,
+        # even when that difference is one algorithm or one concrete failure.
+        return round(0.25 * target_score, 6)
+    return round(max(legacy_score, objective_score), 6)
 
 
 class EvolutionBudgetExceeded(RuntimeError):
@@ -439,6 +546,13 @@ class OpportunityLedger:
         selected = max(eligible, key=lambda item: (int(item.get("score") or 0), item.get("created_at", "")))
         task = selected.get("task")
         return dict(task) if isinstance(task, dict) else None
+
+    def status_for_task(self, task_id: str) -> str | None:
+        for entry in reversed(self._read()):
+            task = entry.get("task")
+            if isinstance(task, dict) and str(task.get("id")) == str(task_id):
+                return str(entry.get("status") or "")
+        return None
 
     def update(self, task_id: str, status: str, outcome: str = "") -> None:
         entries = self._read()

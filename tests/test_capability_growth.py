@@ -220,6 +220,7 @@ def test_idle_without_blocking_candidate_discovers_its_own_growth_question(
         lambda **_kwargs: discovered,
     )
     monkeypatch.setattr(developer, "_candidate_workspace", lambda _branch: (workspace, True))
+    monkeypatch.setattr(developer, "_review_task_repository", lambda *args, **kwargs: {"status": "source_anchored"})
 
     def continue_candidate(**kwargs):
         captured.update(kwargs)

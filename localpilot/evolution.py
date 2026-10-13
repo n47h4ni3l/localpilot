@@ -417,16 +417,30 @@ def select_capability_proposal(proposals: Iterable[CapabilityProposal]) -> Capab
 
 
 def capability_task_id(proposal: CapabilityProposal) -> str:
+    """Identify the objective, including new limitations of an existing feature."""
+    return _capability_identity(proposal, full_objective=True)
+
+
+def legacy_capability_task_id(proposal: CapabilityProposal) -> str:
+    """Locate pre-v2 history without treating its coarse identity as a veto."""
+    return _capability_identity(proposal, full_objective=False)
+
+
+def _capability_identity(proposal: CapabilityProposal, *, full_objective: bool) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", proposal.capability_target.lower()).strip("-")[:28]
+    objective = {
+        "class": proposal.evolution_class.value,
+        "target": proposal.capability_target,
+        "hypothesis": proposal.hypothesis,
+    }
+    if full_objective:
+        objective.update({
+            "identity_version": 2, "observed_limitation": proposal.observed_limitation,
+            "evaluation": {"metric": proposal.metric, "success_criterion": proposal.success_criterion,
+                           "measurement_method": proposal.measurement_method},
+        })
     digest = hashlib.sha256(
-        json.dumps(
-            {
-                "class": proposal.evolution_class.value,
-                "target": proposal.capability_target,
-                "hypothesis": proposal.hypothesis,
-            },
-            sort_keys=True,
-        ).encode("utf-8")
+        json.dumps(objective, sort_keys=True).encode("utf-8")
     ).hexdigest()[:10]
     return f"capability-{slug or 'growth'}-{digest}"
 

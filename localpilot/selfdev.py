@@ -1251,6 +1251,21 @@ class SelfDeveloper:
             if review and isinstance(review.get("verified_change_plan"), dict):
                 task["repository_review"] = {**review, "reviewed_revision": diagnostic["revision"]}
                 break
+        # A previously accepted owner comment augments this SAME original
+        # experiment only while its isolated revision cycle is active.
+        from localpilot.pr_revision_feedback import OwnerRevisionLedger
+        active = OwnerRevisionLedger(
+            self.data_dir / "owner-pr-revisions.json"
+        ).active_for_task(str(task_id))
+        if active is not None:
+            task["acceptance"] = [
+                *list(task.get("acceptance") or []),
+                (
+                    f"Owner PR review #{active['pr_number']} comment "
+                    f"#{active['comment_id']}: {active['feedback']}"
+                ),
+            ]
+            task["owner_revision_feedback"] = str(active["feedback"])
         return task
 
     def _load_next_task(self) -> dict[str, Any] | None:
@@ -2831,19 +2846,27 @@ class SelfDeveloper:
                     self._emit("Candidate branch pushed" if pushed else "Candidate push failed")
                     if pushed:
                         status = "candidate_pending_validation"
-                        pull_request = self.github.create_candidate_pull_request(
-                            workspace,
-                            branch=branch,
-                            title=f"{EvolutionClass(task['evolution_class']).label}: {task['title']}",
-                            body=self._candidate_pr_body(task, evaluation_report, check_result),
-                        )
-                        delivery = (
-                            "Candidate pushed and presented for human review; it remains pending until CI passes "
-                            "and a human merges it."
-                            if pull_request.ok
-                            else "Candidate pushed; automatic PR presentation was unavailable, so the branch remains "
-                            f"awaiting human review: {pull_request.stderr or pull_request.stdout}"
-                        )
+                        if task.get("owner_revision_feedback"):
+                            # Revising an open PR updates its existing head branch.
+                            # Creating another PR here would be a duplicate.
+                            delivery = (
+                                "Owner-requested changes pushed to the existing candidate PR; "
+                                "new GitHub CI is required before human review."
+                            )
+                        else:
+                            pull_request = self.github.create_candidate_pull_request(
+                                workspace,
+                                branch=branch,
+                                title=f"{EvolutionClass(task['evolution_class']).label}: {task['title']}",
+                                body=self._candidate_pr_body(task, evaluation_report, check_result),
+                            )
+                            delivery = (
+                                "Candidate pushed and presented for human review; it remains pending until CI passes "
+                                "and a human merges it."
+                                if pull_request.ok
+                                else "Candidate pushed; automatic PR presentation was unavailable, so the branch remains "
+                                f"awaiting human review: {pull_request.stderr or pull_request.stdout}"
+                            )
                     else:
                         status = "candidate_needs_work"
                         delivery = f"Candidate push failed: {push.stderr or push.stdout}"
@@ -3975,6 +3998,161 @@ class SelfDeveloper:
         self._emit(f"Evolution result: {result.status}")
         return result
 
+    def _revise_owner_reviewed_candidate(self, *, force: bool) -> EvolutionResult | None:
+        """Consume a single authenticated owner comment on a green, unmerged PR.
+
+        Only previously-pushed, locally-tracked candidates are eligible.
+        A green CI job never by itself certifies acceptance of the owner's
+        requested changes. The original candidate branch is reused.
+        """
+        from localpilot.pr_revision_feedback import OwnerRevisionLedger
+
+        ledger = OwnerRevisionLedger(self.data_dir / "owner-pr-revisions.json")
+        # Newest managed pushed candidate first; leave other work untouched.
+        for pending in reversed(self.memory.pending_candidates()):
+            lifecycle = self.github.candidate_lifecycle(pending.branch)
+            if (
+                lifecycle.merged or lifecycle.pull_request_state != "open"
+                or lifecycle.validation_state != "passed"
+            ):
+                continue
+            durable = self.memory.candidate_for_cycle(pending.cycle_id)
+            if (
+                durable is None or not durable.pushed or durable.merged
+                or durable.validation_state == "rejected_by_human"
+            ):
+                continue
+            if ledger.active(pending.branch) is not None:
+                continue
+            try:
+                requests = self.github.owner_revision_requests(pending.branch)
+            except (RuntimeError, ValueError) as exc:
+                self.audit.write(
+                    "owner_pr_review_check_failed",
+                    branch=pending.branch, error=f"{type(exc).__name__}: {exc}"[:1000],
+                )
+                return EvolutionResult(
+                    "deferred", pending.branch, None,
+                    "Could not safely verify owner PR review comments; no edits made.",
+                )
+            seen = ledger.seen(pending.branch)
+            request = next((item for item in requests if item.comment_id not in seen), None)
+            if request is None:
+                continue
+            task = self._load_task_by_id(pending.task_id)
+            if task is None:
+                return EvolutionResult(
+                    "deferred", pending.branch, None,
+                    "Owner PR feedback found but its original objective is unavailable.",
+                )
+
+            # Verify this is the exact current remote PR head: never overwrite
+            # another developer's intervening commit or local uncommitted work.
+            workspace = self.github.worktree_for_branch(pending.branch)
+            if workspace is None:
+                workspace = self.data_dir / "owner-revisions" / pending.branch.split("/")[-1]
+                restored = self.github.checkout_existing_branch_worktree(
+                    pending.branch, workspace
+                )
+                if not restored.ok:
+                    return EvolutionResult(
+                        "deferred", pending.branch, workspace,
+                        "Cannot safely restore the original candidate branch for owner review.",
+                    )
+            clean = self.github._run(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                cwd=workspace,
+            )
+            current = self.github._run(
+                ["git", "rev-parse", "--verify", "HEAD^{commit}"],
+                cwd=workspace,
+            )
+            remote = self.github._run(
+                ["git", "ls-remote", "--heads", self.config.github.remote, pending.branch],
+                cwd=workspace, timeout=60,
+            )
+            remote_head = remote.stdout.split()[0] if remote.ok and remote.stdout else ""
+            if (
+                not clean.ok or clean.stdout or not current.ok
+                or not remote_head or remote_head != current.stdout
+            ):
+                return EvolutionResult(
+                    "deferred", pending.branch, workspace,
+                    "Candidate is dirty or its local head differs from the remote PR; "
+                    "owner feedback is retained for later safe review.",
+                )
+            try:
+                protected = self.github.reviewer_modified_test_paths(workspace)
+            except RuntimeError:
+                return EvolutionResult(
+                    "deferred", pending.branch, workspace,
+                    "Reviewer-owned test protection could not be verified.",
+                )
+            selection = self._select_developer_model()
+            if selection.model is None:
+                return EvolutionResult(
+                    "deferred", pending.branch, workspace, selection.reason,
+                )
+            # Start a new durable cycle on the SAME branch, retaining the
+            # original cycle and all its test/review evidence as history.
+            cycle_id = self.memory.start_cycle(
+                task_id=pending.task_id,
+                branch=pending.branch,
+                everyday_model=self.config.model.name,
+                developer_model=selection.model,
+                workspace=workspace,
+                is_worktree=True,
+            )
+            if not ledger.begin(request, cycle_id, pending.task_id):
+                return EvolutionResult(
+                    "deferred", pending.branch, workspace,
+                    "Owner review comment already processed or an active revision exists.",
+                )
+            task = self._load_task_by_id(pending.task_id)
+            if task is None:
+                ledger.finish(request.comment_id, "needs_work")
+                return EvolutionResult(
+                    "failed", pending.branch, workspace,
+                    "Owner feedback task became unavailable before revision.",
+                )
+            self.memory.attach_experiment_cycle(pending.task_id, cycle_id, pending.branch)
+            self._active_task_id = pending.task_id
+            self.audit.write(
+                "owner_pr_revision_started",
+                branch=pending.branch, cycle_id=cycle_id,
+                pr_number=request.pr_number, comment_id=request.comment_id,
+                feedback_chars=len(request.feedback),
+            )
+            try:
+                tools = self._candidate_tools(
+                    workspace, branch=pending.branch,
+                    task_id=pending.task_id, cycle_id=cycle_id, force=force,
+                    protected_paths=protected,
+                )
+                self._emit(
+                    f"Revising PR #{request.pr_number} from owner comment #{request.comment_id}"
+                )
+                result = self._continue_candidate(
+                    force=force, cycle_id=cycle_id, task=task,
+                    branch=pending.branch, workspace=workspace, is_worktree=True,
+                    developer_model=selection.model, tools=tools,
+                )
+            except Exception:
+                # Keep the active receipt for safe checkpoint/local recovery.
+                raise
+            if result.status == "candidate_pending_validation":
+                ledger.finish(request.comment_id, "completed")
+            elif result.status in {"failed", "candidate_ready"}:
+                ledger.finish(request.comment_id, "needs_work")
+            self.audit.write(
+                "owner_pr_revision_result",
+                branch=pending.branch, cycle_id=cycle_id,
+                pr_number=request.pr_number, comment_id=request.comment_id,
+                status=result.status,
+            )
+            return result
+        return None
+
     def _run_once(self, *, force: bool = False) -> EvolutionResult:
         if not self.config.selfdev.enabled:
             return EvolutionResult("disabled", None, None, "Self-development is disabled in config.")
@@ -4029,6 +4207,10 @@ class SelfDeveloper:
         repair = self._repair_failed_candidate(force=force)
         if repair is not None:
             return repair
+
+        revision = self._revise_owner_reviewed_candidate(force=force)
+        if revision is not None:
+            return revision
 
         self._emit("Selecting an objective and developer model")
         task = self._load_next_task()

@@ -3975,6 +3975,27 @@ class SelfDeveloper:
                 self._persist_active_checkpoint()
             else:
                 self._clear_checkpoint(f"terminal evolve status: {result.status}")
+        # A revision may finish on a later invocation via normal checkpoint
+        # or local static-repair recovery. Acknowledge the owner command only
+        # after the recorded revision cycle has pushed the same branch.
+        if result.branch and result.status == "candidate_pending_validation":
+            from localpilot.pr_revision_feedback import OwnerRevisionLedger
+            receipts = OwnerRevisionLedger(
+                self.data_dir / "owner-pr-revisions.json"
+            )
+            active_revision = receipts.active(result.branch)
+            if active_revision:
+                managed = self.memory.candidate_for_cycle(
+                    int(active_revision["cycle_id"])
+                )
+                if (
+                    managed is not None and managed.pushed
+                    and managed.branch == result.branch
+                    and managed.status == "candidate_pending_validation"
+                ):
+                    receipts.finish(
+                        int(active_revision["comment_id"]), "completed"
+                    )
         latest_experiment = self.memory.latest_experiment()
         if self._active_task_id:
             self.opportunities.update(

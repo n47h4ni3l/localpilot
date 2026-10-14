@@ -340,6 +340,72 @@ class GitHubIntegration:
             timeout=120,
         )
 
+    def owner_revision_requests(self, branch: str):
+        """Read review commands on the open, same-repository managed candidate PR.
+
+        This is a read-only GitHub operation. The marker alone is not authority:
+        the issue-comment author must match the verified repository owner.
+        """
+        from localpilot.pr_revision_feedback import parse_owner_revision
+
+        if not is_managed_candidate_branch(branch) or not self.gh_available():
+            return []
+        repo = self._run(["gh", "repo", "view", "--json", "nameWithOwner"], timeout=45)
+        if not repo.ok:
+            raise RuntimeError("Could not verify GitHub repository owner: " + repo.stderr[:400])
+        try:
+            full_name = json.loads(repo.stdout)["nameWithOwner"]
+            owner, name = full_name.split("/")
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            raise RuntimeError("GitHub repository identity was not usable.") from exc
+        if not owner or not name or not re.fullmatch(r"[A-Za-z0-9_.-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+            raise RuntimeError("GitHub repository identity was not safe.")
+
+        result = self._run(
+            ["gh", "pr", "list", "--head", branch, "--state", "open",
+             "--json", "number,headRefName,baseRefName,isCrossRepository"],
+            timeout=45,
+        )
+        if not result.ok:
+            raise RuntimeError("Could not verify candidate PR: " + result.stderr[:400])
+        try:
+            entries = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Invalid GitHub PR response.") from exc
+        if not isinstance(entries, list):
+            raise RuntimeError("Invalid GitHub PR collection.")
+        matches = [
+            item for item in entries if isinstance(item, dict)
+            and item.get("headRefName") == branch
+            and item.get("baseRefName") == self.config.main_branch
+            and item.get("isCrossRepository") is False
+            and type(item.get("number")) is int
+        ]
+        if len(matches) != 1:
+            return []
+        number = matches[0]["number"]
+        comments_result = self._run(
+            ["gh", "api", "--method", "GET",
+             f"repos/{owner}/{name}/issues/{number}/comments?per_page=100"],
+            timeout=60,
+        )
+        if not comments_result.ok:
+            raise RuntimeError("Could not fetch candidate PR comments: " + comments_result.stderr[:400])
+        try:
+            comments = json.loads(comments_result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Invalid GitHub PR comments.") from exc
+        # Fail closed rather than overlook more recent commands on a long thread.
+        if not isinstance(comments, list) or len(comments) >= 100:
+            raise RuntimeError("PR comments exceed the bounded review window.")
+        requests = [
+            command for item in comments
+            if (command := parse_owner_revision(
+                item, owner_login=owner, pr_number=number, branch=branch
+            )) is not None
+        ]
+        return sorted(requests, key=lambda command: command.comment_id)
+
     def resolve_candidate_pull_request(self, pull_request_number: int) -> CandidatePullRequest:
         """Resolve an explicit PR number without changing GitHub state."""
         if isinstance(pull_request_number, bool) or int(pull_request_number) <= 0:

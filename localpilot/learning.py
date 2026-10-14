@@ -1530,6 +1530,93 @@ class LearningMemory:
             ).fetchone()
         return json.loads(row["review_json"]) if row is not None else None
 
+    def repository_review_feedback(self, task_id: str | None = None, limit: int = 6) -> list[dict]:
+        """Recent review diagnostics, never validated lessons or completion proof.
+
+        Bound the stored JSON read, lookback, individual hints and total prompt
+        contribution. Task filtering intentionally retains previous objectives
+        and revisions so a retry can learn from earlier verification failures.
+        """
+        limit = max(0, min(int(limit), 6))
+        if not limit:
+            return []
+        where = "WHERE task_id = ?" if task_id is not None else ""
+        params = ([str(task_id)] if task_id is not None else []) + [max(24, limit * 12)]
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT task_id, objective_fingerprint, revision, created_at,
+                           substr(review_json, 1, 32768) AS review_json
+                    FROM evolution_repository_reviews {where}
+                    ORDER BY id DESC LIMIT ?""", params,
+            ).fetchall()
+
+        def compact(value: Any, maximum: int) -> str:
+            return " ".join(value.split())[:maximum] if isinstance(value, str) else ""
+
+        feedback: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+        for row in rows:
+            identity = (row["task_id"], row["objective_fingerprint"], row["revision"])
+            if identity in seen:
+                continue
+            seen.add(identity)
+            try:
+                review = json.loads(row["review_json"])
+                if not isinstance(review, dict):
+                    raise ValueError("Review is not an object")
+            except (ValueError, TypeError, RecursionError):
+                review = {"status": "unreadable_record", "issues": [{
+                    "code": "invalid_stored_review",
+                    "detail": "Saved review is malformed or exceeds the diagnostic read limit.",
+                }]}
+            stored_issues = review.get("issues")
+            issues = [
+                {"code": compact(issue.get("code"), 60), "detail": compact(issue.get("detail"), 160)}
+                for issue in (stored_issues[:3] if isinstance(stored_issues, list) else [])
+                if isinstance(issue, dict)
+            ]
+            stored_evidence = review.get("evidence")
+            hints = [item for item in (
+                stored_evidence[:60] if isinstance(stored_evidence, list) else []
+            ) if isinstance(item, str) and len(item) <= 160 and item.startswith((
+                "path:", "symbol:", "config:", "test:", "integration:", "call:",
+            ))][:2]
+            stored_sources = review.get("source_evidence")
+            if isinstance(stored_sources, list):
+                hints.extend(
+                    "path:" + item["path"]
+                    for item in stored_sources[:2]
+                    if isinstance(item, dict) and isinstance(item.get("path"), str) and len(item["path"]) <= 120
+                )
+            stored_hashes = review.get("source_hashes")
+            hashes = {}
+            if isinstance(stored_hashes, dict):
+                for path, digest in list(stored_hashes.items())[:8]:
+                    if (isinstance(path, str) and len(path) <= 120 and isinstance(digest, str)
+                            and re.fullmatch(r"[a-fA-F0-9]{64}", digest)):
+                        hashes[path] = digest.lower()
+                        if len(hashes) == 2:
+                            break
+            summary = {
+                "task_id": compact(row["task_id"], 200),
+                "objective_fingerprint": compact(row["objective_fingerprint"], 64),
+                "revision": compact(row["revision"], 100),
+                "status": compact(review.get("status"), 40) or "unknown",
+                "created_at": compact(row["created_at"], 40),
+                "evidence_state": "unverified_review_diagnostic",
+                "issues": issues,
+                "remaining_gap": compact(review.get("remaining_gap"), 240),
+                "proposed_change": compact(review.get("proposed_change"), 240),
+                "source_hints": list(dict.fromkeys(hints))[:2],
+                "source_hashes": hashes,
+            }
+            if len(json.dumps([*feedback, summary], ensure_ascii=False)) > 6000:
+                break
+            feedback.append(summary)
+            if len(feedback) == limit:
+                break
+        return feedback
+
     def objective_history(self, target: str, limit: int = 64) -> list[dict]:
         """Bounded full-objective lookback, including terminal history outside the queue."""
         limit = max(1, min(int(limit), 64))
@@ -1811,6 +1898,7 @@ class LearningMemory:
             ).fetchall()
         teachings = self.human_lessons(limit=limit)
         return {
+            "repository_review_feedback": self.repository_review_feedback(limit=min(limit, 6)),
             "capabilities": [dict(row) for row in capabilities],
             "frontiers": [dict(row) for row in frontiers],
             "experiments": [dict(row) for row in experiments],

@@ -168,6 +168,8 @@ def test_real_candidate_pipeline_blocks_writes_when_grounding_fails(
     tmp_path: Path, monkeypatch
 ):
     developer, workspace, task, cycle_id, tools = _developer(tmp_path)
+    task["repository_review"] = {"status": "source_anchored", "verified_change_plan": _plan(),
+                                 "performance_verified": False, "objective_completed": False}
     stages = []
     milestones = []
     monkeypatch.setattr(developer, "_activate_checkpoint", lambda **kwargs: None)
@@ -189,6 +191,9 @@ def test_real_candidate_pipeline_blocks_writes_when_grounding_fails(
                 }
             )
         if stage == "grounding":
+            assert "verified_change_plan" in kwargs["messages"][0]["content"]
+            assert "localpilot.sample:Runner.execute" in kwargs["messages"][0]["content"]
+            assert "does not bypass this gate" in kwargs["messages"][0]["content"]
             return json.dumps(
                 {
                     "change_plan": _plan(
@@ -223,6 +228,8 @@ def test_real_candidate_pipeline_writes_only_after_grounding_passes(
     tmp_path: Path, monkeypatch
 ):
     developer, workspace, task, cycle_id, tools = _developer(tmp_path)
+    task["repository_review"] = {"status": "source_anchored", "verified_change_plan": _plan(),
+                                 "performance_verified": False, "objective_completed": False}
     stages = []
     milestones = []
     monkeypatch.setattr(developer, "_activate_checkpoint", lambda **kwargs: None)
@@ -244,6 +251,8 @@ def test_real_candidate_pipeline_writes_only_after_grounding_passes(
                 }
             )
         if stage == "grounding":
+            assert "verified_change_plan" in messages[0]["content"]
+            assert "localpilot.sample:Runner.execute" in messages[0]["content"]
             return json.dumps({"change_plan": _plan()})
         assert stage == "implementation"
         assert "Verified repository change plan" in messages[0]["content"]

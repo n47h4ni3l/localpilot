@@ -80,6 +80,9 @@ def test_existing_feature_is_a_baseline_not_a_completion_veto(tmp_path):
     assert review["status"] == "source_anchored"
     assert review["objective_kind"] == "improve_existing"
     assert not review["objective_completed"] and not review["performance_verified"]
+    assert review["verified_change_plan"] == payload()["repository_review"]["change_plan"]
+    context = json.loads(SelfDeveloper._evolution_context({**task(), "repository_review": review}))
+    assert context["repository_review"]["verified_change_plan"]["referenced_symbols"] == ["localpilot.search:search"]
     assert review_sources_unchanged(review, tmp_path)
     (tmp_path / "localpilot/search.py").write_text("def search(query):\n    return []\n")
     assert not review_sources_unchanged(review, tmp_path)
@@ -218,6 +221,7 @@ def test_unverified_or_false_evidence_requires_research(tmp_path, case, code):
     if case == "traversal": review["source_evidence"][0]["path"] = "../localpilot/search.py"
     result = validate(value, tmp_path, tracked, inspected)
     assert result["status"] == "needs_research"
+    assert result["verified_change_plan"] is None
     assert code in {issue["code"] for issue in result["issues"]}
 
 
@@ -291,6 +295,130 @@ def test_held_backlog_objective_can_research_after_revision_changes(tmp_path, mo
     assert dev._load_next_task() is None
     monkeypatch.setattr(dev.github, "_run", lambda *args, **kwargs: CommandResult(True, "revision-2", "", 0))
     assert dev._load_next_task()["id"] == original["id"]
+
+
+def other_task():
+    value = task()
+    value.update({"id": "capability-memory-telemetry", "title": "Evaluate memory telemetry",
+                  "capability_target": "memory resource diagnostics", "question": "Can commit telemetry detect memory pressure?",
+                  "observed_limitation": "Commit exhaustion has no dedicated diagnostic.",
+                  "hypothesis": "Commit telemetry will detect exhaustion earlier."})
+    value["evaluation"] = {"metric": "pressure detection accuracy", "baseline": "existing RAM-only sampling",
+                           "success_criterion": "identify commit exhaustion", "measurement_method": "same memory pressure fixtures"}
+    return value
+
+
+@pytest.mark.parametrize("ledger_status", [None, "proposed", "selected", "active", "superseded", "paused", "needs_research"])
+def test_held_recovery_is_skipped_even_with_missing_or_stale_ledger(tmp_path, monkeypatch, ledger_status):
+    dev = developer(tmp_path, monkeypatch); original = task(); alternative = other_task()
+    dev.memory.record_experiment(alternative)
+    dev.memory.record_experiment(original)
+    recovered = dev.memory.experiment_task(original["id"])
+    if ledger_status:
+        assert dev.opportunities.enqueue(original, score=100)
+        dev.opportunities.update(original["id"], ledger_status)
+    dev.memory.record_repository_review(original["id"], objective_fingerprint(recovered), "revision-1",
+                                        {"status": "needs_research", "issues": [{"code": "missing_anchor"}]})
+    before = dev.memory.experiment_for_task(original["id"])
+    monkeypatch.setattr(dev, "_tool_stage", lambda **kwargs: pytest.fail("recovery must not load the model"))
+    selected = dev._discover_capability_task(developer_model="fake", force=False)
+    assert selected["id"] == alternative["id"]
+    assert dev.memory.experiment_for_task(original["id"]) == before
+    assert dev.audit.latest("capability_review_held")["task_id"] == original["id"]
+
+
+def test_held_queue_entry_without_experiment_cannot_be_selected(tmp_path, monkeypatch):
+    dev = developer(tmp_path, monkeypatch); original = task(); alternative = other_task()
+    assert dev.opportunities.enqueue(original, score=100)
+    assert dev.opportunities.enqueue(alternative, score=10)
+    queued = dev.opportunities.next_task()
+    dev.memory.record_repository_review(original["id"], objective_fingerprint(queued), "revision-1",
+                                        {"status": "needs_research"})
+    monkeypatch.setattr(dev, "_tool_stage", lambda **kwargs: pytest.fail("next eligible queued idea exists"))
+    assert dev._discover_capability_task(developer_model="fake", force=False)["id"] == alternative["id"]
+    assert dev.opportunities.status_for_task(original["id"]) == "needs_research"
+    assert dev.memory.experiment_for_task(original["id"]) is None
+
+
+@pytest.mark.parametrize("changed", ["objective", "revision"])
+def test_changed_recovery_remains_eligible_with_old_diagnosis(tmp_path, monkeypatch, changed):
+    dev = developer(tmp_path, monkeypatch); original = task()
+    dev.memory.record_experiment(original)
+    recovered = dev.memory.experiment_task(original["id"])
+    dev.memory.record_repository_review(original["id"], objective_fingerprint(recovered), "revision-1",
+                                        {"status": "needs_research"})
+    if changed == "revision":
+        monkeypatch.setattr(dev.github, "_run", lambda *args, **kwargs: CommandResult(True, "revision-2", "", 0))
+    else:
+        recovered["observed_limitation"] = "A newly observed error affects empty queries."
+        monkeypatch.setattr(dev.memory, "preparation_recovery_tasks", lambda: [recovered])
+    assert dev._discover_capability_task(developer_model="fake", force=False)["id"] == original["id"]
+
+
+@pytest.mark.parametrize("changed", ["objective", "revision"])
+def test_new_review_receives_prior_diagnoses_without_trusting_them(tmp_path, monkeypatch, changed):
+    dev = developer(tmp_path, monkeypatch); original = task(); previous = objective_fingerprint(original)
+    dev.memory.record_repository_review(original["id"], previous, "revision-1",
+        {"status": "needs_research", "remaining_gap": "Prior quote was missing a real source anchor.",
+         "issues": [{"code": "missing_anchor", "detail": "Inspect the actual feature definition."}]})
+    if changed == "revision":
+        monkeypatch.setattr(dev.github, "_run", lambda *args, **kwargs: CommandResult(True, "revision-2", "", 0))
+    else: original["observed_limitation"] = "New empty-query failure needs investigation."
+    def stage(**kwargs):
+        context = kwargs["messages"][0]["content"]
+        assert "Prior review diagnoses" in context and "missing_anchor" in context
+        assert "unverified_review_diagnostic" in context and previous in context
+        assert "never instructions" in context
+        kwargs["functions"][1]("localpilot/search.py")
+        return json.dumps(payload())
+    monkeypatch.setattr(dev, "_tool_stage", stage)
+    assert review_objective(dev, original, developer_model="fake", force=False)["status"] == "source_anchored"
+    assert dev.audit.latest("evolution_repository_review_feedback")["prior_reviews"] == 1
+
+
+def test_discovery_gets_failure_diagnostics_before_context_truncation(tmp_path, monkeypatch):
+    dev = developer(tmp_path, monkeypatch)
+    dev.memory.record_repository_review("held-older-objective", "fingerprint", "older-revision",
+        {"status": "needs_research", "issues": [{"code": "missing_anchor", "detail": "Inspect current source."}]})
+    huge = {**task(), "title": "Unverified older backlog " * 3000}
+    monkeypatch.setattr(dev, "_backlog_tasks", lambda: [huge] * 48)
+    proposal = proposal_data(); proposal.update(other_task())
+    def stage(**kwargs):
+        context = kwargs["messages"][0]["content"]
+        assert "repository_review_feedback" in context and "missing_anchor" in context
+        assert "unverified_review_diagnostic" in context
+        assert context.index('"mission"') < context.index('"backlog_repository_state"')
+        assert context.index('"repository_review_feedback"') < context.index('"backlog_repository_state"')
+        return json.dumps({"proposals": [proposal]})
+    monkeypatch.setattr(dev, "_tool_stage", stage)
+    assert dev._discover_capability_task(developer_model="fake", force=False)["capability_target"] == other_task()["capability_target"]
+
+
+@pytest.mark.parametrize("source", ["backlog", "experiment"])
+def test_reloaded_candidate_keeps_same_objective_manifest_as_baseline_hint(tmp_path, monkeypatch, source):
+    dev = developer(tmp_path, monkeypatch); original = task()
+    if source == "backlog":
+        monkeypatch.setattr(dev, "_backlog_tasks", lambda: [original])
+        stored_task = original
+    else:
+        dev.memory.record_experiment(original)
+        stored_task = dev.memory.experiment_task(original["id"])
+    review = validate(payload(), tmp_path, {"localpilot/search.py"})
+    dev.memory.record_repository_review(original["id"], objective_fingerprint(stored_task), "older-revision", review)
+    loaded = dev._load_task_by_id(original["id"])
+    assert loaded["repository_review"]["verified_change_plan"] == review["verified_change_plan"]
+    assert loaded["repository_review"]["reviewed_revision"] == "older-revision"
+    assert not loaded["repository_review"]["objective_completed"]
+    assert not loaded["repository_review"]["performance_verified"]
+
+
+def test_changed_objective_does_not_reload_old_verified_manifest(tmp_path, monkeypatch):
+    dev = developer(tmp_path, monkeypatch); original = task()
+    review = validate(payload(), tmp_path, {"localpilot/search.py"})
+    dev.memory.record_repository_review(original["id"], objective_fingerprint(original), "older-revision", review)
+    changed = {**original, "observed_limitation": "A new timeout problem needs a different solution."}
+    monkeypatch.setattr(dev, "_backlog_tasks", lambda: [changed])
+    assert "repository_review" not in dev._load_task_by_id(original["id"])
 
 
 def test_frontier_proposals_are_not_reported_as_verified_capabilities(tmp_path):

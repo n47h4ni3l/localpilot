@@ -89,15 +89,31 @@ class OwnerRevisionLedger:
         records = self._load()
         return next((dict(r) for r in reversed(records) if r["branch"] == branch and r["state"] == "active"), None)
 
-    def begin(self, request: OwnerRevision, cycle_id: int) -> bool:
+    def active_for_task(self, task_id: str) -> dict[str, Any] | None:
+        records = self._load()
+        return next(
+            (dict(r) for r in reversed(records)
+             if r.get("task_id") == task_id and r["state"] == "active"),
+            None,
+        )
+
+    def begin(self, request: OwnerRevision, cycle_id: int, task_id: str) -> bool:
         records = self._load()
         if any(r["comment_id"] == request.comment_id for r in records):
             return False
         if any(r["branch"] == request.branch and r["state"] == "active" for r in records):
             return False
+        if len(records) >= MAX_RECEIPTS:
+            completed = next(
+                (index for index, row in enumerate(records) if row["state"] != "active"),
+                None,
+            )
+            if completed is None:
+                raise RuntimeError("PR revision receipts are full; refusing to discard active work.")
+            records.pop(completed)
         records.append({
             "comment_id": request.comment_id, "pr_number": request.pr_number,
-            "branch": request.branch, "cycle_id": cycle_id,
+            "branch": request.branch, "cycle_id": cycle_id, "task_id": task_id,
             "feedback": request.feedback, "state": "active",
         })
         self._save(records)

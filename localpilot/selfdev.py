@@ -1743,15 +1743,20 @@ class SelfDeveloper:
     ) -> Any:
         request_think = kwargs.pop("_request_think", self.config.model.think)
         last_check = 0.0
+        last_progress = time.monotonic()
+        self._emit("Waiting for the developer model response")
 
         def stream_guard() -> None:
-            nonlocal last_check
+            nonlocal last_check, last_progress
             now = time.monotonic()
             if now - last_check >= 1.0:
                 # CPU load from Ollama is expected while it is generating.
                 # User input and emergency memory pressure remain stop signals.
                 self._check_resources(force, branch, during_inference=True)
                 last_check = now
+            if now - last_progress >= 30.0:
+                self._emit("Still waiting for the developer model response")
+                last_progress = now
 
         model_name = str(kwargs.get("model") or "")
         keep_alive = (
@@ -2726,6 +2731,10 @@ class SelfDeveloper:
 
             checks_passed: bool | None = None
             check_result = "static checks disabled"
+            self._emit(
+                f"Candidate: inspected {len(tools.files_read)} file(s), "
+                f"modified {len(tools.files_written)} file(s)"
+            )
             if self.config.selfdev.run_static_checks:
                 self._emit("Running final non-executing static checks")
                 check_result = tools.run_candidate_static_checks()
@@ -2735,6 +2744,7 @@ class SelfDeveloper:
                     next_action="Repair failures if present; otherwise commit and deliver the candidate.",
                 )
                 checks_passed = check_result.startswith("static_checks=passed")
+                self._emit("Static checks passed" if checks_passed else "Static checks failed")
                 if tools.files_written and not checks_passed:
                     self._checkpoint_milestone(
                         "local_static_repair",
@@ -2793,10 +2803,14 @@ class SelfDeveloper:
                     next_action="Commit the verified changed paths and push only if configured.",
                 )
                 relative_paths = [path.relative_to(workspace).as_posix() for path in tools.files_written]
+                self._emit("Committing the validated candidate")
                 commit = self.github.commit_paths(workspace, f"candidate: {task['title']}", relative_paths)
+                self._emit("Candidate commit saved" if commit.ok else "Candidate commit failed")
                 if commit.ok and self.config.github.auto_push_candidates:
+                    self._emit("Pushing the candidate branch")
                     push = self.github.push_branch(workspace, branch)
                     pushed = push.ok
+                    self._emit("Candidate branch pushed" if pushed else "Candidate push failed")
                     if pushed:
                         status = "candidate_pending_validation"
                         pull_request = self.github.create_candidate_pull_request(
@@ -3882,6 +3896,7 @@ class SelfDeveloper:
 
     def run_once(self, *, force: bool = False) -> EvolutionResult:
         invocation_id = uuid.uuid4().hex
+        self._emit("Starting self-development preflight")
         self._active_task_id = None
         self._budget = EvolutionRunBudget(
             invocation_id=invocation_id,
@@ -3899,6 +3914,7 @@ class SelfDeveloper:
         try:
             result = self._run_once(force=force)
         except Exception as exc:
+            self._emit(f"Evolution stopped: {type(exc).__name__}")
             if self._active_checkpoint is not None:
                 self._active_checkpoint["next_action"] = (
                     f"Revalidate the candidate and recover from {type(exc).__name__}."
@@ -3938,6 +3954,7 @@ class SelfDeveloper:
             budget=budget,
         )
         self._budget = None
+        self._emit(f"Evolution result: {result.status}")
         return result
 
     def _run_once(self, *, force: bool = False) -> EvolutionResult:
@@ -3953,6 +3970,7 @@ class SelfDeveloper:
                 f"PC is in use or busy: {len(foreground_turns)} active foreground chat turn(s)",
             )
 
+        self._emit("Checking trusted main")
         sync = self.github.sync_trusted_main()
         self.audit.write(
             "selfdev_main_sync",
@@ -3994,6 +4012,7 @@ class SelfDeveloper:
         if repair is not None:
             return repair
 
+        self._emit("Selecting an objective and developer model")
         task = self._load_next_task()
         if task is None and self.memory.has_outstanding_candidate():
             return EvolutionResult(
@@ -4030,6 +4049,7 @@ class SelfDeveloper:
         task = normalize_evolution_task(task)
         self._active_task_id = str(task["id"])
         try:
+            self._emit("Verifying the objective against current repository source")
             review = self._review_task_repository(task, developer_model=developer_model, force=force)
         except CyclePaused as exc:
             return EvolutionResult("paused", None, None, f"Repository verification paused: {exc}")

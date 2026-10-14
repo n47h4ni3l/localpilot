@@ -5,6 +5,10 @@
   const lastChecked = document.getElementById("update-last-checked");
   const currentVersion = document.getElementById("update-current-version");
   const settingsToggle = document.getElementById("settings-toggle");
+  const notice = document.getElementById("update-notice");
+  const noticeText = document.getElementById("update-notice-text");
+  const apply = document.getElementById("update-notice-apply");
+  const later = document.getElementById("update-notice-later");
 
   if (!toggle || !lastChecked || !currentVersion) return;
 
@@ -41,6 +45,14 @@
     lastChecked.textContent = formatChecked(status.lastChecked);
     currentVersion.textContent = status.currentVersion || "unknown";
     currentVersion.title = status.currentVersion || "unknown";
+    if (notice && noticeText && apply && later) {
+      notice.hidden = !status.noticeAvailable;
+      noticeText.textContent = status.applyRequested
+        ? "Update requested. Save any draft and close chat to let Nestra restart safely."
+        : "An update is available. Would you like to install it?";
+      apply.disabled = !!status.applyRequested;
+      later.hidden = !!status.applyRequested;
+    }
   }
 
   function checkDue(status) {
@@ -86,6 +98,20 @@
     }
   });
 
+  async function chooseUpdate(method) {
+    if (inFlight || !apiReady() || !cached || !cached.targetSha) return;
+    inFlight = true;
+    try {
+      const result = await window.pywebview.api[method](cached.targetSha);
+      render(await window.pywebview.api.get_update_settings());
+      if (!result.ok && noticeText) noticeText.textContent = result.reason || "Please check for the update again.";
+    } catch (error) {
+      if (noticeText) noticeText.textContent = "The update request couldn't be saved. Please try again.";
+    } finally { inFlight = false; }
+  }
+  if (apply) apply.addEventListener("click", function () { chooseUpdate("request_update"); });
+  if (later) later.addEventListener("click", function () { chooseUpdate("dismiss_update"); });
+
   if (settingsToggle) {
     settingsToggle.addEventListener("click", function () {
       setTimeout(function () { loadStatus({ checkIfDue: true }); }, 0);
@@ -97,6 +123,6 @@
   });
 
   setInterval(function () {
-    if (cached && cached.enabled) loadStatus({ checkIfDue: true });
+    if (cached) loadStatus({ checkIfDue: true });
   }, 60 * 1000);
 })();

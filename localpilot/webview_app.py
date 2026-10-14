@@ -27,6 +27,8 @@ from localpilot.desktop_state import DesktopUIState
 from localpilot.desktop_startup import set_startup, startup_shortcut_path, startup_status
 from localpilot.foreground import active_foreground_turns
 from localpilot.desktop_update_status import (
+    dismiss_update_notice,
+    request_manual_update,
     check_for_updates as check_desktop_updates,
     current_update_status,
     set_automatic_updates as set_desktop_automatic_updates,
@@ -373,6 +375,12 @@ class WindowBridge:
             main_branch=self._config.github.main_branch,
         ).as_dict()
 
+    def request_update(self, target_sha: str) -> dict[str, Any]:
+        return request_manual_update(self._state, target_sha)
+
+    def dismiss_update(self, target_sha: str) -> dict[str, Any]:
+        return dismiss_update_notice(self._state, target_sha)
+
     def open_config_file(self) -> dict[str, Any]:
         if not self._config_path:
             return {"ok": False, "reason": "no-config-path"}
@@ -519,6 +527,8 @@ def main(
         bridge.get_update_settings,
         bridge.set_automatic_updates,
         bridge.check_for_updates,
+        bridge.request_update,
+        bridge.dismiss_update,
         bridge.open_config_file,
     )
 

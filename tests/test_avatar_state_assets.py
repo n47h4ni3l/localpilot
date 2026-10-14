@@ -19,6 +19,7 @@ def test_avatar_state_manifest_uses_uploaded_per_state_sheets():
         "uncertain": "error.png",
         "sleeping": "sleeping.png",
         "offline": "offline.png",
+        "suggestion": "suggestion.png",
     }
 
     for asset_name, filename in expected.items():

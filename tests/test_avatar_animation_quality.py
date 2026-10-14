@@ -48,6 +48,7 @@ def test_each_primary_state_sheet_contains_multiple_real_drawings():
         "uncertain": 5,
         "sleeping": 4,
         "offline": 5,
+        "suggestion": 5,
     }
 
     for asset_name, minimum in minimums.items():

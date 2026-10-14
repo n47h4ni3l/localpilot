@@ -13,27 +13,40 @@ openai/gpt-oss-20b
   -> ...
 ```
 
-## P1.2 operational report and verification gap (14 October 2026)
+## Verified P1.1 to P1.2 continuation (14 October 2026)
 
-The owner reports that **P1.2 completed training as a continuation of
-P1.1 and was promoted on 13 October 2026**. The currently checked-in
-`package-1.json` records the earlier P1 lineage only. The separate
-`training/configs/qlora_p12_curated_1000.yaml` is a frozen preparation
-configuration whose status note refers to P1 as the proposed parent and
-to a 12 October dry-run; it is **not evidence of P1.2's actual input
-adapter or successful promotion**. The repository does not yet contain
-a verified P1.1 -> P1.2 immutable run/promotion manifest.
+The training machine's accepted manifests are now recorded byte-for-byte:
+[`package-2-production-20261013.json`](package-2-production-20261013.json)
+is the 51-step P1 continuation later named **P1.1**;
+[`package-3.json`](package-3.json) is **P1.2**, the subsequent 1,185-step,
+three-epoch continuation over the fresh 1,000-record corpus. Package numbers
+identify cumulative adapter generations, independently of the model's short
+version label. The completed recipe is
+[`qlora_p12_currentprod_20261013.yaml`](../configs/qlora_p12_currentprod_20261013.yaml).
+The old `qlora_p12_curated_1000.yaml` preparation recipe and the earlier
+wrong-parent experiment are preserved as historical records.
 
-Keep these distinctions explicit: the owner report establishes the stated
-operational status, while GitHub alone cannot verify the trained parent,
-actual checkpoint, deployed digest or rollback identity. Do not rewrite
-historic configurations or package-1 hashes to make them appear current.
-Obtain the actual training-PC receipts and create new content-addressed
-lineage records for the P1.1 parent and promoted P1.2, including exact
-adapter/config/completion hashes, checkpoint inventory, GGUF/Ollama model
-identity and digest, owner acceptance, evaluation status, and rollback.
-If artefacts are inaccessible, mark individual fields **unverified** rather
-than guessing. Promotion does not itself prove benchmark superiority.
+The content-addressed [verification receipt](receipts/p11-p12-7b89b458db509a1008406231fa41c7dba9cc3b9ce3a4601122e3a8a69daa872a.json)
+binds both accepted manifests, the actual preflight parent, source corpus
+and canonical rendered dataset identities, config, run identities, natural
+completion and final checkpoint markers, GGUFs and deployed aliases. Its
+filename contains the SHA256 of its exact bytes. On 14 October, both retained
+GGUFs and every parent/final adapter and required checkpoint file were
+rehashed against those receipts. A read-only Ollama inventory confirmed
+`nestra:p1.2` and the retained `nestra:p1.1` rollback. Separately observed
+desktop configuration selects P1.2 for all three selectors in Guide-only mode.
+
+The original P1.1 manifest records its old deployment name `nestra:20b-p1`;
+the promotion receipt explicitly maps that same digest to `nestra:p1.1`.
+Neither its historic name nor its hashes were rewritten. Artifact paths in
+the accepted records refer to retained local files; weights, raw evaluation
+material and private conversations are not published here.
+
+Owner acceptance and deployment were verified on 13 October at
+11:15:27 UTC. The exact timestamp of the owner's chat decision is not in the
+local deployment receipt and is explicitly unknown. `benchmark_promoted`
+remains false. The bounded Guide-only comparison and single execution
+fixture support the recorded owner decision, not broad benchmark superiority.
 
 The deployed GGUF/Ollama model is never used as a training source. New packages load the exact pinned GPT-OSS training snapshot and then load the previous accepted adapter with PEFT in trainable mode. A new package creates a fresh Trainer, optimizer and scheduler; only an in-package `--resume` restores optimizer/scheduler/RNG state.
 

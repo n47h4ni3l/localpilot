@@ -3,8 +3,8 @@
 Status: **historical P1.2 corpus preparation record**. The owner reported
 on 14 October 2026 that P1.2 was successfully trained **from P1.1** and
 promoted on the evening of **13 October 2026**. This operational report has
-not yet been reconciled with a verified, immutable training/promotion manifest
-in this repository. The frozen preparation config still names the earlier P1
+now been reconciled with [verified immutable lineage receipts](lineage/README.md)
+from the training machine. The frozen preparation config still names the earlier P1
 adapter as its proposed parent; **do not infer actual run lineage from it**.
 
 The owner's 12 October request replaced an earlier mostly repeated P1 corpus

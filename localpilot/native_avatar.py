@@ -33,6 +33,7 @@ _CHAT_START_GRACE_MS = _legacy._CHAT_START_GRACE_MS
 _STATE_COLORS = dict(_legacy._STATE_COLORS)
 _STATE_COLORS.setdefault("researching", "#5fa8ff")
 _STATE_COLORS.setdefault("learning", "#6fde8e")
+_STATE_COLORS.setdefault("suggestion", "#6fde8e")
 # Keep only a trace of the sheet's baked-in whole-character drift. Limb, eye and
 # prop changes remain untouched because this only recentres each frame.
 _BODY_MOTION_RETENTION = 0.075
@@ -41,6 +42,7 @@ _MAX_STABILIZATION_PX = 6.0
 _legacy._STATE_COLORS.update({
     "researching": _STATE_COLORS["researching"],
     "learning": _STATE_COLORS["learning"],
+    "suggestion": _STATE_COLORS["suggestion"],
 })
 
 _enable_per_monitor_dpi_awareness = _legacy._enable_per_monitor_dpi_awareness
@@ -124,7 +126,7 @@ def _launch_webview(
 
 _REQUIRED_ANIMATION_STATES = {
     "idle", "listening", "thinking", "researching", "working", "speaking",
-    "success", "uncertain", "error", "learning", "restarting", "sleeping", "offline",
+    "success", "uncertain", "error", "learning", "restarting", "sleeping", "offline", "suggestion",
 }
 
 
@@ -196,7 +198,7 @@ def _load_animation_manifest() -> dict[str, Any] | None:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
-    if payload.get("version") != 6 or int(payload.get("frame_size") or 0) != AVATAR_SIZE:
+    if payload.get("version") != 7 or int(payload.get("frame_size") or 0) != AVATAR_SIZE:
         return None
     try:
         transition_ms = int(payload.get("transition_ms") or 0)

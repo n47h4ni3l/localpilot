@@ -1,0 +1,145 @@
+{
+  "accepted_as_lineage_head": true,
+  "artifact_type": "nestra_lineage_head",
+  "base": {
+    "identity": "openai/gpt-oss-20b",
+    "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+    "training_model_id": "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
+    "training_revision": "093fba6992ef5a7152481afec0bdfca1ac486998"
+  },
+  "benchmark_promoted": false,
+  "deployment": {
+    "candidate_source_tag_at_evaluation": "nestra:20b-p12-currentprod-candidate-20261013",
+    "digest": "c356171d9a54f773c0064a56b5af028b209f61355ba68f67119d857c83bf7f46",
+    "gguf_sha256": "1f9c085c7333c6ea98709327f956e046da9e9241e75edae31bc81ff875bba4a1",
+    "guide_only": true,
+    "model": "nestra:p1.2",
+    "promotion_receipt_directory": "E:\\LLM_HOME\\backups\\nestra-p12-promotion-20261013T110536Z",
+    "temperature": 1.0,
+    "version_label": "P1.2"
+  },
+  "evaluation": {
+    "eval_v1": {
+      "critical": null,
+      "hard_failures": null,
+      "overall": null,
+      "performed_for_candidate": false,
+      "report": "E:\\LLM_HOME\\exports\\nestra-p12-currentprod-20261013\\evaluation\\focused-answer-review.json",
+      "scope": "Four-case subset; not the full Eval v1 suite. Aggregate fields left null rather than misrepresenting focused scores."
+    },
+    "evolution_execution_v1": {
+      "expected_task_count": 1,
+      "hard_failures": 0,
+      "overall": 4.0,
+      "report": "E:\\LLM_HOME\\exports\\nestra-p12-currentprod-20261013\\evaluation\\evolution-execution-candidate_scored.json",
+      "scope": "Single regression-first fixture; not the full execution benchmark",
+      "scope_violations": 0,
+      "task_count": 1
+    },
+    "guide_only_focused_comparison": {
+      "cached_production_baseline": true,
+      "external_independent_review": false,
+      "historical_strict_excluded": true,
+      "report": "E:\\LLM_HOME\\exports\\nestra-p12-currentprod-20261013\\evaluation\\focused-answer-review.json",
+      "results": {
+        "all": {
+          "candidate_hard_failures": 1,
+          "candidate_mean": 3.0833333333333335,
+          "count": 12,
+          "current_hard_failures": 3,
+          "current_mean": 2.6666666666666665,
+          "regressions": 2,
+          "ties": 5,
+          "wins": 5
+        },
+        "fresh": {
+          "candidate_hard_failures": 0,
+          "candidate_mean": 3.625,
+          "count": 8,
+          "current_hard_failures": 0,
+          "current_mean": 3.375,
+          "regressions": 1,
+          "ties": 4,
+          "wins": 3
+        },
+        "targeted_held_out": {
+          "candidate_hard_failures": 1,
+          "candidate_mean": 2.0,
+          "count": 4,
+          "current_hard_failures": 3,
+          "current_mean": 1.25,
+          "regressions": 1,
+          "ties": 1,
+          "wins": 2
+        }
+      },
+      "sha256": "2282cfd5520bd509e1613850a15817a17f1729fd06ec6c037c1ed6e112375243"
+    }
+  },
+  "original_baseline": {
+    "digest": "9ba9cc2b4e02463b933096090530aef679d534dd91ecc9afadfb2dbfdc59f3c5",
+    "model": "gpt-oss:20b"
+  },
+  "owner_acceptance": {
+    "decision": "accepted_as_working_lineage",
+    "note": "Owner explicitly selected production promotion after reviewing the mixed Guide-only comparison: five wins, five ties, two score decreases, serious answer failures reduced from three to one, no new serious failure, and working one-case self-development execution. All scores and limitations preserved. No full-benchmark improvement or independent grading is claimed. Future training requires its own owner authorization."
+  },
+  "package": 3,
+  "parent": {
+    "manifest": "training/lineage/package-2-production-20261013.json",
+    "package": 2,
+    "sha256": "de0d19758728ee1d5e79e989c3ce12ad549b7b0498fdb194e36824a0147a0fff"
+  },
+  "recorded_at": "2026-10-13T11:15:26.367654+00:00",
+  "rollback": {
+    "config_backup": "E:\\LLM_HOME\\backups\\nestra-p12-promotion-20261013T110536Z\\backup\\rollback-to-p1.1.toml",
+    "digest": "b94bd74323cbd9af7aa56468c0dbcc97eae3c01f974afcb1dacfce51d8609812",
+    "model": "nestra:p1.1"
+  },
+  "schema_version": 1,
+  "training": {
+    "adapter_files": {
+      "adapter_config.json": {
+        "bytes": 1589,
+        "sha256": "b2d668fd50043552a267970def1e78bb5f11719e21bf8fa553e323e6e323cf68"
+      },
+      "adapter_model.safetensors": {
+        "bytes": 370291488,
+        "sha256": "879cbdec49454a06ddd43d64ebdb2566aa62502a0d66c0cbcf86521b2c6c9539"
+      }
+    },
+    "checkpoint_files": {
+      "adapter_config.json": {
+        "bytes": 1589,
+        "sha256": "b2d668fd50043552a267970def1e78bb5f11719e21bf8fa553e323e6e323cf68"
+      },
+      "adapter_model.safetensors": {
+        "bytes": 370291488,
+        "sha256": "879cbdec49454a06ddd43d64ebdb2566aa62502a0d66c0cbcf86521b2c6c9539"
+      },
+      "optimizer.pt": {
+        "bytes": 191434647,
+        "sha256": "5ff7892ee273e4ebad62f8ec351ce7fc85a2dc276ce84462c8960e4ac7a9a619"
+      },
+      "rng_state.pth": {
+        "bytes": 14645,
+        "sha256": "181c5f0270cf39930062ddfa3767a2481d0c360f120b11f8e25dbf533a1cdaba"
+      },
+      "scheduler.pt": {
+        "bytes": 1465,
+        "sha256": "922a6f1ba5d36aa30a1eea3f8322ea2ecb8aefb1f35bd5c2278e27ce29fed206"
+      },
+      "trainer_state.json": {
+        "bytes": 204255,
+        "sha256": "aa2ba8c7f5d6aa0e5294e25735c06f6c921a1deddc1f807b9df7d330993a7656"
+      }
+    },
+    "checkpoint_marker_sha256": "86bfa614bd62d31de22155847ad7b25aefdb897490b7fe4d4f7e7ed86b22a18a",
+    "completion_marker_sha256": "0036225c18ac98fe1abdcbeeb1a72836e313b7e452c7da3a0872ebd4b188367b",
+    "config": "training/configs/qlora_p12_currentprod_20261013.yaml",
+    "global_step": 1185,
+    "output_directory": "training/outputs/p12_currentprod_20261013",
+    "run_identity_sha256": "40995399d9286ce04dd2bf60ce190e5255af3f40ab296028f548cb031c85635e",
+    "training_config_sha256": "5a32fb46e677abffc5ecb8802759a5947d878b7cb8d1aac2eded891d4360af67"
+  }
+}

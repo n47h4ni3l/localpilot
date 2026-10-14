@@ -472,7 +472,9 @@ def apply_handoff(root: str | Path, handoff_path: str | Path, parent_pid: int) -
     branch = str(handoff.get("main_branch") or "main")
 
     try:
-        if not state.read().get("automatic_updates"):
+        values = state.read()
+        manual = handoff.get("manual") is True and values.get("update_apply_requested_sha") == target_sha
+        if not values.get("automatic_updates") and not manual:
             raise RuntimeError("Automatic updates were disabled before the handoff completed.")
         _wait_for_parent_exit(int(parent_pid))
         _verify_clean_trusted_main(root_path, branch, old_sha, target_sha)
@@ -502,6 +504,7 @@ def apply_handoff(root: str | Path, handoff_path: str | Path, parent_pid: int) -
 
         state.update(
             update_last_checked=_utc_now(),
+            update_apply_requested_sha=None,
             update_available=False,
             update_target_version=target_sha[:7],
             update_check_error=None,
@@ -520,6 +523,7 @@ def apply_handoff(root: str | Path, handoff_path: str | Path, parent_pid: int) -
             pass
         state.update(
             update_last_checked=_utc_now(),
+            update_apply_requested_sha=None,
             update_available=False,
             update_check_error=f"Automatic update failed: {type(exc).__name__}: {exc}"[:1000],
         )

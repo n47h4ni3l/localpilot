@@ -22,6 +22,9 @@ class UpdateStatus:
     update_available: bool | None
     target_version: str | None
     check_error: str | None
+    target_sha: str | None = None
+    dismissed_target_sha: str | None = None
+    apply_requested_sha: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -32,6 +35,12 @@ class UpdateStatus:
             "updateAvailable": self.update_available,
             "targetVersion": self.target_version,
             "checkError": self.check_error,
+            "targetSha": self.target_sha,
+            "noticeAvailable": (
+                not self.enabled and self.update_available is True and not self.check_error
+                and self.target_sha is not None and self.target_sha != self.dismissed_target_sha
+            ),
+            "applyRequested": bool(self.target_sha and self.target_sha == self.apply_requested_sha),
         }
 
 
@@ -80,12 +89,33 @@ def current_update_status(root: str | Path, state: DesktopUIState) -> UpdateStat
             if isinstance(values.get("update_check_error"), str)
             else None
         ),
+        target_sha=values.get("update_target_sha"),
+        dismissed_target_sha=values.get("update_dismissed_target_sha"),
+        apply_requested_sha=values.get("update_apply_requested_sha"),
     )
 
 
 def set_automatic_updates(root: str | Path, state: DesktopUIState, enabled: bool) -> UpdateStatus:
     state.update(automatic_updates=bool(enabled))
     return current_update_status(root, state)
+
+
+def request_manual_update(state: DesktopUIState, target_sha: str) -> dict[str, Any]:
+    """Queue the owner's exact selection; the companion applies it after chat closes."""
+    values = state.read()
+    if (not re.fullmatch(r"[0-9a-f]{40}", str(target_sha))
+            or target_sha != values.get("update_target_sha")
+            or values.get("update_available") is not True or values.get("update_check_error")):
+        return {"ok": False, "reason": "The update changed or is unavailable. Check again before choosing it."}
+    state.update(update_apply_requested_sha=target_sha)
+    return {"ok": True}
+
+
+def dismiss_update_notice(state: DesktopUIState, target_sha: str) -> dict[str, Any]:
+    if target_sha != state.read().get("update_target_sha"):
+        return {"ok": False, "reason": "The available update changed."}
+    state.update(update_dismissed_target_sha=target_sha)
+    return {"ok": True}
 
 
 def check_for_updates(
@@ -106,6 +136,7 @@ def check_for_updates(
     checked_at = datetime.now(timezone.utc).isoformat()
     update_available: bool | None = None
     target_version: str | None = None
+    target_sha: str | None = None
     error: str | None = None
 
     try:
@@ -169,6 +200,7 @@ def check_for_updates(
         update_last_checked=checked_at,
         update_available=update_available,
         update_target_version=target_version,
+        update_target_sha=target_sha if error is None else None,
         update_check_error=error,
     )
     return current_update_status(root, state)

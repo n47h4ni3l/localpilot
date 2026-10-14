@@ -150,11 +150,39 @@ def test_empty_same_context_high_answer_is_visible(tmp_path, monkeypatch):
 
     answer = agent.ask("Reason and answer.")
 
-    assert answer == (
-        "[LocalPilot completed a high same-context answer reasoning pass but returned no usable final answer.]"
-    )
+    assert answer == "I couldn't produce a reply for this request. Please try again."
     assert "first private reasoning" not in str(agent.messages)
     assert "continued private reasoning" not in str(agent.messages)
+
+
+def test_forced_evolve_reasoning_only_failure_is_actionable(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path)
+    calls = []
+    streams = iter([
+        [_chunk(thinking="private initial reasoning")],
+        [_chunk(thinking="private continuation")],
+    ])
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return iter(next(streams))
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=fake_chat))
+    answer = agent.ask("could you please run a forced evolve cycle?")
+    assert "I couldn't produce a reply" in answer
+    assert "`/evolve`" in answer
+    assert "same-context" not in answer
+    assert "private" not in answer
+    assert len(calls) == 2
+
+
+def test_forced_evolve_nonempty_answer_is_preserved(tmp_path, monkeypatch):
+    _, agent = _agent(tmp_path)
+    reply = "Use /evolve to start a manually requested cycle."
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(
+        chat=lambda **kwargs: iter([_chunk(content=reply)])
+    ))
+    assert agent.ask("could you please run a forced evolve cycle?") == reply
 
 
 def test_truly_empty_stream_retries_once_then_returns_answer(tmp_path, monkeypatch):

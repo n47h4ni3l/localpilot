@@ -55,6 +55,7 @@ from localpilot.selfdev_frontend_validation import (
     _FRONTEND_SUFFIXES,
     _validate_frontend_candidate,
 )
+from localpilot.selfdev_frontend_baseline import TrustedFrontendBaseline, approved_main_revision
 from localpilot.selfdev_response_parsing import (
     ChangePlan,
     PlannedChange,
@@ -187,8 +188,10 @@ class CandidateTools:
         max_zip_members: int = 2000,
         max_zip_bytes: int = 1024 * 1024 * 1024,
         allow_oversized_repair: bool = False,
+        trusted_main_revision: str | None = None,
     ) -> None:
         self.workspace = workspace.resolve()
+        self._frontend_baseline = TrustedFrontendBaseline(self.workspace, trusted_main_revision)
         self.max_files = max(1, int(max_files))
         self.soft_file_budget = max(1, min(int(soft_file_budget), self.max_files))
         self.resource_store = resource_store
@@ -561,6 +564,7 @@ class CandidateTools:
         toml_count = 0
         frontend_count = 0
         javascript_count = 0
+        baseline_frontend_count = 0
         node = shutil.which("node")
         for path in self.workspace.rglob("*"):
             if not path.is_file():
@@ -578,7 +582,16 @@ class CandidateTools:
                     toml_count += 1
                 elif path.suffix.lower() in _FRONTEND_SUFFIXES:
                     content = path.read_text(encoding="utf-8", errors="strict")
-                    _validate_frontend_candidate(rel, content)
+                    try:
+                        _validate_frontend_candidate(rel, content)
+                    except ValueError:
+                        # Candidate restrictions still apply to every new or
+                        # modified file. Owner-reviewed inherited integrations
+                        # are admitted only with exact approved blob identity.
+                        self._resolve(rel.as_posix())
+                        if not self._frontend_baseline.matches(rel, content):
+                            raise
+                        baseline_frontend_count += 1
                     frontend_count += 1
                     if path.suffix.lower() == ".js":
                         javascript_count += 1
@@ -604,6 +617,8 @@ class CandidateTools:
         return (
             f"static_checks=passed\npython_files={python_count}\ntoml_files={toml_count}\n"
             f"frontend_files={frontend_count}\njavascript_files={javascript_count}\n"
+            f"trusted_baseline_frontend_files={baseline_frontend_count}\n"
+            f"trusted_baseline_revision={self._frontend_baseline.revision or 'unavailable'}\n"
             f"javascript_parser={'node' if node else 'policy-only'}\n"
             f"{self.complexity_report()}"
         )
@@ -690,6 +705,9 @@ class SelfDeveloper:
             max_zip_members=self.config.selfdev.max_zip_members,
             max_zip_bytes=self.config.selfdev.max_zip_size_mb * 1024**2,
             allow_oversized_repair=allow_oversized_repair,
+            trusted_main_revision=approved_main_revision(
+                self.root, remote=self.config.github.remote, branch=self.config.github.main_branch,
+            ),
         )
         if tools.oversized_repair_paths:
             self.audit.write(

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
-from typing import Iterable
+from typing import Iterable, Union, Optional, Any, Callable
+
 
 
 @dataclass(frozen=True, slots=True)

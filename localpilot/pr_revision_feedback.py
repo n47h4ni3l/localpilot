@@ -104,13 +104,9 @@ class OwnerRevisionLedger:
         if any(r["branch"] == request.branch and r["state"] == "active" for r in records):
             return False
         if len(records) >= MAX_RECEIPTS:
-            completed = next(
-                (index for index, row in enumerate(records) if row["state"] != "active"),
-                None,
-            )
-            if completed is None:
-                raise RuntimeError("PR revision receipts are full; refusing to discard active work.")
-            records.pop(completed)
+            # Never evict consumed IDs: an old GitHub comment could otherwise
+            # be replayed as new authority. Stop until an owner audits/archives.
+            raise RuntimeError("PR revision receipts are full; refusing to forget consumed commands.")
         records.append({
             "comment_id": request.comment_id, "pr_number": request.pr_number,
             "branch": request.branch, "cycle_id": cycle_id, "task_id": task_id,

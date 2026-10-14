@@ -3914,7 +3914,6 @@ class SelfDeveloper:
 
     def run_once(self, *, force: bool = False) -> EvolutionResult:
         invocation_id = uuid.uuid4().hex
-        self._emit("Starting self-development preflight")
         self._active_task_id = None
         self._budget = EvolutionRunBudget(
             invocation_id=invocation_id,
@@ -3930,6 +3929,7 @@ class SelfDeveloper:
             budget=self._budget.snapshot(),
         )
         try:
+            self._emit("Starting self-development preflight")
             result = self._run_once(force=force)
         except Exception as exc:
             self._emit(f"Evolution stopped: {type(exc).__name__}")

@@ -211,6 +211,7 @@ def test_developer_chat_merges_explicit_context_into_existing_options():
 
 def test_live_selfdev_path_preserves_gpt_oss_high_and_context():
     developer = object.__new__(SelfDeveloper)
+    developer._emit = lambda message: None  # Isolate the model wrapper from progress/audit IO.
     developer.config = Config()
     developer.config.model.think = "high"
     developer.config.selfdev.context_tokens = 16384
@@ -242,6 +243,7 @@ def test_live_ollama_chat_enables_pre_first_chunk_preemption(monkeypatch):
     import localpilot.selfdev as selfdev_module
 
     developer = object.__new__(SelfDeveloper)
+    developer._emit = lambda message: None  # Isolate the model wrapper from progress/audit IO.
     developer.config = Config()
     developer._check_resources = lambda *args, **kwargs: None
     captured = {}
@@ -296,6 +298,7 @@ def test_recent_foreground_completion_preserves_everyday_model_for_selfdev(tmp_p
 
 def test_live_qwen_path_keeps_context_when_thinking_is_unsupported():
     developer = object.__new__(SelfDeveloper)
+    developer._emit = lambda message: None  # Isolate the model wrapper from progress/audit IO.
     developer.config = Config()
     developer.config.model.think = "high"
     developer.config.selfdev.context_tokens = 16384

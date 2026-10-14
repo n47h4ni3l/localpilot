@@ -62,6 +62,31 @@ def update_safe_boundary(data_dir: str | Path) -> bool:
     return not evolution_active(data_path)
 
 
+def check_update_notification(
+    root: str | Path, state: DesktopUIState, *, remote: str, main_branch: str,
+    now: datetime | None = None,
+) -> str | None:
+    """Read-only OFF path, with one casual notice per exact target and 30-minute cadence."""
+    values = state.read()
+    if values.get("automatic_updates"):
+        return None
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if update_check_due(state, now=current):
+        check_for_updates(root, state, remote=remote, main_branch=main_branch)
+        values = state.read()
+    target = values.get("update_target_sha")
+    if (values.get("automatic_updates") or values.get("update_available") is not True
+            or values.get("update_check_error") or not isinstance(target, str)
+            or len(target) != 40 or any(c not in "0123456789abcdef" for c in target)
+            or target in {values.get("update_notified_target_sha"), values.get("update_dismissed_target_sha")}):
+        return None
+    notified = _parse_timestamp(values.get("update_notification_last_at"))
+    if notified and (current - notified).total_seconds() < CHECK_INTERVAL_SECONDS:
+        return None
+    state.update(update_notified_target_sha=target, update_notification_last_at=current.isoformat())
+    return target
+
+
 def _run(root: Path, args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
@@ -90,14 +115,20 @@ def prepare_update_handoff(
     config_path: str | Path | None,
     remote: str,
     main_branch: str,
+    manual_target_sha: str | None = None,
 ) -> Path | None:
     root_path = Path(root).resolve()
     values = state.read()
-    if not bool(values.get("automatic_updates")):
+    manual = manual_target_sha is not None
+    if manual and manual_target_sha != values.get("update_apply_requested_sha"):
+        return None
+    if not bool(values.get("automatic_updates")) and not manual:
+        return None
+    if manual and not update_safe_boundary(state.path.parent):
         return None
 
     status = current_update_status(root_path, state)
-    if update_check_due(state):
+    if manual or update_check_due(state):
         status = check_for_updates(
             root_path,
             state,
@@ -105,6 +136,11 @@ def prepare_update_handoff(
             main_branch=main_branch,
         )
     if status.check_error or status.update_available is not True:
+        if manual:
+            state.update(update_apply_requested_sha=None)
+        return None
+    if manual and state.read().get("update_target_sha") != manual_target_sha:
+        state.update(update_apply_requested_sha=None, update_check_error="The available update changed. Choose the new version before updating.")
         return None
 
     data_dir = state.path.parent
@@ -129,6 +165,9 @@ def prepare_update_handoff(
 
     old_sha = head.stdout.strip()
     target_sha = target.stdout.strip()
+    if manual and target_sha != manual_target_sha:
+        state.update(update_apply_requested_sha=None, update_check_error="The fetched update changed before handoff. Choose it again.")
+        return None
     if old_sha == target_sha:
         state.update(update_available=False, update_target_version=target_sha[:7], update_check_error=None)
         return None
@@ -148,6 +187,7 @@ def prepare_update_handoff(
         "main_branch": main_branch,
         "old_sha": old_sha,
         "target_sha": target_sha,
+        "manual": manual,
     }
     handoff = data_dir / HANDOFF_FILENAME
     temporary = handoff.with_suffix(".tmp")
@@ -165,6 +205,7 @@ def launch_update_if_ready(
     main_branch: str,
     parent_pid: int | None = None,
     commit_launch: Callable[[Callable[[], bool]], bool] | None = None,
+    manual_target_sha: str | None = None,
 ) -> bool:
     handoff = prepare_update_handoff(
         root,
@@ -172,6 +213,7 @@ def launch_update_if_ready(
         config_path=config_path,
         remote=remote,
         main_branch=main_branch,
+        manual_target_sha=manual_target_sha,
     )
     if handoff is None:
         return False
@@ -210,7 +252,8 @@ def launch_update_if_ready(
                 close_fds=True,
             )
         except OSError as exc:
-            state.update(update_check_error=f"Could not start the external updater: {type(exc).__name__}: {exc}"[:1000])
+            state.update(update_apply_requested_sha=None,
+                         update_check_error=f"Could not start the external updater: {type(exc).__name__}: {exc}"[:1000])
             return False
         return True
 

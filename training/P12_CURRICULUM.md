@@ -1,11 +1,17 @@
 # Nestra P1.2: fresh online 1,000-record curriculum
 
-Status: **owner-requested candidate rebuild; independent semantic review
-pending; no training, export or promotion performed**.
+Status: **historical P1.2 corpus preparation record**. The owner reported
+on 14 October 2026 that P1.2 was successfully trained **from P1.1** and
+promoted on the evening of **13 October 2026**. This operational report has
+now been reconciled with [verified immutable lineage receipts](lineage/README.md)
+from the training machine. The frozen preparation config still names the earlier P1
+adapter as its proposed parent; **do not infer actual run lineage from it**.
 
-The accepted original P1 adapter remains the proposed continuation parent.
-The owner's 12 October request replaces the earlier mostly repeated P1 corpus
+The owner's 12 October request replaced an earlier mostly repeated P1 corpus
 with fresh online examples, including a small concrete self-improvement mix.
+The corpus selection, source receipts and tokenizer figures below describe
+that preparation; they do not prove the parent adapter used by the eventual
+P1.2 run or the quality of the promoted model.
 
 ## Curriculum
 
@@ -90,18 +96,27 @@ manifest. The selection binds the new candidate bytes and source bundle.
 Curation needs PyArrow and the tokenizer; normal materialization and CI need
 neither downloads nor model weights.
 
-## Remaining review and training boundaries
+## Preparation boundaries and later promotion report
 
-The original P1 base, adapter parent, LoRA, optimizer, learning rate, BF16,
-micro-batch, accumulation, three epochs and native compile settings are
-preserved. Only corpus identity and counts-derived checkpoint cadence change.
-P1, P1.1, their evidence and the production alias remain unchanged.
+This checked-in preparation recipe preserved the **original P1** base/adapter
+parent, LoRA, optimizer, learning rate, BF16, micro-batch, accumulation,
+three epochs and native compile settings; only the corpus identity and
+counts-derived checkpoint cadence changed at preparation time. These are
+historical configuration facts, **not proof of the actual P1.2 run parent**.
+The owner has since specified **P1.1** as the actual parent.
 
-Source, schema, assertion and tokenizer checks are integrity evidence. They
-are not independent semantic approval, complete decontamination or proof of
-improved model behavior. Remaining gates are an independent content review
-bound to the final corpus digest, separate private-holdout/similarity work,
-and an exact target-PC preflight. Any subsequently authorized training run
-needs paired P1/candidate conversation, final-answer, coding, tool and
-self-development evaluation with failures retained. Export and promotion
-remain separate owner decisions.
+The training configuration records that the exact target-PC dry-run passed
+30 checks on 12 October 2026 and that the owner authorized training.
+The owner separately reports that P1.2 training and promotion completed
+on 13 October. Neither the original preparation file nor the CI corpus
+checks authenticate an output adapter, Ollama digest or production alias.
+
+Source, schema, assertion and tokenizer checks are integrity evidence; they
+do not provide independent semantic approval, complete decontamination or
+proof of improved model behavior. **Do not retroactively edit the frozen
+training inputs or fabricate hashes to reconcile this mismatch.** Capture
+the actual P1.1 parent manifest/adapter identity, P1.2 run configuration,
+checkpoint/completion receipts, output SHA-256 hashes, Ollama model digest,
+promotion decision and rollback target as a new immutable lineage record.
+Compare promoted P1.2 against P1.1 with failures retained. Historical P1
+and P1.1 model evidence must remain available for audit/rollback.

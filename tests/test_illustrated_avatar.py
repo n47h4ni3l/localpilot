@@ -35,12 +35,13 @@ EXPECTED_PRIMARY_ASSETS = {
     "error.png",
     "sleeping.png",
     "offline.png",
+    "suggestion.png",
 }
 
 
 def test_per_state_animation_sheets_are_committed_verified_and_substantive():
     manifest = json.loads(native_avatar._animation_manifest_path().read_text(encoding="utf-8"))
-    assert manifest["version"] == 6
+    assert manifest["version"] == 7
     assert manifest["frame_size"] == native_avatar.AVATAR_SIZE
     assert 0 <= manifest["transition_ms"] <= 1000
 

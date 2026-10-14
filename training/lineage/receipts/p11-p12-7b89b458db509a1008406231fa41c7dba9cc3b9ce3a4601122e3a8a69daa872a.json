@@ -1,0 +1,214 @@
+{
+  "actual_trained_parent": {
+    "adapter_files": {
+      "adapter_config.json": {
+        "bytes": 1589,
+        "sha256": "b2d668fd50043552a267970def1e78bb5f11719e21bf8fa553e323e6e323cf68"
+      },
+      "adapter_model.safetensors": {
+        "bytes": 370291488,
+        "sha256": "555fc30a86c95c657c03e5cb11e09836886770909b89a6090106550da60e631a"
+      }
+    },
+    "adapter_path": "/mnt/e/LLM_HOME/src/localpilot/training/outputs/nestra_p1_selfdev_micro_20261011/adapter",
+    "checkpoint_marker_sha256": "c3d7b14d503d1fe921736a2866073767c95f0c98a09985c081f7de111b66b108",
+    "completion_marker_sha256": "88882b9532c9abe473c51382d9b2f6c0cff3cba12b2b1c5a6ad10f29fbff269c",
+    "manifest": "/mnt/e/LLM_HOME/src/localpilot/training/lineage/package-2-production-20261013.json",
+    "manifest_sha256": "de0d19758728ee1d5e79e989c3ce12ad549b7b0498fdb194e36824a0147a0fff",
+    "model": "nestra:20b-p1",
+    "package": 2,
+    "target_contract": {
+      "logical_targets": [
+        "down_proj",
+        "gate_proj",
+        "k_proj",
+        "o_proj",
+        "q_proj",
+        "up_proj",
+        "v_proj"
+      ],
+      "producer_training_spec_sha256": "8d16a5fc78bef76c2fb586ae7254960ace29aa8d90096175e3896644d18edcf3",
+      "representation": "unsloth_gpt_oss_regex"
+    }
+  },
+  "artifact_type": "nestra_lineage_verification_receipt",
+  "completed_config": {
+    "canonical_training_spec_sha256": "5a32fb46e677abffc5ecb8802759a5947d878b7cb8d1aac2eded891d4360af67",
+    "file_sha256": "0b099bbab238139da48d72d356a786b03a277f3526d5c7d5d089e7f9d4c4af00",
+    "path": "training/configs/qlora_p12_currentprod_20261013.yaml"
+  },
+  "corpus": {
+    "manifest_canonical_sha256": "f1e49b49eaa2ec945eb3c5259f53e406509805b252c8316bfb8c4bcccee3ba19",
+    "manifest_file_sha256": "4ae66a631a9bf20d26bee78605fdcf1971991cd9b80226ada30449de0dd28778",
+    "rendered_dataset_canonical_sha256": "4c441a97833d4656db76b3a762592baebffe23fe09b0ffd4da9a620fc9258b72",
+    "source_jsonl_sha256": "324660364dc5413ccaacc0a2e8cae55d33dd097192f42d047dc23bec51081f88",
+    "source_records": 1000
+  },
+  "desktop_config_observation": {
+    "config_sha256": "1a74abc476bfc4e297de37fd0bca996fbd1c6727d6330ac868213d08c56244f0",
+    "developer_model": "nestra:p1.2",
+    "implementation_model": "nestra:p1.2",
+    "model": "nestra:p1.2",
+    "scaffold_mode": "guide_first"
+  },
+  "packages": {
+    "p1.1": {
+      "accepted_manifest": {
+        "path": "training/lineage/package-2-production-20261013.json",
+        "sha256": "de0d19758728ee1d5e79e989c3ce12ad549b7b0498fdb194e36824a0147a0fff"
+      },
+      "benchmark_promoted": false,
+      "gguf": {
+        "bytes": 13792638560,
+        "file": "candidate-mxfp4.gguf",
+        "sha256": "8576a023fbcc8179e9e514d575bdbeab29041179f32baff3bd6fe978d5178505"
+      },
+      "run_identity": {
+        "corpus_manifest_sha256": "342cb47a111e8e271e0aa56d8ea4e91f73ffc954131744376d9120ab1baa5cf7",
+        "dataset_sha256": "15461d6e2598f9570a34fd5c2fc60663b3af84a4c12804d3490fd361aea82f0e",
+        "environment_sha256": "cb2842e8eabac5554a888f4248d6b25c2015380660d23f8786d893fd000badd2",
+        "eval_manifest_sha256": "bec0dc013bcce616acad3f9ce6b6ce77d77b8cc462fba90539a62b396dbdee03",
+        "model_evidence_sha256": "3d5cc533ae7bb82557df20878fa171088e365f06ae07eedf3fd16ccd8b05de02",
+        "schema_version": 1,
+        "trainer_script_sha256": "787cf7b622212cee67eb4a16a3ebeda4c6fdc0e9b4e6fb6f9bdd3278f0c9e849",
+        "training_spec_sha256": "8d16a5fc78bef76c2fb586ae7254960ace29aa8d90096175e3896644d18edcf3"
+      },
+      "training": {
+        "adapter_files": {
+          "adapter_config.json": {
+            "bytes": 1589,
+            "sha256": "b2d668fd50043552a267970def1e78bb5f11719e21bf8fa553e323e6e323cf68"
+          },
+          "adapter_model.safetensors": {
+            "bytes": 370291488,
+            "sha256": "555fc30a86c95c657c03e5cb11e09836886770909b89a6090106550da60e631a"
+          }
+        },
+        "checkpoint_files": {
+          "adapter_config.json": {
+            "bytes": 1589,
+            "sha256": "b2d668fd50043552a267970def1e78bb5f11719e21bf8fa553e323e6e323cf68"
+          },
+          "adapter_model.safetensors": {
+            "bytes": 370291488,
+            "sha256": "555fc30a86c95c657c03e5cb11e09836886770909b89a6090106550da60e631a"
+          },
+          "optimizer.pt": {
+            "bytes": 188092951,
+            "sha256": "17e631a98fa9336e7350bebc5d838eb4963fe437d01bd83e2fcac98c55229cd0"
+          },
+          "rng_state.pth": {
+            "bytes": 14645,
+            "sha256": "181c5f0270cf39930062ddfa3767a2481d0c360f120b11f8e25dbf533a1cdaba"
+          },
+          "scheduler.pt": {
+            "bytes": 1465,
+            "sha256": "aafabe617c763bd384c975b4a6676c8a7a67a4fc86b82dd430d0c1a847f03d3e"
+          },
+          "trainer_state.json": {
+            "bytes": 9320,
+            "sha256": "89a4415761954b3ca545ed6e0b8315b97984c3a9eb1c13721b0d8d494abedc84"
+          }
+        },
+        "checkpoint_marker_sha256": "c3d7b14d503d1fe921736a2866073767c95f0c98a09985c081f7de111b66b108",
+        "completion_marker_sha256": "88882b9532c9abe473c51382d9b2f6c0cff3cba12b2b1c5a6ad10f29fbff269c",
+        "config": "training/outputs/nestra_p1_selfdev_micro_20261011/training_config.json",
+        "global_step": 51,
+        "output_directory": "training/outputs/nestra_p1_selfdev_micro_20261011",
+        "run_identity_sha256": "7c00435eba5ec0bee3ac59892d4822542525ef79eeee9ff1e82b1baa3dca02b2",
+        "training_config_sha256": "8d16a5fc78bef76c2fb586ae7254960ace29aa8d90096175e3896644d18edcf3"
+      }
+    },
+    "p1.2": {
+      "accepted_manifest": {
+        "path": "training/lineage/package-3.json",
+        "sha256": "3a09b027feb3508e088656c2e5c3413675733f5f2047294cd31bb5a50d821a99"
+      },
+      "benchmark_promoted": false,
+      "gguf": {
+        "bytes": 13792638560,
+        "file": "candidate-mxfp4.gguf",
+        "sha256": "1f9c085c7333c6ea98709327f956e046da9e9241e75edae31bc81ff875bba4a1"
+      },
+      "run_identity": {
+        "corpus_manifest_sha256": "f1e49b49eaa2ec945eb3c5259f53e406509805b252c8316bfb8c4bcccee3ba19",
+        "dataset_sha256": "4c441a97833d4656db76b3a762592baebffe23fe09b0ffd4da9a620fc9258b72",
+        "environment_sha256": "cb2842e8eabac5554a888f4248d6b25c2015380660d23f8786d893fd000badd2",
+        "eval_manifest_sha256": "bec0dc013bcce616acad3f9ce6b6ce77d77b8cc462fba90539a62b396dbdee03",
+        "model_evidence_sha256": "44c7c627ada39fbe4a264b093fdeae5c0993d554867bed00add042e3544ba6d9",
+        "schema_version": 1,
+        "trainer_script_sha256": "787cf7b622212cee67eb4a16a3ebeda4c6fdc0e9b4e6fb6f9bdd3278f0c9e849",
+        "training_spec_sha256": "5a32fb46e677abffc5ecb8802759a5947d878b7cb8d1aac2eded891d4360af67"
+      },
+      "training": {
+        "adapter_files": {
+          "adapter_config.json": {
+            "bytes": 1589,
+            "sha256": "b2d668fd50043552a267970def1e78bb5f11719e21bf8fa553e323e6e323cf68"
+          },
+          "adapter_model.safetensors": {
+            "bytes": 370291488,
+            "sha256": "879cbdec49454a06ddd43d64ebdb2566aa62502a0d66c0cbcf86521b2c6c9539"
+          }
+        },
+        "checkpoint_files": {
+          "adapter_config.json": {
+            "bytes": 1589,
+            "sha256": "b2d668fd50043552a267970def1e78bb5f11719e21bf8fa553e323e6e323cf68"
+          },
+          "adapter_model.safetensors": {
+            "bytes": 370291488,
+            "sha256": "879cbdec49454a06ddd43d64ebdb2566aa62502a0d66c0cbcf86521b2c6c9539"
+          },
+          "optimizer.pt": {
+            "bytes": 191434647,
+            "sha256": "5ff7892ee273e4ebad62f8ec351ce7fc85a2dc276ce84462c8960e4ac7a9a619"
+          },
+          "rng_state.pth": {
+            "bytes": 14645,
+            "sha256": "181c5f0270cf39930062ddfa3767a2481d0c360f120b11f8e25dbf533a1cdaba"
+          },
+          "scheduler.pt": {
+            "bytes": 1465,
+            "sha256": "922a6f1ba5d36aa30a1eea3f8322ea2ecb8aefb1f35bd5c2278e27ce29fed206"
+          },
+          "trainer_state.json": {
+            "bytes": 204255,
+            "sha256": "aa2ba8c7f5d6aa0e5294e25735c06f6c921a1deddc1f807b9df7d330993a7656"
+          }
+        },
+        "checkpoint_marker_sha256": "86bfa614bd62d31de22155847ad7b25aefdb897490b7fe4d4f7e7ed86b22a18a",
+        "completion_marker_sha256": "0036225c18ac98fe1abdcbeeb1a72836e313b7e452c7da3a0872ebd4b188367b",
+        "config": "training/configs/qlora_p12_currentprod_20261013.yaml",
+        "global_step": 1185,
+        "output_directory": "training/outputs/p12_currentprod_20261013",
+        "run_identity_sha256": "40995399d9286ce04dd2bf60ce190e5255af3f40ab296028f548cb031c85635e",
+        "training_config_sha256": "5a32fb46e677abffc5ecb8802759a5947d878b7cb8d1aac2eded891d4360af67"
+      }
+    }
+  },
+  "preflight_receipt_sha256": "f158515c66e9e60dca5191ecc2ce3e4d5ced68ffde071f2837acc9ef792762db",
+  "promotion": {
+    "digest": "c356171d9a54f773c0064a56b5af028b209f61355ba68f67119d857c83bf7f46",
+    "exact_owner_message_timestamp": null,
+    "exact_owner_message_timestamp_status": "not recorded in local deployment receipt",
+    "model": "nestra:p1.2",
+    "owner_decision": "accepted_as_working_lineage",
+    "receipt_sha256": "1be0b45a67ef7aafd805e3bb358e9cc45636bedf4f13c91bf9e98bd802c83bd1",
+    "rollback": "nestra:p1.1",
+    "rollback_digest": "b94bd74323cbd9af7aa56468c0dbcc97eae3c01f974afcb1dacfce51d8609812",
+    "verified_at_utc": "2026-10-13T11:15:27.913899+00:00"
+  },
+  "schema_version": 1,
+  "verification": {
+    "all_parent_and_final_adapter_files_rehashed": true,
+    "all_required_final_checkpoint_files_rehashed": true,
+    "both_retained_gguf_files_rehashed": true,
+    "full_benchmark_improvement_established": false,
+    "live_ollama_alias_digests_observed": true,
+    "model_state_changed": false,
+    "private_evaluation_material_published": false,
+    "training_performed": false
+  },
+  "verified_at_utc": "2026-10-14T06:29:07.963124+00:00"
+}

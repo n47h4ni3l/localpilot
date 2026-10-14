@@ -1449,8 +1449,8 @@ class LocalPilotAgent:
                         num_predict=continuation_runtime.get("num_predict"),
                     )
                     if continuation_content.strip():
-                        # Guide recovery preserves the model's text just like first-pass
-                        # delivery. Strict retains its historical draft review below.
+                        # Guide recovery preserves the model's text just like
+                        # first-pass delivery.
                         return self._continue_high_reasoning_answer(
                             chat,
                             prompt=prompt,
@@ -1482,10 +1482,9 @@ class LocalPilotAgent:
                     return marker
 
 
-            marker = (
-                f"[LocalPilot completed a {answer_think} same-context answer reasoning pass "
-                "but returned no usable final answer.]"
-            )
+            marker = "I couldn't produce a reply for this request. Please try again."
+            if re.search(r"\bevolve\b", prompt, flags=re.IGNORECASE):
+                marker += " To start a self-development cycle explicitly, send `/evolve`."
             if calls and hard_limit:
                 marker = (
                     "[LocalPilot reached the hard research ceiling and still requested additional evidence "

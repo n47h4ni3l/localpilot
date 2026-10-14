@@ -4043,8 +4043,18 @@ class SelfDeveloper:
                 or durable.validation_state == "rejected_by_human"
             ):
                 continue
-            if ledger.active(pending.branch) is not None:
-                continue
+            active = ledger.active(pending.branch)
+            if active is not None:
+                previous = self.memory.candidate_for_cycle(
+                    int(active["cycle_id"])
+                )
+                if previous is not None and previous.pushed and previous.status == "candidate_pending_validation":
+                    ledger.finish(int(active["comment_id"]), "completed")
+                elif previous is not None and previous.status == "failed":
+                    ledger.finish(int(active["comment_id"]), "needs_work")
+                else:
+                    # The previous owner revision is still being recovered.
+                    continue
             try:
                 requests = self.github.owner_revision_requests(pending.branch)
             except (RuntimeError, ValueError) as exc:
@@ -4124,7 +4134,29 @@ class SelfDeveloper:
                 workspace=workspace,
                 is_worktree=True,
             )
+            try:
+                tools = self._candidate_tools(
+                    workspace, branch=pending.branch,
+                    task_id=pending.task_id, cycle_id=cycle_id, force=force,
+                    protected_paths=protected,
+                )
+            except (ValueError, PermissionError, RuntimeError):
+                self.memory.finish_cycle(
+                    cycle_id, status="failed",
+                    summary="Owner revision candidate failed path and safety preflight.",
+                    reusable_lesson="Preserve candidate and owner comment when preflight is unsafe.",
+                    checks_passed=False, pushed=False,
+                )
+                return EvolutionResult(
+                    "deferred", pending.branch, workspace,
+                    "Owner revision failed candidate safety preflight; comment remains unconsumed.",
+                )
             if not ledger.begin(request, cycle_id, pending.task_id):
+                self.memory.finish_cycle(
+                    cycle_id, status="failed", summary="Owner comment was already consumed.",
+                    reusable_lesson="Never replay an owner PR comment.",
+                    checks_passed=False, pushed=False,
+                )
                 return EvolutionResult(
                     "deferred", pending.branch, workspace,
                     "Owner review comment already processed or an active revision exists.",
@@ -4145,11 +4177,6 @@ class SelfDeveloper:
                 feedback_chars=len(request.feedback),
             )
             try:
-                tools = self._candidate_tools(
-                    workspace, branch=pending.branch,
-                    task_id=pending.task_id, cycle_id=cycle_id, force=force,
-                    protected_paths=protected,
-                )
                 self._emit(
                     f"Revising PR #{request.pr_number} from owner comment #{request.comment_id}"
                 )

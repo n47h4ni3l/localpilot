@@ -19,7 +19,7 @@
   const MAX_STABILIZATION_PX = 6;
   const REQUIRED_STATES = [
     "idle", "listening", "thinking", "researching", "working", "speaking",
-    "success", "uncertain", "error", "learning", "restarting", "sleeping", "offline",
+    "success", "uncertain", "error", "learning", "restarting", "sleeping", "offline", "suggestion",
   ];
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const canvases = [
@@ -374,7 +374,7 @@
     if (!response.ok) throw new Error("animation manifest unavailable");
     const manifest = await response.json();
     if (
-      Number(manifest.version) !== 6 ||
+      Number(manifest.version) !== 7 ||
       Number(manifest.frame_size) !== 128 ||
       !manifest.states ||
       !manifest.assets

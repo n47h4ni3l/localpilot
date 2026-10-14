@@ -55,6 +55,7 @@ from localpilot.selfdev_frontend_validation import (
     _FRONTEND_SUFFIXES,
     _validate_frontend_candidate,
 )
+from localpilot.selfdev_frontend_baseline import TrustedFrontendBaseline, approved_main_revision
 from localpilot.selfdev_response_parsing import (
     ChangePlan,
     PlannedChange,
@@ -187,8 +188,10 @@ class CandidateTools:
         max_zip_members: int = 2000,
         max_zip_bytes: int = 1024 * 1024 * 1024,
         allow_oversized_repair: bool = False,
+        trusted_main_revision: str | None = None,
     ) -> None:
         self.workspace = workspace.resolve()
+        self._frontend_baseline = TrustedFrontendBaseline(self.workspace, trusted_main_revision)
         self.max_files = max(1, int(max_files))
         self.soft_file_budget = max(1, min(int(soft_file_budget), self.max_files))
         self.resource_store = resource_store
@@ -561,6 +564,7 @@ class CandidateTools:
         toml_count = 0
         frontend_count = 0
         javascript_count = 0
+        baseline_frontend_count = 0
         node = shutil.which("node")
         for path in self.workspace.rglob("*"):
             if not path.is_file():
@@ -578,7 +582,16 @@ class CandidateTools:
                     toml_count += 1
                 elif path.suffix.lower() in _FRONTEND_SUFFIXES:
                     content = path.read_text(encoding="utf-8", errors="strict")
-                    _validate_frontend_candidate(rel, content)
+                    try:
+                        _validate_frontend_candidate(rel, content)
+                    except ValueError:
+                        # Candidate restrictions still apply to every new or
+                        # modified file. Owner-reviewed inherited integrations
+                        # are admitted only with exact approved blob identity.
+                        self._resolve(rel.as_posix())
+                        if not self._frontend_baseline.matches(rel, content):
+                            raise
+                        baseline_frontend_count += 1
                     frontend_count += 1
                     if path.suffix.lower() == ".js":
                         javascript_count += 1
@@ -604,6 +617,8 @@ class CandidateTools:
         return (
             f"static_checks=passed\npython_files={python_count}\ntoml_files={toml_count}\n"
             f"frontend_files={frontend_count}\njavascript_files={javascript_count}\n"
+            f"trusted_baseline_frontend_files={baseline_frontend_count}\n"
+            f"trusted_baseline_revision={self._frontend_baseline.revision or 'unavailable'}\n"
             f"javascript_parser={'node' if node else 'policy-only'}\n"
             f"{self.complexity_report()}"
         )
@@ -690,6 +705,9 @@ class SelfDeveloper:
             max_zip_members=self.config.selfdev.max_zip_members,
             max_zip_bytes=self.config.selfdev.max_zip_size_mb * 1024**2,
             allow_oversized_repair=allow_oversized_repair,
+            trusted_main_revision=approved_main_revision(
+                self.root, remote=self.config.github.remote, branch=self.config.github.main_branch,
+            ),
         )
         if tools.oversized_repair_paths:
             self.audit.write(
@@ -1743,15 +1761,20 @@ class SelfDeveloper:
     ) -> Any:
         request_think = kwargs.pop("_request_think", self.config.model.think)
         last_check = 0.0
+        last_progress = time.monotonic()
+        self._emit("Waiting for the developer model response")
 
         def stream_guard() -> None:
-            nonlocal last_check
+            nonlocal last_check, last_progress
             now = time.monotonic()
             if now - last_check >= 1.0:
                 # CPU load from Ollama is expected while it is generating.
                 # User input and emergency memory pressure remain stop signals.
                 self._check_resources(force, branch, during_inference=True)
                 last_check = now
+            if now - last_progress >= 30.0:
+                self._emit("Still waiting for the developer model response")
+                last_progress = now
 
         model_name = str(kwargs.get("model") or "")
         keep_alive = (
@@ -2726,6 +2749,10 @@ class SelfDeveloper:
 
             checks_passed: bool | None = None
             check_result = "static checks disabled"
+            self._emit(
+                f"Candidate: inspected {len(tools.files_read)} file(s), "
+                f"modified {len(tools.files_written)} file(s)"
+            )
             if self.config.selfdev.run_static_checks:
                 self._emit("Running final non-executing static checks")
                 check_result = tools.run_candidate_static_checks()
@@ -2735,6 +2762,7 @@ class SelfDeveloper:
                     next_action="Repair failures if present; otherwise commit and deliver the candidate.",
                 )
                 checks_passed = check_result.startswith("static_checks=passed")
+                self._emit("Static checks passed" if checks_passed else "Static checks failed")
                 if tools.files_written and not checks_passed:
                     self._checkpoint_milestone(
                         "local_static_repair",
@@ -2793,10 +2821,14 @@ class SelfDeveloper:
                     next_action="Commit the verified changed paths and push only if configured.",
                 )
                 relative_paths = [path.relative_to(workspace).as_posix() for path in tools.files_written]
+                self._emit("Committing the validated candidate")
                 commit = self.github.commit_paths(workspace, f"candidate: {task['title']}", relative_paths)
+                self._emit("Candidate commit saved" if commit.ok else "Candidate commit failed")
                 if commit.ok and self.config.github.auto_push_candidates:
+                    self._emit("Pushing the candidate branch")
                     push = self.github.push_branch(workspace, branch)
                     pushed = push.ok
+                    self._emit("Candidate branch pushed" if pushed else "Candidate push failed")
                     if pushed:
                         status = "candidate_pending_validation"
                         pull_request = self.github.create_candidate_pull_request(
@@ -3897,8 +3929,10 @@ class SelfDeveloper:
             budget=self._budget.snapshot(),
         )
         try:
+            self._emit("Starting self-development preflight")
             result = self._run_once(force=force)
         except Exception as exc:
+            self._emit(f"Evolution stopped: {type(exc).__name__}")
             if self._active_checkpoint is not None:
                 self._active_checkpoint["next_action"] = (
                     f"Revalidate the candidate and recover from {type(exc).__name__}."
@@ -3938,6 +3972,7 @@ class SelfDeveloper:
             budget=budget,
         )
         self._budget = None
+        self._emit(f"Evolution result: {result.status}")
         return result
 
     def _run_once(self, *, force: bool = False) -> EvolutionResult:
@@ -3953,6 +3988,7 @@ class SelfDeveloper:
                 f"PC is in use or busy: {len(foreground_turns)} active foreground chat turn(s)",
             )
 
+        self._emit("Checking trusted main")
         sync = self.github.sync_trusted_main()
         self.audit.write(
             "selfdev_main_sync",
@@ -3994,6 +4030,7 @@ class SelfDeveloper:
         if repair is not None:
             return repair
 
+        self._emit("Selecting an objective and developer model")
         task = self._load_next_task()
         if task is None and self.memory.has_outstanding_candidate():
             return EvolutionResult(
@@ -4030,6 +4067,7 @@ class SelfDeveloper:
         task = normalize_evolution_task(task)
         self._active_task_id = str(task["id"])
         try:
+            self._emit("Verifying the objective against current repository source")
             review = self._review_task_repository(task, developer_model=developer_model, force=force)
         except CyclePaused as exc:
             return EvolutionResult("paused", None, None, f"Repository verification paused: {exc}")

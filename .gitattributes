@@ -1,6 +1,11 @@
 *.pdf binary
 # Authenticode signatures require the committed PowerShell bytes unchanged.
 *.ps1 -text
+# Preserve the accepted local receipts and their content-addressed byte hashes.
+training/lineage/package-2-production-20261013.json -text whitespace=cr-at-eol
+training/lineage/package-3.json -text whitespace=cr-at-eol
+training/lineage/receipts/*.json -text
+training/configs/qlora_p12_currentprod_20261013.yaml -text whitespace=cr-at-eol
 pyproject.toml text eol=lf
 training/datasets/external_corpus_v1.jsonl text eol=lf
 training/sources/external_corpus_v1_sources.jsonl text eol=lf

@@ -14,6 +14,17 @@ space to run. Progress and errors are saved in
 `%LOCALAPPDATA%\LocalPilot\installation.log`. If a download or prerequisite
 installation fails, rerun the installer to continue.
 
+Bootstrap probes Python 3.12 through the Python launcher first and skips
+the Microsoft Store app-execution alias. Ollama client installation and
+server readiness are checked separately using the server's model inventory.
+Before starting a server, setup checks that its model directory is accessible
+and writable. If `OLLAMA_MODELS` points at an unavailable drive, interactive
+setup offers the local `%USERPROFILE%\.ollama\models` directory for that
+server; unattended setup stops with instructions rather than changing it.
+Model downloads reuse existing download progress with up to three attempts.
+Setup reports success only after the configured model appears in the server
+inventory. Missing private `nestra:*` models must be restored separately.
+
 The installer uses an isolated Python environment belonging to LocalPilot.
 It installs Python 3.12 and Ollama when absent, plus Git, GitHub CLI,
 Microsoft WebView2 and the PawnIO hardware sensor driver. When the configured
@@ -47,7 +58,13 @@ PC and then open LocalPilot using its desktop icon.
 The avatar appears beside the chat as soon as the desktop opens. Opening the
 icon again brings forward the existing conversation instead of creating a
 second desktop. Automatic updates wait while the chat is open, preserving an
-unsent message. Reinstallation closes the previous windows and runtime safely
+unsent message. With automatic updates off, a read-only check runs at most
+every 30 minutes. A newer trusted main triggers one brief casual avatar wave
+per full commit identity; opening chat shows **Update now** and **Later**.
+Choosing **Update now** queues that exact commit without enabling automatic
+updates. Save any draft and close chat before the updater applies it. Dirty,
+diverged or non-main checkouts remain blocked, and a changed target requires
+a new choice. Reinstallation closes the previous windows and runtime safely
 before opening the replacement; an active response or shutdown problem gives
 retry guidance. The setup window finishes independently of the running desktop.
 

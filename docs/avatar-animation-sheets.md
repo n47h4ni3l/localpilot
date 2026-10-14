@@ -14,6 +14,7 @@ Primary sheets live in `localpilot/webview/avatar/anim/`:
 - `error.png` (currently shared by `uncertain` and `error`)
 - `sleeping.png`
 - `offline.png`
+- `suggestion.png` (one casual wave for an available update; no urgent animation)
 
 The runtime manifest records each sheet's grid geometry, frame count, expected byte size, playback timing, and runtime-state mapping. `learning` temporarily reuses the Thinking artwork and `restarting` temporarily reuses Working until dedicated sheets are drawn.
 

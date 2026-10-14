@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "frame_size": 128,
   "transition_ms": 220,
   "notes": "Per-state hand-drawn animation sheets. Transition sheets are intentionally deferred; WebView uses a short crossfade and native mode switches directly between completed state loops. No whole-image scale/squash/rotate animation is used.",
@@ -13,7 +13,8 @@
     "success": {"file": "success.png", "columns": 4, "rows": 2, "frames": 8, "bytes": 2060529},
     "uncertain": {"file": "error.png", "columns": 4, "rows": 2, "frames": 8, "bytes": 1908681},
     "sleeping": {"file": "sleeping.png", "columns": 8, "rows": 1, "frames": 8, "bytes": 1390758},
-    "offline": {"file": "offline.png", "columns": 4, "rows": 2, "frames": 8, "bytes": 2183959}
+    "offline": {"file": "offline.png", "columns": 4, "rows": 2, "frames": 8, "bytes": 2183959},
+    "suggestion": {"file": "suggestion.png", "columns": 4, "rows": 3, "frames": 12, "bytes": 2202468}
   },
   "states": {
     "idle": {"asset": "idle", "frame_ms": 420, "representative_frame": 0},
@@ -28,6 +29,7 @@
     "learning": {"asset": "thinking", "frame_ms": 126, "representative_frame": 9},
     "restarting": {"asset": "working", "frame_ms": 180, "representative_frame": 0},
     "sleeping": {"asset": "sleeping", "frame_ms": 480, "representative_frame": 0},
-    "offline": {"asset": "offline", "frame_ms": 340, "representative_frame": 0}
+    "offline": {"asset": "offline", "frame_ms": 340, "representative_frame": 0},
+    "suggestion": {"asset": "suggestion", "frame_ms": 200, "representative_frame": 0}
   }
 }

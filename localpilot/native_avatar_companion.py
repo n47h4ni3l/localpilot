@@ -20,7 +20,7 @@ from typing import Any
 import psutil
 
 from localpilot import native_avatar as _avatar
-from localpilot.desktop_auto_update import launch_update_if_ready
+from localpilot.desktop_auto_update import check_update_notification, launch_update_if_ready
 from localpilot.desktop_instance import DesktopInstance, assert_no_legacy_desktop
 from localpilot.webview_app import EXPANDED_SIZE, _desktop_python_executable
 
@@ -119,6 +119,8 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
         self._broker_runtime_state = "restarting"
         self._update_thread: threading.Thread | None = None
         self._update_handoff_started = False
+        self._update_notice_target: str | None = None
+        self._update_notice_until = 0.0
         self._chat_launch_lock = threading.Lock()
         self._desktop_instance: DesktopInstance | None = None
         super().__init__(*args, **kwargs)
@@ -138,15 +140,27 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
                     # An unsent composer is not a broker foreground request.
                     # Keep this same chat process until the owner closes it.
                     if not self._chat_is_alive() and self.config.github.enabled:
-                        launch_update_if_ready(
-                            self.project_root,
-                            self.state_store,
-                            config_path=self.config_path,
-                            remote=self.config.github.remote,
-                            main_branch=self.config.github.main_branch,
-                            parent_pid=os.getpid(),
-                            commit_launch=self._commit_update_launch,
-                        )
+                        values = self.state_store.read()
+                        manual_target = values.get("update_apply_requested_sha")
+                        if values.get("automatic_updates") or manual_target:
+                            launch_update_if_ready(
+                                self.project_root, self.state_store,
+                                config_path=self.config_path,
+                                remote=self.config.github.remote,
+                                main_branch=self.config.github.main_branch,
+                                parent_pid=os.getpid(),
+                                commit_launch=self._commit_update_launch,
+                                manual_target_sha=manual_target,
+                            )
+                        else:
+                            target = check_update_notification(
+                                self.project_root, self.state_store,
+                                remote=self.config.github.remote,
+                                main_branch=self.config.github.main_branch,
+                            )
+                            if target:
+                                self._update_notice_target = target
+                                self._update_notice_until = 0.0
                 except Exception as exc:
                     self.state_store.update(
                         update_check_error=(
@@ -212,6 +226,21 @@ class NativeAvatarCompanion(_avatar.NativeAvatarApp):
             shared_state = self.state_store.read().get("companion_state")
             if isinstance(shared_state, str) and shared_state in _avatar._STATE_COLORS:
                 display_state = shared_state
+        notice = getattr(self, "_update_notice_target", None)
+        if notice:
+            values = self.state_store.read()
+            if (self._chat_is_alive() or values.get("automatic_updates")
+                    or values.get("update_target_sha") != notice or values.get("update_check_error")
+                    or values.get("update_dismissed_target_sha") == notice):
+                self._update_notice_target = None
+            elif display_state in {"idle", "sleeping"}:
+                now = time.monotonic()
+                if not self._update_notice_until:
+                    self._update_notice_until = now + 2.4
+                if now < self._update_notice_until:
+                    display_state = "suggestion"
+                else:
+                    self._update_notice_target = None
 
         self.runtime_state = display_state
         self._draw()

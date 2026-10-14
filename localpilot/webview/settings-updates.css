@@ -22,3 +22,14 @@
 .settings-meta-row code {
   font-family: var(--font-mono);
 }
+
+.update-notice {
+  margin: 8px 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color, #d4cbdc);
+  border-radius: 12px;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+.update-notice__actions { display: flex; gap: 8px; margin-top: 8px; }
+.update-notice button { font: inherit; padding: 4px 10px; cursor: pointer; border-radius: 8px; }

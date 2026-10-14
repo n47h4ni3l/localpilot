@@ -57,6 +57,11 @@ function Test-Python311 {
         [string[]]$PrefixArgs = @()
     )
 
+    if ((Split-Path -Parent $Executable) -like '*\Microsoft\WindowsApps') {
+        # Do not invoke the Store app-execution alias: it can open UI or wait
+        # indefinitely instead of behaving like an interpreter.
+        return $null
+    }
     try {
         $output = & $Executable @PrefixArgs -c "import platform,sys; print(platform.python_version()); raise SystemExit(0 if sys.version_info >= (3,11) else 1)" 2>$null
         if ($LASTEXITCODE -eq 0 -and $output) {
@@ -143,11 +148,79 @@ function Find-Ollama {
 }
 
 function Read-OllamaModels {
-    # Windows PowerShell turns redirected native stderr into ErrorRecords.
-    # A stopped Ollama service is expected here and must remain recoverable.
-    $ErrorActionPreference = 'Continue'
-    $lines = @(& $ollama list 2>$null)
-    return [pscustomobject]@{ Lines = $lines; ExitCode = $LASTEXITCODE }
+    $hostAddress = if ($env:OLLAMA_HOST) { $env:OLLAMA_HOST } else { '127.0.0.1:11434' }
+    if ($hostAddress -notmatch '^https?://') { $hostAddress = 'http://' + $hostAddress }
+    try {
+        $uri = [Uri]$hostAddress
+        if ($uri.Scheme -notin @('http', 'https')) { throw 'OLLAMA_HOST requires HTTP or HTTPS.' }
+        $builder = [UriBuilder]$uri
+        if ($builder.Host -in @('0.0.0.0', '[::]', '::')) { $builder.Host = '127.0.0.1' }
+        $builder.Path = '/api/tags'
+        $response = Invoke-RestMethod -Uri $builder.Uri -TimeoutSec 5 -ErrorAction Stop
+        if (-not $response -or -not ($response.PSObject.Properties.Name -contains 'models')) {
+            throw 'Ollama returned no model inventory.'
+        }
+        return [pscustomobject]@{ Ready = $true; Names = @($response.models | ForEach-Object { $_.name }); Error = $null }
+    } catch {
+        return [pscustomobject]@{ Ready = $false; Names = @(); Error = $_.Exception.Message }
+    }
+}
+
+function Assert-OllamaModelDirectory {
+    param([switch]$Unattended)
+    $localModels = Join-Path $env:USERPROFILE '.ollama\models'
+    $configured = if ($env:OLLAMA_MODELS) { $env:OLLAMA_MODELS } else { $localModels }
+    try {
+        $directory = [IO.Path]::GetFullPath($configured)
+        $driveRoot = [IO.Path]::GetPathRoot($directory)
+        if (-not (Test-Path -LiteralPath $driveRoot -PathType Container)) {
+            throw "The drive or share '$driveRoot' is unavailable."
+        }
+        if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+            New-Item -ItemType Directory -Path $directory -ErrorAction Stop | Out-Null
+        }
+        $probe = Join-Path $directory ('.localpilot-write-check-' + [Guid]::NewGuid().ToString('N'))
+        $stream = [IO.File]::Open($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+        $stream.Dispose()
+        Remove-Item -LiteralPath $probe -ErrorAction Stop
+        return
+    } catch {
+        $reason = $_.Exception.Message
+        if ($Unattended -or $configured -eq $localModels) {
+            throw "Ollama cannot use OLLAMA_MODELS='$configured': $reason Restore that drive/path or set OLLAMA_MODELS to '$localModels', then retry bootstrap."
+        }
+        Write-Host "Ollama cannot use OLLAMA_MODELS='$configured': $reason" -ForegroundColor Yellow
+        $answer = Read-Host "Use '$localModels' for the server started by this installation? [y/N]"
+        if ($answer -notmatch '^[Yy]$') { throw 'Ollama startup was canceled. Repair OLLAMA_MODELS and retry bootstrap.' }
+        $env:OLLAMA_MODELS = $localModels
+        Assert-OllamaModelDirectory -Unattended
+    }
+}
+
+function Ensure-OllamaModel {
+    param([Parameter(Mandatory = $true)][string]$Model, [switch]$Unattended)
+    $modelTag = if (($Model -split '/')[-1] -match ':') { $Model } else { $Model + ':latest' }
+    $inventory = Read-OllamaModels
+    if (-not $inventory.Ready) { throw "Ollama is not ready: $($inventory.Error). Start Ollama and retry bootstrap." }
+    if ($inventory.Names -contains $modelTag) { Write-Host "$modelTag is already installed."; return }
+    if ($modelTag -like 'nestra:*') {
+        throw "Configured local model '$modelTag' is missing. Restore that model before starting LocalPilot; its configuration was preserved."
+    }
+    Write-Host "$modelTag is not installed. Pulling it is a large download and may take some time." -ForegroundColor Yellow
+    $answer = if ($Unattended) { 'y' } else { Read-Host "Download $modelTag now? [y/N]" }
+    if ($answer -notmatch '^[Yy]$') {
+        throw "Installation incomplete: required model '$modelTag' is missing. Run 'ollama pull $modelTag', then retry bootstrap."
+    }
+    for ($pullAttempt = 1; $pullAttempt -le 3; $pullAttempt++) {
+        Write-Host "Downloading $modelTag (attempt $pullAttempt/3; existing download progress is reused)..."
+        # Native stderr from a failed pull must not prevent bounded recovery.
+        $previousErrorAction = $ErrorActionPreference
+        try { $ErrorActionPreference = 'Continue'; & $ollama pull $modelTag; $pullExit = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $previousErrorAction }
+        $inventory = Read-OllamaModels
+        if ($pullExit -eq 0 -and $inventory.Ready -and $inventory.Names -contains $modelTag) { return }
+    }
+    throw "Required model '$modelTag' was not verified after three download attempts. Check Ollama's error above, then retry bootstrap to resume; installation is incomplete."
 }
 
 function Find-DotNet8Sdk {
@@ -311,36 +384,22 @@ if (-not (Test-Path "localpilot.toml")) {
 $model = (& $python -c "import sys,tomllib; from pathlib import Path; print(tomllib.loads(Path(sys.argv[1]).read_text(encoding='utf-8')).get('model',{}).get('name','gpt-oss:20b'))" (Join-Path $repoRoot 'localpilot.toml') | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $model) { throw "Could not read the configured LocalPilot model." }
 $modelProbe = Read-OllamaModels
-$modelLines = $modelProbe.Lines
-if ($modelProbe.ExitCode -ne 0) {
+if (-not $modelProbe.Ready) {
+    if ($env:OLLAMA_HOST -and $env:OLLAMA_HOST -notmatch '^(https?://)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\[::\])(:\d+)?/?$') {
+        throw "Configured Ollama server '$env:OLLAMA_HOST' is unavailable. Start that server or correct OLLAMA_HOST, then retry bootstrap."
+    }
+    Assert-OllamaModelDirectory -Unattended:$Unattended
     Write-Host "Starting the local Ollama server..."
     Start-Process -FilePath $ollama -ArgumentList 'serve' -WindowStyle Hidden | Out-Null
     $ollamaReady = $false
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
         Start-Sleep -Seconds 1
         $modelProbe = Read-OllamaModels
-        $modelLines = $modelProbe.Lines
-        if ($modelProbe.ExitCode -eq 0) { $ollamaReady = $true; break }
+        if ($modelProbe.Ready) { $ollamaReady = $true; break }
     }
-    if (-not $ollamaReady) { throw "Ollama did not become ready. Check the Ollama installation, then retry." }
+    if (-not $ollamaReady) { throw "Ollama did not become ready: $($modelProbe.Error). Open Ollama from the Windows Start menu or run 'ollama serve' to inspect its startup error, then retry bootstrap." }
 }
-$installedModels = @($modelLines | Select-Object -Skip 1 | ForEach-Object { ($_ -split '\s+')[0] })
-if ($installedModels -notcontains $model) {
-    Write-Host ""
-    Write-Host "$model is not installed. Pulling it is a large download and may take some time." -ForegroundColor Yellow
-    if ($Unattended -and $model -like 'nestra:*') {
-        throw "Configured local model '$model' is missing. Restore that model before starting LocalPilot; its configuration was preserved."
-    }
-    $answer = if ($Unattended) { 'y' } else { Read-Host "Download $model now? [y/N]" }
-    if ($answer -match '^[Yy]$') {
-        & $ollama pull $model
-        if ($LASTEXITCODE -ne 0) { throw "Ollama could not download '$model'. Retry installation to resume the download." }
-    } else {
-        Write-Host "Skipped model download. You can run 'ollama pull $model' later." -ForegroundColor Yellow
-    }
-} else {
-    Write-Host "$model is already installed."
-}
+Ensure-OllamaModel -Model $model -Unattended:$Unattended
 
 Write-Host ""
 Write-Host "Bootstrap complete." -ForegroundColor Green

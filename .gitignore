@@ -31,6 +31,10 @@ training/datasets/p12_corpus_1000.jsonl
 training/manifests/p12_corpus_manifest.json
 training/lineage/package-*-production-*.json
 training/lineage/package-3.json
+# Verified accepted receipts for issue #212 are intentionally published.
+!training/configs/qlora_p12_currentprod_20261013.yaml
+!training/lineage/package-2-production-20261013.json
+!training/lineage/package-3.json
 training/scripts/start_guarded_p12_*.ps1
 training/scripts/start_p12_after_restart_*.ps1
 training/scripts/start_p12_currentprod_*.ps1

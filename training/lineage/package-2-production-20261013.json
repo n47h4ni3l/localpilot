@@ -1,0 +1,113 @@
+{
+  "accepted_as_lineage_head": true,
+  "artifact_type": "nestra_lineage_head",
+  "base": {
+    "identity": "openai/gpt-oss-20b",
+    "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+    "training_model_id": "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
+    "training_revision": "093fba6992ef5a7152481afec0bdfca1ac486998"
+  },
+  "benchmark_promoted": false,
+  "deployment": {
+    "candidate_source_tag": "nestra:20b-p1-selfdev-candidate-20261011",
+    "digest": "b94bd74323cbd9af7aa56468c0dbcc97eae3c01f974afcb1dacfce51d8609812",
+    "gguf_sha256": "8576a023fbcc8179e9e514d575bdbeab29041179f32baff3bd6fe978d5178505",
+    "model": "nestra:20b-p1",
+    "temperature": 1.0
+  },
+  "evaluation": {
+    "eval_v1": {
+      "critical": null,
+      "hard_failures": null,
+      "overall": null,
+      "performed_for_candidate": false
+    },
+    "prior_parent_evaluation": {
+      "eval_v1": {
+        "critical": 1.875,
+        "hard_failures": 3,
+        "overall": 2.04,
+        "report": "nestra-benchmark:training/reports/nestra_20b_p1_eval_v1_20261002_codex_reviewed_scored_20261003.json"
+      },
+      "evolution_execution_v1": {
+        "hard_failures": 1,
+        "overall": 4.0,
+        "report": "nestra-benchmark:training/reports/nestra_20b_p1_evolution_execution_post_cc_20261002_scored.json",
+        "scope_violations": 0
+      }
+    },
+    "promotion_smoke": {
+      "critical_regressions": 0,
+      "paired_cells": 16,
+      "report": "C:\\Users\\natha\\Documents\\Codex\\2026-10-11\\referenced-chatgpt-conversation-this-is-an\\outputs\\promotion-20261012\\pre-promotion-review.json",
+      "scope": "Bounded owner-requested self-audit; not an independent blind improvement score",
+      "sha256": "fbe15586c688f3ac8b419aa86e9cb0af600bec36fa47bb240ee642330e7b5230"
+    }
+  },
+  "original_baseline": {
+    "digest": "17052f91a42e97930aa6e28a6c6c06a983e6a58dbb00434885a0cf5313e376f7",
+    "model": "gpt-oss:20b"
+  },
+  "owner_acceptance": {
+    "decision": "accepted_as_working_lineage",
+    "note": "Owner authorized promotion if short regression results were satisfactory. Original failing cases complete at temperature 1.0; paired normal-use smoke and real desktop checks pass. Automatic future training is acceptable within owner-authorized scope; no training launched here."
+  },
+  "package": 2,
+  "parent": {
+    "manifest": "training/lineage/package-1.json",
+    "package": 1,
+    "sha256": "f53f8d34f46b2c0a8461e23e4065f8fc7bcaba5faf6d5b2e22c739f849f2f061"
+  },
+  "recorded_at": "2026-10-12T01:12:36.771205+00:00",
+  "rollback": {
+    "config_backup": "E:\\LLM_HOME\\backups\\nestra-p1-promotion-20261012-attempt-3\\localpilot.toml.original",
+    "digest": "870386dd9cbfe625ab110af128ffbf6216565e5c9d2d603a070e8f6228f203d9",
+    "model": "nestra:20b-p1-original-20261011"
+  },
+  "schema_version": 1,
+  "training": {
+    "adapter_files": {
+      "adapter_config.json": {
+        "bytes": 1589,
+        "sha256": "b2d668fd50043552a267970def1e78bb5f11719e21bf8fa553e323e6e323cf68"
+      },
+      "adapter_model.safetensors": {
+        "bytes": 370291488,
+        "sha256": "555fc30a86c95c657c03e5cb11e09836886770909b89a6090106550da60e631a"
+      }
+    },
+    "checkpoint_files": {
+      "adapter_config.json": {
+        "bytes": 1589,
+        "sha256": "b2d668fd50043552a267970def1e78bb5f11719e21bf8fa553e323e6e323cf68"
+      },
+      "adapter_model.safetensors": {
+        "bytes": 370291488,
+        "sha256": "555fc30a86c95c657c03e5cb11e09836886770909b89a6090106550da60e631a"
+      },
+      "optimizer.pt": {
+        "bytes": 188092951,
+        "sha256": "17e631a98fa9336e7350bebc5d838eb4963fe437d01bd83e2fcac98c55229cd0"
+      },
+      "rng_state.pth": {
+        "bytes": 14645,
+        "sha256": "181c5f0270cf39930062ddfa3767a2481d0c360f120b11f8e25dbf533a1cdaba"
+      },
+      "scheduler.pt": {
+        "bytes": 1465,
+        "sha256": "aafabe617c763bd384c975b4a6676c8a7a67a4fc86b82dd430d0c1a847f03d3e"
+      },
+      "trainer_state.json": {
+        "bytes": 9320,
+        "sha256": "89a4415761954b3ca545ed6e0b8315b97984c3a9eb1c13721b0d8d494abedc84"
+      }
+    },
+    "checkpoint_marker_sha256": "c3d7b14d503d1fe921736a2866073767c95f0c98a09985c081f7de111b66b108",
+    "completion_marker_sha256": "88882b9532c9abe473c51382d9b2f6c0cff3cba12b2b1c5a6ad10f29fbff269c",
+    "config": "training/outputs/nestra_p1_selfdev_micro_20261011/training_config.json",
+    "global_step": 51,
+    "output_directory": "training/outputs/nestra_p1_selfdev_micro_20261011",
+    "run_identity_sha256": "7c00435eba5ec0bee3ac59892d4822542525ef79eeee9ff1e82b1baa3dca02b2",
+    "training_config_sha256": "8d16a5fc78bef76c2fb586ae7254960ace29aa8d90096175e3896644d18edcf3"
+  }
+}

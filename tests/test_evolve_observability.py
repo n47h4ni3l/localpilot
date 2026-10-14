@@ -20,6 +20,7 @@ def test_every_run_records_a_terminal_outcome(tmp_path: Path):
         json.loads(line)
         for line in (tmp_path / "data" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
     ]
+    rows = [row for row in rows if row["event"] in {"evolve_run_start", "evolve_run_end"}]
     assert [row["event"] for row in rows] == ["evolve_run_start", "evolve_run_end"]
     assert rows[-1]["status"] == "disabled"
     assert rows[0]["invocation_id"] == rows[-1]["invocation_id"]

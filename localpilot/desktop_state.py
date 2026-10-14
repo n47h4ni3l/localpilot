@@ -31,6 +31,11 @@ class DesktopUIState:
             "update_last_checked": None,
             "update_available": None,
             "update_target_version": None,
+            "update_target_sha": None,
+            "update_notified_target_sha": None,
+            "update_notification_last_at": None,
+            "update_dismissed_target_sha": None,
+            "update_apply_requested_sha": None,
             "update_check_error": None,
         }
 
@@ -61,6 +66,10 @@ class DesktopUIState:
             values["update_target_version"] = None
         if not isinstance(values["update_check_error"], str):
             values["update_check_error"] = None
+        for key in ("update_target_sha", "update_notified_target_sha", "update_notification_last_at",
+                    "update_dismissed_target_sha", "update_apply_requested_sha"):
+            if not isinstance(values[key], str):
+                values[key] = None
         return values
 
     def update(self, **changes: Any) -> dict[str, Any]:

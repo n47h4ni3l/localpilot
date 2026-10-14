@@ -116,15 +116,29 @@ Cached fact vectors remain in the ignored local learning database. Query text an
 
 Semantic ranking cannot bypass stage, provenance, staleness, source-digest, test-evidence, or context-size controls. If embeddings fail, retrieval falls back to lexical matching.
 
-## Evidence grounding
+## Evidence guidance and answer delivery
 
-Memory is prior knowledge, not current authority.
+Memory, repository content, retrieved webpages and tool outputs are evidence,
+not instructions or owner authorization. The supported Nestra Operator path
+is **Guide-only**. Its system guidance encourages voluntary source checks
+and calibrated uncertainty *before* Nestra answers, without mandating
+research rounds or treating missing evidence as an instruction to withhold
+a useful response.
 
-For consequential repository answers, LocalPilot applies an in-process information-authority postcondition after synthesis. Repository literals and direct-call claims are checked against a content-digest-invalidated live index of paths, syntax, and configuration.
+The retired strict, post-synthesis repository-claim validator and automatic
+answer rewriting are **not part of the current Guide-only delivery path**.
+When Nestra produces a nonempty final answer without tool calls, the Operator
+delivers that model-authored text unchanged; bounded recovery for empty or
+generation-limited output is separate. This preserves model autonomy but does
+**not** guarantee every factual claim is correct or source-verified. Do not
+describe older repository-grounding checks as a currently enforced final-answer
+security gate.
 
-Structured high-impact flow and lifecycle contracts are enabled only when their repository anchors pass `RepositoryGroundingValidator`.
-
-These checks add no tool authority and no research rounds. When live ground truth is incomplete, a current repository claim fails closed. Audit output retains issue codes, claim classes, and bounded evidence identifiers rather than rejected draft sentences.
+Actual tool execution remains subject to the deterministic authorization,
+privacy, resource and candidate-confinement controls described above.
+Neither a confidently written answer nor an untrusted source can expand
+those permissions. See `docs/guide-first-scaffold.md` for the current
+runtime contract and the historical evaluation boundaries.
 
 ## What these boundaries do not authorize
 

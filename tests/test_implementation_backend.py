@@ -58,6 +58,9 @@ elif behavior == 'cli_error':
     raise SystemExit(7)
 elif behavior == 'malformed':
     print('not json')
+elif behavior == 'syntax_corrupt':
+    pathlib.Path('module.py').write_text('class Broken:\\n           bad: bool\\n  invalid: bool\\n', encoding='utf-8')
+    print(json.dumps({'result': json.dumps({'summary': 'done', 'tests': []}), 'subtype': 'success'}))
 elif behavior in {'success', 'nonzero_success', 'plain_success', 'null_success', 'max_turns', 'escape'}:
     target = pathlib.Path('module.py' if behavior != 'escape' else 'other.py')
     target.write_text('VALUE = 2\\n', encoding='utf-8')
@@ -191,6 +194,34 @@ def test_real_process_wrapper_edits_only_candidate_and_returns_structured_eviden
     assert result.session_id == "session-1"
     assert result.usage == {"input_tokens": 10, "output_tokens": 5}
     assert result.tests[0]["passed"] is True
+
+
+def test_invalid_claude_python_reverts_to_last_valid_source(tmp_path: Path):
+    root = _repo(tmp_path)
+    source = root / "module.py"
+    original = source.read_bytes()
+    result = _backend(tmp_path, "syntax_corrupt").run(
+        ImplementationRequest(root, "broken edit", ("module.py",))
+    )
+    assert result.status == ImplementationStatus.CANDIDATE_TEST_FAILURE
+    assert "Python syntax guard" in result.summary
+    assert "previous valid file content restored" in result.summary
+    assert source.read_bytes() == original
+    assert not result.changed_paths
+    assert not list(root.glob("*.syntax-revert"))
+
+
+def test_preexisting_invalid_python_is_preserved_for_bounded_repair(tmp_path: Path):
+    root = _repo(tmp_path)
+    source = root / "module.py"
+    invalid = "class Broken:\\n        okay: bool\\n  invalid: bool\\n".replace("\\\\n", "\\n")
+    source.write_text(invalid, encoding="utf-8")
+    result = _backend(tmp_path, "malformed").run(
+        ImplementationRequest(root, "repair broken source", ("module.py",))
+    )
+    assert result.status == ImplementationStatus.CANDIDATE_TEST_FAILURE
+    assert "pre-existing invalid source retained for repair" in result.summary
+    assert source.read_text(encoding="utf-8") == invalid
 
 
 def test_explicit_success_envelope_retains_nonzero_exit_as_evidence(tmp_path: Path):

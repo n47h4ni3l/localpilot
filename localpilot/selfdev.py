@@ -4279,6 +4279,11 @@ class SelfDeveloper:
                 # Backlog fix PRs can be complete when CI turns green; they
                 # remain awaiting human review rather than being extended.
                 continue
+            experiment = self.memory.experiment_for_task(pending.task_id)
+            if experiment is not None and experiment.outcome == "improved":
+                # Respect a model-reported completed experiment; leave the
+                # successful PR untouched for the owner's review.
+                continue
 
             # Only a same-repository PR on the trusted base qualifies. A
             # candidate-shaped branch name alone is not sufficient identity.
@@ -4366,6 +4371,15 @@ class SelfDeveloper:
                     continue
             if not receipts.can_start(branch, remote_head):
                 continue
+            # An interrupted previous push may have left an active receipt
+            # that was just finalized above. Reload the original task now;
+            # do not recursively embed last round's small-step acceptance.
+            task = self._load_task_by_id(pending.task_id)
+            if task is None:
+                return EvolutionResult(
+                    "deferred", branch, workspace,
+                    "Original objective became unavailable during continuation.",
+                )
             try:
                 protected = self.github.reviewer_modified_test_paths(workspace)
             except RuntimeError:

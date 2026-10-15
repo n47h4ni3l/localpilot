@@ -446,7 +446,27 @@ class SelfDeveloper(_BaseSelfDeveloper):
             if checkpoint_stage in {"implementation", "ci_repair", "local_static_repair"}
             else "implementation"
         )
+        repair_stage = stage in {"local_static_repair", "ci_repair"}
+        # Repairing a compiler error is a small step, not another attempt to
+        # complete the entire capability experiment. Preserve the original
+        # research goal as background; review only the immediate repair.
+        repair_acceptance = [
+            "Fix the concrete recorded static/CI error on the existing candidate.",
+            "Restore syntactically valid Python and preserve established source "
+            "behaviour; do not replace working code with placeholders.",
+            "Pass the permitted repository tests and candidate static checks.",
+            "Make the smallest focused change. Do not require the overall "
+            "research/benchmark goal to be finished in this repair step.",
+        ]
+        effective_acceptance = (
+            repair_acceptance if repair_stage
+            else list(task.get("acceptance", []))
+        )
         max_repairs = int(self.config.selfdev.implementation_review_repair_passes)
+        if repair_stage:
+            # An unsuccessful local syntax fix must not consume twelve extra
+            # Claude invocations before the bounded outer recovery can pause.
+            max_repairs = min(max_repairs, 2)
         progress = self._load_claude_repair_progress(
             branch=branch,
             cycle_id=cycle_id,
@@ -475,8 +495,12 @@ class SelfDeveloper(_BaseSelfDeveloper):
             f"{json.dumps(sorted(tools.protected_paths))}. Finish with one strict JSON object containing summary and "
             "tests. tests must be a non-empty list of {command, passed, exit_code, output_digest}; output_digest is a "
             "SHA-256 digest of bounded command output, never raw logs or reasoning. Do not return chain-of-thought.\n"
-            f"Task: {task['title']}\nAcceptance: {json.dumps(task.get('acceptance', []), ensure_ascii=False)}\n"
-            f"Capability experiment contract:\n{evolution_context}\n"
+            f"Task: {task['title']}\nImmediate acceptance: {json.dumps(effective_acceptance, ensure_ascii=False)}\n"
+            + (
+                "The original experiment is background context, not a pass/fail criterion for this repair.\n"
+                if repair_stage else ""
+            )
+            + f"Capability experiment contract (context):\n{evolution_context}\n"
             f"LocalPilot research brief:\n{research[:12000]}\n"
             f"Verified grounding plan:\n{json.dumps(grounding_plan, ensure_ascii=False)}\n"
             f"Grounding evidence:\n{json.dumps(grounding_evidence, ensure_ascii=False)}\n"
@@ -596,11 +620,12 @@ class SelfDeveloper(_BaseSelfDeveloper):
                             "role": "system",
                             "content": (
                                 "You are LocalPilot's independent acceptance reviewer. You did not implement this change. "
-                                "Review the bounded diff, test evidence, static checks, task contract, and scope. Reject missing "
-                                "tests, failed tests, incomplete acceptance, unsafe scope, or unsupported evidence. Return one "
-                                "strict JSON object with approved (boolean), feedback (list of concrete repair instructions), "
-                                "and summary. Do not reveal hidden reasoning.\n"
-                                f"Task: {task['title']}\nAcceptance: {json.dumps(task.get('acceptance', []))}\n"
+                                "Review the bounded diff, test evidence, static checks, immediate acceptance and scope. "
+                                "Reject missing tests, failed tests, incomplete IMMEDIATE acceptance, unsafe scope, or "
+                                "unsupported evidence. A syntax/CI repair is not required to finish the original "
+                                "capability experiment. Return one strict JSON object with approved (boolean), feedback "
+                                "(list of concrete repair instructions), and summary. Do not reveal hidden reasoning.\n"
+                                f"Task: {task['title']}\nImmediate acceptance: {json.dumps(effective_acceptance)}\n"
                                 f"Backend status: {result.status.value}\nChanged paths: {json.dumps(result.changed_paths)}\n"
                                 f"Test evidence: {json.dumps(result.tests, ensure_ascii=False)}\n"
                                 f"Static checks:\n{static_result[:6000]}\nDiff:\n{diff[-24000:]}"
@@ -680,6 +705,7 @@ class SelfDeveloper(_BaseSelfDeveloper):
                 self._emit(
                     f"LocalPilot review requested Claude Code repair pass {repair_count}/{max_repairs}"
                 )
+                previous_digest = result.diff_digest
                 result = backend.run(
                     replace(
                         request,
@@ -689,6 +715,25 @@ class SelfDeveloper(_BaseSelfDeveloper):
                 )
                 if result.status in terminal_without_review:
                     review_status = "repair_failed"
+                    break
+                if result.diff_digest == previous_digest:
+                    # A stalled or rolled-back source edit has yielded no new
+                    # implementation state. Persist feedback and stop spending
+                    # additional calls repeating the same attempt.
+                    review_status = "no_progress"
+                    result = replace(
+                        result,
+                        status=ImplementationStatus.REVIEW_REJECTED,
+                        summary=(
+                            "No candidate diff progress after the bounded repair pass; "
+                            "the original candidate is retained for later review. "
+                            + (result.summary or feedback)[:1000]
+                        ),
+                    )
+                    self._clear_claude_repair_progress(
+                        branch=branch, cycle_id=cycle_id, stage=stage,
+                        reason="repair changed no candidate diff",
+                    )
                     break
 
             for relative in result.changed_paths:

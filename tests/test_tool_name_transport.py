@@ -38,6 +38,7 @@ def _chunk(content="", tool_calls=None):
 
 @pytest.mark.parametrize(("requested", "expected_reason"), [
     ("read_repository_file<|channel|>commentary", "gpt_oss_channel_suffix"),
+    ("read_repository_file<|channel|>json", "gpt_oss_channel_suffix"),
     (" read_repository_file ", "surrounding_whitespace"),
     ("READ_REPOSITORY_FILE", "case_only"),
 ])
@@ -58,6 +59,11 @@ def test_repairs_only_unambiguous_advertised_read_only_names(requested, expected
     "read_repository_file<|channel|>analysis",
     "read_repository_file<|channel|>commentary<|channel|>commentary",
     "read_repository_file<|channel|>commentaryx",
+    "read_repository_file<|channel|>jsonx",
+    "read_repository_file<|channel|>json<|channel|>json",
+    "read_repository_file<|channel|>commentary<|channel|>json",
+    "read_repository_file<|channel|>json<|channel|>commentary",
+    "read_repository_file<|channel|>json;open_windows_app",
     "read_repository_fil",
     "read_repository_file_more",
     "repo_browser.search",
@@ -109,7 +115,8 @@ def test_explicit_owner_no_web_request_cannot_be_bypassed(tmp_path, monkeypatch)
     assert agent.audit.latest("model_tool_name_transport_recovered") is None
 
 
-def test_external_mentor_is_never_recovered_even_when_enabled(tmp_path):
+@pytest.mark.parametrize("channel", ["commentary", "json"])
+def test_external_mentor_is_never_recovered_even_when_enabled(tmp_path, channel):
     cfg = Config()
     cfg.agent.scaffold_mode = "guide_first"
     cfg.mentor.enabled = True
@@ -117,7 +124,7 @@ def test_external_mentor_is_never_recovered_even_when_enabled(tmp_path):
     agent = LocalPilotAgent(cfg, tmp_path)
     offered = agent._functions()
     assert "consult_external_mentor" in _advertised_tool_names(offered)
-    raw = _call("consult_external_mentor<|channel|>commentary", {
+    raw = _call(f"consult_external_mentor<|channel|>{channel}", {
         "question": "What approach should I consider?", "impasse": "I am stuck.",
     })
     result = agent._stream_chat_message(
@@ -128,8 +135,9 @@ def test_external_mentor_is_never_recovered_even_when_enabled(tmp_path):
     assert agent.audit.latest("model_tool_name_transport_recovered") is None
 
 
-def test_missing_or_unadvertised_tools_never_recover():
-    original = _call("read_repository_file<|channel|>commentary")
+@pytest.mark.parametrize("channel", ["commentary", "json"])
+def test_missing_or_unadvertised_tools_never_recover(channel):
+    original = _call(f"read_repository_file<|channel|>{channel}")
     for exposed, recoverable in [
         (frozenset(), frozenset({"read_repository_file"})),
         (frozenset({"read_repository_file"}), frozenset()),
@@ -141,12 +149,13 @@ def test_missing_or_unadvertised_tools_never_recover():
         assert recovered is original and reason is None
 
 
-def test_mutating_or_expensive_mentor_tools_are_never_recovered(tmp_path):
+@pytest.mark.parametrize("channel", ["commentary", "json"])
+def test_mutating_or_expensive_mentor_tools_are_never_recovered(tmp_path, channel):
     agent = _agent(tmp_path)
     exposed = _advertised_tool_names(agent._functions())
     assert "read_repository_file" in exposed
     assert "open_windows_app" in exposed  # May be enabled, but never recover a mutated action name.
-    raw = _call("open_windows_app<|channel|>commentary", {"app": "notepad"})
+    raw = _call(f"open_windows_app<|channel|>{channel}", {"app": "notepad"})
     repaired, reason = _recover_readonly_tool_call(
         raw, exposed=frozenset({"open_windows_app"}),
         recoverable=frozenset({"read_repository_file"}),
@@ -161,9 +170,10 @@ def test_mutating_or_expensive_mentor_tools_are_never_recovered(tmp_path):
     assert agent.audit.latest("model_tool_name_transport_recovered") is None
 
 
-def test_stream_recovers_name_and_preserves_arguments_audit_and_original(tmp_path):
+@pytest.mark.parametrize("channel", ["commentary", "json"])
+def test_stream_recovers_name_and_preserves_arguments_audit_and_original(tmp_path, channel):
     agent = _agent(tmp_path)
-    request = _call("read_repository_file<|channel|>commentary", {"path": "README.md"})
+    request = _call(f"read_repository_file<|channel|>{channel}", {"path": "README.md"})
     def fake_chat(**kwargs):
         assert any(getattr(fn, "__name__", None) == "read_repository_file"
                    for fn in kwargs["tools"])
@@ -174,11 +184,26 @@ def test_stream_recovers_name_and_preserves_arguments_audit_and_original(tmp_pat
     assert _tool_call_parts(result["tool_calls"][0]) == (
         "read_repository_file", {"path": "README.md"},
     )
-    assert request.function.name == "read_repository_file<|channel|>commentary"
+    assert request.function.name == f"read_repository_file<|channel|>{channel}"
     event = agent.audit.latest("model_tool_name_transport_recovered")
     assert event["resolved_name"] == "read_repository_file"
     assert event["recovery_reason"] == "gpt_oss_channel_suffix"
     assert "arguments" not in event and "args" not in event
+
+
+@pytest.mark.parametrize("channel", ["commentary", "json"])
+def test_advertised_read_only_name_cannot_bypass_denied_policy(tmp_path, channel):
+    agent = _agent(tmp_path)
+    offered = agent._functions()
+    assert "read_repository_file" in _advertised_tool_names(offered)
+    agent.policy.auto_allow_read_only = False
+    request = _call(f"read_repository_file<|channel|>{channel}", {"path": "README.md"})
+    result = agent._stream_chat_message(
+        lambda **_: iter([_chunk(tool_calls=[request])]),
+        think="high", tools=offered, phase="operator",
+    )
+    assert _tool_call_parts(result["tool_calls"][0])[0] == request.function.name
+    assert agent.audit.latest("model_tool_name_transport_recovered") is None
 
 
 def test_retired_scaffold_mode_is_rejected(tmp_path):
@@ -186,9 +211,10 @@ def test_retired_scaffold_mode_is_rejected(tmp_path):
         _agent(tmp_path, "strict")
 
 
-def test_model_without_advertised_tools_cannot_recover(tmp_path):
+@pytest.mark.parametrize("channel", ["commentary", "json"])
+def test_model_without_advertised_tools_cannot_recover(tmp_path, channel):
     agent = _agent(tmp_path)
-    request = _call("read_repository_file<|channel|>commentary")
+    request = _call(f"read_repository_file<|channel|>{channel}")
     result = agent._stream_chat_message(
         lambda **kwargs: iter([_chunk(tool_calls=[request])]),
         think="high", tools=None, phase="final"
@@ -213,8 +239,9 @@ def test_dict_tool_call_preserves_other_wire_metadata_and_parameters():
     assert original["function"]["name"] != recovered["function"]["name"]
 
 
+@pytest.mark.parametrize("channel", ["commentary", "json"])
 def test_end_to_end_recovered_tool_executes_original_registered_function(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, channel):
     agent = _agent(tmp_path)
     invocations = []
     def read_repository_file(path: str, start_line: int = 1, end_line: int = 10) -> str:
@@ -225,7 +252,7 @@ def test_end_to_end_recovered_tool_executes_original_registered_function(
         read_repository_file,
     )
     streams = iter([
-        [_chunk(tool_calls=[_call("read_repository_file<|channel|>commentary", {
+        [_chunk(tool_calls=[_call(f"read_repository_file<|channel|>{channel}", {
             "path": "README.md", "start_line": 1, "end_line": 1,
         })])],
         [_chunk(content="I read the registered source and formed my own conclusion.")],
@@ -244,3 +271,44 @@ def test_end_to_end_recovered_tool_executes_original_registered_function(
     assert agent.audit.latest("model_guide_first_answer_delivered")[
         "draft_preserved_byte_for_byte"
     ] is True
+
+
+@pytest.mark.parametrize(("name", "arguments"), [
+    ("get_library_summary", {}),
+    ("get_learning_memory_summary", {
+        "fact_type": "library", "sample_limit": 5, "source_limit": 5, "stage": "current",
+    }),
+    ("search_library", {"max_results": 1, "query": "latest"}),
+    ("get_system_sense_summary", {}),
+])
+def test_observed_json_calls_recover_through_stream_without_changing_arguments(
+        tmp_path, name, arguments):
+    cfg = Config()
+    cfg.library.enabled = True
+    cfg.systemsense.enabled = False
+    agent = LocalPilotAgent(cfg, tmp_path)
+    # Keep native collectors disabled; the binding still follows the production
+    # registry, advertised-schema and permission checks in the streaming path.
+    def get_system_sense_summary() -> str:
+        return "Bounded collector evidence"
+    agent.tools["get_system_sense_summary"] = ToolSpec(
+        "get_system_sense_summary", "Read current collector evidence",
+        RiskLevel.READ_ONLY, get_system_sense_summary,
+    )
+    assert name in agent.tools
+    request = {
+        "type": "function", "id": "observed-call",
+        "function": {"name": f"{name}<|channel|>json", "arguments": dict(arguments)},
+    }
+    result = agent._stream_chat_message(
+        lambda **_: iter([_chunk(tool_calls=[request])]),
+        think="high", tools=agent._functions(), phase="operator", turn_no=1,
+    )
+    recovered = result["tool_calls"][0]
+    assert _tool_call_parts(recovered) == (name, arguments)
+    assert recovered["id"] == "observed-call"
+    assert request["function"]["name"] == f"{name}<|channel|>json"
+    event = agent.audit.latest("model_tool_name_transport_recovered")
+    assert event["original_name"] == request["function"]["name"]
+    assert event["resolved_name"] == name
+    assert event["recovery_reason"] == "gpt_oss_channel_suffix"

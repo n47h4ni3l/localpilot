@@ -173,9 +173,9 @@ def _tool_call_parts(call: Any) -> tuple[str, dict[str, Any]]:
     return str(getattr(fn, "name", "") or ""), dict(getattr(fn, "arguments", None) or {})
 
 
-# GPT-OSS/Ollama sometimes serializes a known tool's name with this channel
-# delimiter appended. This exact suffix is transport noise, not a new tool.
-_KNOWN_CHANNEL_SUFFIX = "<|channel|>commentary"
+# GPT-OSS/Ollama sometimes appends a channel/format marker to a tool name.
+# Only these observed, exact suffixes are transport noise, not new tools.
+_KNOWN_CHANNEL_SUFFIXES = ("<|channel|>commentary", "<|channel|>json")
 
 
 def _advertised_tool_names(tools: list[Any] | None) -> frozenset[str]:
@@ -207,8 +207,10 @@ def _recover_readonly_tool_call(
     if original in exposed or not original or len(original) > 180:
         return call, None
     candidates: list[tuple[str, str]] = []
-    if original.endswith(_KNOWN_CHANNEL_SUFFIX) and original.count(_KNOWN_CHANNEL_SUFFIX) == 1:
-        candidates.append((original[:-len(_KNOWN_CHANNEL_SUFFIX)], "gpt_oss_channel_suffix"))
+    if original.count("<|channel|>") == 1:
+        for suffix in _KNOWN_CHANNEL_SUFFIXES:
+            if original.endswith(suffix):
+                candidates.append((original[:-len(suffix)], "gpt_oss_channel_suffix"))
     stripped = original.strip(" \t\r\n")
     if stripped != original:
         candidates.append((stripped, "surrounding_whitespace"))

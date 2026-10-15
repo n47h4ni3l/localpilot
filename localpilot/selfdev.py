@@ -4219,6 +4219,9 @@ class SelfDeveloper:
         examined: set[str] = set()
         for pending in reversed(self.memory.pending_candidates()):
             branch = pending.branch
+            from localpilot.github_integration import is_managed_candidate_branch
+            if not is_managed_candidate_branch(branch):
+                continue
             if branch in examined:
                 continue
             examined.add(branch)
@@ -4267,6 +4270,16 @@ class SelfDeveloper:
                 return EvolutionResult(
                     "deferred", branch, None,
                     "PR identity or trusted base could not be verified.",
+                )
+            if (
+                latest.pull_request_url
+                and not latest.pull_request_url.rstrip("/").endswith(
+                    f"/pull/{matches[0]['number']}"
+                )
+            ):
+                return EvolutionResult(
+                    "deferred", branch, None,
+                    "PR URL differs from the durable candidate review record.",
                 )
 
             workspace = self.github.worktree_for_branch(branch)

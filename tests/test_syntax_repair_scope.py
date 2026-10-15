@@ -123,7 +123,7 @@ def test_syntax_repair_reviews_only_immediate_contract(tmp_path, monkeypatch):
     assert "Fix the concrete recorded static/CI error" in backend.prompts[0]
     assert "not a pass/fail criterion" in backend.prompts[0]
     assert "Immediate acceptance" in reviews[0]
-    assert "not required to finish" in reviews[0]
+    assert "do not demand completion" in reviews[0]
     assert "±1%" not in reviews[0]
 
 

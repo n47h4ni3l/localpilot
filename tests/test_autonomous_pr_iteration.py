@@ -32,6 +32,47 @@ def test_autonomous_head_receipts_resume_only_after_real_new_commit(tmp_path):
     assert ledger.path.read_text(encoding="utf-8").count('"head"') == 1
 
 
+def test_incremental_brief_survives_restart_and_closes_after_push(tmp_path):
+    config = Config()
+    config.agent.data_dir = "data"
+    developer = SelfDeveloper(config, tmp_path)
+    task = {
+        "id": "factuality-progress",
+        "title": "Factuality measurement",
+        "question": "Can the model measure factual error rates?",
+        "acceptance": ["Measure the complete factuality baseline."],
+        "evaluation": {
+            "metric": "hallucination rate", "baseline": "unknown",
+            "measurement_method": "Run a reproducible reference benchmark",
+        },
+        "source": "capability_discovery",
+    }
+    developer.memory.record_experiment(task)
+    cycle = developer.memory.start_cycle(
+        task_id=task["id"], branch=BRANCH, everyday_model="nestra",
+        developer_model="developer", workspace=tmp_path / "candidate", is_worktree=True,
+    )
+    receipts = AutonomousPRLedger(
+        developer.data_dir / "autonomous-pr-iterations.json"
+    )
+    acceptance = ["Build one meaningful scoring fixture this time."]
+    assert receipts.claim(
+        BRANCH, HEAD, cycle_id=cycle,
+        task_id=task["id"], acceptance=acceptance,
+    )
+    assert receipts.active_for_task(task["id"])["acceptance"] == acceptance
+    # The actual checkpoint loader must reconstruct the exact per-step task,
+    # rather than reverting to the larger original acceptance criteria.
+    restored = developer._load_task_by_id(task["id"])
+    assert restored["acceptance"] == acceptance
+    assert restored["incremental_pr_revision"] is True
+    receipts.finish(BRANCH, cycle, "completed")
+    assert receipts.active_for_task(task["id"]) is None
+    restored = developer._load_task_by_id(task["id"])
+    assert restored["acceptance"] != acceptance
+    assert not restored.get("incremental_pr_revision")
+
+
 def test_autonomous_receipts_fail_closed_on_corruption(tmp_path):
     path = tmp_path / "bad.json"
     path.write_text('{"version":1,"branches":{"unsafe":{"attempts":true,"head":"bad"}}}', encoding="utf-8")

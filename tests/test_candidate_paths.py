@@ -29,7 +29,7 @@ def test_python_syntax_guard_preserves_previous_valid_file(tmp_path: Path):
     path = tmp_path / "module.py"
     path.write_text(original, encoding="utf-8")
     tools = CandidateTools(tmp_path)
-    with pytest.raises(ValueError, match="Invalid Python candidate edit.*line 2"):
+    with pytest.raises(ValueError, match="Invalid Python candidate edit.*line 3"):
         tools.write_project_file("module.py", "class Broken:\n        okay: bool\n  invalid: bool\n")
     assert path.read_text(encoding="utf-8") == original
     assert not tools.files_written

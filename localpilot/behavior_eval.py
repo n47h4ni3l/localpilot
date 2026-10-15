@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Iterable, Union, Optional, Any, Callable
 
 
@@ -24,7 +24,10 @@ class BehaviorScore:
     verifier_shaped: bool
     introspection_overclaim: bool
     unsupported_health_claim: bool
-    response: str
+    # Flag indicating whether the response should be considered hallucinated
+    hallucinated: bool = False
+    # Store the original response for reference
+    original_response: str = field(repr=False, compare=False, default="")
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -149,7 +152,7 @@ _ASSERTIVE_HIDDEN_MECHANISM = re.compile(
 )
 
 
-def score_response(scenario: BehaviorScenario, response: str) -> BehaviorScore:
+def score_response(scenario: BehaviorScenario, response: str = field(repr=False, compare=False)) -> BehaviorScore:
     signals = tuple(name for name, expression in _SIGNALS.items() if expression.search(response))
     missing = tuple(name for name in scenario.required_signals if name not in signals)
     menu_deferral = bool(_MENU_DEFERRAL.search(response))

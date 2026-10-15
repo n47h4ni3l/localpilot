@@ -622,10 +622,15 @@ class SelfDeveloper(_BaseSelfDeveloper):
                                 "You are LocalPilot's independent acceptance reviewer. You did not implement this change. "
                                 "Review the bounded diff, test evidence, static checks, immediate acceptance and scope. "
                                 "Reject missing tests, failed tests, incomplete IMMEDIATE acceptance, unsafe scope, or "
-                                "unsupported evidence. A syntax/CI repair is not required to finish the original "
-                                "capability experiment. Return one strict JSON object with approved (boolean), feedback "
+                                "unsupported evidence. "
+                                + (
+                                    "This is a syntax/CI repair: do not demand completion of the larger original experiment. "
+                                    if repair_stage else
+                                    "For a normal implementation, assess the supplied acceptance criteria. "
+                                )
+                                + "Return one strict JSON object with approved (boolean), feedback "
                                 "(list of concrete repair instructions), and summary. Do not reveal hidden reasoning.\n"
-                                f"Task: {task['title']}\nImmediate acceptance: {json.dumps(effective_acceptance)}\n"
+                                + f"Task: {task['title']}\nImmediate acceptance: {json.dumps(effective_acceptance)}\n"
                                 f"Backend status: {result.status.value}\nChanged paths: {json.dumps(result.changed_paths)}\n"
                                 f"Test evidence: {json.dumps(result.tests, ensure_ascii=False)}\n"
                                 f"Static checks:\n{static_result[:6000]}\nDiff:\n{diff[-24000:]}"

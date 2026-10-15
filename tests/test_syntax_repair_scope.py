@@ -10,7 +10,8 @@ from localpilot.implementation_backend import (
     ImplementationResult,
     ImplementationStatus,
 )
-from localpilot.selfdev import CandidateTools, SelfDeveloper
+from localpilot.evolution_reliability import SelfDeveloper
+from localpilot.selfdev import CandidateTools
 
 
 def _candidate(tmp_path: Path) -> Path:

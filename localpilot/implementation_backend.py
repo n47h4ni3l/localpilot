@@ -873,10 +873,20 @@ class ClaudeCodeBackend:
         if syntax_failures:
             # This is a candidate implementation mistake, NOT a sandbox
             # escape: do not quarantine the PR or attempt to run its tests.
-            changed, digest = self._validate_candidate(
-                workspace, allowed_paths=request.allowed_paths,
-                protected_paths=request.protected_paths,
-            )
+            try:
+                changed, digest = self._validate_candidate(
+                    workspace, allowed_paths=request.allowed_paths,
+                    protected_paths=request.protected_paths,
+                )
+            except (OSError, UnicodeError, ValueError, RuntimeError, PermissionError) as exc:
+                # An unrelated path escape or protected write still outranks
+                # the syntax mistake and keeps the original confinement gate.
+                return ImplementationResult(
+                    ImplementationStatus.CONFINEMENT_VIOLATION, self.name, self.model,
+                    f"Post-run candidate validation failed: {type(exc).__name__}: {_bounded(exc, 1000)}",
+                    exit_code=process.returncode, duration_seconds=duration,
+                    repair_pass=repair_pass, sanitized_output=sanitized,
+                )
             return ImplementationResult(
                 ImplementationStatus.CANDIDATE_TEST_FAILURE, self.name, self.model,
                 "Python syntax guard rejected malformed candidate edit: "

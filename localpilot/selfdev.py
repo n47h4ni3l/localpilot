@@ -3413,19 +3413,27 @@ class SelfDeveloper:
                     "result": experiment.outcome if experiment else "pending_ci",
                     "measurement_artifact": task["evaluation"]["measurement_method"],
                 }
-                pull_request = self.github.create_candidate_pull_request(
-                    workspace,
-                    branch=branch,
-                    title=f"{EvolutionClass(task['evolution_class']).label}: {task['title']}",
-                    body=self._candidate_pr_body(task, report, check_result),
-                )
-                delivery = (
-                    "Candidate pushed and presented for human review; it remains pending until CI passes and "
-                    "a human merges it."
-                    if pull_request.ok
-                    else "Candidate pushed; PR presentation remains awaiting human action: "
-                    f"{pull_request.stderr or pull_request.stdout}"
-                )
+                if task.get("owner_revision_feedback") or task.get("incremental_pr_revision"):
+                    # Local repair must preserve the same existing PR identity,
+                    # just like the normal incremental delivery path.
+                    delivery = (
+                        "Recovered revision pushed to the existing candidate PR; "
+                        "fresh GitHub CI and human review are still required."
+                    )
+                else:
+                    pull_request = self.github.create_candidate_pull_request(
+                        workspace,
+                        branch=branch,
+                        title=f"{EvolutionClass(task['evolution_class']).label}: {task['title']}",
+                        body=self._candidate_pr_body(task, report, check_result),
+                    )
+                    delivery = (
+                        "Candidate pushed and presented for human review; it remains pending until CI passes and "
+                        "a human merges it."
+                        if pull_request.ok
+                        else "Candidate pushed; PR presentation remains awaiting human action: "
+                        f"{pull_request.stderr or pull_request.stdout}"
+                    )
             else:
                 status = "candidate_needs_work"
                 delivery = f"Candidate push failed: {push.stderr or push.stdout}"

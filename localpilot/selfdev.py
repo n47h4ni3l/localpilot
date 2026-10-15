@@ -358,6 +358,19 @@ class CandidateTools:
         if len(content.encode("utf-8")) > 1_000_000:
             raise ValueError("Candidate file exceeds 1 MB safety limit.")
         _validate_frontend_candidate(Path(relative), content)
+        # Reject malformed Python *before* replacing a working candidate file.
+        # Syntax compilation is non-executing and does not require the full
+        # proposed capability to be complete. A repair of an already-invalid
+        # file is accepted once its replacement is syntactically valid.
+        if suffix == ".py":
+            try:
+                compile(content, relative, "exec")
+            except (SyntaxError, ValueError) as exc:
+                raise ValueError(
+                    f"Invalid Python candidate edit {relative}: "
+                    f"{type(exc).__name__} at line {getattr(exc, 'lineno', '?')}: "
+                    f"{str(exc)[:300]}"
+                ) from exc
         reserved = set(self.files_written if reserved_paths is None else reserved_paths)
         if path not in reserved and len(reserved) >= self.max_files:
             raise RuntimeError(

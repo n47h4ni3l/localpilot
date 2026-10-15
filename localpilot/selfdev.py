@@ -1266,6 +1266,16 @@ class SelfDeveloper:
                 ),
             ]
             task["owner_revision_feedback"] = str(active["feedback"])
+        if active is None:
+            from localpilot.autonomous_pr_iteration import AutonomousPRLedger
+            step = AutonomousPRLedger(
+                self.data_dir / "autonomous-pr-iterations.json"
+            ).active_for_task(str(task_id))
+            if step is not None:
+                managed = self.memory.candidate_for_cycle(int(step["cycle_id"]))
+                if managed is not None and managed.branch == step["branch"]:
+                    task["acceptance"] = list(step["acceptance"])
+                    task["incremental_pr_revision"] = True
         return task
 
     def _load_next_task(self) -> dict[str, Any] | None:
@@ -3999,6 +4009,31 @@ class SelfDeveloper:
                     receipts.finish(
                         int(active_revision["comment_id"]), "completed"
                     )
+        # Preserve the exact incremental acceptance brief across checkpoints.
+        # Finalize only when this same durable cycle really pushed a commit,
+        # or reached a terminal no-progress state. Interrupted candidates
+        # remain active for the ordinary recovery machinery.
+        if result.branch:
+            from localpilot.autonomous_pr_iteration import AutonomousPRLedger
+            auto_receipts = AutonomousPRLedger(
+                self.data_dir / "autonomous-pr-iterations.json"
+            )
+            active_step = auto_receipts.active(result.branch)
+            if active_step is not None:
+                managed_step = self.memory.candidate_for_cycle(int(active_step["cycle_id"]))
+                if managed_step is not None and managed_step.branch == result.branch:
+                    if (
+                        managed_step.pushed
+                        and managed_step.status == "candidate_pending_validation"
+                        and result.status == "candidate_pending_validation"
+                    ):
+                        auto_receipts.finish(
+                            result.branch, managed_step.cycle_id, "completed"
+                        )
+                    elif managed_step.status in {"failed", "no_changes"}:
+                        auto_receipts.finish(
+                            result.branch, managed_step.cycle_id, "needs_work"
+                        )
         latest_experiment = self.memory.latest_experiment()
         if self._active_task_id:
             self.opportunities.update(
@@ -4240,7 +4275,9 @@ class SelfDeveloper:
             ):
                 continue
             task = self._load_task_by_id(pending.task_id)
-            if task is None:
+            if task is None or task.get("source") != "capability_discovery":
+                # Backlog fix PRs can be complete when CI turns green; they
+                # remain awaiting human review rather than being extended.
                 continue
 
             # Only a same-repository PR on the trusted base qualifies. A
@@ -4310,6 +4347,23 @@ class SelfDeveloper:
                     "deferred", branch, workspace,
                     "Existing PR worktree is dirty or its HEAD differs from remote; no edits made.",
                 )
+            active_attempt = receipts.active(branch)
+            if active_attempt is not None:
+                managed_attempt = self.memory.candidate_for_cycle(
+                    int(active_attempt["cycle_id"])
+                )
+                if (
+                    managed_attempt is not None
+                    and managed_attempt.pushed
+                    and managed_attempt.status == "candidate_pending_validation"
+                ):
+                    receipts.finish(
+                        branch, managed_attempt.cycle_id, "completed"
+                    )
+                else:
+                    # Recovery is handled before this method. Never create
+                    # another cycle while an earlier step remains active.
+                    continue
             if not receipts.can_start(branch, remote_head):
                 continue
             try:
@@ -4363,7 +4417,10 @@ class SelfDeveloper:
                     "deferred", branch, workspace,
                     "Incremental candidate path or safety validation failed; PR untouched.",
                 )
-            if not receipts.claim(branch, remote_head):
+            if not receipts.claim(
+                branch, remote_head, cycle_id=cycle_id,
+                task_id=pending.task_id, acceptance=task["acceptance"],
+            ):
                 return EvolutionResult(
                     "deferred", branch, workspace,
                     "PR head already attempted; no duplicate inference started.",

@@ -2846,11 +2846,14 @@ class SelfDeveloper:
                     self._emit("Candidate branch pushed" if pushed else "Candidate push failed")
                     if pushed:
                         status = "candidate_pending_validation"
-                        if task.get("owner_revision_feedback"):
-                            # Revising an open PR updates its existing head branch.
-                            # Creating another PR here would be a duplicate.
+                        if task.get("owner_revision_feedback") or task.get("incremental_pr_revision"):
+                            # Both owner-directed and incremental revisions reuse
+                            # the verified existing PR and its exact head branch.
                             delivery = (
-                                "Owner-requested changes pushed to the existing candidate PR; "
+                                "Incremental changes pushed to the existing candidate PR; "
+                                "new GitHub CI is required before human review."
+                                if task.get("incremental_pr_revision")
+                                else "Owner-requested changes pushed to the existing candidate PR; "
                                 "new GitHub CI is required before human review."
                             )
                         else:
@@ -4201,6 +4204,181 @@ class SelfDeveloper:
             return result
         return None
 
+    def _iterate_open_candidate(self, *, force: bool) -> EvolutionResult | None:
+        """Give a green, unfinished managed PR one small autonomous next step.
+
+        Existing owner-comment revisions take priority. The original objective
+        and PR remain intact; this does not imply the capability is complete.
+        A durable HEAD receipt prevents repeated inference on a stalled diff.
+        """
+        from localpilot.autonomous_pr_iteration import AutonomousPRLedger
+        from localpilot.pr_revision_feedback import OwnerRevisionLedger
+
+        receipts = AutonomousPRLedger(self.data_dir / "autonomous-pr-iterations.json")
+        owner_receipts = OwnerRevisionLedger(self.data_dir / "owner-pr-revisions.json")
+        examined: set[str] = set()
+        for pending in reversed(self.memory.pending_candidates()):
+            branch = pending.branch
+            if branch in examined:
+                continue
+            examined.add(branch)
+            latest = self.memory.candidate_for_branch(branch)
+            if (
+                latest is None or not latest.pushed or latest.merged
+                or latest.status != "candidate_pending_validation"
+                or latest.validation_state == "rejected_by_human"
+                or owner_receipts.active(branch) is not None
+            ):
+                continue
+            lifecycle = self.github.candidate_lifecycle(branch)
+            if (
+                lifecycle.merged or lifecycle.pull_request_state != "open"
+                or lifecycle.validation_state != "passed"
+            ):
+                continue
+            task = self._load_task_by_id(pending.task_id)
+            if task is None:
+                continue
+
+            # Only a same-repository PR on the trusted base qualifies. A
+            # candidate-shaped branch name alone is not sufficient identity.
+            info = self.github._run(
+                ["gh", "pr", "list", "--head", branch, "--state", "open",
+                 "--json", "number,headRefName,baseRefName,isCrossRepository"],
+                timeout=45,
+            )
+            if not info.ok:
+                return EvolutionResult(
+                    "deferred", branch, None,
+                    "Could not verify the open managed PR for incremental continuation.",
+                )
+            try:
+                entries = json.loads(info.stdout)
+            except (ValueError, TypeError):
+                entries = None
+            matches = [
+                row for row in entries if isinstance(row, dict)
+                and row.get("headRefName") == branch
+                and row.get("baseRefName") == self.config.github.main_branch
+                and row.get("isCrossRepository") is False
+                and type(row.get("number")) is int
+            ] if isinstance(entries, list) else []
+            if len(matches) != 1:
+                return EvolutionResult(
+                    "deferred", branch, None,
+                    "PR identity or trusted base could not be verified.",
+                )
+
+            workspace = self.github.worktree_for_branch(branch)
+            if workspace is None:
+                workspace = self.data_dir / "autonomous-pr-iterations" / branch.split("/")[-1]
+                restored = self.github.checkout_existing_branch_worktree(branch, workspace)
+                if not restored.ok:
+                    return EvolutionResult(
+                        "deferred", branch, workspace,
+                        "Could not restore the existing PR branch safely.",
+                    )
+            clean = self.github._run(
+                ["git", "status", "--porcelain", "--untracked-files=all"], cwd=workspace,
+            )
+            current = self.github._run(
+                ["git", "rev-parse", "--verify", "HEAD^{commit}"], cwd=workspace,
+            )
+            remote = self.github._run(
+                ["git", "ls-remote", "--heads", self.config.github.remote, branch],
+                cwd=workspace, timeout=60,
+            )
+            remote_head = remote.stdout.split()[0] if remote.ok and remote.stdout else ""
+            if (
+                not clean.ok or clean.stdout or not current.ok
+                or not remote_head or remote_head != current.stdout
+            ):
+                return EvolutionResult(
+                    "deferred", branch, workspace,
+                    "Existing PR worktree is dirty or its HEAD differs from remote; no edits made.",
+                )
+            if not receipts.can_start(branch, remote_head):
+                continue
+            try:
+                protected = self.github.reviewer_modified_test_paths(workspace)
+            except RuntimeError:
+                return EvolutionResult(
+                    "deferred", branch, workspace,
+                    "Existing PR test protections could not be verified.",
+                )
+            selection = self._select_developer_model()
+            if selection.model is None:
+                return EvolutionResult("deferred", branch, workspace, selection.reason)
+
+            # Review just ONE attainable increment, not the whole original
+            # long-running benchmark. Retain the objective's original question,
+            # evaluation contract and history for later iterations.
+            task = dict(task)
+            task["acceptance"] = [
+                "This is one incremental step in the existing open PR, not the final delivery "
+                "of the entire objective. Select one small, functional and testable improvement "
+                "toward the original goal; do not require complete benchmark success yet.",
+                "Inspect the current candidate implementation. Add meaningful executable "
+                "behaviour, a reproducible fixture, or a targeted regression test. "
+                "Unused imports, formatting-only changes and empty work are not progress.",
+                "Explain what this step establishes, what remains unfinished and the next "
+                "smallest useful step. Do not invent completed measurements.",
+                ("Original overall acceptance criteria (future steps): "
+                 + json.dumps(task.get("acceptance", []), ensure_ascii=False)[:1600]),
+                ("Most recent candidate outcome and feedback: "
+                 + str(latest.summary or latest.reusable_lesson or "Not yet measured")[-1200:]),
+            ]
+            task["incremental_pr_revision"] = True
+            cycle_id = self.memory.start_cycle(
+                task_id=pending.task_id, branch=branch,
+                everyday_model=self.config.model.name,
+                developer_model=selection.model, workspace=workspace, is_worktree=True,
+            )
+            try:
+                tools = self._candidate_tools(
+                    workspace, branch=branch, task_id=pending.task_id,
+                    cycle_id=cycle_id, force=force, protected_paths=protected,
+                )
+            except (ValueError, PermissionError, RuntimeError):
+                self.memory.finish_cycle(
+                    cycle_id, status="failed",
+                    summary="Incremental PR continuation failed candidate safety preflight.",
+                    reusable_lesson="Do not resume before validating candidate confinement.",
+                    checks_passed=False, pushed=False,
+                )
+                return EvolutionResult(
+                    "deferred", branch, workspace,
+                    "Incremental candidate path or safety validation failed; PR untouched.",
+                )
+            if not receipts.claim(branch, remote_head):
+                return EvolutionResult(
+                    "deferred", branch, workspace,
+                    "PR head already attempted; no duplicate inference started.",
+                )
+            self.memory.attach_experiment_cycle(pending.task_id, cycle_id, branch)
+            self._active_task_id = pending.task_id
+            self._emit(
+                f"Continuing open PR #{matches[0]['number']} with one focused development step"
+            )
+            self.audit.write(
+                "selfdev_incremental_pr_started",
+                branch=branch, cycle_id=cycle_id,
+                pr_number=matches[0]["number"], verified_head=remote_head,
+                human_merge_required=True,
+            )
+            result = self._continue_candidate(
+                force=force, cycle_id=cycle_id, task=task, branch=branch,
+                workspace=workspace, is_worktree=True,
+                developer_model=selection.model, tools=tools,
+            )
+            self.audit.write(
+                "selfdev_incremental_pr_result",
+                branch=branch, cycle_id=cycle_id,
+                status=result.status, human_merge_required=True,
+            )
+            return result
+        return None
+
     def _run_once(self, *, force: bool = False) -> EvolutionResult:
         if not self.config.selfdev.enabled:
             return EvolutionResult("disabled", None, None, "Self-development is disabled in config.")
@@ -4259,6 +4437,13 @@ class SelfDeveloper:
         revision = self._revise_owner_reviewed_candidate(force=force)
         if revision is not None:
             return revision
+
+        # Passing CI means the current diff is safe to review, not that the
+        # original research objective is complete. Continue an unfinished PR
+        # on the same head branch for one bounded step before discovering more.
+        incremental = self._iterate_open_candidate(force=force)
+        if incremental is not None:
+            return incremental
 
         self._emit("Selecting an objective and developer model")
         task = self._load_next_task()

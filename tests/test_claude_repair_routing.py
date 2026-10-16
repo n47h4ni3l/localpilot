@@ -6,9 +6,54 @@ from pathlib import Path
 
 import pytest
 
-from localpilot.config import Config
+from localpilot.config import Config, load_config
 from localpilot.evolution_reliability import SelfDeveloper
 from localpilot.selfdev import CandidateTools
+
+
+@pytest.mark.parametrize("stage", ["implementation", "ci_repair", "local_static_repair"])
+def test_explicit_native_nestra_backend_handles_missing_tool_name_without_claude(
+    tmp_path: Path, monkeypatch, stage: str,
+):
+    config_path = tmp_path / "localpilot.toml"
+    config_path.write_text(
+        '[model]\nprovider = "ollama"\nname = "nestra:p1.2"\n'
+        '[selfdev]\nimplementation_backend = "local_tools"\n', encoding="utf-8",
+    )
+    config = load_config(config_path)
+    developer = SelfDeveloper(config, tmp_path)
+    (tmp_path / "fixture.txt").write_text("native fixture", encoding="utf-8")
+    tools = CandidateTools(tmp_path)
+    responses = iter([
+        {"content": "", "tool_calls": [{"function": {"arguments": {}}}]},
+        {"content": "", "tool_calls": [{"function": {
+            "name": "read_project_file", "arguments": {"relative_path": "fixture.txt"},
+        }}]},
+        {"content": "native completion"},
+    ])
+
+    def chat(_chat, **kwargs):
+        assert kwargs["model"] == "nestra:p1.2"
+        assert kwargs["tools"] == [tools.read_project_file]
+        return next(responses)
+
+    monkeypatch.setattr(developer, "_developer_chat", chat)
+    monkeypatch.setattr(developer, "_check_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        developer, "_claude_code_backend",
+        lambda **_kwargs: pytest.fail("explicit native execution must not start Claude Code"),
+    )
+    messages = [{"role": "user", "content": "Read the fixture"}]
+    result = developer._tool_stage(
+        chat=lambda **_kwargs: None, model=config.selfdev.developer_model,
+        messages=messages, functions=[tools.read_project_file], rounds=3,
+        force=True, branch="localpilot/candidate-native-routing", stage=stage,
+    )
+    assert result == "native completion"
+    results = [row["content"] for row in messages if row.get("role") == "tool"]
+    assert results[0] == "Unknown candidate tool: "
+    assert "native fixture" in results[1]
+    assert config.selfdev.implementation_model == "nestra:p1.2"
 
 
 def _git(root: Path, *args: str) -> None:

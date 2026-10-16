@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -56,12 +57,22 @@ if behavior == 'timeout':
 elif behavior == 'cli_error':
     print('failed', file=sys.stderr)
     raise SystemExit(7)
+elif behavior in {'missing_tool_name', 'invalid_model'}:
+    errors = (["undefined is not an object (evaluating 'ke.name.startsWith')",
+               '[session_crash] error_name=TypeError api_error_status=none cause_name=none']
+              if behavior == 'missing_tool_name' else ['model nestra:missing not found'])
+    print(json.dumps({'type': 'result', 'subtype': 'error_during_execution',
+                      'is_error': True, 'errors': errors}))
+    print('[claude-code:unrecognized_model] {"model":"nestra:p1.2","query_source":"sdk"}', file=sys.stderr)
+    raise SystemExit(1)
 elif behavior == 'malformed':
     print('not json')
 elif behavior == 'syntax_corrupt':
     pathlib.Path('module.py').write_text('class Broken:\\n           bad: bool\\n  invalid: bool\\n', encoding='utf-8')
     print(json.dumps({'result': json.dumps({'summary': 'done', 'tests': []}), 'subtype': 'success'}))
-elif behavior in {'success', 'nonzero_success', 'plain_success', 'null_success', 'max_turns', 'escape'}:
+elif behavior in {'success', 'unrecognized_success', 'nonzero_success', 'plain_success', 'null_success', 'max_turns', 'escape'}:
+    if behavior == 'unrecognized_success':
+        print('[claude-code:unrecognized_model] {"model":"nestra:p1.2","query_source":"sdk"}', file=sys.stderr)
     target = pathlib.Path('module.py' if behavior != 'escape' else 'other.py')
     target.write_text('VALUE = 2\\n', encoding='utf-8')
     result = {
@@ -182,6 +193,78 @@ def test_preflight_accepts_nestra_as_implementation_model(monkeypatch):
     result = backend.preflight()
     assert result.healthy is True
     assert result.model == "nestra:20b-p1"
+
+
+def test_missing_ollama_model_fails_preflight_without_starting_implementation(tmp_path, monkeypatch):
+    root = _repo(tmp_path)
+    backend = ClaudeCodeBackend(executable_argv=(sys.executable,), model="nestra:missing")
+    backend._run_probe = lambda *args: subprocess.CompletedProcess(
+        args, 0, stdout=" ".join(backend._REQUIRED_FLAGS), stderr=""
+    )
+    calls = []
+
+    def missing_model(path, payload=None, **kwargs):
+        calls.append((path, payload))
+        raise HTTPError("http://localhost:11434/api/show", 404, "model not found", None, None)
+
+    backend._ollama_json = missing_model
+    monkeypatch.setattr(
+        backend, "_command",
+        lambda **_kwargs: pytest.fail("unavailable models must not start Claude Code"),
+    )
+    result = backend.run(ImplementationRequest(root, "implement", ("module.py",)))
+    assert result.status == ImplementationStatus.BACKEND_UNAVAILABLE
+    assert result.model == "nestra:missing"
+    assert "nestra:missing" in result.summary
+    assert "404" in result.summary
+    assert calls == [("/api/show", {"model": "nestra:missing"})]
+
+
+@pytest.mark.parametrize("model", ["nestra:p1.2", "gpt-oss:20b"])
+def test_claude_child_routes_exact_model_to_local_ollama(monkeypatch, model):
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-cloud-credential")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    backend = ClaudeCodeBackend(model=model, base_url="http://127.0.0.1:11434")
+    env = backend._environment()
+    command = backend._command()
+    assert command[command.index("--model") + 1] == model
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:11434"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "ollama"
+    assert env["ANTHROPIC_API_KEY"] == ""
+    assert "CLAUDE_CODE_USE_BEDROCK" not in env
+    assert "CLAUDE_CODE_USE_VERTEX" not in env
+
+
+def test_unrecognized_model_diagnostic_does_not_reject_successful_claude_run(tmp_path):
+    backend = _backend(tmp_path, "unrecognized_success")
+    backend.model = "nestra:p1.2"
+    result = backend.run(
+        ImplementationRequest(_repo(tmp_path), "implement", ("module.py",))
+    )
+    assert result.status == ImplementationStatus.COMPLETED
+    assert result.exit_code == 0
+    assert "unrecognized_model" in result.sanitized_output
+
+
+@pytest.mark.parametrize("behavior", ["missing_tool_name", "invalid_model"])
+def test_cli_failure_preserves_actual_error_and_explains_model_diagnostic(tmp_path, behavior):
+    backend = _backend(tmp_path, behavior)
+    backend.model = "nestra:p1.2"
+    result = backend.run(
+        ImplementationRequest(_repo(tmp_path), "implement", ("module.py",))
+    )
+    assert result.status == ImplementationStatus.CLI_ERROR
+    assert result.exit_code == 1
+    assert "not proof of provider rejection" in result.summary
+    if behavior == "missing_tool_name":
+        assert "tool_use response without a name" in result.summary
+        assert "implementation_backend=local_tools" in result.summary
+        assert "ke.name.startsWith" in result.sanitized_output
+    else:
+        assert "model nestra:missing not found" in result.summary
+        assert "tool_use response" not in result.summary
 
 def test_real_process_wrapper_edits_only_candidate_and_returns_structured_evidence(tmp_path: Path):
     root = _repo(tmp_path)

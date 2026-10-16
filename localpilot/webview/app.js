@@ -243,7 +243,37 @@
     }
     const response = await fetch(BASE_URL + path, { method: method, headers: headers, body: payload });
     if (!response.ok) {
-      const err = new Error("HTTP " + response.status + " for " + method + " " + path);
+      let reason = "";
+      // Validation responses are small JSON objects. Bound the bytes read and
+      // parsed, even if a broken service returns a large HTML/error document.
+      let reader = null;
+      try {
+        if (response.body && typeof response.body.getReader === "function") {
+          reader = response.body.getReader();
+          const chunks = [];
+          let length = 0;
+          let complete = false;
+          while (length <= 8192) {
+            const next = await reader.read();
+            if (next.done) { complete = true; break; }
+            length += next.value.byteLength;
+            if (length > 8192) { await reader.cancel(); break; }
+            chunks.push(next.value);
+          }
+          if (complete && length) {
+            const bytes = new Uint8Array(length);
+            let offset = 0;
+            chunks.forEach(function (chunk) { bytes.set(chunk, offset); offset += chunk.byteLength; });
+            const detail = JSON.parse(new TextDecoder("utf-8").decode(bytes));
+            if (detail && typeof detail.error === "string") reason = detail.error.trim().slice(0, 800);
+          }
+        }
+      } catch (_) {
+        // A malformed error body must not hide the HTTP failure/status.
+      } finally {
+        if (reader) reader.releaseLock();
+      }
+      const err = new Error(reason || "HTTP " + response.status + " for " + method + " " + path);
       err.status = response.status;
       throw err;
     }
@@ -295,6 +325,8 @@
   const activityStrip = document.getElementById("activity-strip");
   const activityText = document.getElementById("activity-text");
   const activitySteps = document.getElementById("activity-steps");
+  let chatFiles = null;
+  const sendDrafts = new Map();
   const composerWrap = document.getElementById("composer");
   const composerInput = document.getElementById("composer-input");
   const sendBtn = document.getElementById("send-btn");
@@ -1085,11 +1117,13 @@
   }
 
   function renderUserTurn(message) {
+    if (knownMessageIds.has(message.id)) return;
     const turn = document.createElement("div");
     turn.className = "turn turn--user";
     const label = document.createElement("span"); label.className = "turn-label"; label.textContent = "You";
     const bubble = document.createElement("div"); bubble.className = "bubble"; bubble.textContent = message.content;
     turn.appendChild(label); turn.appendChild(bubble);
+    if (chatFiles) chatFiles.renderMessage(turn, message);
     messageStream.appendChild(turn);
     knownMessageIds.add(message.id);
     lastUserContent = message.content;
@@ -1097,6 +1131,10 @@
   }
 
   function renderAssistantTurn(message) {
+    if (messageElementsById.has(message.id)) {
+      updateAssistantActivity(message.id, message.steps);
+      return;
+    }
     const turn = document.createElement("div");
     turn.className = "turn turn--assistant";
     const label = document.createElement("span"); label.className = "turn-label"; label.textContent = "LocalPilot";
@@ -1112,6 +1150,9 @@
     reveal.textContent = message.content || "";
     turn.appendChild(label);
     turn.appendChild(bubble);
+    const activity = document.createElement("div");
+    activity.className = "turn-activity";
+    turn.appendChild(activity);
     messageStream.appendChild(turn);
     knownMessageIds.add(message.id);
     messageElementsById.set(message.id, {
@@ -1119,19 +1160,25 @@
       bubbleEl: bubble,
       revealEl: reveal,
       caretEl: caret,
+      activityEl: activity,
+      steps: [],
+      status: message.status,
       revealedLength: (message.content || "").length,
       targetContent: message.content || "",
       revealTimer: null,
       finalizeAfterReveal: false,
     });
+    updateAssistantActivity(message.id, message.steps);
+    if (chatFiles) chatFiles.renderMessage(turn, message);
     if (message.status === "complete") renderSafeMarkdown(reveal, message.content || "");
     if (message.status === "failed") renderFailedNotice(message.id, message);
+    if (message.status === "error") renderAssistantError(message);
     scrollToBottom();
   }
 
   function renderFailedNotice(messageId, message) {
     const entry = messageElementsById.get(messageId);
-    if (!entry) return;
+    if (!entry || entry.failureNoticeEl) return;
     const promptAtFailure = lastUserContent;
     const div = document.createElement("div");
     div.className = "failed-notice";
@@ -1148,6 +1195,28 @@
     });
     div.appendChild(retry);
     entry.turnEl.appendChild(div);
+    entry.failureNoticeEl = div;
+  }
+
+  function renderAssistantError(message) {
+    if (!messageElementsById.has(message.id)) {
+      renderAssistantTurn(Object.assign({}, message, {status: "error"}));
+      return;
+    }
+    const entry = messageElementsById.get(message.id);
+    if (!entry) return;
+    clearTimeout(entry.revealTimer);
+    entry.revealTimer = null;
+    entry.finalizeAfterReveal = false;
+    entry.status = "error";
+    entry.targetContent = message.content || "The local runtime reported an error. Please try again.";
+    entry.revealedLength = entry.targetContent.length;
+    if (entry.caretEl && entry.caretEl.parentNode) entry.caretEl.remove();
+    entry.bubbleEl.classList.add("bubble-plain--error");
+    renderSafeMarkdown(entry.revealEl, entry.targetContent);
+    updateAssistantActivity(message.id, message.steps);
+    collapseActivityIntoChip(message.id);
+    scrollToBottom();
   }
 
   function pacedReveal(messageId) {
@@ -1186,6 +1255,7 @@
   function finalizeMessage(messageId) {
     const entry = messageElementsById.get(messageId);
     if (!entry) return;
+    entry.status = "complete";
     if (entry.revealedLength >= entry.targetContent.length) {
       if (entry.caretEl && entry.caretEl.parentNode) entry.caretEl.remove();
       renderSafeMarkdown(entry.revealEl, entry.targetContent);
@@ -1199,77 +1269,51 @@
      Tool activity (§5) — the same label map from the design doc, sourced
      from the verified tool registry in tools/__init__.py.
      ====================================================================== */
-  const TOOL_LABELS = {
-    get_system_summary: "Checking system info",
-    get_storage_summary: "Checking disk space",
-    get_top_processes: "Checking running processes",
-    get_startup_items: "Checking startup items",
-    get_active_power_plan: "Checking power settings",
-    get_defender_summary: "Checking Defender status",
-    get_device_problem_summary: "Checking device issues",
-    search_public_web: "Searching the web",
-    fetch_public_https: "Searching the web",
-    list_repository_tree: "Reading the project",
-    read_repository_file: "Reading the project",
-    search_repository: "Reading the project",
-    get_repository_status: "Checking Git status",
-    list_github_pull_requests: "Checking pull requests",
-    get_github_pull_request: "Checking pull requests",
-    get_github_pull_request_diff: "Checking pull requests",
-    list_github_issues: "Checking issues",
-    get_github_issue: "Checking issues",
-    open_windows_app: "Opening an app",
-    open_windows_settings: "Opening Settings",
-    set_active_power_plan: "Changing power plan",
-    restore_power_plan: "Restoring power plan",
-  };
-  function labelForTool(name) { return TOOL_LABELS[name] || "Working on it"; }
+  function labelForTool(name) { return window.LocalPilotActivity.label(name); }
 
   let activityRunSteps = [];
+
+  function updateAssistantActivity(messageId, steps) {
+    const entry = messageElementsById.get(messageId);
+    if (!entry || !Array.isArray(steps)) return;
+    steps.forEach(function (step) { entry.steps = window.LocalPilotActivity.upsert(entry.steps, step); });
+    window.LocalPilotActivity.render(entry.activityEl, entry.steps);
+  }
 
   function renderActivitySteps() {
     if (!activityRunSteps.length) return;
     const visible = activityRunSteps.slice(-2);
     const extra = activityRunSteps.length - visible.length;
-    activityText.textContent = visible.map(function (s) { return s.label; }).join(" \u00b7 ") +
+    activityText.textContent = visible.map(function (s) { return labelForTool(s.tool); }).join(" · ") +
       (extra > 0 ? " +" + extra + " more" : "");
-    activitySteps.textContent = activityRunSteps.map(function (s) { return s.ok === false ? "\u25CB" : "\u25CF"; }).join("");
+    activitySteps.textContent = activityRunSteps.map(function (s) { return s.status === "failed" ? "○" : "●"; }).join("");
   }
 
   function onToolStarted(payload) {
-    if (!payload || !payload.tool) return;
-    const label = labelForTool(payload.tool);
-    activityRunSteps.push({ tool: payload.tool, label: label, ok: null });
+    if (!payload || !payload.step || !messageElementsById.has(payload.message_id)) return;
+    if (messageElementsById.get(payload.message_id).status !== "streaming") return;
+    activityRunSteps = window.LocalPilotActivity.upsert(activityRunSteps, payload.step);
+    updateAssistantActivity(payload.message_id, [payload.step]);
+    // A replayed start must not revive activity that has already completed.
+    if (!activityRunSteps.some(function (s) { return s.status === "running"; })) return;
     activityStrip.classList.add("is-visible");
     renderActivitySteps();
-    previewLine.textContent = label + "\u2026";
+    previewLine.textContent = labelForTool(payload.step.tool) + "…";
     previewLine.classList.add("is-visible");
   }
 
   function onToolCompleted(payload) {
-    if (!payload || !payload.tool) return;
-    for (let i = activityRunSteps.length - 1; i >= 0; i--) {
-      if (activityRunSteps[i].tool === payload.tool && activityRunSteps[i].ok === null) {
-        activityRunSteps[i].ok = !!payload.ok;
-        break;
-      }
-    }
+    if (!payload || !payload.step || !messageElementsById.has(payload.message_id)) return;
+    activityRunSteps = window.LocalPilotActivity.upsert(activityRunSteps, payload.step);
+    updateAssistantActivity(payload.message_id, [payload.step]);
     renderActivitySteps();
   }
 
   function collapseActivityIntoChip(messageId) {
     activityStrip.classList.remove("is-visible");
     previewLine.classList.remove("is-visible");
-    if (!activityRunSteps.length) return;
     const entry = messageElementsById.get(messageId);
-    if (entry) {
-      const chip = document.createElement("div");
-      chip.className = "activity-chip";
-      chip.textContent = "\u2699 " + activityRunSteps.length + " step" + (activityRunSteps.length > 1 ? "s" : "");
-      chip.title = activityRunSteps.map(function (s) { return s.label; }).join(", ");
-      entry.bubbleEl.appendChild(chip);
-      scrollToBottom();
-    }
+    if (entry) window.LocalPilotActivity.render(entry.activityEl, entry.steps);
     activityRunSteps = [];
   }
 
@@ -1280,6 +1324,11 @@
      omission — see delivery notes.
      ====================================================================== */
   function handleEvent(evt) {
+    const payload = evt.payload || {};
+    const eventSessionId = evt.session_id || payload.session_id ||
+      (payload.message && payload.message.session_id) || (payload.message_record && payload.message_record.session_id);
+    const sessionLifecycle = evt.type === "session.created" || evt.type === "session.renamed" || evt.type === "session.deleted";
+    if (eventSessionId && eventSessionId !== activeSessionId && !sessionLifecycle) return;
     switch (evt.type) {
       case "runtime.ready":
         if (currentState === "offline" || currentState === "restarting") setGlobalState("idle");
@@ -1289,9 +1338,12 @@
         if (state) setGlobalState(state);
         break;
       }
-      case "runtime.error":
+      case "runtime.error": {
+        const message = payload.message_record;
+        if (message && message.session_id === activeSessionId) renderAssistantError(message);
         setGlobalState("error");
         break;
+      }
       case "session.created":
       case "session.renamed":
         if (historySheet.classList.contains("is-open")) loadSessionList();
@@ -1301,7 +1353,11 @@
         break;
       case "message.created": {
         const message = evt.payload && evt.payload.message;
-        if (!message || message.session_id !== activeSessionId || knownMessageIds.has(message.id)) break;
+        if (!message || message.session_id !== activeSessionId) break;
+        if (knownMessageIds.has(message.id)) {
+          if (message.role === "assistant") updateAssistantActivity(message.id, message.steps);
+          break;
+        }
         if (message.role === "user") renderUserTurn(message);
         else renderAssistantTurn(message);
         break;
@@ -1310,15 +1366,19 @@
         const messageId = evt.payload && evt.payload.message_id;
         const content = evt.payload && evt.payload.content;
         if (messageId == null || content == null || !messageElementsById.has(messageId)) break;
+        if (messageElementsById.get(messageId).status !== "streaming") break;
         updateAssistantContent(messageId, content);
         break;
       }
       case "message.completed": {
         const message = evt.payload && evt.payload.message;
         if (!message || !messageElementsById.has(message.id)) break;
+        updateAssistantActivity(message.id, message.steps);
+        if (messageElementsById.get(message.id).status !== "streaming") break;
         updateAssistantContent(message.id, message.content);
         finalizeMessage(message.id);
         collapseActivityIntoChip(message.id);
+        if (chatFiles) chatFiles.renderMessage(messageElementsById.get(message.id).turnEl, message);
         loadSessionList();
         break;
       }
@@ -1333,6 +1393,8 @@
         const message = evt.payload && evt.payload.message;
         if (!message || !messageElementsById.has(message.id)) break;
         const entry = messageElementsById.get(message.id);
+        entry.status = "failed";
+        updateAssistantActivity(message.id, message.steps);
         if (entry.caretEl && entry.caretEl.parentNode) entry.caretEl.remove();
         renderFailedNotice(message.id, message);
         activityStrip.classList.remove("is-visible");
@@ -1359,7 +1421,10 @@
   }
 
   async function switchSession(sessionId) {
+    if (activeSessionId) sendDrafts.set(activeSessionId, composerInput.value);
     activeSessionId = sessionId;
+    composerInput.value = sendDrafts.get(sessionId) || "";
+    if (chatFiles) chatFiles.sessionChanged(sessionId);
     composerInput.disabled = sendBtn.disabled = !sessionId;
     messageElementsById.forEach(function (entry) { clearTimeout(entry.revealTimer); });
     followMessages = true;
@@ -1370,6 +1435,9 @@
     activityStrip.classList.remove("is-visible");
     previewLine.classList.remove("is-visible");
     activityRunSteps = [];
+    // Error belongs to the failed turn; opening another conversation starts
+    // with its own state. Health polling still owns Offline and Restarting.
+    if (currentState !== "offline" && currentState !== "restarting") setGlobalState("idle");
     if (!sessionId) return;
     try {
       const messages = await loadMessages(sessionId);
@@ -1378,6 +1446,20 @@
         if (m.role === "user") renderUserTurn(m);
         else renderAssistantTurn(m);
       });
+      const streaming = messages.filter(function (m) {
+        const entry = messageElementsById.get(m.id);
+        return m.role === "assistant" && entry && entry.status === "streaming";
+      });
+      if (streaming.length) {
+        const latest = streaming[streaming.length - 1];
+        activityRunSteps = messageElementsById.get(latest.id).steps.slice();
+        const runningTools = activityRunSteps.some(function (step) { return step.status === "running"; });
+        if (runningTools) {
+          activityStrip.classList.add("is-visible");
+          renderActivitySteps();
+        }
+        setGlobalState(runningTools ? "working" : (latest.content ? "speaking" : "thinking"));
+      }
       await loadSessionList();
     } catch (e) {
       console.error("LocalPilot: failed to load messages for session", sessionId, e);
@@ -1403,9 +1485,11 @@
      ====================================================================== */
   async function pollEvents() {
     try {
+      const pollSessionId = activeSessionId;
       const path = "/v1/events?after=" + lastEventId + "&wait=25" +
         (activeSessionId ? "&session_id=" + encodeURIComponent(activeSessionId) : "");
       const data = await api("GET", path);
+      if (pollSessionId !== activeSessionId) return;
       const events = data.events || [];
       events.forEach(function (evt) {
         handleEvent(evt);
@@ -1414,7 +1498,7 @@
     } catch (e) {
       await sleep(1500); // broker likely unreachable; health loop will surface "offline"
     }
-    pollEvents();
+    finally { pollEvents(); }
   }
 
   /* ======================================================================
@@ -1455,7 +1539,7 @@
     if (currentState === "listening" && !composerInput.value.trim()) setGlobalState("idle");
   });
   composerInput.addEventListener("input", function () {
-    sendBtn.classList.toggle("is-ready", composerInput.value.trim().length > 0);
+    sendBtn.classList.toggle("is-ready", composerInput.value.trim().length > 0 || !!(chatFiles && chatFiles.hasPending()));
     if (currentState === "idle" && composerInput.value.trim()) setGlobalState("listening");
   });
   composerInput.addEventListener("keydown", function (e) {
@@ -1464,19 +1548,25 @@
   sendBtn.addEventListener("click", trySend);
 
   async function trySend() {
-    if (composerInput.readOnly) return;
+    if (composerInput.readOnly || composerWrap.classList.contains("is-busy") || (chatFiles && chatFiles.isBusy())) return;
     const text = composerInput.value.trim();
-    if (!text || !activeSessionId) return;
+    const sessionId = activeSessionId;
+    const fileIds = chatFiles ? chatFiles.pendingIds(sessionId) : [];
+    if ((!text && !fileIds.length) || !sessionId) return;
     followMessages = true;
     composerInput.value = "";
+    sendDrafts.set(sessionId, "");
     sendBtn.classList.remove("is-ready");
     composerWrap.classList.add("is-busy");
     try {
-      await api("POST", "/v1/sessions/" + activeSessionId + "/messages", { content: text });
+      await api("POST", "/v1/sessions/" + sessionId + "/messages", { content: text, file_ids: fileIds });
+      if (chatFiles) chatFiles.clearPending(sessionId, fileIds);
       loadSessionList();
     } catch (e) {
       console.error("LocalPilot: failed to send message", e);
-      composerInput.value = text; // don't silently lose what they typed
+      const draft = activeSessionId === sessionId ? composerInput.value : sendDrafts.get(sessionId) || "";
+      sendDrafts.set(sessionId, text + (draft ? "\n" + draft : ""));
+      if (activeSessionId === sessionId) composerInput.value = sendDrafts.get(sessionId);
       composerInput.dispatchEvent(new Event("input"));
     } finally {
       composerWrap.classList.remove("is-busy");
@@ -1491,6 +1581,18 @@
     TOKEN = payload.token;
     hasConfigPath = !!payload.hasConfigPath;
     openConfigBtn.hidden = !hasConfigPath;
+    if (window.LocalPilotFiles && !chatFiles) {
+      chatFiles = window.__localPilotFiles = window.LocalPilotFiles.init({
+        api: api, bridge: bridge, getSessionId: function () { return activeSessionId; },
+        onPendingChange: function () {
+          sendBtn.classList.toggle("is-ready", !!composerInput.value.trim() || chatFiles && chatFiles.hasPending());
+        },
+      });
+    }
+    window.__localPilotHasDraft = function () {
+      return !!composerInput.value.trim() || Array.from(sendDrafts.values()).some(function (value) { return !!value.trim(); }) ||
+        !!(chatFiles && chatFiles.hasDraft());
+    };
 
     bridge("get_start_with_windows").then(function (result) {
       if (result && result.ok) {

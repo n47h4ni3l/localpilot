@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ import webview
 from webview.window import FixPoint
 
 from localpilot.config import load_config
+from localpilot.chat_files import ChatFiles
 from localpilot.comic_geometry import pixel
 from localpilot.desktop import BrokerClient, ensure_broker
 from localpilot.desktop_state import DesktopUIState
@@ -151,7 +153,7 @@ def _startup_shortcut_path() -> Path:
 
 
 class WindowBridge:
-    """Window-manager bridge only; conversation data remains on the broker."""
+    """Native window/file-dialog actions; conversation transport remains on the broker."""
 
     def __init__(
         self,
@@ -191,6 +193,49 @@ class WindowBridge:
         w, h = self._surface_size()
         self._window.resize(w, h, fix_point=self._resize_anchor())
         return {"ok": True}
+
+    def _chat_file(self, request: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
+        if not isinstance(request, dict):
+            raise ValueError("Choose a file from this conversation")
+        store = ChatFiles(self._root / self._config.agent.data_dir)
+        session_id = str(request.get("session_id") or "")
+        file_id = str(request.get("file_id") or "")
+        metadata = store.get(file_id, session_id=session_id)
+        return metadata, store.read_bytes(file_id, session_id=session_id)
+
+    def open_chat_file(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Open a working copy, never execute code or expose the immutable stored original."""
+        try:
+            metadata, data = self._chat_file(request)
+            folder = self._root / self._config.agent.data_dir / "chat-file-open-copies" / uuid.uuid4().hex
+            folder.mkdir(parents=True, exist_ok=False)
+            path = folder / metadata["name"]
+            with path.open("xb") as handle:
+                handle.write(data)
+            if metadata["mime"] in {"image/png", "image/jpeg", "image/webp", "application/pdf",
+                                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}:
+                os.startfile(str(path))
+            else:
+                subprocess.Popen(["notepad.exe", str(path)], creationflags=hidden_process_creation_flags())
+            return {"ok": True}
+        except (OSError, ValueError, KeyError) as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def save_chat_file(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Save an exact copy to the owner's selected new path without overwriting files."""
+        try:
+            metadata, data = self._chat_file(request)
+            selected = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename=metadata["name"])
+            if not selected:
+                return {"cancelled": True}
+            path = Path(selected[0] if isinstance(selected, (tuple, list)) else selected)
+            with path.open("xb") as handle:
+                handle.write(data)
+            return {"ok": True, "path": str(path)}
+        except FileExistsError:
+            return {"ok": False, "error": "That file already exists. Choose a new name to preserve it."}
+        except (OSError, ValueError, KeyError) as exc:
+            return {"ok": False, "error": str(exc)}
 
     def _resize_anchor(self):
         return (FixPoint.SOUTH | FixPoint.WEST) if getattr(self._window, "_comic_tail_left", False) else _ANCHOR_BOTTOM_RIGHT
@@ -280,6 +325,7 @@ class WindowBridge:
   const input = document.getElementById('composer-input');
   const composer = document.getElementById('composer');
   const busy = Boolean(!input || (input.value || '').trim() ||
+    (window.__localPilotHasDraft && window.__localPilotHasDraft()) ||
     (composer && composer.classList.contains('is-busy')) || document.querySelector('.caret'));
   if (!busy) input.readOnly = true;
   return Boolean(busy);

@@ -173,6 +173,56 @@ def test_existing_output_and_unlisted_owner_files_are_preserved(inputs, tmp_path
         build(inputs, tmp_path, output=tmp_path / "other-output")
 
 
+def test_unlisted_python_bytecode_caches_are_omitted_and_local_files_preserved(inputs):
+    dependencies = inputs[1]
+    receipt_path = dependencies / "dependency-stage-receipt.json"
+    raw_receipt = receipt_path.read_bytes()
+    caches = [
+        write(dependencies, "runtime-deps/python/python/Lib/__pycache__/argparse.cpython-312.pyc", b"generated cache"),
+        write(dependencies, "runtime-deps/python/python/Lib/tkinter/__pycache__/__init__.cpython-312.pyc", b"generated tkinter cache"),
+    ]
+    original_bytes = {path: path.read_bytes() for path in caches}
+    files = builder.dependency_files(dependencies)
+    names = {name for name, _, _ in files}
+    assert not any("__pycache__" in name for name in names)
+    assert "payload/dependencies/runtime-deps/python/python/python.exe" in names
+    assert receipt_path.read_bytes() == raw_receipt
+    assert {path: path.read_bytes() for path in caches} == original_bytes
+
+
+def test_unlisted_python_source_executables_and_other_bytecode_still_rejected(inputs):
+    dependencies = inputs[1]
+    for relative in (
+        "runtime-deps/python/python/Lib/unlisted.py",
+        "runtime-deps/python/python/Lib/__pycache__/payload.exe",
+        "runtime-deps/python/python/Scripts/__pycache__/other.pyc",
+        "runtime-deps/gh/__pycache__/other.pyc",
+    ):
+        path = write(dependencies, relative, b"unlisted material")
+        with pytest.raises(ValueError, match="Unlisted file"):
+            builder.dependency_files(dependencies)
+        assert path.read_bytes() == b"unlisted material"
+        path.unlink()  # Only this test's own temporary fixture file.
+
+
+def test_archive_listed_python_bytecode_keeps_exact_receipt_hash(inputs, tmp_path):
+    dependencies = inputs[1]
+    relative = "runtime-deps/python/python/Lib/demo/__pycache__/original.cpython-312.pyc"
+    path = write(dependencies, relative, b"archive bytecode")
+    receipt_path = dependencies / "dependency-stage-receipt.json"
+    receipt = json.loads(receipt_path.read_bytes())
+    expected = identity(path)
+    receipt["packages"][0]["files"].append({"path": "python/Lib/demo/__pycache__/original.cpython-312.pyc", **expected})
+    receipt_path.write_text(json.dumps(receipt))
+    rows = builder.dependency_files(dependencies)
+    name, source, pinned = next(row for row in rows if row[0] == "payload/dependencies/" + relative)
+    assert pinned == expected
+    source.write_bytes(b"altered bytecode")
+    with zipfile.ZipFile(tmp_path / "pinned-bytecode.zip", "w") as archive, source.open("rb") as stream:
+        with pytest.raises(ValueError, match="pinned identity|expected size"):
+            builder.write_member(archive, name, stream, expected=pinned)
+
+
 def test_corrupted_payload_hash_leaves_failed_zip_and_receipt(inputs, tmp_path):
     runtime = inputs[1] / "runtime-deps/python/python/python.exe"
     runtime.write_bytes(b"changed contents")
@@ -208,7 +258,7 @@ def test_public_dependency_receipt_omits_owner_paths_without_mutating_local_evid
     original["wheels"]["cache_directory"] = owner + "/pip-cache"
     original["wheels"]["requested_requirements"] = ["example==1"]
     original["wheels"]["files"][0].update(name="example", version="1")
-    original["wheels"]["download_command"] = [owner + "/python.exe", "-m", "pip", "download", "--index-url", "https://pypi.org/simple", "--dest", owner + "/wheelhouse", "--requirement", owner + "/requirements.txt"]
+    original["wheels"]["download_command"] = [owner + "/python.exe", "-m", "pip", "download", "--index-url", "https://pypi.org/simple", "--dest", owner + "/wheelhouse", "--requirement", owner + "/requirements.txt", "--find-links", owner + "/reviewed-prebuilt"]
     raw = (json.dumps(original, indent=2) + "\n").encode()
     receipt_path.write_bytes(raw)
     result = build(inputs, tmp_path)
@@ -223,7 +273,7 @@ def test_public_dependency_receipt_omits_owner_paths_without_mutating_local_evid
         assert public["packages"][0]["url"] == original["packages"][0]["url"]
         assert public["wheels"]["files"][0]["version"] == "1"
         assert public["wheels"]["download_command"][0] == "python"
-        assert public["wheels"]["download_command"][-4:] == ["--dest", "wheelhouse", "--requirement", "requirements-download.txt"]
+        assert public["wheels"]["download_command"][-6:] == ["--dest", "wheelhouse", "--requirement", "requirements-download.txt", "--find-links", "wheelhouse"]
         assert "local_work_directory" not in public
         assert "cache_directory" not in public["wheels"]
 

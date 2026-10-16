@@ -119,6 +119,22 @@ def _functions(tmp_path, root, operation, mutation=""):
         "foreach($function in $functions){Invoke-Expression $function.Extent.Text}\n"
         "function Start-Process {throw 'No process may execute in these tests.'}\n"
         "$c=Get-NestraLaunchConfiguration $Root\n"
+        "if($Operation -eq 'port'){\n"
+        "  $script:rows=@([pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=8766;RemoteAddress='0.0.0.0';RemotePort=0;OwningProcess=987;State=$Mutation})\n"
+        "  if($Mutation -in @('Established','TimeWait')){$script:rows[0].RemoteAddress='127.0.0.1';$script:rows[0].RemotePort=50001}\n"
+        "  if($Mutation -eq 'nonloopback'){$script:rows[0].LocalAddress='0.0.0.0'}\n"
+        "  if($Mutation -eq 'twoowners'){$script:rows+=([pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=8766;RemoteAddress='0.0.0.0';RemotePort=0;OwningProcess=988;State='Bound'})}\n"
+        "  if($Mutation -eq 'mixed'){$script:rows+=([pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=8766;RemoteAddress='127.0.0.1';RemotePort=50001;OwningProcess=988;State='Established'})}\n"
+        "  $script:portMutation=$Mutation\n"
+        "  function Get-NetTCPConnection {param($LocalPort,$ErrorAction,$State) if($PSBoundParameters.ContainsKey('State')){throw 'State filtering hides bound server endpoints'};if($LocalPort -ne 8766){throw 'Wrong port'};return $script:rows}\n"
+        "  function Get-CimInstance {param($ClassName,$Filter,$ErrorAction)\n"
+        "    if($Filter -cne 'ProcessId = 987'){throw 'Wrong endpoint owner lookup'}\n"
+        "    $owner=if($script:portMutation -eq 'wrongpid'){988}else{987}\n"
+        "    return [pscustomobject]@{ProcessId=$owner;CreationDate=[DateTime]::UtcNow}\n"
+        "  }\n"
+        "  $found=Get-NestraPortProcess 8766\n"
+        "  if($null -eq $found){'absent'}else{$found.ProcessId};exit 0\n"
+        "}\n"
         "if($Operation -eq 'tasks'){\n"
         "  $c.Tasks.owner_sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value\n"
         "  $script:taskConfig=$c;$script:taskMutation=$Mutation\n"
@@ -180,6 +196,26 @@ def test_standard_desktop_verifies_elevated_broker_without_protected_commandline
     result = _functions(tmp_path, _installation(tmp_path), "auth")
     assert result.returncode == 0, result.stderr
     assert "verified" in result.stdout
+
+
+@pytest.mark.parametrize("state", ["Listen", "Bound", "NONE", "mixed"])
+def test_peerless_loopback_server_endpoint_is_discovered_across_states(tmp_path, state):
+    result = _functions(tmp_path, _installation(tmp_path), "port", state)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "987"
+
+
+@pytest.mark.parametrize("state", ["Established", "TimeWait"])
+def test_connections_with_remote_peers_are_not_server_endpoints(tmp_path, state):
+    result = _functions(tmp_path, _installation(tmp_path), "port", state)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "absent"
+
+
+@pytest.mark.parametrize("mutation", ["nonloopback", "twoowners", "wrongpid"])
+def test_bound_endpoint_cannot_bypass_local_address_or_exact_pid_checks(tmp_path, mutation):
+    result = _functions(tmp_path, _installation(tmp_path), "port", mutation)
+    assert result.returncode != 0
 
 
 @pytest.mark.parametrize("mutation,expected", [("", 0), ("level", 1), ("owner", 1), ("action", 1)])

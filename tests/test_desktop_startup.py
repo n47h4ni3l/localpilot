@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -309,3 +310,117 @@ def test_disable_only_disables_owned_task_and_removes_verified_owned_link(tmp_pa
     assert result.returncode == 0, result.stderr
     assert events == ["disable", "remove-link"]
     assert json.loads(result.stdout) == {"enabled": False}
+
+
+def _bundle_startup_fixture(tmp_path):
+    install = (tmp_path / "private Nestra").resolve()
+    app = install / "app"
+    app.mkdir(parents=True)
+    config = app / "localpilot.toml"
+    config.write_text("# fresh fixture\n", encoding="utf-8")
+    owner = "S-1-5-21-111-222-333-1001"
+    digest = hashlib.sha256((str(install).lower() + "|" + owner).encode()).hexdigest()[:12]
+    (app / ".nestra-runtime.json").write_text(json.dumps({
+        "schema_version": 1, "install_directory": str(install), "app_root": str(app), "config_path": str(config),
+    }), encoding="utf-8")
+    (install / "tasks.json").write_text(json.dumps({
+        "format_version": 1, "install_directory": str(install), "owner_sid": owner,
+        "tasks": {role: f"Nestra ALPHA2 {digest} {role}" for role in ("Desktop", "Broker", "Worker")},
+    }), encoding="utf-8")
+    return app, config
+
+
+def test_bundle_startup_reports_actual_managed_group_without_legacy_lookup(tmp_path, monkeypatch):
+    app, config = _bundle_startup_fixture(tmp_path)
+    monkeypatch.setattr(startup, "os", SimpleNamespace(name="nt", path=os.path, environ=os.environ))
+    monkeypatch.setattr(startup, "_operation", lambda *a, **k: pytest.fail("Bundle startup must not query/register legacy tasks"))
+    monkeypatch.setattr(startup.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=json.dumps({
+        "enabled": False, "tasks": {"Desktop": {"enabled": True}, "Broker": {"enabled": True}, "Worker": {"enabled": False}},
+    })))
+    status = startup.startup_status(app, config)
+    assert status["ok"] is True and status["enabled"] is False
+    assert status["managed"] is True and status["can_change"] is False
+    assert status["tasks"]["Worker"]["enabled"] is False
+    assert "Task Scheduler as administrator" in status["reason"]
+    assert "Nestra ALPHA2" in status["reason"]
+    assert startup.set_startup(app, config, True)["ok"] is False
+
+
+def test_invalid_bundle_metadata_cannot_fall_back_to_legacy_task_registration(tmp_path, monkeypatch):
+    app, config = _bundle_startup_fixture(tmp_path)
+    (app.parent / "tasks.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(startup, "os", SimpleNamespace(name="nt", path=os.path, environ=os.environ))
+    monkeypatch.setattr(startup, "_operation", lambda *a, **k: pytest.fail("Invalid bundle must remain managed"))
+    monkeypatch.setattr(startup.subprocess, "run", lambda *a, **k: pytest.fail("Invalid metadata must fail before task lookup"))
+    result = startup.set_startup(app, config, True)
+    assert result["ok"] is False and result["managed"] is True and result["can_change"] is False
+
+
+@pytest.mark.skipif(os.name != "nt" or not shutil.which("powershell"), reason="Windows PowerShell task-status mock")
+@pytest.mark.parametrize("mode", ["enabled", "disabled-worker", "foreign-owner", "foreign-action", "foreign-trigger"])
+def test_bundle_task_status_validates_owner_actions_and_trio_states_with_read_only_mocks(tmp_path, mode):
+    app, config = _bundle_startup_fixture(tmp_path)
+    spec = startup._bundle_startup_spec(app, config)
+    mocks = r'''
+function Get-IdentitySid { return 'S-1-5-21-111-222-333-1001' }
+function Get-ScheduledTask {
+    param($TaskPath, $ErrorAction)
+    foreach ($role in @('Desktop', 'Broker', 'Worker')) {
+        $expected = $spec.tasks.$role
+        $task = [pscustomobject]@{
+            TaskName=$expected.name; Description=$expected.description; State='Ready'
+            Actions=@([pscustomobject]@{Execute=$spec.powershell;Arguments=$expected.arguments;WorkingDirectory=$spec.app_root})
+            Principal=[pscustomobject]@{UserId=$spec.owner_sid;RunLevel=$expected.run_level;LogonType='Interactive'}
+            Settings=[pscustomobject]@{Enabled=$true;MultipleInstances='IgnoreNew'}
+            Triggers=@([pscustomobject]@{UserId=$spec.owner_sid;Enabled=$true;CimClass=[pscustomobject]@{CimClassName='MSFT_TaskLogonTrigger'}})
+        }
+        if ($role -eq 'Worker') {
+            if ($env:TEST_BUNDLE_MODE -eq 'disabled-worker') { $task.Settings.Enabled=$false }
+            if ($env:TEST_BUNDLE_MODE -eq 'foreign-owner') { $task.Principal.UserId='S-1-5-21-111-222-333-9999' }
+            if ($env:TEST_BUNDLE_MODE -eq 'foreign-action') { $task.Actions[0].Arguments='different command' }
+            if ($env:TEST_BUNDLE_MODE -eq 'foreign-trigger') { $task.Triggers[0].UserId='S-1-5-21-111-222-333-9999' }
+        }
+        $task
+    }
+}
+'''
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", startup._TASK_FUNCTIONS + mocks + startup._BUNDLE_TASK_STATUS],
+        env={**os.environ, "LOCALPILOT_BUNDLE_STARTUP_JSON": json.dumps(spec), "TEST_BUNDLE_MODE": mode},
+        capture_output=True, text=True, timeout=30,
+    )
+    if mode.startswith("foreign"):
+        assert result.returncode != 0
+        assert "preserved" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        status = json.loads(result.stdout)
+        assert status["enabled"] is (mode == "enabled")
+        assert status["tasks"]["Worker"]["enabled"] is (mode == "enabled")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="Node frontend interaction")
+def test_managed_bundle_startup_switch_displays_actual_state_and_disables_changes():
+    source = Path(startup.__file__).parent / "webview/app.js"
+    script = r'''
+const fs=require('fs'), vm=require('vm'), assert=require('assert');
+const source=fs.readFileSync(process.argv[1], 'utf8');
+const start=source.indexOf('  function renderStartupSettings(result) {');
+const end=source.indexOf('  startupToggle.addEventListener(', start);
+const elements={};
+const startupToggle={disabled:false, state:false, classList:{toggle(name,value){startupToggle.state=value;}},
+  setAttribute(){}, parentElement:{insertAdjacentElement(where,element){elements[element.id]=element;}}};
+const context={startupToggle, document:{getElementById(id){return elements[id] || null;}, createElement(){return {setAttribute(){}};}}};
+vm.createContext(context);
+vm.runInContext(source.slice(start,end),context);
+context.renderStartupSettings({ok:true,managed:true,enabled:true,can_change:false,reason:'Use Task Scheduler: exact owned tasks'});
+assert.equal(startupToggle.disabled,true);
+assert.equal(startupToggle.state,true);
+assert.match(elements['startup-managed-feedback'].textContent,/exact owned tasks/);
+context.renderStartupSettings({ok:true,enabled:false});
+assert.equal(startupToggle.disabled,false);
+assert.equal(startupToggle.state,false);
+assert.equal(elements['startup-managed-feedback'].textContent,'');
+'''
+    result = subprocess.run([str(shutil.which("node")), "-e", script, str(source)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr

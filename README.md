@@ -6,7 +6,9 @@
 
 The ambition is not millions of copies of the same assistant with different profiles. It is millions of personal intelligences that begin with shared capabilities but develop distinct strengths over years of learning, experience, and use.
 
-LocalPilot is experimental software, currently at version `0.2.1`. It is **not** an AGI or superintelligence claim. The existing system can converse locally, study selected sources during idle periods, retain source-linked learning, and prepare reviewed development candidates. Private Library-to-model-weight learning and preserving trained personal adapters across foundation upgrades are **future work**, not shipped capabilities.
+LocalPilot is experimental software, currently at version `0.2.2`. It is **not** an AGI or superintelligence claim. The existing system can converse locally, study selected sources during idle periods, retain source-linked learning, and prepare reviewed development candidates. Private Library-to-model-weight learning and preserving trained personal adapters across foundation upgrades are **future work**, not shipped capabilities.
+
+The next self-contained Nestra Windows ALPHA bundle is being prepared separately; see [bundle installation and validation](docs/NESTRA_BUNDLE.md). It includes the accepted P1.2 model and offline runtime dependencies. Fresh-PC validation and third-party redistribution review remain release gates.
 
 ## The vision
 

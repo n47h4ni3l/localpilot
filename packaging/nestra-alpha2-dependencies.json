@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "packages": [
+    {"name":"python","url":"https://github.com/astral-sh/python-build-standalone/releases/download/20261013/cpython-3.12.15%2B20261013-x86_64-pc-windows-msvc-install_only.tar.gz","sha256":"bbc902d4d187ac4914915bf538196a064b49109a33a104965b5164ced5b80a1e","max_bytes":50000000,"kind":"tar.gz","filename":"cpython-3.12.15-windows-x64.tar.gz","max_unpacked_bytes":350000000},
+    {"name":"ollama","url":"https://github.com/ollama/ollama/releases/download/v0.40.3/ollama-windows-amd64.zip","sha256":"e5ecff02dfc7cae8ddf6d6b7a7ac5f727ffeedf4491f44ae75ff5b0820dbbbd5","max_bytes":1500000000,"kind":"zip","filename":"ollama-windows-amd64-0.40.3.zip","max_unpacked_bytes":5000000000},
+    {"name":"portable-git","url":"https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/PortableGit-2.56.0.2-64-bit.7z.exe","sha256":"075e158ef8e1f0ab80b347e245405d3eca735c2dc88fd8e032e137d0ca61f61b","max_bytes":65000000,"kind":"exe","filename":"PortableGit-2.56.0.2-64-bit.7z.exe"},
+    {"name":"gh","url":"https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_windows_amd64.zip","sha256":"ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4","max_bytes":20000000,"kind":"zip","filename":"gh_2.102.0_windows_amd64.zip","max_unpacked_bytes":75000000},
+    {"name":"pawnio","url":"https://github.com/namazso/PawnIO.Setup/releases/download/2.2.0/PawnIO_setup.exe","sha256":"1f519a22e47187f70a1379a48ca604981c4fcf694f4e65b734aaa74a9fba3032","max_bytes":30000000,"kind":"exe","filename":"PawnIO_setup.exe"},
+    {"name":"webview2","url":"https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/9f894531-f31c-4fe8-8678-2ced4725def4/MicrosoftEdgeWebView2RuntimeInstallerX64.exe","sha256":"3505a37b54a294c2bc423b30d6c02cd33a2e58dbcdc7e03b50d7a4112746c986","max_bytes":350000000,"kind":"exe","filename":"MicrosoftEdgeWebView2RuntimeInstallerX64.exe"},
+    {"name":"claude","url":"https://downloads.claude.ai/claude-code-releases/2.1.263/win32-x64/claude.exe","sha256":"0b35df94c1307004f07b738390bfef8dfca5e9af29aaf6517f305bf086b95b03","max_bytes":350000000,"kind":"file","filename":"claude.exe"}
+  ],
+  "wheels": {
+    "requirements": ["ollama==0.6.3","Pillow==11.3.0","pypdf==6.19.0","psutil==7.2.2","pywin32==312","pywebview==6.2.1","rich==15.0.0","pytest==9.1.1","hatchling==1.32.4","editables==0.6","pip==26.2.1","proxy_tools==0.1.0"],
+    "prebuilt": [{"filename":"proxy_tools-0.1.0-py3-none-any.whl","sha256":"cf5dfb5581a7ec6745c448d81dcfe6f817490568d7de469dc8760181ef6fe63d","max_bytes":10000}],
+    "max_total_bytes": 250000000,
+    "index_url": "https://pypi.org/simple"
+  },
+  "policy": {"max_total_download_bytes":2500000000,"max_total_unpacked_bytes":6000000000,"max_zip_entries":50000}
+}

@@ -118,6 +118,9 @@ def prepare_update_handoff(
     manual_target_sha: str | None = None,
 ) -> Path | None:
     root_path = Path(root).resolve()
+    marker = root_path / ".nestra-runtime.json"
+    if marker.exists() or marker.is_symlink():
+        return None
     values = state.read()
     manual = manual_target_sha is not None
     if manual and manual_target_sha != values.get("update_apply_requested_sha"):

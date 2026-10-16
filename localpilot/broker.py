@@ -6,6 +6,7 @@ import binascii
 import json
 import os
 import secrets
+import sys
 import threading
 import time
 import urllib.parse
@@ -14,6 +15,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+import psutil
 
 from localpilot.audit import AuditLog
 from localpilot.chat_store import ChatStore
@@ -79,6 +82,7 @@ class BrokerApp:
     def __init__(self, root: str | Path, config: Config, *, config_path: str | Path | None = None) -> None:
         self.root = Path(root).resolve()
         self.config = config
+        self.config_path = str(Path(config_path).resolve()) if config_path is not None else None
         data_dir = (self.root / config.agent.data_dir).resolve()
         self.data_dir = data_dir
         self.audit = AuditLog(data_dir / "audit.jsonl")
@@ -130,12 +134,30 @@ class BrokerApp:
             write_foreground_turns(self.data_dir, ())
 
     def broker_status(self) -> dict[str, Any]:
+        # This endpoint is token-authenticated. A standard-privilege desktop
+        # cannot always read an elevated broker's command line through WMI;
+        # expose our own identity so its launcher can cross-check the live
+        # listener PID/start time and the registered owner task instead.
+        process = psutil.Process(os.getpid())
+        identity = {
+            "root": str(self.root),
+            "config_path": self.config_path,
+            "data_dir": str(self.data_dir),
+            "executable": str(Path(sys.executable).resolve()),
+            "host_executable": str(Path(process.exe()).resolve()),
+            "command_line": process.cmdline(),
+            "created_at_unix": process.create_time(),
+            "user": process.username(),
+            "desktop_host": self.config.desktop.host,
+            "desktop_port": self.config.desktop.port,
+        }
         with self._lock:
             return {
                 "pid": os.getpid(),
                 "elevated": current_process_elevated(),
                 "pending_requests": len(self._pending),
                 "shutdown_requested": self._shutdown_requested,
+                "runtime_identity": identity,
             }
 
     def begin_idle_shutdown(self) -> None:

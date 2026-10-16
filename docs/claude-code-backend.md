@@ -71,6 +71,25 @@ The previous in-process editor remains available only as an explicit rollback:
 implementation_backend = "local_tools"
 ```
 
+### Nestra P1.2 native Ollama execution
+
+For Nestra P1.2 installations affected by Claude Code 2.1.263's missing-tool-name crash, explicitly select the existing native Ollama implementation path in the installation's local `localpilot.toml`:
+
+```toml
+[model]
+provider = "ollama"
+name = "nestra:p1.2"
+
+[selfdev]
+developer_model = "nestra:p1.2"
+implementation_model = "nestra:p1.2"
+implementation_backend = "local_tools"
+```
+
+Preserve the other settings. This sends implementation, CI repair, and static repair through LocalPilot's native Ollama tools using the same accepted model. It retains the existing resource, checkpoint, candidate-validation, CI, and human-merge gates. Claude Code remains available through the explicit `claude_code` setting; LocalPilot does not infer backend compatibility from a model-name prefix or silently switch providers/models after a failure. Restart the background worker at a safe cycle boundary after changing its configuration, because it loads configuration at startup. Evolution also requires the production checkout to be on trusted `main` with no unrelated edits.
+
+`[claude-code:unrecognized_model]` is a diagnostic emitted for a model ID the CLI does not recognize locally. It also appears on successful local Nestra runs and does not establish a failed Ollama load. The separate `ke.name.startsWith` TypeError occurs in CLI result accounting when an assistant `tool_use` block has no `name`. A loopback replay of that malformed response reproduces the exact crash; a live read-only Nestra P1.2 run succeeds while emitting the model diagnostic. The historical audit does not retain the raw provider response, so it cannot establish where the malformed block originated. An actual missing Ollama model still fails preflight without invoking implementation or substituting another model.
+
 ## Post-merge benchmark
 
 From a clean, up-to-date `main` with the background worker disabled:

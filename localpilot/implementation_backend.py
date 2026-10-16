@@ -304,6 +304,11 @@ def _claude_error_detail(stdout: str, stderr: str, *, workspace: Path) -> str:
             continue
         if not isinstance(payload, dict):
             continue
+        if "ke.name.startsWith" in str(payload.get("errors") or ""):
+            fields.append(
+                "Claude Code crashed while counting a tool_use response without a name; "
+                "explicitly select selfdev.implementation_backend=local_tools for native Ollama execution"
+            )
         for key in ("subtype", "error", "errors", "stop_reason"):
             if payload.get(key) not in (None, "", []):
                 fields.append(f"{key}={_bounded(payload[key], 500)}")
@@ -311,6 +316,8 @@ def _claude_error_detail(stdout: str, stderr: str, *, workspace: Path) -> str:
     stderr_tail = sanitize_process_output(stderr, workspace=workspace)
     if stderr_tail:
         fields.append(f"stderr={_bounded(stderr_tail, 1000)}")
+        if "[claude-code:unrecognized_model]" in stderr_tail:
+            fields.append("unrecognized_model is a CLI diagnostic, not proof of provider rejection")
     return "; ".join(fields)[:1600]
 
 
@@ -506,7 +513,9 @@ class ClaudeCodeBackend:
             elif int(active.get("size_vram") or 0) >= int(active.get("size") or 0) * 0.95:
                 _trim_windows_gpu_runner_working_sets()
         except (OSError, subprocess.SubprocessError) as exc:
-            messages.append(f"Ollama preflight failed: {type(exc).__name__}: {_bounded(exc, 500)}")
+            messages.append(
+                f"Ollama preflight failed for {self.model}: {type(exc).__name__}: {_bounded(exc, 500)}"
+            )
         except (ValueError, json.JSONDecodeError) as exc:
             messages.append(f"Ollama preflight returned invalid data: {type(exc).__name__}: {_bounded(exc, 500)}")
 

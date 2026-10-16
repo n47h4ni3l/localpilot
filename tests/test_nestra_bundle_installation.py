@@ -28,7 +28,6 @@ REQUIRED = (
     "payload/dependencies/runtime-deps/gh/bin/gh.exe",
     "payload/dependencies/installers/webview2/MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
     "payload/dependencies/installers/pawnio/PawnIO_setup.exe",
-    "payload/dependencies/installers/claude/claude.exe",
     "payload/dependencies/installers/portable-git/PortableGit-2.49.0-64-bit.7z.exe",
     "payload/dependencies/requirements-offline.txt",
     "payload/dependencies/wheelhouse/example-1.0-py3-none-any.whl",
@@ -115,9 +114,10 @@ def _run_functions(tmp_path: Path, bundle: str | Path, destination: Path, operat
 
 
 @WINDOWS_PS
-def test_script_parses_and_complete_inventory_preflight_is_read_only(tmp_path):
+def test_native_payload_without_claude_passes_read_only_preflight(tmp_path):
     bundle = _bundle(tmp_path)
     before = _snapshot(bundle)
+    assert not any("claude" in relative.lower() for relative in before)
     destination = tmp_path / "new installation"
     result = _run_functions(tmp_path, bundle, destination)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -127,7 +127,7 @@ def test_script_parses_and_complete_inventory_preflight_is_read_only(tmp_path):
 
 
 @WINDOWS_PS
-@pytest.mark.parametrize("failure", ["hash", "size", "missing", "unlisted", "duplicate", "escape", "ads", "case_duplicate", "missing_claude"])
+@pytest.mark.parametrize("failure", ["hash", "size", "missing", "unlisted", "duplicate", "escape", "ads", "case_duplicate", "missing_ollama"])
 def test_inventory_rejects_corruption_and_unsafe_paths_before_any_execution(tmp_path, failure):
     bundle = _bundle(tmp_path)
     manifest = json.loads((bundle / "bundle-manifest.json").read_text())
@@ -144,8 +144,8 @@ def test_inventory_rejects_corruption_and_unsafe_paths_before_any_execution(tmp_
         manifest["files"].append(first.copy())
     elif failure == "case_duplicate":
         manifest["files"].append({**first, "path": first["path"].upper()})
-    elif failure == "missing_claude":
-        selected = next(item for item in manifest["files"] if item["path"].endswith("claude/claude.exe"))
+    elif failure == "missing_ollama":
+        selected = next(item for item in manifest["files"] if item["path"].endswith("ollama/ollama.exe"))
         manifest["files"].remove(selected)
         (bundle / selected["path"]).unlink()
     else:

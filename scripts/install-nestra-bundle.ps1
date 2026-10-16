@@ -100,7 +100,6 @@ function Get-NestraBundleInventory {
         'payload/dependencies/runtime-deps/gh/bin/gh.exe',
         'payload/dependencies/installers/webview2/MicrosoftEdgeWebView2RuntimeInstallerX64.exe',
         'payload/dependencies/installers/pawnio/PawnIO_setup.exe',
-        'payload/dependencies/installers/claude/claude.exe',
         'payload/dependencies/requirements-offline.txt',
         'payload/model/bundle-model.json', 'payload/model/manifest.json',
         'payload/hardware/win-x64/LocalPilot.SystemSense.HardwareProvider.exe',
@@ -286,9 +285,6 @@ function Install-NestraBundle {
     $hardwareDestination = Join-Path $app 'localpilot/_hardware/win-x64'
     New-Item -ItemType Directory -Path $hardwareDestination -Force | Out-Null
     Copy-Item -Path (Join-Path $Inventory.Root 'payload/hardware/win-x64/*') -Destination $hardwareDestination -Recurse
-    $claudeDirectory = Join-Path $runtime 'claude'
-    New-Item -ItemType Directory -Path $claudeDirectory | Out-Null
-    Copy-Item -LiteralPath (Join-Path $dependencies 'installers/claude/claude.exe') -Destination $claudeDirectory
     $basePython = Join-Path $runtime 'python/python/python.exe'
     Invoke-NestraSetupProcess -Executable $basePython -Arguments @('-m', 'venv', (Join-Path $app '.venv')) -WorkingDirectory $app -Stage 'create-environment' | Out-Null
     $python = Join-Path $app '.venv/Scripts/python.exe'

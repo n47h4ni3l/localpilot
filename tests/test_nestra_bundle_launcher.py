@@ -23,7 +23,7 @@ def _installation(tmp_path):
         "app/.venv/Scripts/python.exe", "app/.venv/Scripts/pythonw.exe",
         "runtime/python/python/python.exe", "runtime/ollama/ollama.exe",
         "runtime/git/cmd/git.exe", "runtime/git/bin/bash.exe", "runtime/gh/bin/gh.exe",
-        "runtime/claude/claude.exe", "app/scripts/launch-nestra.ps1",
+        "app/scripts/launch-nestra.ps1",
     )
     for relative in paths:
         path = root / relative
@@ -34,7 +34,7 @@ def _installation(tmp_path):
     (app / "localpilot-data/broker-token").write_text("A" * 43)
     config = ('[agent]\nscaffold_mode = "guide_first"\ndata_dir = "localpilot-data"\n'
               '[model]\nprovider = "ollama"\nname = "nestra:p1.2"\n'
-              '[selfdev]\ndeveloper_model = "nestra:p1.2"\nimplementation_model = "nestra:p1.2"\n'
+              '[selfdev]\nimplementation_backend = "local_tools"\ndeveloper_model = "nestra:p1.2"\nimplementation_model = "nestra:p1.2"\n'
               '[desktop]\nhost = "127.0.0.1"\nport = 8766\n')
     (app / "localpilot.toml").write_text(config)
     metadata = {
@@ -72,6 +72,7 @@ def test_verify_only_does_not_execute_or_write(tmp_path, role):
     assert value["status"] == "verified"
     assert value["model"] == "nestra:p1.2"
     assert value["guide_only"] is True
+    assert not (root / "runtime/claude").exists()
     assert _snapshot(root) == before
     assert not (root / "state").exists()
 
@@ -90,10 +91,16 @@ def test_cross_installation_or_production_endpoints_are_rejected(tmp_path, field
     assert _snapshot(root) == before
 
 
-def test_wrong_model_or_guide_configuration_is_rejected(tmp_path):
+@pytest.mark.parametrize("original,replacement", [
+    ('name = "nestra:p1.2"', 'name = "gpt-oss:20b"'),
+    ('scaffold_mode = "guide_first"', 'scaffold_mode = "legacy_strict"'),
+    ('implementation_backend = "local_tools"', 'implementation_backend = "claude_code"'),
+    ('implementation_model = "nestra:p1.2"', 'implementation_model = "foreign-model"'),
+])
+def test_wrong_model_guide_or_earlier_claude_backend_is_rejected(tmp_path, original, replacement):
     root = _installation(tmp_path)
     path = root / "app/localpilot.toml"
-    path.write_text(path.read_text().replace('name = "nestra:p1.2"', 'name = "gpt-oss:20b"'))
+    path.write_text(path.read_text().replace(original, replacement))
     result = _verify(root)
     assert result.returncode != 0
     assert "accepted bundle identity" in result.stderr
@@ -101,7 +108,7 @@ def test_wrong_model_or_guide_configuration_is_rejected(tmp_path):
 
 def test_missing_packaged_runtime_fails_without_global_fallback(tmp_path):
     root = _installation(tmp_path)
-    (root / "runtime/claude/claude.exe").unlink()
+    (root / "runtime/gh/bin/gh.exe").unlink()
     result = _verify(root)
     assert result.returncode != 0
     assert "runtime file is missing" in result.stderr

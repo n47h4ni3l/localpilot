@@ -83,7 +83,6 @@ function Get-NestraLaunchConfiguration {
         Git = (Join-Path $runtimeRoot 'git/cmd/git.exe')
         Bash = (Join-Path $runtimeRoot 'git/bin/bash.exe')
         GitHub = (Join-Path $runtimeRoot 'gh/bin/gh.exe')
-        Claude = (Join-Path $runtimeRoot 'claude/claude.exe')
         Launcher = (Join-Path $app 'scripts/launch-nestra.ps1')
         Config = $configPath
     }
@@ -97,6 +96,7 @@ function Get-NestraLaunchConfiguration {
     foreach ($expected in @(@('agent', 'scaffold_mode', 'guide_first'), @('agent', 'data_dir', 'localpilot-data'),
                             @('model', 'provider', 'ollama'), @('model', 'name', 'nestra:p1.2'),
                             @('selfdev', 'developer_model', 'nestra:p1.2'), @('selfdev', 'implementation_model', 'nestra:p1.2'),
+                            @('selfdev', 'implementation_backend', 'local_tools'),
                             @('desktop', 'host', '127.0.0.1'), @('desktop', 'port', '8766'))) {
         if ((Get-NestraTomlLaunchValue $text $expected[0] $expected[1]) -cne $expected[2]) {
             throw "Nestra configuration differs from its accepted bundle identity: [$($expected[0])] $($expected[1])"
@@ -148,13 +148,11 @@ function Set-NestraPrivateEnvironment {
     param($Configuration)
     $env:PATH = @((Split-Path -Parent $Configuration.Files.Python), (Split-Path -Parent $Configuration.Files.BasePython),
         (Join-Path $Configuration.RuntimeRoot 'git/cmd'), (Join-Path $Configuration.RuntimeRoot 'git/bin'),
-        (Join-Path $Configuration.RuntimeRoot 'gh/bin'), (Join-Path $Configuration.RuntimeRoot 'claude'),
+        (Join-Path $Configuration.RuntimeRoot 'gh/bin'),
         (Join-Path $Configuration.RuntimeRoot 'ollama'), $env:PATH) -join ';'
     $env:OLLAMA_HOST = [string]$Configuration.Runtime.ollama_host
     $env:OLLAMA_MODELS = $Configuration.Models
     $env:OLLAMA_NO_CLOUD = '1'
-    $env:CLAUDE_CODE_GIT_BASH_PATH = $Configuration.Files.Bash
-    $env:CLAUDE_CONFIG_DIR = Join-Path $Configuration.Root 'state/claude'
     $env:DISABLE_AUTOUPDATER = '1'
     $env:PYTHONNOUSERSITE = '1'
     $env:PYTHONDONTWRITEBYTECODE = '1'

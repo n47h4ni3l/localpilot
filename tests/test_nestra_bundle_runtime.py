@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import tomllib
 
 import pytest
 
@@ -13,8 +14,7 @@ from localpilot.nestra_bundle_runtime import configure
 def _installation(tmp_path, monkeypatch):
     app, runtime, models = (tmp_path / name for name in ("app", "runtime", "models"))
     app.mkdir()
-    (runtime / "claude").mkdir(parents=True)
-    (runtime / "claude/claude.exe").write_bytes(b"test-runtime")
+    runtime.mkdir()
     manifest = models / "manifests-v2/ollama.com/library/nestra/p1.2"
     manifest.parent.mkdir(parents=True)
     manifest.write_bytes(b'{"fixture":"exact accepted metadata"}')
@@ -30,7 +30,7 @@ def test_fresh_config_is_private_guide_only_and_same_model(tmp_path, monkeypatch
     assert cfg.agent.scaffold_mode == "guide_first"
     assert cfg.model.name == cfg.selfdev.implementation_model == cfg.selfdev.developer_model == "nestra:p1.2"
     assert cfg.model.temperature == 1.0
-    assert cfg.selfdev.implementation_backend == "claude_code"
+    assert cfg.selfdev.implementation_backend == "local_tools"
     assert cfg.selfdev.implementation_base_url == "http://127.0.0.1:11435"
     assert cfg.desktop.port == 8766
     assert cfg.library.root == str(tmp_path / "library")
@@ -40,6 +40,12 @@ def test_fresh_config_is_private_guide_only_and_same_model(tmp_path, monkeypatch
     assert not cfg.selfdev.auto_promote
     assert identity == json.loads((app / ".nestra-runtime.json").read_text())
     assert not list((app / "localpilot-data").iterdir())
+    assert not (runtime / "claude").exists()
+    assert not (tmp_path / "state" / "claude").exists()
+    serialized = tomllib.loads((app / "localpilot.toml").read_text())
+    assert serialized["selfdev"]["implementation_backend"] == "local_tools"
+    assert "implementation_executable" not in serialized["selfdev"]
+    assert identity["model_digest"] == hashlib.sha256((models / "manifests-v2/ollama.com/library/nestra/p1.2").read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("existing", ["localpilot.toml", ".nestra-runtime.json"])
@@ -49,6 +55,8 @@ def test_existing_owner_configuration_is_preserved(tmp_path, monkeypatch, existi
     with pytest.raises(FileExistsError):
         configure(app, runtime, models)
     assert (app / existing).read_bytes() == b"owner original"
+    assert not (tmp_path / "library").exists()
+    assert not (tmp_path / "state").exists()
 
 
 def test_wrong_model_fails_before_creating_config(tmp_path, monkeypatch):

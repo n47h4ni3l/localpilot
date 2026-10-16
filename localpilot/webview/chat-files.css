@@ -61,7 +61,10 @@
 .chat-files-drop-target { outline: 3px dashed var(--comic-accent, #9a7bbf); outline-offset: -5px; }
 .chat-file-preview {
   box-sizing: border-box;
-  width: min(90vw, 900px);
+  width: min(calc(100vw - var(--surface-left-inset, 8px) - var(--chat-right-inset, 34px) - 32px), calc(var(--chat-panel-width, 458px) - 32px));
+  inset-inline-start: auto;
+  inset-inline-end: calc(var(--chat-right-inset, 34px) + 16px);
+  margin-inline: 0;
   max-height: 88vh;
   border: 2px solid var(--comic-ink, #28313f);
   border-radius: 14px;

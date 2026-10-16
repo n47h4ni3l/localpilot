@@ -29,7 +29,7 @@ def activity_preview(value: Any, limit: int = 1600) -> str:
     if not isinstance(text, str):
         text = json.dumps(text, ensure_ascii=False, default=str)
     text = re.sub(r"(?i)(bearer\s+)\S+", r"\1[redacted]", text)
-    text = re.sub(r"(?i)((?:password|api[_-]?key|secret|access[_-]?token)\s*[:=]\s*)[^\s,;]+",
+    text = re.sub(r"(?i)((?:password|api[_-]?key|secret|access[_-]?token)[\"']?\s*[:=]\s*)[^\s,;]+",
                   r"\1[redacted]", text)
     return text[:limit] + ("… [preview truncated]" if len(text) > limit else "")
 

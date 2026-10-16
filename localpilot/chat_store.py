@@ -246,6 +246,17 @@ class ChatStore:
             if item["status"] == "complete" and str(item["content"]).strip()
         ]
 
+    def linked_file_ids(self, session_id: str) -> list[str]:
+        """Only files deliberately sent or visibly returned belong to model context."""
+        ids: set[str] = set()
+        with self._connect() as connection:
+            for row in connection.execute("SELECT files_json FROM chat_messages WHERE session_id = ? AND files_json != '[]'",
+                                          (session_id,)):
+                for item in json.loads(row[0]):
+                    if isinstance(item, dict) and isinstance(item.get("id"), str):
+                        ids.add(item["id"])
+        return sorted(ids)
+
     def fail_streaming_messages(self, reason: str) -> list[dict[str, Any]]:
         """Close records abandoned by a broker/process restart."""
         timestamp = _now()

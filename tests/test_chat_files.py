@@ -119,6 +119,35 @@ def test_context_does_not_leak_and_partial_artifact_survives(tmp_path):
             read_chat_file(file_id)
 
 
+def test_explicit_access_hides_unsent_uploads_and_allows_this_request_artifacts(tmp_path, monkeypatch):
+    monkeypatch.setattr("localpilot.chat_files._isolated_extract", lambda *_: {"status": "no_text", "text": "", "truncated": False})
+    store = ChatFiles(tmp_path)
+    sent = store.import_bytes("sent.txt", b"shared", "one")
+    unsent = store.import_bytes("unsent.txt", b"private draft", "one")
+    unsent_image = store.import_bytes("unsent.png", _png(), "one")
+    with chat_file_context(tmp_path, "one", attachment_ids=[sent["id"]], accessible_file_ids=[sent["id"]]) as context:
+        assert [item["id"] for item in list_chat_files()["files"]] == [sent["id"]]
+        assert read_chat_file(sent["id"])["text"] == "shared"
+        with pytest.raises(ValueError, match="not sent"):
+            read_chat_file(unsent["id"])
+        with pytest.raises(ValueError, match="not sent"):
+            edit_chat_file(unsent["id"], "private", "public")
+        with pytest.raises(ValueError, match="not sent"):
+            edit_chat_image(unsent_image["id"], "resize", width=5, height=5)
+        output = create_chat_file("returned.txt", "new output")["artifacts"][0]
+        assert read_chat_file(output["id"])["text"] == "new output"
+        assert {item["id"] for item in list_chat_files()["files"]} == {sent["id"], output["id"]}
+        edited = edit_chat_file(output["id"], "new", "edited")["artifacts"][0]
+        assert read_chat_file(edited["id"])["text"] == "edited output"
+        assert len(context.artifacts) == 2
+    with pytest.raises(ValueError, match="foreground"):
+        read_chat_file(sent["id"])
+    with chat_file_context(tmp_path, "one", accessible_file_ids=[]):
+        assert list_chat_files()["files"] == []
+        with pytest.raises(ValueError, match="not sent"):
+            read_chat_file(output["id"])
+
+
 def test_edit_text_preserves_original_and_creates_new_copy(tmp_path):
     with chat_file_context(tmp_path, "one") as context:
         original = create_chat_file("a.txt", "one\r\ntwo")

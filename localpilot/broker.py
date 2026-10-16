@@ -263,6 +263,7 @@ class BrokerApp:
                     "prompt": content.strip(),
                     "history": history,
                     "file_ids": file_ids,
+                    "accessible_file_ids": self.store.linked_file_ids(session_id),
                 }
             )
             timer.start()

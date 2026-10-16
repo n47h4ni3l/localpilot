@@ -60,6 +60,7 @@ def test_authenticated_upload_read_and_cross_session_isolation(tmp_path):
                                  {"content": "", "file_ids": [file["id"]]})
         assert status == 202 and result["user"]["files"][0]["id"] == file["id"]
         assert app.runtime.sent[-1]["file_ids"] == [file["id"]]
+        assert app.runtime.sent[-1]["accessible_file_ids"] == [file["id"]]
         app._on_runtime_message({"kind": "result", "request_id": result["request_id"],
                                  "session_id": session, "answer": "Read"})
         assert ChatStore(app.store.path).messages(session)[0]["files"][0]["sha256"] == file["sha256"]
@@ -129,3 +130,10 @@ def test_file_tool_schemas_work_with_the_installed_ollama_client():
     for spec in CHAT_FILE_TOOL_SPECS:
         tool = convert_function_to_tool(spec.fn)
         assert tool.function.name == spec.name
+
+
+def test_activity_previews_bound_and_redact_structured_and_repr_secrets():
+    from localpilot.chat_activity import activity_preview
+    for value in ({"api_key": "private"}, "{'api_key': 'private', 'count': 2}", "Bearer private"):
+        assert "private" not in activity_preview(value)
+    assert len(activity_preview({"text": "a" * 100_000})) < 1700

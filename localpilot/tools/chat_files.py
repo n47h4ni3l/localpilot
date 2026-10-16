@@ -27,16 +27,23 @@ class ChatFileContext:
     attachment_ids: tuple[str, ...] = ()
     allow_screenshot: bool = False
     artifacts: list[dict] = field(default_factory=list)
+    accessible_file_ids: frozenset[str] | None = None
 
 
 _CONTEXT: ContextVar[ChatFileContext | None] = ContextVar("localpilot_chat_files", default=None)
 
 
 @contextmanager
-def chat_file_context(data_dir: str | Path, session_id: str, attachment_ids: tuple[str, ...] | list[str] = (), *, allow_screenshot: bool = False) -> Iterator[ChatFileContext]:
-    context = ChatFileContext(ChatFiles(data_dir), session_id, tuple(attachment_ids), allow_screenshot)
-    for file_id in context.attachment_ids:
+def chat_file_context(data_dir: str | Path, session_id: str, attachment_ids: tuple[str, ...] | list[str] = (), *, allow_screenshot: bool = False, accessible_file_ids: tuple[str, ...] | list[str] | None = None) -> Iterator[ChatFileContext]:
+    if accessible_file_ids is not None and not isinstance(accessible_file_ids, (list, tuple, set, frozenset)):
+        raise ValueError("Accessible chat file IDs must be a collection of file IDs.")
+    allowed = None if accessible_file_ids is None else frozenset(accessible_file_ids)
+    context = ChatFileContext(ChatFiles(data_dir), session_id, tuple(attachment_ids), allow_screenshot,
+                              accessible_file_ids=allowed)
+    for file_id in allowed or ():
         context.store.get(file_id, session_id=session_id)
+    for file_id in context.attachment_ids:
+        _file(context, file_id)
     token = _CONTEXT.set(context)
     try:
         yield context
@@ -51,6 +58,19 @@ def _current() -> ChatFileContext:
     return context
 
 
+def _visible_ids(context: ChatFileContext) -> set[str] | None:
+    if context.accessible_file_ids is None:
+        return None
+    return set(context.accessible_file_ids) | {item["id"] for item in context.artifacts}
+
+
+def _file(context: ChatFileContext, file_id: str) -> dict:
+    visible = _visible_ids(context)
+    if visible is not None and file_id not in visible:
+        raise ValueError("File was not sent in this conversation or returned by this request.")
+    return context.store.get(file_id, session_id=context.session_id)
+
+
 def _public(item: dict) -> dict:
     return {key: value for key, value in item.items() if key != "extraction"} | {
         "extraction": {key: value for key, value in item.get("extraction", {}).items() if key != "text"}}
@@ -58,6 +78,8 @@ def _public(item: dict) -> dict:
 
 def _artifact(name: str, data: bytes, *, source_file_id: str | None = None) -> dict:
     context = _current()
+    if source_file_id is not None:
+        _file(context, source_file_id)
     item = _public(context.store.import_bytes(name, data, context.session_id, kind="artifact", source_file_id=source_file_id))
     # Record immediately: a later model/tool error must not lose a file that
     # was already created successfully during this request.
@@ -68,7 +90,10 @@ def _artifact(name: str, data: bytes, *, source_file_id: str | None = None) -> d
 def list_chat_files() -> dict:
     """List attached and returned files available only in this conversation."""
     context = _current()
-    return {"files": [_public(item) for item in context.store.list_session(context.session_id)],
+    visible = _visible_ids(context)
+    items = (context.store.list_session(context.session_id) if visible is None else
+             sorted((_file(context, file_id) for file_id in visible), key=lambda item: item["created_at"]))
+    return {"files": [_public(item) for item in items],
             "current_attachment_ids": list(context.attachment_ids)}
 
 
@@ -77,7 +102,7 @@ def read_chat_file(file_id: str, start: int = 0, max_chars: int = 12000) -> dict
     context = _current()
     if type(start) is not int or start < 0 or type(max_chars) is not int or not 1 <= max_chars <= 16000:
         raise ValueError("Use start >= 0 and max_chars between 1 and 16000.")
-    item = context.store.get(file_id, session_id=context.session_id)
+    item = _file(context, file_id)
     extracted = item.get("extraction", {})
     text = str(extracted.get("text", ""))
     return {"file": _public(item), "text": text[start:start + max_chars], "start": start,
@@ -100,7 +125,7 @@ def create_chat_file(name: str, text: str) -> dict:
 def edit_chat_file(file_id: str, old: str, new: str, count: int = 1) -> dict:
     """Replace exact text in a UTF-8 attachment and return a NEW edited copy."""
     context = _current()
-    item = context.store.get(file_id, session_id=context.session_id)
+    item = _file(context, file_id)
     if Path(item["name"]).suffix.lower() not in _TEXT_SUFFIXES:
         raise ValueError("Exact replacement supports UTF-8 text/code files; DOCX/PDF require a new document.")
     if not isinstance(old, str) or not old or not isinstance(new, str) or type(count) is not int or not 1 <= count <= 1000:
@@ -174,7 +199,7 @@ def edit_chat_image(file_id: str, operation: str, left: int = 0, top: int = 0,
     it does not understand or generate depicted content.
     """
     context = _current()
-    item = context.store.get(file_id, session_id=context.session_id)
+    item = _file(context, file_id)
     if item["mime"] not in {"image/png", "image/jpeg", "image/webp"}:
         raise ValueError("Select a PNG, JPEG or WebP image from this conversation.")
     if any(type(value) is not int for value in (left, top, width, height)):

@@ -259,7 +259,8 @@ class RuntimeWorker:
             model_prompt = prompt + ("\n\n" + file_context if file_context else "")
             allow_capture = _explicit_screen_capture_requested(prompt)
             with chat_file_context(self.root / self.config.agent.data_dir, session_id,
-                                   file_ids, allow_screenshot=allow_capture) as context:
+                                   file_ids, allow_screenshot=allow_capture,
+                                   accessible_file_ids=list(command.get("accessible_file_ids") or file_ids)) as context:
                 created_files = context.artifacts
                 # File capabilities exist only for this foreground request;
                 # CLI/autonomous/diagnostic agents keep their established tools.

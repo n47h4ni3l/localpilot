@@ -42,4 +42,5 @@
   background: rgba(128, 128, 128, 0.1);
   border-radius: 5px;
 }
+.chat-activity .chat-activity__preview { font-family: Consolas, "Cascadia Mono", monospace !important; }
 .bubble-plain--error { border-left: 3px solid #a33c36; padding-left: 9px; }

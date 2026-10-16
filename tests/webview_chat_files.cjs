@@ -79,7 +79,18 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(c.isBusy(), false);
   assert.equal(f.ids['chat-file-input'].value, '');
   assert.deepEqual(JSON.parse(JSON.stringify(f.calls[0])), {method: 'POST', route: '/v1/sessions/a/files', body: {name: 'notes.txt', data_base64: 'aGVsbG8='}});
-  assert.match(f.ids['chat-pending-files'].children[0].children[0].children[1].textContent, /Text extracted/);
+  const pendingCard = f.ids['chat-pending-files'].children[0];
+  assert.match(pendingCard.className, /chat-file-card--pending/);
+  assert.match(pendingCard.children[0].children[1].textContent, /Ready/);
+  assert.match(pendingCard.children[0].children[1].attributes.title, /Text extracted/);
+  assert.match(pendingCard.children[0].children[1].attributes['aria-label'], /Text extracted/);
+  assert.equal(findButton(pendingCard, 'Open'), undefined);
+  assert.equal(findButton(pendingCard, 'Save as…'), undefined);
+  const removePending = findButton(pendingCard, '×');
+  assert.match(removePending.className, /chat-file-action--remove/);
+  assert.equal(removePending.attributes['aria-label'], 'Remove notes.txt from this message');
+  assert.equal(removePending.attributes.title, removePending.attributes['aria-label']);
+  assert.equal(f.ids['chat-file-feedback'].hidden, true, 'ready file cards do not need a separate success banner');
   const sent = c.pendingItems();
   c.clearPending();
   assert.equal(c.hasPending(), false);
@@ -105,6 +116,8 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   await tick();
   assert.equal(c.isBusy(), true);
   assert.equal(c.hasDraft(), true);
+  assert.equal(f.ids['chat-file-feedback'].hidden, false);
+  assert.match(f.ids['chat-file-feedback'].textContent, /Attaching files/);
   c.clearPending();
   assert.equal(c.hasPending(), true, 'cannot clear an in-flight upload');
   f.switchSession('c');
@@ -113,6 +126,37 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(c.hasPending(), false, 'late upload cannot attach to another conversation');
   f.switchSession('a');
   assert.equal(c.pendingIds().join(','), 'raced');
+
+  const compact = fixture();
+  compact.handler(async () => ({file: {id: 'image', name: 'screen.png', mime: 'image/png', size: 20, extraction: {status: 'unavailable'}}}));
+  await compact.attach([file('screen.png')]);
+  let compactMeta = compact.ids['chat-pending-files'].children[0].children[0].children[1];
+  assert.match(compactMeta.textContent, /Image attached/);
+  assert.match(compactMeta.attributes.title, /visual understanding unavailable/);
+  compact.controller.clearPending();
+  compact.handler(async () => ({file: {id: 'ocr', name: 'scan.png', mime: 'image/png', size: 20, extraction: {status: 'ocr', truncated: true}}}));
+  await compact.attach([file('scan.png')]);
+  compactMeta = compact.ids['chat-pending-files'].children[0].children[0].children[1];
+  assert.match(compactMeta.textContent, /Ready/);
+  assert.match(compactMeta.attributes.title, /OCR.*Text extraction limited/);
+  // Removing a final attachment clears a lingering native action success,
+  // while transport/extraction errors remain visible for troubleshooting.
+  const successMessage = new Element();
+  compact.controller.renderMessage(successMessage, {files: [{id: 'saved', name: 'notes.txt'}]});
+  await findButton(successMessage, 'Save as…').click();
+  assert.equal(compact.ids['chat-file-feedback'].hidden, false);
+  await findButton(compact.ids['chat-pending-files'], '×').click();
+  assert.equal(compact.controller.hasPending(), false);
+  assert.equal(compact.ids['chat-file-feedback'].hidden, true);
+  compact.controller.restorePending([{id: 'remaining', name: 'notes.txt', text_status: 'no_text', size: 2}]);
+  compactMeta = compact.ids['chat-pending-files'].children[0].children[0].children[1];
+  assert.match(compactMeta.textContent, /No readable text/);
+  compact.handler(async () => { throw Error('Upload unavailable'); });
+  await compact.attach([file('failed.txt')]);
+  await findButton(compact.ids['chat-pending-files'], '×').click();
+  assert.equal(compact.controller.hasPending(), false);
+  assert.equal(compact.ids['chat-file-feedback'].hidden, false, 'removing the last card must retain a real upload error');
+  assert.match(compact.ids['chat-file-feedback'].textContent, /Upload unavailable/);
 
   // Bounds reject the whole selection before reading or posting anything.
   const bounds = fixture();
@@ -134,6 +178,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(failed.controller.hasDraft(), false);
   assert.equal(failed.controller.isBusy(), false);
   assert.match(failed.ids['chat-file-feedback'].textContent, /failed.txt.*HTTP 413/);
+  assert.equal(failed.ids['chat-file-feedback'].hidden, false);
 
   const io = fixture();
   let prevented = 0;
@@ -143,13 +188,19 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   await io.ids.panel.listeners.drop({dataTransfer: {types: ['Files'], files: [file('drop.txt')]}, preventDefault() { prevented++; }});
   assert.equal(io.calls.length, 2);
   assert.equal(prevented, 2);
+  let finishCapture;
   io.handler(async (method, route) => {
     assert.equal(method, 'POST'); assert.equal(route, '/v1/sessions/a/screenshot');
-    return {file: {id: 'capture', name: 'screen.png', mime: 'image/png', size: 10, session_id: 'a'}};
+    return new Promise(resolve => { finishCapture = resolve; });
   });
-  await io.ids['chat-screenshot-btn'].click();
+  const capture = io.ids['chat-screenshot-btn'].click();
+  await tick();
+  assert.equal(io.ids['chat-file-feedback'].hidden, false, 'actual capture progress stays visible');
+  assert.match(io.ids['chat-file-feedback'].textContent, /Taking a screenshot/);
+  finishCapture({file: {id: 'capture', name: 'screen.png', mime: 'image/png', size: 10, session_id: 'a'}});
+  await capture;
   assert.equal(io.calls.at(-1).route, '/v1/sessions/a/screenshot');
-  assert.match(io.ids['chat-file-feedback'].textContent, /Preview it before sending/);
+  assert.equal(io.ids['chat-file-feedback'].hidden, true, 'successful capture uses its card without a redundant banner');
 
   // Artifact actions use only broker file identity, never a supplied path.
   const artifacts = fixture();

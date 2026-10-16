@@ -265,7 +265,7 @@ def test_tool_activity_is_redacted_and_bounded_before_event_transport(tmp_path, 
     agent._event_sink = events.append
     agent.tools["inspect_fixture"] = ToolSpec(
         "inspect_fixture", "Inspect local fixture", RiskLevel.READ_ONLY,
-        lambda api_key: {"secret": "result-secret", "text": "x" * 100_000},
+        lambda api_key: {"secret": "result secret phrase", "text": "x" * 100_000},
     )
     responses = iter([
         [_chunk(tool_calls=[_call("inspect_fixture", {"api_key": "argument-secret"})])],
@@ -278,5 +278,5 @@ def test_tool_activity_is_redacted_and_bounded_before_event_transport(tmp_path, 
     assert [event["type"] for event in steps] == ["tool.started", "tool.completed"]
     for event in steps:
         preview = event["payload"].get("arguments_preview", event["payload"].get("result_preview"))
-        assert "argument-secret" not in preview and "result-secret" not in preview
+        assert "argument-secret" not in preview and "secret phrase" not in preview
         assert len(preview) < 1700

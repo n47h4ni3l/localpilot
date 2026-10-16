@@ -134,6 +134,9 @@ def test_file_tool_schemas_work_with_the_installed_ollama_client():
 
 def test_activity_previews_bound_and_redact_structured_and_repr_secrets():
     from localpilot.chat_activity import activity_preview
-    for value in ({"api_key": "private"}, "{'api_key': 'private', 'count': 2}", "Bearer private"):
+    for value in ({"api_key": "private"}, "{'api_key': 'private', 'count': 2}", "Bearer private",
+                  "{'secret': 'private phrase', 'count': 2}", '{"password": "private phrase',
+                  "authorization='private phrase'"):
         assert "private" not in activity_preview(value)
+        assert "phrase" not in activity_preview(value)
     assert len(activity_preview({"text": "a" * 100_000})) < 1700

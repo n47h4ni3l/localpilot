@@ -594,6 +594,7 @@ class ClaudeCodeBackend:
             "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "PROGRAMDATA",
             "TEMP", "TMP", "COMSPEC",
             "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+            "CLAUDE_CODE_GIT_BASH_PATH", "CLAUDE_CONFIG_DIR", "DISABLE_AUTOUPDATER",
         )
         env = {name: os.environ[name] for name in retained if name in os.environ}
         env.update(

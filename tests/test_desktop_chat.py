@@ -203,6 +203,16 @@ def test_broker_administrator_status_and_idle_shutdown_are_authenticated_and_pre
         assert status == 200
         assert payload["elevated"] is False
         assert payload["pending_requests"] == 0
+        identity = payload["runtime_identity"]
+        assert identity["root"] == str(tmp_path.resolve())
+        assert identity["data_dir"] == str((tmp_path / app.config.agent.data_dir).resolve())
+        assert identity["executable"] == str(Path(sys.executable).resolve())
+        assert Path(identity["host_executable"]).is_absolute()
+        assert identity["config_path"] is None
+        assert identity["created_at_unix"] > 0
+        assert identity["command_line"]
+        assert identity["desktop_port"] == app.config.desktop.port
+        assert "token" not in identity
         session = app.store.create_session()
         active = app.submit(session["id"], "Please finish this response")
         assert request("POST", "/v1/broker/shutdown")[0] == 409

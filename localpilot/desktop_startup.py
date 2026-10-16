@@ -11,6 +11,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import stat
 import subprocess
 import sys
 from typing import Any
@@ -154,6 +156,125 @@ try {
 """
 
 
+_BUNDLE_TASK_STATUS = r"""
+$spec = $env:LOCALPILOT_BUNDLE_STARTUP_JSON | ConvertFrom-Json
+$sid = Get-IdentitySid
+if ($sid -cne $spec.owner_sid) { throw 'This bundle belongs to another Windows account.' }
+$all = @(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop)
+$states = @{}
+$enabled = $true
+foreach ($role in @('Desktop', 'Broker', 'Worker')) {
+    $expected = $spec.tasks.$role
+    $matches = @($all | Where-Object { $_.TaskName -ceq $expected.name })
+    if ($matches.Count -eq 0) {
+        $states[$role] = @{name=$expected.name; present=$false; enabled=$false}
+        $enabled = $false
+        continue
+    }
+    if ($matches.Count -ne 1) { throw 'The bundle startup task names are ambiguous.' }
+    $task = $matches[0]
+    $actions = @($task.Actions)
+    $triggers = @($task.Triggers)
+    if ($task.Description -cne $expected.description -or $actions.Count -ne 1 -or
+        $actions[0].Execute -ine $spec.powershell -or $actions[0].Arguments -cne $expected.arguments -or
+        $actions[0].WorkingDirectory -ine $spec.app_root -or
+        (Resolve-IdentitySid $task.Principal.UserId) -cne $sid -or
+        $task.Principal.RunLevel -cne $expected.run_level -or $task.Principal.LogonType -cne 'Interactive' -or
+        $task.Settings.MultipleInstances -cne 'IgnoreNew' -or $triggers.Count -ne 1 -or
+        $triggers[0].CimClass.CimClassName -cne 'MSFT_TaskLogonTrigger' -or
+        (Resolve-IdentitySid $triggers[0].UserId) -cne $sid) {
+        throw ('The ' + $role + ' startup task differs from this bundle owner, launcher, privilege or logon trigger; it was preserved.')
+    }
+    $active = [bool]($task.Settings.Enabled -and $triggers[0].Enabled)
+    $states[$role] = @{name=$expected.name; present=$true; enabled=$active; state=[string]$task.State}
+    if (-not $active) { $enabled = $false }
+}
+@{enabled=$enabled; tasks=$states} | ConvertTo-Json -Compress -Depth 4
+"""
+
+
+def _bundle_startup_spec(root: Path, config_path: str | Path | None) -> dict[str, Any] | None:
+    """Recognize bundle ownership without ever falling through on bad metadata."""
+    root = root.absolute()
+    marker, tasks_path = root / ".nestra-runtime.json", root.parent / "tasks.json"
+    if not marker.exists() and not marker.is_symlink() and not (root.name == "app" and tasks_path.exists()):
+        return None
+    for path in (marker, tasks_path, root / "scripts/launch-nestra.ps1"):
+        for candidate in (path, *path.parents):
+            try:
+                info = candidate.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise ValueError("Linked bundle startup paths are unsupported.")
+    def read(path: Path) -> dict[str, Any]:
+        if not path.is_file() or path.stat().st_size > 1024 * 1024:
+            raise ValueError("Bundle startup metadata is missing or oversized.")
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(value, dict):
+            raise ValueError("Bundle startup metadata must be an object.")
+        return value
+    runtime, registered = read(marker), read(tasks_path)
+    install = root.parent.resolve()
+    config = _effective_config(root, config_path)
+    if (runtime.get("schema_version") != 1 or registered.get("format_version") != 1
+            or root.name != "app" or not _same_path(runtime.get("install_directory", ""), install)
+            or not _same_path(runtime.get("app_root", ""), root)
+            or not _same_path(runtime.get("config_path", ""), config)
+            or not _same_path(registered.get("install_directory", ""), install)):
+        raise ValueError("Bundle startup metadata belongs to another root or configuration.")
+    # Registration keeps the original spelling in its description/arguments.
+    # Resolved path equality above validates identity without changing it.
+    install, root = Path(registered["install_directory"]), Path(runtime["app_root"])
+    if not install.is_absolute() or not root.is_absolute():
+        raise ValueError("Bundle startup paths must be absolute.")
+    sid = registered.get("owner_sid", "")
+    if not isinstance(sid, str) or not re.fullmatch(r"S-1-5-[0-9-]+", sid):
+        raise ValueError("Bundle startup owner SID is invalid.")
+    digest = hashlib.sha256((str(install).lower() + "|" + sid).encode()).hexdigest()[:12]
+    tasks = {}
+    for role in ("Desktop", "Broker", "Worker"):
+        name = f"Nestra ALPHA2 {digest} {role}"
+        if registered.get("tasks", {}).get(role) != name:
+            raise ValueError("Bundle startup task name differs from its installation identity.")
+        tasks[role] = {
+            "name": name, "run_level": "Limited" if role == "Desktop" else "Highest",
+            "description": f"Nestra ALPHA2; root={install}; owner={sid}; role={role}",
+            "arguments": subprocess.list2cmdline([
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
+                "-File", str(root / "scripts/launch-nestra.ps1"), "-Role", role, "-InstallDirectory", str(install),
+            ]),
+        }
+    return {"owner_sid": sid, "app_root": str(root), "tasks": tasks,
+            "powershell": str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe")}
+
+
+def _bundle_startup_status(root: Path, config_path: str | Path | None) -> dict[str, Any] | None:
+    try:
+        spec = _bundle_startup_spec(root, config_path)
+        if spec is None:
+            return None
+        environment = os.environ.copy()
+        environment["LOCALPILOT_BUNDLE_STARTUP_JSON"] = json.dumps(spec)
+        result = subprocess.run(
+            [spec["powershell"], "-NoProfile", "-NonInteractive", "-Command", _TASK_FUNCTIONS + _BUNDLE_TASK_STATUS],
+            check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", env=environment,
+            timeout=30, creationflags=hidden_process_creation_flags(),
+        )
+        status = json.loads(result.stdout)
+        if not isinstance(status, dict) or not isinstance(status.get("enabled"), bool) or not isinstance(status.get("tasks"), dict):
+            raise ValueError("Windows returned invalid bundle startup status.")
+        names = ", ".join(item["name"] for item in spec["tasks"].values())
+        return {"ok": True, "managed": True, "can_change": False, **status,
+                "reason": "Bundle login startup is managed by Windows Task Scheduler. "
+                          "To change it, open Task Scheduler as administrator under this account and inspect all three tasks: " + names}
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
+        detail = "Windows could not verify the registered task group." if isinstance(exc, subprocess.SubprocessError) else str(exc)[:240]
+        return {"ok": False, "enabled": False, "managed": True, "can_change": False,
+                "reason": "Bundle login startup could not be verified; its tasks were preserved. "
+                          "Open Windows Task Scheduler as administrator under this account to inspect this installation's Nestra ALPHA2 tasks. " + detail}
+
+
 def startup_shortcut_path() -> Path:
     appdata = os.environ.get("APPDATA")
     base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
@@ -219,6 +340,9 @@ def _operation(
 def startup_status(root: Path, config_path: str | Path | None) -> dict[str, Any]:
     if os.name != "nt":
         return {"ok": True, "enabled": False}
+    bundle = _bundle_startup_status(root, config_path)
+    if bundle is not None:
+        return bundle
     result = _operation("status", root, config_path)
     legacy = _owned_legacy(result.get("legacy"), root.resolve(), _effective_config(root, config_path))
     return {"ok": True, "enabled": result["enabled"] or legacy}
@@ -227,6 +351,9 @@ def startup_status(root: Path, config_path: str | Path | None) -> dict[str, Any]
 def set_startup(root: Path, config_path: str | Path | None, enabled: bool) -> dict[str, Any]:
     if os.name != "nt":
         return {"ok": False, "reason": "not-windows"}
+    bundle = _bundle_startup_status(root, config_path)
+    if bundle is not None:
+        return {**bundle, "ok": False}
     if current_process_elevated() is not True:
         return {"ok": False, "reason": "Reopen LocalPilot as administrator to change login startup."}
     status = _operation("status", root, config_path)

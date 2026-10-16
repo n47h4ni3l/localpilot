@@ -694,9 +694,28 @@
     if (!settingsPopover.contains(e.target) && !clickedToggle) closeSettings();
   });
 
+  function renderStartupSettings(result) {
+    if (!result) return;
+    if (result.ok || result.managed) {
+      startupToggle.classList.toggle("is-on", !!result.enabled);
+      startupToggle.setAttribute("aria-checked", String(!!result.enabled));
+    }
+    startupToggle.disabled = result.can_change === false;
+    startupToggle.title = result.reason || "";
+    let feedback = document.getElementById("startup-managed-feedback");
+    if (result.managed && !feedback) {
+      feedback = document.createElement("p");
+      feedback.id = "startup-managed-feedback";
+      feedback.setAttribute("role", "status");
+      startupToggle.parentElement.insertAdjacentElement("afterend", feedback);
+    }
+    if (feedback) feedback.textContent = result.managed ? result.reason || "" : "";
+  }
   startupToggle.addEventListener("click", async function () {
+    if (startupToggle.disabled) return;
     const wantOn = !startupToggle.classList.contains("is-on");
     const result = await bridge("set_start_with_windows", wantOn);
+    if (result && result.managed) { renderStartupSettings(result); return; }
     if (result && result.ok) {
       startupToggle.classList.toggle("is-on", wantOn);
       startupToggle.setAttribute("aria-checked", String(wantOn));
@@ -1595,10 +1614,7 @@
     };
 
     bridge("get_start_with_windows").then(function (result) {
-      if (result && result.ok) {
-        startupToggle.classList.toggle("is-on", !!result.enabled);
-        startupToggle.setAttribute("aria-checked", String(!!result.enabled));
-      }
+      renderStartupSettings(result);
     });
 
     setGlobalState("restarting");

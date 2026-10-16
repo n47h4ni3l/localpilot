@@ -1,0 +1,56 @@
+{
+  "format_version": 1,
+  "retrieved_at": "2026-10-16T21:14:26.972548+00:00",
+  "gpt_oss_repository_revision": "5681a6b6552635e7b29cde94a61ca6a7aee90ebd",
+  "files": [
+    {
+      "path": "claude-code-2.1.263/LICENSE.md",
+      "source_url": "https://raw.githubusercontent.com/anthropics/claude-code/v2.1.263/LICENSE.md",
+      "resolved_url": "https://raw.githubusercontent.com/anthropics/claude-code/v2.1.263/LICENSE.md",
+      "sha256": "728158fd1037143fad6907e8fa34804177e598b7326519503fe83cafdef849e6",
+      "size": 150
+    },
+    {
+      "path": "ollama-0.40.3/LICENSE",
+      "source_url": "https://raw.githubusercontent.com/ollama/ollama/v0.40.3/LICENSE",
+      "resolved_url": "https://raw.githubusercontent.com/ollama/ollama/v0.40.3/LICENSE",
+      "sha256": "5934ed2ce0d15154bcdb9c85203210abac0da4314af34081e36df4599f90b226",
+      "size": 1058
+    },
+    {
+      "path": "git-2.56.0.windows.2/COPYING",
+      "source_url": "https://raw.githubusercontent.com/git-for-windows/git/v2.56.0.windows.2/COPYING",
+      "resolved_url": "https://raw.githubusercontent.com/git-for-windows/git/v2.56.0.windows.2/COPYING",
+      "sha256": "5b2198d1645f767585e8a88ac0499b04472164c0d2da22e75ecf97ef443ab32e",
+      "size": 18765
+    },
+    {
+      "path": "cpython-3.12.15/LICENSE",
+      "source_url": "https://raw.githubusercontent.com/python/cpython/v3.12.15/LICENSE",
+      "resolved_url": "https://raw.githubusercontent.com/python/cpython/v3.12.15/LICENSE",
+      "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf",
+      "size": 13936
+    },
+    {
+      "path": "github-cli-2.102.0/LICENSE",
+      "source_url": "https://raw.githubusercontent.com/cli/cli/v2.102.0/LICENSE",
+      "resolved_url": "https://raw.githubusercontent.com/cli/cli/v2.102.0/LICENSE",
+      "sha256": "6da4adc42392c8485e40b4251c7e332fc3352df1947c9ffade71dd60b14a7a4f",
+      "size": 1068
+    },
+    {
+      "path": "python-build-standalone-20261013/LICENSE",
+      "source_url": "https://raw.githubusercontent.com/astral-sh/python-build-standalone/20261013/LICENSE",
+      "resolved_url": "https://raw.githubusercontent.com/astral-sh/python-build-standalone/20261013/LICENSE",
+      "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
+      "size": 16725
+    },
+    {
+      "path": "gpt-oss/LICENSE",
+      "source_url": "https://raw.githubusercontent.com/openai/gpt-oss/5681a6b6552635e7b29cde94a61ca6a7aee90ebd/LICENSE",
+      "resolved_url": "https://raw.githubusercontent.com/openai/gpt-oss/5681a6b6552635e7b29cde94a61ca6a7aee90ebd/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size": 11358
+    }
+  ]
+}

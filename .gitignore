@@ -18,6 +18,8 @@ tools/WindowsInstaller/obj/
 .DS_Store
 Thumbs.db
 .localpilot-release.json
+.nestra-runtime.json
+packaging/wheels/*.whl
 dist/
 
 # Isolated local test scratch; never source or training evidence.

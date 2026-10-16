@@ -16,11 +16,22 @@
     const status = String(file.text_status || (file.extraction && file.extraction.status) || "").toLowerCase();
     if (status === "extracted" || status === "text" || status === "ready") return "Text extracted";
     if (status === "ocr") return "Text extracted with OCR";
+    if (status === "processing" || status === "pending") return "Reading text…";
     if (status === "empty" || status === "no_text") return "No readable text found";
     if (status === "failed" || status === "error") return "Text extraction failed; file attached";
     if (/^image\//i.test(file.mime || "")) return "Image attached; visual understanding unavailable";
     if (status === "unsupported" || status === "unavailable") return "File attached; text extraction unavailable";
     return "File attached";
+  }
+
+  function pendingStatus(file) {
+    if (file._uploading) return file._capture ? "Capturing…" : "Attaching…";
+    const status = String(file.text_status || (file.extraction && file.extraction.status) || "").toLowerCase();
+    if (["extracted", "text", "ready", "ocr"].includes(status)) return "Ready";
+    if (status === "processing" || status === "pending") return "Reading text…";
+    if (status === "empty" || status === "no_text") return "No readable text";
+    if (status === "failed" || status === "error") return "Text unavailable";
+    return /^image\//i.test(file.mime || "") ? "Image attached" : "Attached";
   }
 
   function init(options) {
@@ -179,11 +190,17 @@
     }
 
     function makeCard(file, sessionId, isPending) {
-      const card = element("div", "chat-file-card");
+      const card = element("div", "chat-file-card" + (isPending ? " chat-file-card--pending" : ""));
       const details = element("div", "chat-file-card__details");
-      details.appendChild(element("strong", "chat-file-card__name", file.name || "Attached file"));
-      details.appendChild(element("span", "chat-file-card__meta", sizeLabel(file.size) + " · " + fileStatus(file) +
-        (file.extraction && file.extraction.truncated ? " · Text extraction limited" : "")));
+      const name = element("strong", "chat-file-card__name", file.name || "Attached file");
+      name.setAttribute("title", file.name || "Attached file");
+      details.appendChild(name);
+      const fullStatus = sizeLabel(file.size) + " · " + fileStatus(file) +
+        (file.extraction && file.extraction.truncated ? " · Text extraction limited" : "");
+      const meta = element("span", "chat-file-card__meta", isPending ? sizeLabel(file.size) + " · " + pendingStatus(file) : fullStatus);
+      meta.setAttribute("title", fullStatus);
+      meta.setAttribute("aria-label", fullStatus);
+      details.appendChild(meta);
       card.appendChild(details);
       const actions = element("div", "chat-file-card__actions");
       if (!file._uploading && file.id) {
@@ -210,15 +227,18 @@
         }
       }
       if (isPending) {
-        const remove = button("Remove", function () {
+        const remove = button("×", function () {
           const state = getState(sessionId);
           state.items = state.items.filter(function (item) { return item !== file; });
+          if (!state.items.length && !state.busy && !state.error) state.feedback = "";
           if (sessionId === currentSessionId) {
             refresh();
             if (attachButton) attachButton.focus();
           }
-        });
-        remove.setAttribute("aria-label", "Remove " + file.name + " from this message");
+        }, "chat-file-action chat-file-action--remove");
+        const removeLabel = "Remove " + (file.name || "attached file") + " from this message";
+        remove.setAttribute("aria-label", removeLabel);
+        remove.setAttribute("title", removeLabel);
         actions.appendChild(remove);
       }
       card.appendChild(actions);
@@ -279,7 +299,7 @@
         }
       } finally {
         state.busy -= 1;
-        if (!state.error) state.feedback = state.items.length ? "Files ready to send." : "";
+        if (!state.error && !state.busy) state.feedback = "";
         if (sessionId === currentSessionId) refresh();
       }
     }
@@ -298,7 +318,7 @@
         if (!response.file || !response.file.id) throw new Error("The server did not return a screenshot.");
         const position = state.items.indexOf(item);
         if (position >= 0) state.items[position] = response.file;
-        setFeedback(sessionId, "Screenshot attached. Preview it before sending.", false);
+        setFeedback(sessionId, "", false);
       } catch (error) {
         state.items = state.items.filter(function (entry) { return entry !== item; });
         setFeedback(sessionId, "Could not take a screenshot. " + error.message, true);

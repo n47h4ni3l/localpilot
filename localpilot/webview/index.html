@@ -132,13 +132,17 @@
 
       <div class="composer-wrap">
         <div class="chat-pending-files" id="chat-pending-files" aria-label="Pending attachments"></div>
-        <div class="chat-file-tools" id="chat-file-tools">
-          <button id="chat-attach-btn" type="button" aria-label="Attach files" title="Attach files">＋ Attach</button>
-          <button id="chat-screenshot-btn" type="button" aria-label="Take a screenshot to attach" title="Capture current displays">Screenshot</button>
-          <input id="chat-file-input" type="file" multiple hidden>
-        </div>
+        <input id="chat-file-input" type="file" multiple hidden>
         <p class="chat-file-feedback" id="chat-file-feedback" role="status" aria-live="polite" hidden></p>
         <div class="composer" id="composer">
+          <div class="chat-file-tools" id="chat-file-tools" role="group" aria-label="Add an attachment">
+            <button id="chat-attach-btn" type="button" aria-label="Attach files" title="Attach files">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 12 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l8-8"/><path d="m7 13 7-7"/></svg>
+            </button>
+            <button id="chat-screenshot-btn" type="button" aria-label="Take a screenshot to attach" title="Capture current displays">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6 9.5 3h5L16 6h4v14H4V6Z"/><circle cx="12" cy="12.5" r="3.5"/></svg>
+            </button>
+          </div>
           <textarea id="composer-input" rows="1" placeholder="Ask LocalPilot…" aria-label="Message LocalPilot"></textarea>
           <button id="send-btn" aria-label="Send message">➤</button>
         </div>

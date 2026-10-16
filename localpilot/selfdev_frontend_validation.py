@@ -1,7 +1,7 @@
 """Frontend (HTML/CSS/JS) candidate-write validation for the self-development
 pipeline.
 
-Extracted verbatim (no logic changes) from selfdev.py. Enforces that
+Extracted from selfdev.py. Enforces that
 frontend writes stay inside localpilot/webview, declare the exact required
 CSP, and contain no active-content/XSS-sink/unapproved-bridge-call
 patterns. Re-imported as bare names into selfdev.py wherever still
@@ -22,6 +22,8 @@ _FRONTEND_BRIDGE_METHODS = {
     "get_start_with_windows",
     "set_start_with_windows",
     "open_config_file",
+    "open_chat_file",
+    "save_chat_file",
 }
 
 _REQUIRED_CSP = {
@@ -29,7 +31,9 @@ _REQUIRED_CSP = {
     "script-src": {"'self'"},
     "style-src": {"'self'"},
     "connect-src": {"http://127.0.0.1:*", "http://localhost:*"},
-    "img-src": {"'self'", "data:"},
+    # Attachment previews use revocable, local image blobs. Scripts retain the
+    # exact self-only policy; this does not permit blob navigation/execution.
+    "img-src": {"'self'", "data:", "blob:"},
     "font-src": {"'self'"},
     "object-src": {"'none'"},
     "base-uri": {"'none'"},

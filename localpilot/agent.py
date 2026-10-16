@@ -2025,6 +2025,7 @@ class LocalPilotAgent:
             self._emit_event(
                 "tool.started",
                 tool=name,
+                arguments_preview=self._tool_arguments_for_audit(name, args),
                 round=-1,
                 evidence_source="trusted repository",
                 memory_guided_verification=True,
@@ -2080,6 +2081,7 @@ class LocalPilotAgent:
             self._emit_event(
                 "tool.completed",
                 tool=name,
+                result_preview=self._tool_result_audit_preview(name, rendered_result),
                 round=-1,
                 ok=ok,
                 evidence_source="trusted repository",
@@ -2485,6 +2487,7 @@ class LocalPilotAgent:
                         self._emit_event(
                             "tool.started",
                             tool=name,
+                            arguments_preview=self._tool_arguments_for_audit(name, args),
                             round=turn_no,
                             evidence_source=evidence_source,
                             registered=spec is not None,
@@ -2648,6 +2651,7 @@ class LocalPilotAgent:
                         self._emit_event(
                             "tool.completed",
                             tool=name,
+                            result_preview=self._tool_result_audit_preview(name, result),
                             round=turn_no,
                             ok=ok,
                             evidence_source=evidence_source,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import threading
 from pathlib import Path
@@ -17,7 +18,18 @@ from localpilot.chat_commands import (
 from localpilot.systemsense_diagnosis import normalize_diagnosis_scope
 from localpilot.systemsense_watch import parse_systemsense_watch_request
 from localpilot.config import load_config
+from localpilot.chat_files import ChatFiles
+from localpilot.tools.chat_files import CHAT_FILE_TOOL_SPECS, chat_file_context
 from localpilot.systemsense import get_system_sense
+
+
+def _explicit_screen_capture_requested(prompt: str) -> bool:
+    """Grant one foreground capture only for a direct request, never quoted examples."""
+    return bool(re.match(
+        r"^\s*(?:Nestra[, :]\s*)?(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+)?"
+        r"(?:please\s+)?(?:take|capture|grab|send|show)\s+(?:(?:me|us)\s+)?"
+        r"(?:(?:a|one|the|current|new)\s+){0,3}(?:screenshot|screen\s+shot)\b",
+        prompt, re.I))
 
 
 class RuntimeWorker:
@@ -90,7 +102,22 @@ class RuntimeWorker:
         # LocalPilotAgent resolves the same process-local SystemSense singleton
         # by database path, preserving its established constructor surface.
         agent = LocalPilotAgent(self.config, self.root, event_sink=self._event_sink)
-        agent.messages.extend(self._conversation_history(history))
+        files = ChatFiles(self.root / self.config.agent.data_dir)
+        hydrated = [dict(message) for message in history]
+        remaining = 24000
+        for message in reversed(hydrated):
+            attached = message.get("files") or []
+            if not attached:
+                continue
+            ids = [item["id"] for item in attached if isinstance(item, dict) and item.get("id")][:4]
+            try:
+                context = files.model_context(ids, session_id=session_id)
+            except (KeyError, ValueError, OSError):
+                context = "Previously attached files are unavailable. Do not infer their content."
+            descriptors = "\nAttached local file IDs: " + ", ".join(ids)
+            message["content"] = str(message.get("content") or "") + descriptors + "\n" + context[:remaining]
+            remaining = max(0, remaining - len(context))
+        agent.messages.extend(self._conversation_history(hydrated))
         self._agents[session_id] = agent
         return agent
 
@@ -109,7 +136,8 @@ class RuntimeWorker:
             }
         )
 
-    def _write_answer(self, request_id: str, session_id: str, answer: str) -> None:
+    def _write_answer(self, request_id: str, session_id: str, answer: str,
+                      artifact_ids: list[str] | None = None) -> None:
         self._write_state(request_id, session_id, "speaking")
         for delta in self._answer_chunks(answer):
             self._write(
@@ -127,6 +155,7 @@ class RuntimeWorker:
                 "request_id": request_id,
                 "session_id": session_id,
                 "answer": answer,
+                "artifact_ids": artifact_ids or [],
             }
         )
 
@@ -154,6 +183,7 @@ class RuntimeWorker:
             raise ValueError("ask requires request_id, session_id, and prompt")
         self._active_request_id = request_id
         self._active_session_id = session_id
+        created_files: list[dict[str, Any]] = []
         try:
             parsed = parse_chat_command(prompt)
             if parsed is not None:
@@ -223,8 +253,29 @@ class RuntimeWorker:
 
             self._write_state(request_id, session_id, "thinking")
             agent = self._agent(session_id, list(command.get("history") or []))
-            answer = agent.ask(prompt, interface="desktop")
-            self._write_answer(request_id, session_id, answer)
+            file_ids = list(command.get("file_ids") or [])
+            files = ChatFiles(self.root / self.config.agent.data_dir)
+            file_context = files.model_context(file_ids, session_id=session_id) if file_ids else ""
+            model_prompt = prompt + ("\n\n" + file_context if file_context else "")
+            allow_capture = _explicit_screen_capture_requested(prompt)
+            with chat_file_context(self.root / self.config.agent.data_dir, session_id,
+                                   file_ids, allow_screenshot=allow_capture) as context:
+                created_files = context.artifacts
+                # File capabilities exist only for this foreground request;
+                # CLI/autonomous/diagnostic agents keep their established tools.
+                tools = getattr(agent, "tools", None)
+                previous = {spec.name: tools.get(spec.name) for spec in CHAT_FILE_TOOL_SPECS} if tools is not None else {}
+                if tools is not None:
+                    tools.update({spec.name: spec for spec in CHAT_FILE_TOOL_SPECS})
+                try:
+                    answer = agent.ask(model_prompt, interface="desktop")
+                finally:
+                    for name, old in previous.items():
+                        if old is None:
+                            tools.pop(name, None)
+                        else:
+                            tools[name] = old
+            self._write_answer(request_id, session_id, answer, [item["id"] for item in created_files])
         except Exception as exc:
             self._write(
                 {
@@ -233,6 +284,7 @@ class RuntimeWorker:
                     "session_id": session_id,
                     "error_type": type(exc).__name__,
                     "message": str(exc),
+                    "artifact_ids": [item["id"] for item in created_files],
                 }
             )
         finally:

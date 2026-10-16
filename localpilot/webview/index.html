@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src http://127.0.0.1:* http://localhost:*; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src http://127.0.0.1:* http://localhost:*; img-src 'self' data: blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'">
 <title>LocalPilot</title>
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="chrome-polish.css">
@@ -12,6 +12,8 @@
 <link rel="stylesheet" href="settings-updates.css">
 <link rel="stylesheet" href="settings-location.css">
 <link rel="stylesheet" href="desktop-commands.css">
+<link rel="stylesheet" href="chat-activity.css">
+<link rel="stylesheet" href="chat-files.css">
 </head>
 <body>
 <div class="app" id="app">
@@ -129,6 +131,13 @@
       </div>
 
       <div class="composer-wrap">
+        <div class="chat-pending-files" id="chat-pending-files" aria-label="Pending attachments"></div>
+        <div class="chat-file-tools" id="chat-file-tools">
+          <button id="chat-attach-btn" type="button" aria-label="Attach files" title="Attach files">＋ Attach</button>
+          <button id="chat-screenshot-btn" type="button" aria-label="Take a screenshot to attach" title="Capture current displays">Screenshot</button>
+          <input id="chat-file-input" type="file" multiple hidden>
+        </div>
+        <p class="chat-file-feedback" id="chat-file-feedback" role="status" aria-live="polite" hidden></p>
         <div class="composer" id="composer">
           <textarea id="composer-input" rows="1" placeholder="Ask LocalPilot…" aria-label="Message LocalPilot"></textarea>
           <button id="send-btn" aria-label="Send message">➤</button>
@@ -192,6 +201,8 @@
 
     <div aria-live="polite" class="sr-only" id="live-region"></div>
   </div>
+<script src="chat-activity.js"></script>
+<script src="chat-files.js"></script>
 <script src="app.js"></script>
 <script src="desktop-commands.js"></script>
 <script src="settings-updates.js"></script>

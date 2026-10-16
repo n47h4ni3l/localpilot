@@ -186,6 +186,11 @@ def dependency_files(root: Path) -> list[tuple[str, Path, dict | None]]:
     for relative, path in walk_files(root):
         if relative == "pip-download.log" or relative.startswith("pip-work/"):
             continue
+        if relative not in expected and re.fullmatch(r"runtime-deps/python/python/Lib/(?:[^/]+/)*__pycache__/[^/]+\.pyc", relative):
+            # Running the staged interpreter for offline checks can create
+            # local caches. Preserve them locally, but do not distribute them.
+            # Archive-listed bytecode remains pinned and is never skipped.
+            continue
         if relative not in expected and relative not in metadata:
             raise ValueError(f"Unlisted file in staged dependencies: {relative}")
         found.add(relative)

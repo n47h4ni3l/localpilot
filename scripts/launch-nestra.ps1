@@ -152,24 +152,34 @@ function Set-NestraPrivateEnvironment {
         (Join-Path $Configuration.RuntimeRoot 'ollama'), $env:PATH) -join ';'
     $env:OLLAMA_HOST = [string]$Configuration.Runtime.ollama_host
     $env:OLLAMA_MODELS = $Configuration.Models
+    $env:OLLAMA_NO_CLOUD = '1'
     $env:CLAUDE_CODE_GIT_BASH_PATH = $Configuration.Files.Bash
     $env:CLAUDE_CONFIG_DIR = Join-Path $Configuration.Root 'state/claude'
     $env:DISABLE_AUTOUPDATER = '1'
     $env:PYTHONNOUSERSITE = '1'
+    $env:PYTHONDONTWRITEBYTECODE = '1'
     $env:PYTHONPATH = $null
     $env:PYTHONHOME = $null
 }
 
 function Get-NestraPortProcess {
     param([int]$Port)
-    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
+    # Some Windows builds expose an active server as Bound/NONE rather than
+    # Listen. Identify its peerless bound endpoint across all TCP states;
+    # established clients and closing/TIME_WAIT connections have peers.
+    $connections = @(Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue)
+    $listeners = @($connections | Where-Object {
+        [int]$_.RemotePort -eq 0 -and [string]$_.RemoteAddress -in @('0.0.0.0', '::', '')
+    })
     if (-not $listeners.Count) { return $null }
     $owners = @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)
     if ($owners.Count -ne 1 -or [int]$owners[0] -le 0 -or @($listeners | Where-Object LocalAddress -NotIn @('127.0.0.1', '::1')).Count) {
         throw "Port $Port is occupied by a different or non-loopback service. Close or reconfigure that service manually; Nestra did not stop it."
     }
     $process = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$owners[0]) -ErrorAction Stop
-    if ($null -eq $process -or $null -eq $process.CreationDate) { throw "Cannot verify the live process owning port $Port." }
+    if ($null -eq $process -or [int]$process.ProcessId -ne [int]$owners[0] -or $null -eq $process.CreationDate) {
+        throw "Cannot verify the live process owning port $Port."
+    }
     return $process
 }
 

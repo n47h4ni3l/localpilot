@@ -130,12 +130,14 @@ def test_protected_paths_never_start_child(tool, monkeypatch, path):
     assert calls == []
 
 
-def test_dirty_source_is_preserved_and_not_copied(tool, monkeypatch):
+def test_dirty_source_is_preserved_and_never_mistaken_for_committed_snapshot(tool, monkeypatch):
     calls = _backend(monkeypatch, tool)
     (tool.root / "module.py").write_text("OWNER_DRAFT = True\n")
-    with pytest.raises(RuntimeError, match="clean source"):
-        tool.claude_code("Inspect the module")
-    assert calls == []
+    result = tool.claude_code("Inspect the module")
+    assert (calls[0].workspace / "module.py").read_text() == "VALUE = 1\n"
+    assert result["source_basis"] == "committed_head_snapshot"
+    assert result["working_tree_included"] is False
+    assert "uncommitted working-tree edits are not included" in calls[0].prompt
     assert (tool.root / "module.py").read_text() == "OWNER_DRAFT = True\n"
     assert not (tool.root / "localpilot-data/claude-code/active.json").exists()
 

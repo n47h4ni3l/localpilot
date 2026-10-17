@@ -6,7 +6,7 @@ The earlier fixed `implementation_backend = "claude_code"` route remains availab
 
 ## Chat and native Evolution
 
-The model-facing tool is `claude_code(task, allowed_paths=None)`. In chat, an omitted or empty path list requests read-only repository assistance. Explicit canonical repository-relative paths request a proposed edit limited to those exact files. Chat prepares a fresh private Git snapshot of safe committed source and requires a clean source checkout. Owner Git configuration, hooks, remotes, private configuration, secrets, hidden evaluations, training outputs, and reports are omitted from that snapshot.
+The model-facing tool is `claude_code(task, allowed_paths=None)`. In chat, an omitted or empty path list requests read-only repository assistance. Explicit canonical repository-relative paths request a proposed edit limited to those exact files. Chat prepares a fresh private Git snapshot of safe committed HEAD source. Uncommitted owner changes remain untouched and are explicitly excluded; the result reports `source_basis: committed_head_snapshot`, `working_tree_included: false`, and the exact source revision. It does not claim to inspect the working draft. Owner Git configuration, hooks, remotes, private configuration, secrets, hidden evaluations, training outputs, and reports are omitted from that snapshot.
 
 The returned status, source revision, changed paths, proposal location/hash, and diff digest describe what actually happened. `pending_review` is a proposal state, not acceptance. Chat reports `applied_to_production: false` and `tests_independently_verified: false`; it does not apply, commit, or push the proposed edits. Read-only assistance does not claim candidate test success.
 

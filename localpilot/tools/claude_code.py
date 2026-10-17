@@ -205,8 +205,6 @@ class ClaudeCodeTool:
         )
 
     def _snapshot(self, destination: Path) -> tuple[str, int]:
-        if self._git(self.root, "status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=all").strip():
-            raise RuntimeError("Claude Code requires a clean source checkout; existing edits have been preserved.")
         revision = self._git(self.root, "rev-parse", "--verify", "HEAD^{commit}").decode("ascii").strip()
         rows = self._git(self.root, "ls-tree", "-rlz", "--full-tree", revision).split(b"\0")
         selected: list[tuple[str, str, int]] = []
@@ -277,7 +275,8 @@ class ClaudeCodeTool:
     def claude_code(self, task: str, allowed_paths: list[str] | None = None) -> dict:
         """Ask local Nestra through Claude Code; optional explicit paths permit proposal edits only.
 
-        Without allowed_paths this is a read-only coding/repository question.
+        Uses committed HEAD source; unsaved/uncommitted working-tree edits are
+        excluded and preserved. Without allowed_paths this is a read-only question.
         With paths, edits stay in a new isolated proposal and are not applied
         to the live repository. Never pass absolute paths or private files.
         """
@@ -312,7 +311,9 @@ class ClaudeCodeTool:
             self._resource_guard()
             prompt = (
                 "You are Nestra using Claude Code as a local tool harness with the same accepted model. "
-                "Answer the bounded task from this isolated source snapshot. Never access parent/absolute paths, "
+                "Answer the bounded task from this isolated source snapshot. "
+                f"The source is commit {revision}; uncommitted working-tree edits are not included. "
+                "Never claim to have inspected uncommitted owner changes. Never access parent/absolute paths, "
                 "private data, credentials, the web, package managers or external services. Never commit, push, "
                 "change branches, delete files, weaken tests or claim changes were applied to production. "
                 "Only these exact files may be edited: " + json.dumps(allowed) + ". "
@@ -338,6 +339,7 @@ class ClaudeCodeTool:
                 "status": result.status.value, "backend": result.backend, "model": result.model,
                 "summary": sanitize_process_output(result.summary, workspace=workspace)[:2000],
                 "source_revision": revision, "snapshot_omitted_files": omitted,
+                "source_basis": "committed_head_snapshot", "working_tree_included": False,
                 "read_only": not allowed, "changed_paths": list(result.changed_paths),
                 "diff_digest": result.diff_digest, "proposal_path": proposal_path, "proposal_sha256": proposal_hash,
                 "workspace": str(workspace), "applied_to_production": False,

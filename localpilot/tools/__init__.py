@@ -125,7 +125,8 @@ def registry(
                 "claude_code",
                 "Use Claude Code as a local Nestra coding tool. Pass task and optional explicit allowed_paths "
                 "for isolated proposal edits; omit paths for read-only repository help. Uses the same accepted "
-                "local model, never changes production, and returns real results with review still pending.",
+                "local model and a committed HEAD snapshot (uncommitted owner edits are excluded), never changes "
+                "production, and returns real results with review still pending.",
                 RiskLevel.REVERSIBLE,
                 coding.claude_code,
             ))

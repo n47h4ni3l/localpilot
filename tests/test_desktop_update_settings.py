@@ -5,10 +5,33 @@ from types import SimpleNamespace
 
 from localpilot import desktop_update_status, webview_app
 from localpilot.desktop_state import DesktopUIState
+from localpilot import desktop_auto_update
 
 
 def _result(returncode: int = 0, stdout: str = "", stderr: str = ""):
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def test_private_bundle_update_controls_never_fetch_queue_or_prepare_legacy_handoff(tmp_path, monkeypatch):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / ".nestra-runtime.json").write_text("{}", encoding="utf-8")
+    state = DesktopUIState(root / "localpilot-data")
+    state.update(automatic_updates=True, update_target_sha="b" * 40, update_available=True)
+    before = state.path.read_bytes()
+    def version_only(call_root, args, **kwargs):
+        assert args == ["git", "rev-parse", "--short=7", "HEAD"]
+        return _result(stdout="aaaaaaa")
+    monkeypatch.setattr(desktop_update_status, "_run", version_only)
+    monkeypatch.setattr(desktop_auto_update, "_run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("No handoff commands")))
+    status = desktop_update_status.check_for_updates(root, state).as_dict()
+    assert status["managed"] is True and status["canChange"] is False
+    assert status["enabled"] is False and status["noticeAvailable"] is False
+    assert "migration" in status["reason"]
+    assert desktop_update_status.set_automatic_updates(root, state, False).managed is True
+    assert desktop_update_status.request_manual_update(state, "b" * 40)["ok"] is False
+    assert desktop_auto_update.prepare_update_handoff(root, state, config_path=None, remote="origin", main_branch="main") is None
+    assert state.path.read_bytes() == before
 
 
 def test_desktop_update_preference_defaults_off_and_persists(tmp_path):

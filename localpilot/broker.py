@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import secrets
+import sys
 import threading
 import time
 import urllib.parse
@@ -13,8 +16,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 from localpilot.audit import AuditLog
 from localpilot.chat_store import ChatStore
+from localpilot.chat_files import ChatFiles
 from localpilot.config import Config, load_config
 from localpilot.foreground import write_foreground_turns
 from localpilot.process import current_process_elevated
@@ -76,10 +82,12 @@ class BrokerApp:
     def __init__(self, root: str | Path, config: Config, *, config_path: str | Path | None = None) -> None:
         self.root = Path(root).resolve()
         self.config = config
+        self.config_path = str(Path(config_path).resolve()) if config_path is not None else None
         data_dir = (self.root / config.agent.data_dir).resolve()
         self.data_dir = data_dir
         self.audit = AuditLog(data_dir / "audit.jsonl")
         self.store = ChatStore(data_dir / config.desktop.chat_database)
+        self.files = ChatFiles(data_dir)
         # The runtime worker remains the sole owner of passive collection. The
         # broker opens the same local store only to serve a bounded, read-only
         # summary to the authenticated desktop UI.
@@ -126,12 +134,30 @@ class BrokerApp:
             write_foreground_turns(self.data_dir, ())
 
     def broker_status(self) -> dict[str, Any]:
+        # This endpoint is token-authenticated. A standard-privilege desktop
+        # cannot always read an elevated broker's command line through WMI;
+        # expose our own identity so its launcher can cross-check the live
+        # listener PID/start time and the registered owner task instead.
+        process = psutil.Process(os.getpid())
+        identity = {
+            "root": str(self.root),
+            "config_path": self.config_path,
+            "data_dir": str(self.data_dir),
+            "executable": str(Path(sys.executable).resolve()),
+            "host_executable": str(Path(process.exe()).resolve()),
+            "command_line": process.cmdline(),
+            "created_at_unix": process.create_time(),
+            "user": process.username(),
+            "desktop_host": self.config.desktop.host,
+            "desktop_port": self.config.desktop.port,
+        }
         with self._lock:
             return {
                 "pid": os.getpid(),
                 "elevated": current_process_elevated(),
                 "pending_requests": len(self._pending),
                 "shutdown_requested": self._shutdown_requested,
+                "runtime_identity": identity,
             }
 
     def begin_idle_shutdown(self) -> None:
@@ -211,10 +237,17 @@ class BrokerApp:
             self.store.delete_session(session_id)
             self._event("session.deleted", {"session_id": session_id})
 
-    def submit(self, session_id: str, content: str) -> dict[str, Any]:
+    def submit(self, session_id: str, content: str, file_ids: list[str] | None = None) -> dict[str, Any]:
         content = str(content)
-        if not content.strip():
+        if file_ids is not None and (not isinstance(file_ids, list) or len(file_ids) > 4
+                                    or any(not isinstance(item, str) for item in file_ids)):
+            raise ValueError("Attach up to four files to one message")
+        file_ids = list(dict.fromkeys(file_ids or []))
+        files = [self.public_file(self.files.get(item, session_id=session_id)) for item in file_ids]
+        if not content.strip() and not files:
             raise ValueError("Message content must not be empty")
+        if not content.strip():
+            content = "Please inspect the attached files."
         if len(content) > 100_000:
             raise ValueError("Message content exceeds the 100,000 character limit")
         with self._lock:
@@ -223,7 +256,7 @@ class BrokerApp:
                 raise BrokerBusyError("LocalPilot is restarting; please retry once it is ready.")
             self.store.session(session_id)
             history = self.store.completed_history(session_id)
-            user_message = self.store.add_message(session_id, "user", content.strip())
+            user_message = self.store.add_message(session_id, "user", content.strip(), files=files)
             assistant_message = self.store.add_message(session_id, "assistant", "", status="streaming")
             request_id = str(uuid.uuid4())
             timer = threading.Timer(
@@ -251,6 +284,8 @@ class BrokerApp:
                     "message_id": assistant_message["id"],
                     "prompt": content.strip(),
                     "history": history,
+                    "file_ids": file_ids,
+                    "accessible_file_ids": self.store.linked_file_ids(session_id),
                 }
             )
             timer.start()
@@ -275,6 +310,29 @@ class BrokerApp:
             "foreground_published": foreground_published,
             "foreground_active_count": foreground_active_count,
         }
+
+    @staticmethod
+    def public_file(metadata: dict[str, Any]) -> dict[str, Any]:
+        item = dict(metadata)
+        if isinstance(item.get("extraction"), dict):
+            item["extraction"] = {key: value for key, value in item["extraction"].items() if key != "text"}
+        item.pop("path", None)
+        return item
+
+    def upload_file(self, session_id: str, name: str, encoded: str) -> dict[str, Any]:
+        self.store.session(session_id)
+        if not isinstance(encoded, str) or len(encoded) > 14_000_000:
+            raise ValueError("Files must be at most 10 MiB")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("Invalid file encoding") from exc
+        return self.public_file(self.files.import_bytes(name, data, session_id))
+
+    def capture_screenshot(self, session_id: str) -> dict[str, Any]:
+        from localpilot.tools.chat_files import capture_screenshot
+        self.store.session(session_id)
+        return self.public_file(capture_screenshot(self.files, session_id))
 
     def _expire_request(self, request_id: str) -> None:
         with self._lock:
@@ -338,6 +396,7 @@ class BrokerApp:
             for item in pending:
                 item["timer"].cancel()
                 marker = f"[LocalPilot runtime restarted before this answer completed: {reason}]"
+                self.store.interrupt_steps(item["message_id"])
                 failed = self.store.update_message(item["message_id"], marker, status="error")
                 self._event(
                     "message.failed",
@@ -372,6 +431,14 @@ class BrokerApp:
         if kind == "event":
             event_type = str(message.get("type") or "runtime.event")
             payload = dict(message.get("payload") or {})
+            with self._lock:
+                pending = self._pending.get(request_id)
+                if request_id and pending is None:
+                    return
+                if pending is not None:
+                    payload["message_id"] = pending["message_id"]
+                    if event_type in {"tool.started", "tool.completed"}:
+                        payload["step"] = self.store.record_tool_event(pending["message_id"], event_type, payload)
             if event_type == "assistant.delta":
                 with self._lock:
                     pending = self._pending.get(request_id)
@@ -392,6 +459,15 @@ class BrokerApp:
                 if pending is None:
                     return
                 pending["timer"].cancel()
+                artifacts = []
+                for file_id in list(message.get("artifact_ids") or [])[:32]:
+                    try:
+                        artifacts.append(self.public_file(self.files.get(file_id, session_id=pending["session_id"])))
+                    except (KeyError, ValueError, OSError):
+                        continue
+                if artifacts:
+                    self.store.set_message_files(pending["message_id"], artifacts)
+                self.store.interrupt_steps(pending["message_id"])
                 answer = str(message.get("answer") or pending["content"])
                 completed = self.store.update_message(pending["message_id"], answer, status="complete")
                 self._event("message.completed", {"message": completed}, session_id=session_id)
@@ -407,8 +483,19 @@ class BrokerApp:
                     "error_type": str(message.get("error_type") or "RuntimeError"),
                     "message": "The local runtime reported an error.",
                 }
+                if payload["error_type"] in {"ConnectError", "ConnectionError", "ConnectionRefusedError"}:
+                    payload["message"] = "Could not connect to the model service. Check that Ollama is running, then retry."
                 if pending is not None:
                     pending["timer"].cancel()
+                    self.store.interrupt_steps(pending["message_id"])
+                    artifacts = []
+                    for file_id in list(message.get("artifact_ids") or [])[:32]:
+                        try:
+                            artifacts.append(self.public_file(self.files.get(file_id, session_id=pending["session_id"])))
+                        except (KeyError, ValueError, OSError):
+                            continue
+                    if artifacts:
+                        self.store.set_message_files(pending["message_id"], artifacts)
                     marker = f"[LocalPilot error: {payload['error_type']}: {payload['message']}]"
                     failed = self.store.update_message(pending["message_id"], marker, status="error")
                     payload["message_record"] = failed
@@ -489,7 +576,7 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
-        if length < 0 or length > 1_000_000:
+        if length < 0 or length > 16_000_000:
             raise ValueError("Request body is too large")
         return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
 
@@ -516,6 +603,11 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
             if parts == ["v1", "broker", "status"]:
                 self._json(HTTPStatus.OK, self.server.app.broker_status())
                 return
+            if parts == ["v1", "chat", "features"]:
+                self._json(HTTPStatus.OK, {"version": 1, "files": True, "activity": True,
+                                          "max_file_bytes": 10 * 1024 * 1024, "max_attachments": 4,
+                                          "image_reading": "local_ocr"})
+                return
             if parts == ["v1", "systemsense", "summary"]:
                 self._json(
                     HTTPStatus.OK,
@@ -529,6 +621,17 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
                     {"messages": self.server.app.store.messages(parts[2])},
                 )
                 return
+            if len(parts) in {5, 6} and parts[:2] == ["v1", "sessions"] and parts[3] == "files":
+                self.server.app.store.session(parts[2])
+                metadata = self.server.app.files.get(parts[4], session_id=parts[2])
+                if len(parts) == 5:
+                    self._json(HTTPStatus.OK, {"file": self.server.app.public_file(metadata)})
+                    return
+                if parts[5] == "content":
+                    data = self.server.app.files.read_bytes(parts[4], session_id=parts[2])
+                    self._json(HTTPStatus.OK, {"name": metadata["name"], "mime": metadata["mime"],
+                                              "data_base64": base64.b64encode(data).decode("ascii")})
+                    return
             if parts == ["v1", "events"]:
                 after = int((query.get("after") or ["0"])[0])
                 wait = float((query.get("wait") or ["0"])[0])
@@ -585,8 +688,16 @@ class BrokerRequestHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.CREATED, {"session": session})
                 return
             if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "messages":
-                result = self.server.app.submit(parts[2], str(body.get("content") or ""))
+                result = self.server.app.submit(parts[2], str(body.get("content") or ""), body.get("file_ids"))
                 self._json(HTTPStatus.ACCEPTED, result)
+                return
+            if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "files":
+                file = self.server.app.upload_file(parts[2], body.get("name"), body.get("data_base64"))
+                self._json(HTTPStatus.CREATED, {"file": file})
+                return
+            if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "screenshot":
+                file = self.server.app.capture_screenshot(parts[2])
+                self._json(HTTPStatus.CREATED, {"file": file})
                 return
             if parts == ["v1", "runtime", "restart"]:
                 self.server.app.restart_runtime(

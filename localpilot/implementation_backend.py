@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import ctypes
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -146,6 +147,80 @@ def _contains_secret_like_assignment(content: str) -> bool:
         if len(value) >= 20 or value.startswith(("sk-", "ghp_", "github_pat_")):
             return True
     return False
+
+
+
+def snapshot_valid_python_sources(
+    workspace: Path, allowed_paths: Iterable[str], *, max_bytes: int = 8_000_000,
+) -> dict[str, bytes]:
+    """Hold bounded known-good Python bytes for one confined Claude edit pass.
+
+    Pre-existing invalid Python remains eligible for repair; only files that
+    parsed successfully *before* this pass can be restored automatically.
+    This is private in-memory state, not an executable code path.
+    """
+    root = workspace.resolve()
+    snapshots: dict[str, bytes] = {}
+    remaining = max_bytes
+    for item in allowed_paths:
+        relative = _relative_path(item)
+        if not relative.endswith(".py"):
+            continue
+        path = root / relative
+        if path.is_symlink() or not path.is_file() or root not in path.resolve().parents:
+            continue
+        if path.stat().st_size > min(1_000_000, remaining):
+            continue
+        content = path.read_bytes()
+        try:
+            compile(content.decode("utf-8"), relative, "exec")
+        except (SyntaxError, UnicodeError, ValueError):
+            continue
+        snapshots[relative] = content
+        remaining -= len(content)
+    return snapshots
+
+
+def restore_invalid_python_edits(
+    workspace: Path, allowed_paths: Iterable[str], baselines: dict[str, bytes],
+) -> tuple[str, ...]:
+    """Reject invalid Python after a direct Claude edit; restore known-good bytes.
+
+    A repair that starts with an invalid file does not have a valid snapshot:
+    retain its evidence and return a focused syntax failure for the next
+    bounded attempt rather than treating it as a confinement violation.
+    """
+    root = workspace.resolve()
+    failures: list[str] = []
+    for item in allowed_paths:
+        relative = _relative_path(item)
+        if not relative.endswith(".py"):
+            continue
+        path = root / relative
+        if path.is_symlink() or not path.is_file() or root not in path.resolve().parents:
+            continue
+        try:
+            compile(path.read_text(encoding="utf-8", errors="strict"), relative, "exec")
+        except (SyntaxError, UnicodeError, ValueError) as exc:
+            detail = (
+                f"{relative}: {type(exc).__name__} "
+                f"line {getattr(exc, 'lineno', '?')}: {_bounded(exc, 180)}"
+            )
+            baseline = baselines.get(relative)
+            if baseline is None:
+                failures.append(detail + "; pre-existing invalid source retained for repair")
+                continue
+            # Only restore a file whose valid original bytes were captured
+            # before THIS inference pass. Never run git reset/clean/checkout.
+            temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.syntax-revert")
+            try:
+                temp.write_bytes(baseline)
+                os.replace(temp, path)
+                failures.append(detail + "; previous valid file content restored")
+            finally:
+                if temp.exists():
+                    temp.unlink()
+    return tuple(failures)
 
 
 def sanitize_process_output(value: str, *, workspace: Path, secrets: Iterable[str] = ()) -> str:
@@ -519,6 +594,7 @@ class ClaudeCodeBackend:
             "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "PROGRAMDATA",
             "TEMP", "TMP", "COMSPEC",
             "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+            "CLAUDE_CODE_GIT_BASH_PATH", "CLAUDE_CONFIG_DIR", "DISABLE_AUTOUPDATER",
         )
         env = {name: os.environ[name] for name in retained if name in os.environ}
         env.update(
@@ -682,6 +758,12 @@ class ClaudeCodeBackend:
                 "; ".join(preflight.messages), repair_pass=repair_pass,
             )
 
+        # A direct Claude Edit/Write bypasses CandidateTools.write_project_file.
+        # Capture syntax-valid originals to roll back only malformed edits.
+        valid_python_before = snapshot_valid_python_sources(
+            workspace, request.allowed_paths,
+        )
+
         def stopped_result(
             status: ImplementationStatus,
             summary: str,
@@ -690,6 +772,11 @@ class ClaudeCodeBackend:
             duration: float,
             output: str = "",
         ) -> ImplementationResult:
+            syntax_failures = restore_invalid_python_edits(
+                workspace, request.allowed_paths, valid_python_before,
+            )
+            if syntax_failures:
+                summary += " Python syntax guard: " + "; ".join(syntax_failures)[:1000]
             try:
                 stopped_paths, stopped_digest = self._validate_candidate(
                     workspace,
@@ -781,6 +868,34 @@ class ClaudeCodeBackend:
         sanitized = sanitize_process_output(
             combined, workspace=workspace, secrets=(env.get("ANTHROPIC_AUTH_TOKEN", ""),)
         )
+        syntax_failures = restore_invalid_python_edits(
+            workspace, request.allowed_paths, valid_python_before,
+        )
+        if syntax_failures:
+            # This is a candidate implementation mistake, NOT a sandbox
+            # escape: do not quarantine the PR or attempt to run its tests.
+            try:
+                changed, digest = self._validate_candidate(
+                    workspace, allowed_paths=request.allowed_paths,
+                    protected_paths=request.protected_paths,
+                )
+            except (OSError, UnicodeError, ValueError, RuntimeError, PermissionError) as exc:
+                # An unrelated path escape or protected write still outranks
+                # the syntax mistake and keeps the original confinement gate.
+                return ImplementationResult(
+                    ImplementationStatus.CONFINEMENT_VIOLATION, self.name, self.model,
+                    f"Post-run candidate validation failed: {type(exc).__name__}: {_bounded(exc, 1000)}",
+                    exit_code=process.returncode, duration_seconds=duration,
+                    repair_pass=repair_pass, sanitized_output=sanitized,
+                )
+            return ImplementationResult(
+                ImplementationStatus.CANDIDATE_TEST_FAILURE, self.name, self.model,
+                "Python syntax guard rejected malformed candidate edit: "
+                + "; ".join(syntax_failures)[:1600],
+                changed_paths=changed, diff_digest=digest,
+                exit_code=process.returncode, duration_seconds=duration,
+                repair_pass=repair_pass, sanitized_output=sanitized,
+            )
         if len(combined) > self.max_output_chars:
             return stopped_result(
                 ImplementationStatus.RESOURCE_PRESSURE,

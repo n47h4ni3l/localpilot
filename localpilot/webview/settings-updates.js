@@ -42,7 +42,9 @@
     const enabled = !!status.enabled;
     toggle.classList.toggle("is-on", enabled);
     toggle.setAttribute("aria-checked", String(enabled));
-    lastChecked.textContent = formatChecked(status.lastChecked);
+    toggle.disabled = status.canChange === false;
+    toggle.title = status.reason || "";
+    lastChecked.textContent = status.reason || formatChecked(status.lastChecked);
     currentVersion.textContent = status.currentVersion || "unknown";
     currentVersion.title = status.currentVersion || "unknown";
     if (notice && noticeText && apply && later) {
@@ -56,7 +58,7 @@
   }
 
   function checkDue(status) {
-    if (!status || !status.enabled) return false;
+    if (!status || !status.enabled || status.canChange === false) return false;
     if (!status.lastChecked) return true;
     const checked = new Date(status.lastChecked).getTime();
     return !Number.isFinite(checked) || Date.now() - checked >= CHECK_INTERVAL_MS;
@@ -80,7 +82,7 @@
   }
 
   toggle.addEventListener("click", async function () {
-    if (inFlight || !apiReady()) return;
+    if (inFlight || toggle.disabled || !apiReady()) return;
     const wantOn = !toggle.classList.contains("is-on");
     inFlight = true;
     try {

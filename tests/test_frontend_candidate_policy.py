@@ -11,12 +11,20 @@ ROOT = Path(__file__).resolve().parents[1]
 WEBVIEW = ROOT / "localpilot" / "webview"
 
 
-@pytest.mark.parametrize("name", ["index.html", "app.css", "app.js"])
+@pytest.mark.parametrize("name", ["index.html", "app.css", "app.js", "chat-activity.js", "chat-activity.css",
+                                 "chat-files.js", "chat-files.css"])
 def test_current_frontend_assets_are_valid_candidate_writes(tmp_path, name):
     tools = CandidateTools(tmp_path)
     content = (WEBVIEW / name).read_text(encoding="utf-8")
     result = tools.write_project_file(f"localpilot/webview/{name}", content)
     assert result.startswith("Wrote localpilot/webview/")
+
+
+def test_attachment_image_blobs_do_not_allow_blob_scripts(tmp_path):
+    source = (WEBVIEW / "index.html").read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="script-src"):
+        CandidateTools(tmp_path).write_project_file("localpilot/webview/index.html",
+            source.replace("script-src 'self'", "script-src 'self' blob:"))
 
 
 @pytest.mark.parametrize(

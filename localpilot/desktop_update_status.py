@@ -12,6 +12,12 @@ from localpilot.process import hidden_process_creation_flags
 
 _SAFE_REMOTE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SAFE_BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+_BUNDLE_UPDATE_REASON = "This private bundle supports fresh installation only. In-app updates are unavailable until a bundle migration procedure is provided; the existing installation was preserved."
+
+
+def _bundle_updates_managed(root: str | Path) -> bool:
+    marker = Path(root) / ".nestra-runtime.json"
+    return marker.exists() or marker.is_symlink()
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +31,7 @@ class UpdateStatus:
     target_sha: str | None = None
     dismissed_target_sha: str | None = None
     apply_requested_sha: str | None = None
+    managed: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -41,6 +48,9 @@ class UpdateStatus:
                 and self.target_sha is not None and self.target_sha != self.dismissed_target_sha
             ),
             "applyRequested": bool(self.target_sha and self.target_sha == self.apply_requested_sha),
+            "managed": self.managed,
+            "canChange": not self.managed,
+            "reason": _BUNDLE_UPDATE_REASON if self.managed else None,
         }
 
 
@@ -70,6 +80,8 @@ def _current_version(root: Path) -> str:
 def current_update_status(root: str | Path, state: DesktopUIState) -> UpdateStatus:
     root = Path(root).resolve()
     values = state.read()
+    if _bundle_updates_managed(root):
+        return UpdateStatus(False, _current_version(root), None, False, None, _BUNDLE_UPDATE_REASON, managed=True)
     return UpdateStatus(
         enabled=bool(values.get("automatic_updates")),
         current_version=_current_version(root),
@@ -96,12 +108,16 @@ def current_update_status(root: str | Path, state: DesktopUIState) -> UpdateStat
 
 
 def set_automatic_updates(root: str | Path, state: DesktopUIState, enabled: bool) -> UpdateStatus:
+    if _bundle_updates_managed(root):
+        return current_update_status(root, state)
     state.update(automatic_updates=bool(enabled))
     return current_update_status(root, state)
 
 
 def request_manual_update(state: DesktopUIState, target_sha: str) -> dict[str, Any]:
     """Queue the owner's exact selection; the companion applies it after chat closes."""
+    if _bundle_updates_managed(state.path.parent.parent):
+        return {"ok": False, "reason": _BUNDLE_UPDATE_REASON}
     values = state.read()
     if (not re.fullmatch(r"[0-9a-f]{40}", str(target_sha))
             or target_sha != values.get("update_target_sha")
@@ -133,6 +149,8 @@ def check_for_updates(
     """
 
     root = Path(root).resolve()
+    if _bundle_updates_managed(root):
+        return current_update_status(root, state)
     checked_at = datetime.now(timezone.utc).isoformat()
     update_available: bool | None = None
     target_version: str | None = None

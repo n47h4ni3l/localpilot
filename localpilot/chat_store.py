@@ -75,6 +75,10 @@ class ChatStore:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(chat_sessions)")}
             if "title_is_custom" not in columns:
                 connection.execute("ALTER TABLE chat_sessions ADD COLUMN title_is_custom INTEGER NOT NULL DEFAULT 0")
+            message_columns = {row[1] for row in connection.execute("PRAGMA table_info(chat_messages)")}
+            for name in ("files_json", "steps_json"):
+                if name not in message_columns:
+                    connection.execute(f"ALTER TABLE chat_messages ADD COLUMN {name} TEXT NOT NULL DEFAULT '[]'")
 
     def create_session(self, title: str = "New conversation") -> dict[str, Any]:
         session_id = str(uuid.uuid4())
@@ -142,6 +146,7 @@ class ChatStore:
         content: str,
         *,
         status: str = "complete",
+        files: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if role not in {"user", "assistant"}:
             raise ValueError("Chat history accepts only visible user and assistant messages")
@@ -159,18 +164,61 @@ class ChatStore:
                 (timestamp, role, _conversation_title(content), session_id),
             )
             message_id = int(cursor.lastrowid)
+            if files:
+                connection.execute("UPDATE chat_messages SET files_json = ? WHERE id = ?",
+                                   (json.dumps(files, ensure_ascii=False), message_id))
         return self.message(message_id)
+
+    @staticmethod
+    def _message_row(row: sqlite3.Row) -> dict[str, Any]:
+        message = dict(row)
+        for column, key in (("files_json", "files"), ("steps_json", "steps")):
+            values = json.loads(message.pop(column, "[]"))
+            if values:
+                message[key] = values
+        return message
 
     def message(self, message_id: int) -> dict[str, Any]:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT id, session_id, role, content, status, created_at, updated_at "
+                "SELECT id, session_id, role, content, status, created_at, updated_at, files_json, steps_json "
                 "FROM chat_messages WHERE id = ?",
                 (int(message_id),),
             ).fetchone()
         if row is None:
             raise KeyError(f"Unknown chat message: {message_id}")
-        return dict(row)
+        return self._message_row(row)
+
+    def set_message_files(self, message_id: int, files: list[dict[str, Any]]) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute("UPDATE chat_messages SET files_json = ? WHERE id = ?",
+                               (json.dumps(files, ensure_ascii=False), int(message_id)))
+        return self.message(message_id)
+
+    def record_tool_event(self, message_id: int, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist the real call lifecycle with its owning assistant message."""
+        from localpilot.chat_activity import update_steps
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT steps_json FROM chat_messages WHERE id = ?", (int(message_id),)).fetchone()
+            if row is None:
+                raise KeyError("Unknown chat message")
+            steps, step = update_steps(json.loads(row[0]), event_type, payload)
+            connection.execute("UPDATE chat_messages SET steps_json = ? WHERE id = ?",
+                               (json.dumps(steps, ensure_ascii=False), int(message_id)))
+        return step
+
+    def interrupt_steps(self, message_id: int) -> None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT steps_json FROM chat_messages WHERE id = ?", (int(message_id),)).fetchone()
+            if row is None:
+                return
+            steps = json.loads(row[0])
+            for step in steps:
+                if step.get("status") == "running":
+                    step.update(status="interrupted", completed_at=_now())
+            connection.execute("UPDATE chat_messages SET steps_json = ? WHERE id = ?",
+                               (json.dumps(steps, ensure_ascii=False), int(message_id)))
 
     def update_message(self, message_id: int, content: str, *, status: str) -> dict[str, Any]:
         timestamp = _now()
@@ -184,18 +232,30 @@ class ChatStore:
     def messages(self, session_id: str, limit: int = 500) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id, session_id, role, content, status, created_at, updated_at "
+                "SELECT id, session_id, role, content, status, created_at, updated_at, files_json, steps_json "
                 "FROM chat_messages WHERE session_id = ? ORDER BY id ASC LIMIT ?",
                 (session_id, max(1, min(int(limit), 2000))),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [self._message_row(row) for row in rows]
 
-    def completed_history(self, session_id: str) -> list[dict[str, str]]:
+    def completed_history(self, session_id: str) -> list[dict[str, Any]]:
         return [
-            {"role": str(item["role"]), "content": str(item["content"])}
+            {"role": str(item["role"]), "content": str(item["content"]),
+             **({"files": item["files"]} if item.get("files") else {})}
             for item in self.messages(session_id)
             if item["status"] == "complete" and str(item["content"]).strip()
         ]
+
+    def linked_file_ids(self, session_id: str) -> list[str]:
+        """Only files deliberately sent or visibly returned belong to model context."""
+        ids: set[str] = set()
+        with self._connect() as connection:
+            for row in connection.execute("SELECT files_json FROM chat_messages WHERE session_id = ? AND files_json != '[]'",
+                                          (session_id,)):
+                for item in json.loads(row[0]):
+                    if isinstance(item, dict) and isinstance(item.get("id"), str):
+                        ids.add(item["id"])
+        return sorted(ids)
 
     def fail_streaming_messages(self, reason: str) -> list[dict[str, Any]]:
         """Close records abandoned by a broker/process restart."""
@@ -218,6 +278,8 @@ class ChatStore:
                     "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
                     ((timestamp, session_id) for session_id in session_ids),
                 )
+        for message_id in message_ids:
+            self.interrupt_steps(message_id)
         return [self.message(message_id) for message_id in message_ids]
 
     def append_event(

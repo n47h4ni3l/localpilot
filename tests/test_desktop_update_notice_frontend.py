@@ -54,3 +54,27 @@ vm.runInNewContext(fs.readFileSync(process.argv[1], 'utf8'), {
                             text=True, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["verified"] is True
+
+
+def test_managed_bundle_update_setting_disables_toggle_and_never_fetches():
+    script = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const ids=['toggle-auto-updates','update-last-checked','update-current-version','settings-toggle',
+ 'update-notice','update-notice-text','update-notice-apply','update-notice-later'];
+const elements=Object.fromEntries(ids.map(id=>[id,{listeners:{},classList:{toggle(){},contains(){return false;}},
+ setAttribute(){},addEventListener(event,handler){this.listeners[event]=handler;}}]));
+const handlers={};let fetched=0, changed=0;
+const status={ok:true,enabled:false,managed:true,canChange:false,reason:'Future bundle migration required',noticeAvailable:false,currentVersion:'aaaaaaa'};
+const window={addEventListener(event,handler){handlers[event]=handler;},pywebview:{api:{
+ async get_update_settings(){return status;},async check_for_updates(){fetched++;},async set_automatic_updates(){changed++;}
+}}};
+vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),{window,document:{getElementById(id){return elements[id];}},console,Date,setInterval(){},setTimeout(fn){fn();}});
+(async()=>{handlers.pywebviewready();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(elements['toggle-auto-updates'].disabled,true);
+ assert.match(elements['update-last-checked'].textContent,/migration/);
+ await elements['toggle-auto-updates'].listeners.click();
+ assert.equal(fetched,0);assert.equal(changed,0);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+    result = subprocess.run([NODE, "-e", script, str(ROOT / "localpilot/webview/settings-updates.js")], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr

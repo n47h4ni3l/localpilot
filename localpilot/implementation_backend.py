@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import ctypes
 import uuid
@@ -20,6 +21,7 @@ from urllib.parse import urlparse
 import psutil
 
 from localpilot.process import hidden_process_creation_flags
+from localpilot.claude_transport import ClaudeTransport
 from localpilot.selfdev_results import _ALLOWED_SUFFIXES, _IGNORE_NAMES
 
 
@@ -55,6 +57,7 @@ class ImplementationRequest:
     test_commands: tuple[tuple[str, ...], ...] = ()
     review_feedback: str = ""
     session_id: str = ""
+    read_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,7 +254,8 @@ def parse_claude_json_output(output: str) -> dict[str, Any]:
         if isinstance(structured, dict):
             merged = dict(structured)
             for key in (
-                "session_id", "usage", "total_cost_usd", "is_error", "subtype", "stop_reason"
+                "session_id", "usage", "total_cost_usd", "is_error", "subtype", "stop_reason",
+                "api_error_status", "terminal_reason",
             ):
                 if key in candidate:
                     merged[f"_claude_{key}"] = candidate[key]
@@ -265,7 +269,8 @@ def parse_claude_json_output(output: str) -> dict[str, Any]:
             if isinstance(inner, dict):
                 merged = dict(inner)
                 for key in (
-                    "session_id", "usage", "total_cost_usd", "is_error", "subtype", "stop_reason"
+                    "session_id", "usage", "total_cost_usd", "is_error", "subtype", "stop_reason",
+                    "api_error_status", "terminal_reason",
                 ):
                     if key in candidate:
                         merged[f"_claude_{key}"] = candidate[key]
@@ -279,6 +284,8 @@ def parse_claude_json_output(output: str) -> dict[str, Any]:
                     "_claude_is_error": candidate.get("is_error"),
                     "_claude_subtype": candidate.get("subtype"),
                     "_claude_stop_reason": candidate.get("stop_reason"),
+                    "_claude_api_error_status": candidate.get("api_error_status"),
+                    "_claude_terminal_reason": candidate.get("terminal_reason"),
                 }
         if candidate.get("subtype") in {"success", "error_max_turns"}:
             return {
@@ -289,6 +296,8 @@ def parse_claude_json_output(output: str) -> dict[str, Any]:
                 "_claude_is_error": candidate.get("is_error"),
                 "_claude_subtype": candidate.get("subtype"),
                 "_claude_stop_reason": candidate.get("stop_reason"),
+                "_claude_api_error_status": candidate.get("api_error_status"),
+                "_claude_terminal_reason": candidate.get("terminal_reason"),
             }
         if any(key in candidate for key in ("summary", "tests", "status")):
             return candidate
@@ -304,14 +313,16 @@ def _claude_error_detail(stdout: str, stderr: str, *, workspace: Path) -> str:
             continue
         if not isinstance(payload, dict):
             continue
-        for key in ("subtype", "error", "errors", "stop_reason"):
+        for key in ("subtype", "error", "errors", "stop_reason", "api_error_status", "terminal_reason"):
             if payload.get(key) not in (None, "", []):
                 fields.append(f"{key}={_bounded(payload[key], 500)}")
+        if payload.get("is_error") is True and payload.get("result"):
+            fields.append("result=" + _bounded(payload["result"], 500))
         break
     stderr_tail = sanitize_process_output(stderr, workspace=workspace)
     if stderr_tail:
         fields.append(f"stderr={_bounded(stderr_tail, 1000)}")
-    return "; ".join(fields)[:1600]
+    return sanitize_process_output("; ".join(fields), workspace=workspace)[:1600]
 
 
 def _kill_process_tree(process: subprocess.Popen[str]) -> None:
@@ -473,6 +484,15 @@ class ClaudeCodeBackend:
             except (OSError, subprocess.SubprocessError) as exc:
                 messages.append(f"Claude Code preflight failed: {type(exc).__name__}: {_bounded(exc, 500)}")
 
+        if messages:
+            # Do not load a large model for an invocation that cannot start.
+            # Invalid endpoint/context/CLI configuration fails before network I/O.
+            return ImplementationPreflight(
+                False, self.name, self.model,
+                self.executable_argv[0] if self.executable_argv else self.executable,
+                version=version, context_tokens=self.context_tokens, messages=tuple(messages),
+            )
+
         try:
             # Use Ollama's bounded HTTP API rather than the CLI metadata command.
             # The CLI can wedge even while the local server is healthy; /api/show
@@ -535,10 +555,10 @@ class ClaudeCodeBackend:
             "Bash(rm *)", "Bash(rmdir *)", "Bash(del *)", "Bash(Remove-Item *)",
             "Bash(powershell *)", "Bash(pwsh *)", "Bash(cmd *)", "Bash(bash *)", "Bash(sh *)",
         ]
-        return json.dumps({"permissions": {"deny": deny}}, separators=(",", ":"))
+        return json.dumps({"permissions": {"deny": deny}, "disableAllHooks": True}, separators=(",", ":"))
 
     def _command(
-        self, *, session_id: str = "", allowed_paths: Sequence[str] = ()
+        self, *, session_id: str = "", allowed_paths: Sequence[str] = (), read_only: bool = False
     ) -> list[str]:
         allowed = [
             "Read", "Glob", "Grep",
@@ -546,7 +566,9 @@ class ClaudeCodeBackend:
             "Bash(python -m compileall *)", "Bash(python -m pytest *)",
             "Bash(python -m unittest *)", "Bash(py -m pytest *)", "Bash(py -m unittest *)",
         ]
-        for relative in sorted({_relative_path(item) for item in allowed_paths}):
+        if read_only:
+            allowed = ["Read", "Glob", "Grep"]
+        for relative in sorted({_relative_path(item) for item in (() if read_only else allowed_paths)}):
             allowed.extend((f"Edit(./{relative})", f"Write(./{relative})"))
         result_schema = json.dumps(
             {
@@ -555,7 +577,7 @@ class ClaudeCodeBackend:
                     "summary": {"type": "string", "maxLength": 2000},
                     "tests": {
                         "type": "array",
-                        "minItems": 1,
+                        "minItems": 0 if read_only else 1,
                         "maxItems": 20,
                         "items": {
                             "type": "object",
@@ -580,10 +602,11 @@ class ClaudeCodeBackend:
             "--bare", "--restricted", "--print", "--output-format", "json",
             "--json-schema", result_schema,
             "--model", self.model, "--max-turns", str(self.max_turns),
-            "--tools", "Read,Glob,Grep,Edit,Write,Bash",
+            "--tools", "Read,Glob,Grep" if read_only else "Read,Glob,Grep,Edit,Write,Bash",
             "--allowedTools", *allowed,
             "--disallowedTools", *json.loads(self._settings())["permissions"]["deny"],
-            "--settings", self._settings(), "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+            "--settings", self._settings(), "--setting-sources", "",
+            "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
             "--permission-mode", "dontAsk", "--permission-prompts", "none",
             "--no-session-persistence", "--no-chrome",
         ]
@@ -751,6 +774,21 @@ class ClaudeCodeBackend:
                 ImplementationStatus.CONFINEMENT_VIOLATION, self.name, self.model,
                 "Candidate workspace is not an isolated Git checkout.", repair_pass=repair_pass,
             )
+        if request.read_only and (request.allowed_paths or request.test_commands):
+            return ImplementationResult(
+                ImplementationStatus.CONFINEMENT_VIOLATION, self.name, self.model,
+                "Read-only Claude requests cannot grant edit paths or executable test commands.",
+                repair_pass=repair_pass,
+            )
+        if self.resource_guard is not None:
+            try:
+                self.resource_guard()
+            except Exception as exc:
+                return ImplementationResult(
+                    ImplementationStatus.RESOURCE_PRESSURE, self.name, self.model,
+                    f"Claude Code stopped before model preflight: {type(exc).__name__}: {_bounded(exc, 500)}",
+                    repair_pass=repair_pass,
+                )
         preflight = self.preflight()
         if not preflight.healthy:
             return ImplementationResult(
@@ -804,6 +842,7 @@ class ClaudeCodeBackend:
                 exit_code=exit_code,
                 duration_seconds=duration,
                 repair_pass=repair_pass,
+                usage={"transport": transport.evidence()} if transport is not None else {},
                 sanitized_output=output,
             )
         prompt = request.prompt
@@ -813,19 +852,55 @@ class ClaudeCodeBackend:
                 "the relevant repository tests. Address only this bounded feedback:\n" + request.review_feedback[:12000]
             )
         env = self._environment()
+        private_home = tempfile.TemporaryDirectory(prefix="localpilot-claude-")
+        home = Path(private_home.name)
+        for key, relative in (("HOME", ""), ("USERPROFILE", ""), ("APPDATA", "AppData/Roaming"),
+                              ("LOCALAPPDATA", "AppData/Local"), ("CLAUDE_CONFIG_DIR", "claude")):
+            path = home / relative
+            path.mkdir(parents=True, exist_ok=True)
+            env[key] = str(path)
+        transport: ClaudeTransport | None = None
+        def cleanup_private_home() -> None:
+            try:
+                private_home.cleanup()
+            except OSError as exc:
+                # A transient Windows lock must not overwrite the actual CLI
+                # result. The directory contains this invocation's private data.
+                if transport is not None:
+                    transport.cleanup_error = type(exc).__name__
         try:
+            transport = ClaudeTransport(
+                base_url=self.base_url, model=self.model,
+                timeout_seconds=max(0.1, self.timeout_seconds - (time.monotonic() - started)),
+                resource_guard=self.resource_guard, max_requests=self.max_turns * 4 + 8,
+            )
+            transport.__enter__()
+            env["ANTHROPIC_BASE_URL"] = transport.url
+            env["ANTHROPIC_AUTH_TOKEN"] = transport.token
             process = subprocess.Popen(
                 self._command(
-                    session_id=request.session_id, allowed_paths=request.allowed_paths
+                    session_id=request.session_id, allowed_paths=request.allowed_paths,
+                    read_only=request.read_only,
                 ), cwd=str(workspace), env=env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="strict", shell=False,
                 creationflags=hidden_process_creation_flags(),
             )
-        except OSError as exc:
+        except Exception as exc:
+            resource_stopped = transport is not None and bool(transport.resource_stop)
+            deadline_stopped = transport is not None and bool(transport.deadline_stop)
+            if resource_stopped or deadline_stopped:
+                self._cancel_ollama_inference()
+            if transport is not None:
+                transport.close()
+            cleanup_private_home()
             return ImplementationResult(
-                ImplementationStatus.BACKEND_UNAVAILABLE, self.name, self.model,
+                (ImplementationStatus.RESOURCE_PRESSURE if resource_stopped else
+                 ImplementationStatus.TIMEOUT if deadline_stopped else
+                 ImplementationStatus.BACKEND_UNAVAILABLE if isinstance(exc, (OSError, ValueError))
+                 else ImplementationStatus.RESOURCE_PRESSURE), self.name, self.model,
                 f"Claude Code could not start: {type(exc).__name__}: {_bounded(exc, 500)}",
+                usage={"transport": transport.evidence()} if transport is not None else {},
                 repair_pass=repair_pass,
             )
         try:
@@ -864,10 +939,19 @@ class ClaudeCodeBackend:
         finally:
             if process.poll() is None:
                 _kill_process_tree(process)
+            transport.close()
+            cleanup_private_home()
         combined = (stdout or "") + "\n" + (stderr or "")
         sanitized = sanitize_process_output(
             combined, workspace=workspace, secrets=(env.get("ANTHROPIC_AUTH_TOKEN", ""),)
         )
+        if transport.resource_stop or transport.deadline_stop:
+            return stopped_result(
+                ImplementationStatus.RESOURCE_PRESSURE if transport.resource_stop else ImplementationStatus.TIMEOUT,
+                "Claude Code stopped at the resource boundary." if transport.resource_stop else
+                "Claude Code exceeded its transport deadline.",
+                exit_code=process.returncode, duration=duration, output=sanitized,
+            )
         syntax_failures = restore_invalid_python_edits(
             workspace, request.allowed_paths, valid_python_before,
         )
@@ -920,14 +1004,20 @@ class ClaudeCodeBackend:
         except ValueError as exc:
             parse_error = exc
         envelope_subtype = str(payload.get("_claude_subtype") or "") if payload else ""
+        provider_error = bool(payload and (
+            payload.get("_claude_api_error_status") is not None
+            or payload.get("_claude_terminal_reason") == "api_error"
+            or (request.read_only and payload.get("_claude_is_error") is True)
+        ))
         explicit_envelope_success = bool(
             payload
             and envelope_subtype == "success"
+            and not provider_error
         )
         bounded_turn_completion = bool(
             payload and envelope_subtype == "error_max_turns" and changed
         )
-        if process.returncode != 0 and not (explicit_envelope_success or bounded_turn_completion):
+        if provider_error or (process.returncode != 0 and not (explicit_envelope_success or bounded_turn_completion)):
             detail = _claude_error_detail(stdout, stderr, workspace=workspace)
             return ImplementationResult(
                 ImplementationStatus.CLI_ERROR, self.name, self.model,
@@ -935,6 +1025,7 @@ class ClaudeCodeBackend:
                 + (f" {detail}" if detail else ""),
                 changed_paths=changed, diff_digest=digest,
                 exit_code=process.returncode, duration_seconds=duration, repair_pass=repair_pass,
+                usage={"transport": transport.evidence()},
                 sanitized_output=sanitized,
             )
         if payload is None:
@@ -944,6 +1035,17 @@ class ClaudeCodeBackend:
                 changed_paths=changed, diff_digest=digest,
                 exit_code=process.returncode, duration_seconds=duration, repair_pass=repair_pass,
                 sanitized_output=sanitized,
+            )
+        if request.read_only:
+            usage = payload.get("_claude_usage") if isinstance(payload.get("_claude_usage"), dict) else {}
+            return ImplementationResult(
+                ImplementationStatus.COMPLETED, self.name, self.model,
+                _bounded(payload.get("summary") or "Claude Code completed the read-only inspection.", 2000),
+                changed_paths=changed, diff_digest=digest, tests=(),
+                session_id=_bounded(payload.get("_claude_session_id"), 200),
+                exit_code=process.returncode,
+                usage={**usage, "tests_not_run": True, "transport": transport.evidence()},
+                duration_seconds=duration, repair_pass=repair_pass, sanitized_output=sanitized,
             )
         tests_raw = payload.get("tests")
         reported_tests = (
@@ -968,6 +1070,6 @@ class ClaudeCodeBackend:
             _bounded(payload.get("summary") or "Claude Code completed the implementation stage.", 2000),
             changed_paths=changed, diff_digest=digest, tests=tests,
             session_id=_bounded(payload.get("_claude_session_id"), 200),
-            exit_code=process.returncode, usage=dict(usage), duration_seconds=duration,
+            exit_code=process.returncode, usage={**usage, "transport": transport.evidence()}, duration_seconds=duration,
             repair_pass=repair_pass, sanitized_output=sanitized,
         )

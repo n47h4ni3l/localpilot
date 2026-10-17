@@ -58,6 +58,13 @@ elif behavior == 'cli_error':
     raise SystemExit(7)
 elif behavior == 'malformed':
     print('not json')
+elif behavior == 'read_only':
+    print(json.dumps({'result': json.dumps({'summary': 'inspected fixture', 'tests': []}),
+                      'subtype': 'success', 'is_error': False}))
+elif behavior == 'api_error_success':
+    print(json.dumps({'result': 'API Error: malformed provider tool', 'subtype': 'success',
+                      'is_error': True, 'terminal_reason': 'api_error', 'api_error_status': 400}))
+    raise SystemExit(1)
 elif behavior == 'syntax_corrupt':
     pathlib.Path('module.py').write_text('class Broken:\\n           bad: bool\\n  invalid: bool\\n', encoding='utf-8')
     print(json.dumps({'result': json.dumps({'summary': 'done', 'tests': []}), 'subtype': 'success'}))
@@ -192,7 +199,8 @@ def test_real_process_wrapper_edits_only_candidate_and_returns_structured_eviden
     assert result.changed_paths == ("module.py",)
     assert len(result.diff_digest) == 64
     assert result.session_id == "session-1"
-    assert result.usage == {"input_tokens": 10, "output_tokens": 5}
+    assert result.usage["input_tokens"] == 10 and result.usage["output_tokens"] == 5
+    assert result.usage["transport"]["protocol_retries"] == 0
     assert result.tests[0]["passed"] is True
 
 
@@ -327,6 +335,78 @@ def test_command_has_narrow_tools_and_no_permission_bypass(tmp_path: Path):
     if sys.platform == "win32":
         assert env["SYSTEMDRIVE"]
         assert env["PROGRAMDATA"]
+
+
+def test_readonly_command_has_no_edit_write_or_shell_tools(tmp_path):
+    command = _backend(tmp_path, "success")._command(read_only=True)
+    assert command[command.index("--tools") + 1] == "Read,Glob,Grep"
+    allowed = command[command.index("--allowedTools") + 1:command.index("--disallowedTools")]
+    assert allowed == ["Read", "Glob", "Grep"]
+    assert "--setting-sources" in command
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["disableAllHooks"] is True
+
+
+def test_readonly_requests_reject_edits_even_if_cli_ignores_its_tool_permissions(tmp_path):
+    result = _backend(tmp_path, "success").run(
+        ImplementationRequest(_repo(tmp_path), "inspect", (), read_only=True))
+    assert result.status == ImplementationStatus.CONFINEMENT_VIOLATION
+
+
+def test_readonly_inspection_completes_without_claiming_tests_ran(tmp_path):
+    result = _backend(tmp_path, "read_only").run(
+        ImplementationRequest(_repo(tmp_path), "inspect", (), read_only=True))
+    assert result.status == ImplementationStatus.COMPLETED
+    assert result.summary == "inspected fixture" and result.tests == ()
+    assert result.usage["tests_not_run"] is True
+    assert result.changed_paths == ()
+
+
+@pytest.mark.parametrize("read_only", [True, False])
+def test_success_subtype_does_not_hide_real_provider_api_error(tmp_path, read_only):
+    result = _backend(tmp_path, "api_error_success").run(
+        ImplementationRequest(_repo(tmp_path), "inspect", (), read_only=read_only))
+    assert result.status == ImplementationStatus.CLI_ERROR
+    assert result.usage["transport"]["provider_requests"] == 0
+
+
+def test_readonly_requests_cannot_grant_writes_or_executable_tests(tmp_path):
+    result = _backend(tmp_path, "success").run(
+        ImplementationRequest(_repo(tmp_path), "inspect", ("module.py",), read_only=True))
+    assert result.status == ImplementationStatus.CONFINEMENT_VIOLATION
+
+
+def test_resource_guard_blocks_before_preflight_model_load(tmp_path):
+    backend = _backend(tmp_path, "success")
+    called = []
+    backend.preflight = lambda: called.append(True)
+    def pressure():
+        raise RuntimeError("memory pressure")
+    backend.resource_guard = pressure
+    result = backend.run(ImplementationRequest(_repo(tmp_path), "inspect", (), read_only=True))
+    assert result.status == ImplementationStatus.RESOURCE_PRESSURE and not called
+
+
+def test_unavailable_cli_does_not_load_large_model(tmp_path, monkeypatch):
+    backend = ClaudeCodeBackend(executable=str(tmp_path / "missing-claude.exe"))
+    monkeypatch.setattr(backend, "_ollama_json", lambda *_args, **_kwargs: pytest.fail("must not load model"))
+    result = backend.preflight()
+    assert not result.healthy and any("executable is unavailable" in item for item in result.messages)
+
+
+def test_resource_stop_after_preflight_is_classified_and_releases_test_load(tmp_path):
+    backend = _backend(tmp_path, "success")
+    checks, cancelled = [], []
+    def pressure_after_load():
+        checks.append(True)
+        if len(checks) > 1:
+            raise RuntimeError("memory pressure after model load")
+    backend.resource_guard = pressure_after_load
+    backend._cancel_ollama_inference = lambda: cancelled.append(True)
+    result = backend.run(ImplementationRequest(_repo(tmp_path), "inspect", (), read_only=True))
+    assert result.status == ImplementationStatus.RESOURCE_PRESSURE
+    assert result.usage["transport"]["resource_stop"] == "RuntimeError"
+    assert cancelled == [True]
 
 
 def test_localpilot_rejection_drives_one_bounded_claude_rework_pass(tmp_path: Path, monkeypatch):

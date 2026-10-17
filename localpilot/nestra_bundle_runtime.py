@@ -48,9 +48,9 @@ def configure(root: Path, runtime_root: Path, models_root: Path, port: int = 114
     runtime_path = app / ".nestra-runtime.json"
     if config_path.exists() or runtime_path.exists():
         raise FileExistsError("Existing configuration was preserved; reviewed migration is required")
-    claude = runtime / "claude" / "claude.exe"
+    claude = _plain(runtime / "claude" / "claude.exe")
     if not claude.is_file():
-        raise ValueError("The private Claude Code implementation harness is missing")
+        raise ValueError("The private Claude Code tool executable is missing")
     from localpilot.nestra_bundle_model import ACCEPTED_MANIFEST_SHA256
     import hashlib
     manifest_path = models / "manifests-v2" / "ollama.com" / "library" / "nestra" / "p1.2"
@@ -68,7 +68,7 @@ def configure(root: Path, runtime_root: Path, models_root: Path, port: int = 114
     cfg.selfdev.developer_model = cfg.model.name
     cfg.selfdev.implementation_model = cfg.model.name
     cfg.selfdev.developer_model_fallbacks = []
-    cfg.selfdev.implementation_backend = "claude_code"
+    cfg.selfdev.implementation_backend = "local_tools"
     cfg.selfdev.implementation_executable = str(claude)
     cfg.selfdev.implementation_base_url = "http://127.0.0.1:11435"
     cfg.github.enabled = False
@@ -80,6 +80,7 @@ def configure(root: Path, runtime_root: Path, models_root: Path, port: int = 114
     sections = dataclasses.asdict(cfg)
     sections.pop("source_path")
     content = "# Fresh Nestra bundle configuration. Guide-only; no owner data imported.\n"
+    content += "# Nestra orchestrates local tools, including the private Claude Code tool.\n"
     content += "# Connect your own GitHub repository/account before enabling remote evolution.\n\n"
     for name, settings in sections.items():
         content += f"[{name}]\n"

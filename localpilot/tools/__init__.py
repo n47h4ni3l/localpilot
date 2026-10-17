@@ -6,6 +6,7 @@ from localpilot.config import Config
 from localpilot.operator import CommandRunner
 from localpilot.safety import RiskLevel, ToolSpec
 from localpilot.tools.external_mentor import ExternalMentor
+from localpilot.tools.claude_code import ClaudeCodeTool
 from localpilot.tools.github_readonly import GitHubReader
 from localpilot.tools.learning_readonly import LearningMemoryReader
 from localpilot.tools.library import LocalLibrary
@@ -118,6 +119,17 @@ def registry(
         )
     if project_root is not None:
         root = Path(project_root).resolve()
+        if config is not None:
+            coding = ClaudeCodeTool(root, config)
+            specs.append(ToolSpec(
+                "claude_code",
+                "Use Claude Code as a local Nestra coding tool. Pass task and optional explicit allowed_paths "
+                "for isolated proposal edits; omit paths for read-only repository help. Uses the same accepted "
+                "local model and a committed HEAD snapshot (uncommitted owner edits are excluded), never changes "
+                "production, and returns real results with review still pending.",
+                RiskLevel.REVERSIBLE,
+                coding.claude_code,
+            ))
         repository = RepositoryReader(
             project_root,
             data_dir=(root / config.agent.data_dir) if config is not None else None,

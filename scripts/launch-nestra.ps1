@@ -37,9 +37,15 @@ function Get-NestraTomlLaunchValue {
     $current = ''; $values = @()
     foreach ($line in ($Text -split '\r?\n')) {
         if ($line -match '^\s*\[([A-Za-z0-9_.]+)\]\s*(?:#.*)?$') { $current = $Matches[1]; continue }
-        if ($current -ceq $Section -and $line -match ('^\s*' + [regex]::Escape($Key) + '\s*=\s*(.*?)\s*(?:#.*)?$')) {
+        if ($current -ceq $Section -and $line -match ('^\s*' + [regex]::Escape($Key) + '\s*=\s*(.*?)\s*$')) {
             $value = $Matches[1].Trim()
-            if ($value -match '^"([^"\\]*)"$' -or $value -match "^'([^']*)'$") { $value = $Matches[1] }
+            if ($value -match '^("(?:[^"\\]|\\.)*")\s*(?:#.*)?$') {
+                # The generated TOML quotes Windows paths with JSON-compatible
+                # escaping. Decode it before checking the private executable.
+                $value = ConvertFrom-Json -InputObject $Matches[1]
+                if ($value -isnot [string]) { throw 'Nestra launch value must be a string.' }
+            } elseif ($value -match "^'([^']*)'\s*(?:#.*)?$") { $value = $Matches[1] }
+            else { $value = ($value -split '#', 2)[0].Trim() }
             $values += $value
         }
     }
@@ -97,10 +103,15 @@ function Get-NestraLaunchConfiguration {
     foreach ($expected in @(@('agent', 'scaffold_mode', 'guide_first'), @('agent', 'data_dir', 'localpilot-data'),
                             @('model', 'provider', 'ollama'), @('model', 'name', 'nestra:p1.2'),
                             @('selfdev', 'developer_model', 'nestra:p1.2'), @('selfdev', 'implementation_model', 'nestra:p1.2'),
+                            @('selfdev', 'implementation_backend', 'local_tools'),
                             @('desktop', 'host', '127.0.0.1'), @('desktop', 'port', '8766'))) {
         if ((Get-NestraTomlLaunchValue $text $expected[0] $expected[1]) -cne $expected[2]) {
             throw "Nestra configuration differs from its accepted bundle identity: [$($expected[0])] $($expected[1])"
         }
+    }
+    $configuredClaude = Get-NestraTomlLaunchValue $text 'selfdev' 'implementation_executable'
+    if ((Assert-NestraLaunchPath $configuredClaude) -ine $files.Claude) {
+        throw 'Nestra Claude Code tool must use this installation''s private executable.'
     }
     return [pscustomobject]@{ Root = $rootPath; App = $app; RuntimeRoot = $runtimeRoot; Models = $models;
         Config = $configPath; Runtime = $runtime; Tasks = $tasks; Files = $files;

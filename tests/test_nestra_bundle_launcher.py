@@ -23,7 +23,8 @@ def _installation(tmp_path):
         "app/.venv/Scripts/python.exe", "app/.venv/Scripts/pythonw.exe",
         "runtime/python/python/python.exe", "runtime/ollama/ollama.exe",
         "runtime/git/cmd/git.exe", "runtime/git/bin/bash.exe", "runtime/gh/bin/gh.exe",
-        "runtime/claude/claude.exe", "app/scripts/launch-nestra.ps1",
+        "runtime/claude/claude.exe",
+        "app/scripts/launch-nestra.ps1",
     )
     for relative in paths:
         path = root / relative
@@ -34,7 +35,8 @@ def _installation(tmp_path):
     (app / "localpilot-data/broker-token").write_text("A" * 43)
     config = ('[agent]\nscaffold_mode = "guide_first"\ndata_dir = "localpilot-data"\n'
               '[model]\nprovider = "ollama"\nname = "nestra:p1.2"\n'
-              '[selfdev]\ndeveloper_model = "nestra:p1.2"\nimplementation_model = "nestra:p1.2"\n'
+              '[selfdev]\nimplementation_backend = "local_tools"\ndeveloper_model = "nestra:p1.2"\nimplementation_model = "nestra:p1.2"\n'
+              f'implementation_executable = {json.dumps(str(runtime / "claude" / "claude.exe"))}\n'
               '[desktop]\nhost = "127.0.0.1"\nport = 8766\n')
     (app / "localpilot.toml").write_text(config)
     metadata = {
@@ -63,8 +65,9 @@ def _verify(root, role="Desktop"):
 
 
 @pytest.mark.parametrize("role", ["Desktop", "Broker", "Worker"])
-def test_verify_only_does_not_execute_or_write(tmp_path, role):
-    root = _installation(tmp_path)
+@pytest.mark.parametrize("directory", ["ordinary", "folder # with comment marker"])
+def test_verify_only_does_not_execute_or_write(tmp_path, role, directory):
+    root = _installation(tmp_path / directory)
     before = _snapshot(root)
     result = _verify(root, role)
     assert result.returncode == 0, result.stderr
@@ -72,6 +75,7 @@ def test_verify_only_does_not_execute_or_write(tmp_path, role):
     assert value["status"] == "verified"
     assert value["model"] == "nestra:p1.2"
     assert value["guide_only"] is True
+    assert (root / "runtime/claude/claude.exe").is_file()
     assert _snapshot(root) == before
     assert not (root / "state").exists()
 
@@ -90,21 +94,39 @@ def test_cross_installation_or_production_endpoints_are_rejected(tmp_path, field
     assert _snapshot(root) == before
 
 
-def test_wrong_model_or_guide_configuration_is_rejected(tmp_path):
+@pytest.mark.parametrize("original,replacement", [
+    ('name = "nestra:p1.2"', 'name = "gpt-oss:20b"'),
+    ('scaffold_mode = "guide_first"', 'scaffold_mode = "legacy_strict"'),
+    ('implementation_backend = "local_tools"', 'implementation_backend = "claude_code"'),
+    ('implementation_model = "nestra:p1.2"', 'implementation_model = "foreign-model"'),
+])
+def test_wrong_model_guide_or_earlier_claude_backend_is_rejected(tmp_path, original, replacement):
     root = _installation(tmp_path)
     path = root / "app/localpilot.toml"
-    path.write_text(path.read_text().replace('name = "nestra:p1.2"', 'name = "gpt-oss:20b"'))
+    path.write_text(path.read_text().replace(original, replacement))
     result = _verify(root)
     assert result.returncode != 0
     assert "accepted bundle identity" in result.stderr
 
 
-def test_missing_packaged_runtime_fails_without_global_fallback(tmp_path):
+@pytest.mark.parametrize("executable", ["runtime/gh/bin/gh.exe", "runtime/claude/claude.exe"])
+def test_missing_packaged_runtime_fails_without_global_fallback(tmp_path, executable):
     root = _installation(tmp_path)
-    (root / "runtime/claude/claude.exe").unlink()
+    (root / executable).unlink()
     result = _verify(root)
     assert result.returncode != 0
     assert "runtime file is missing" in result.stderr
+
+
+def test_private_claude_path_cannot_be_redirected_to_another_program(tmp_path):
+    root = _installation(tmp_path)
+    config = root / "app/localpilot.toml"
+    config.write_text(config.read_text().replace(
+        json.dumps(str(root / "runtime/claude/claude.exe")), json.dumps(str(root / "runtime/gh/bin/gh.exe")),
+    ))
+    result = _verify(root)
+    assert result.returncode != 0
+    assert "Nestra Claude Code tool must use" in result.stderr
 
 
 def _functions(tmp_path, root, operation, mutation=""):
@@ -119,6 +141,10 @@ def _functions(tmp_path, root, operation, mutation=""):
         "foreach($function in $functions){Invoke-Expression $function.Extent.Text}\n"
         "function Start-Process {throw 'No process may execute in these tests.'}\n"
         "$c=Get-NestraLaunchConfiguration $Root\n"
+        "if($Operation -eq 'environment'){\n"
+        "  Set-NestraPrivateEnvironment $c\n"
+        "  @{claude_config=$env:CLAUDE_CONFIG_DIR;bash=$env:CLAUDE_CODE_GIT_BASH_PATH;path=$env:PATH} | ConvertTo-Json -Compress;exit 0\n"
+        "}\n"
         "if($Operation -eq 'port'){\n"
         "  $script:rows=@([pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=8766;RemoteAddress='0.0.0.0';RemotePort=0;OwningProcess=987;State=$Mutation})\n"
         "  if($Mutation -in @('Established','TimeWait')){$script:rows[0].RemoteAddress='127.0.0.1';$script:rows[0].RemotePort=50001}\n"
@@ -196,6 +222,17 @@ def test_standard_desktop_verifies_elevated_broker_without_protected_commandline
     result = _functions(tmp_path, _installation(tmp_path), "auth")
     assert result.returncode == 0, result.stderr
     assert "verified" in result.stdout
+
+
+def test_claude_tool_environment_uses_private_config_and_git_bash(tmp_path):
+    root = _installation(tmp_path)
+    result = _functions(tmp_path, root, "environment")
+    assert result.returncode == 0, result.stderr
+    environment = json.loads(result.stdout)
+    assert Path(environment["claude_config"]) == root / "state/claude"
+    assert Path(environment["bash"]) == root / "runtime/git/bin/bash.exe"
+    assert str(root / "runtime/claude") in environment["path"]
+    assert not (root / "state").exists()
 
 
 @pytest.mark.parametrize("state", ["Listen", "Bound", "NONE", "mixed"])

@@ -115,9 +115,10 @@ def _run_functions(tmp_path: Path, bundle: str | Path, destination: Path, operat
 
 
 @WINDOWS_PS
-def test_script_parses_and_complete_inventory_preflight_is_read_only(tmp_path):
+def test_native_payload_with_optional_claude_tool_passes_read_only_preflight(tmp_path):
     bundle = _bundle(tmp_path)
     before = _snapshot(bundle)
+    assert "payload/dependencies/installers/claude/claude.exe" in before
     destination = tmp_path / "new installation"
     result = _run_functions(tmp_path, bundle, destination)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -127,7 +128,7 @@ def test_script_parses_and_complete_inventory_preflight_is_read_only(tmp_path):
 
 
 @WINDOWS_PS
-@pytest.mark.parametrize("failure", ["hash", "size", "missing", "unlisted", "duplicate", "escape", "ads", "case_duplicate", "missing_claude"])
+@pytest.mark.parametrize("failure", ["hash", "size", "missing", "unlisted", "duplicate", "escape", "ads", "case_duplicate", "missing_ollama", "missing_claude"])
 def test_inventory_rejects_corruption_and_unsafe_paths_before_any_execution(tmp_path, failure):
     bundle = _bundle(tmp_path)
     manifest = json.loads((bundle / "bundle-manifest.json").read_text())
@@ -144,8 +145,9 @@ def test_inventory_rejects_corruption_and_unsafe_paths_before_any_execution(tmp_
         manifest["files"].append(first.copy())
     elif failure == "case_duplicate":
         manifest["files"].append({**first, "path": first["path"].upper()})
-    elif failure == "missing_claude":
-        selected = next(item for item in manifest["files"] if item["path"].endswith("claude/claude.exe"))
+    elif failure in {"missing_ollama", "missing_claude"}:
+        executable = "claude/claude.exe" if failure == "missing_claude" else "ollama/ollama.exe"
+        selected = next(item for item in manifest["files"] if item["path"].endswith(executable))
         manifest["files"].remove(selected)
         (bundle / selected["path"]).unlink()
     else:

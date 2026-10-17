@@ -114,6 +114,14 @@ def _tool_evidence_source(name: str) -> str | None:
 
 def _tool_result_success(result: Any) -> bool:
     """Recognize real result failures without treating quoted source as errors."""
+    structured = result
+    if isinstance(result, str) and result.lstrip().startswith("{"):
+        try:
+            structured = json.loads(result)
+        except (ValueError, TypeError):
+            pass
+    if isinstance(structured, dict) and structured.get("backend") == "claude_code":
+        return structured.get("status") == "completed"
     text = str(result).strip().lower()
     if not text:
         return False

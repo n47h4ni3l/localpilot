@@ -1,8 +1,8 @@
 # Nestra ALPHA2 private bundle candidate
 
-This **0.2.2-alpha.2** bundle is a local, private Windows evaluation candidate containing the accepted **Nestra P1.2** model, its desktop application, and the pinned runtimes needed for an offline installation. It is **not cleared for public redistribution**. In particular, redistribution rights for the included Claude Code 2.1.263 executable have not been verified. Read `THIRD_PARTY_NOTICES.md` before sharing or publishing an archive.
+This **0.2.2-alpha.2** bundle is a local, private Windows evaluation candidate containing the accepted **Nestra P1.2** model, its desktop application, and the pinned runtimes needed for an offline installation. Nestra uses the native `local_tools` orchestrator and has a private Claude Code executable available as a tool. Public redistribution review remains incomplete for the project source and selected components, including Claude Code. Read `THIRD_PARTY_NOTICES.md` before sharing or publishing an archive.
 
-The package preserves the P1.2 model identity, temperature 1.0, and guide-only behavior. It does not train a model, promote a new checkpoint, or establish a quality improvement. The source includes the chat, Files, Activity, and library interfaces. The presence of those interfaces and successful packaging checks do not establish that they have passed acceptance testing on a fresh Windows PC. A clean Windows VM installation and desktop acceptance run remain separate verification gates.
+The package preserves the P1.2 model identity, temperature 1.0, and guide-only behavior. Chat, planning, research, implementation, review, and repair use the same accepted `nestra:p1.2` model. The fresh configuration explicitly selects `implementation_backend = "local_tools"`, keeps both developer and implementation model selectors on P1.2, and leaves developer-model fallbacks empty. The optional `claude_code` tool gives Nestra access to the bundled coding harness during chat and Evolution; it does not replace Nestra as the orchestrator or select an Anthropic model. Tool calls retain the existing permission boundaries, and Evolution retains its resource, candidate-validation, checkpoint, review, CI, and human-merge gates. This package does not train a model, promote a new checkpoint, or establish a quality improvement. The source includes the chat, Files, Activity, and library interfaces. The presence of those interfaces and successful packaging checks do not establish that they have passed acceptance testing on a fresh Windows PC. A clean Windows VM installation and desktop acceptance run remain separate verification gates.
 
 ## PC and storage requirements
 
@@ -29,7 +29,7 @@ Advanced evaluation options are available on `scripts\install-nestra-bundle.ps1`
 
 The installation has separate `app`, `runtime`, `models`, `library`, and `state` directories. It creates a fresh application configuration and local data directory. The accepted model's original Ollama manifest and blobs are copied into this installation's model store and checked against their recorded hashes; no substitute model is downloaded or selected.
 
-Python and Tk, Ollama, PortableGit with Bash, GitHub CLI, Claude Code, and the wheelhouse are private runtime payloads. Python dependencies install from the hash-pinned wheelhouse without contacting a package index. Git source is restored from the included `source.bundle` at the exact recorded `main` commit, without fetching from the internet. Component versions and hashes are recorded in `packaging/nestra-alpha2-dependencies.json` in the source and in the assembled bundle receipts.
+Python and Tk, Ollama, PortableGit with Bash, GitHub CLI, Claude Code 2.1.263, and the wheelhouse are private runtime payloads. Nestra can invoke Claude Code as a tool while retaining native orchestration. Setup records the exact private executable in `selfdev.implementation_executable`; the launcher supplies private Git Bash and a separate `state/claude` configuration directory. It does not copy the owner's Claude credentials or configuration. Python dependencies install from the hash-pinned wheelhouse without contacting a package index. Git source is restored from the included `source.bundle` at the exact recorded `main` commit, without fetching from the internet. Component versions and hashes are recorded in `packaging/nestra-alpha2-dependencies.json` in the source and in the assembled bundle receipts.
 
 Setup may install the bundled **Microsoft WebView2 Runtime** when absent, and the bundled **PawnIO hardware driver** when absent and hardware installation has not been skipped. These are Windows prerequisites installed by their own upstream installers. They are distinct from the private Python and model directories.
 
@@ -43,7 +43,7 @@ The bundle reserves loopback **11435** for its private Ollama runtime and **8766
 
 Once a complete candidate is installed, model inference and local chat use the included model and local runtimes. Files and activity continue to use the application's existing permission and tool boundaries. Offline packaging does not make every tool or development task an offline operation.
 
-**Online research, remote repositories, GitHub operations, and publishing changes require network access.** GitHub integration and automatic candidate pushing are deliberately disabled in the fresh configuration until the recipient configures their own account and an appropriate repository. Bundling Git, GitHub CLI, and the Claude Code harness does not supply repository permissions, login credentials, a Git identity, or authorization to publish. Owner approval and existing review/promotion rules still apply.
+**Online research, remote repositories, GitHub operations, and publishing changes require network access.** GitHub integration and automatic candidate pushing are deliberately disabled in the fresh configuration until the recipient configures their own account and an appropriate repository. Bundling Git, GitHub CLI, and Claude Code does not supply repository permissions, login credentials, a Git identity, or authorization to publish. Native orchestration and the optional coding tool retain those account and authorization requirements. Owner approval and existing review/promotion rules still apply.
 
 ## Data, diagnostics, and current verification limits
 
@@ -52,6 +52,8 @@ The builder selects committed project source, explicit dependency payloads, the 
 Installation receipts and stage output are kept under `%LOCALAPPDATA%\Nestra\InstallerLogs`. Failures are recorded and partial files are retained. If task registration partly succeeds, the receipt lists each registered task so that partial setup is visible. An `installed` receipt describes completed file/prerequisite setup; it does not prove model quality or fresh-machine desktop acceptance.
 
 This private ALPHA2 candidate has source and preflight checks. It must not be described as installed and accepted on a clean Windows VM unless that separate test has actually completed. Keep the exact archive, manifest, checksums, setup receipt, and any failure logs when reporting results.
+
+Identify this candidate by its archive SHA256 and manifest `source_sha`; the display version alone does not identify its contents. Earlier private archives with the same display version may use a different implementation route. Those archives remain separate historical evidence and are not modified by preparing this candidate.
 
 ## Licenses and sharing
 

@@ -3688,7 +3688,7 @@ class SelfDeveloper:
                     tools.show_candidate_diff,
                     *candidate_claude_code_tools(
                         self, chat=chat, model=developer_model, tools=tools,
-                        task=task, branch=branch, cycle_id=cycle_id, force=force,
+                        task=task, branch=branch, cycle_id=candidate.cycle_id, force=force,
                     ),
                 ],
                 rounds=self.config.selfdev.max_tool_rounds,

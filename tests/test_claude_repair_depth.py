@@ -83,6 +83,9 @@ def test_claude_can_be_sent_back_more_than_six_times_before_acceptance(
 
     backend = RepairingBackend()
     developer = SelfDeveloper(config, root, implementation_backend=backend)
+    # This is an admitted in-memory repair fixture, independent of host load.
+    monkeypatch.setattr(developer.governor, "prepare_ollama_handoff", lambda *_args: {"attempted": False})
+    monkeypatch.setattr(developer, "_check_resources", lambda *_args, **_kwargs: None)
 
     reviews = iter(
         [

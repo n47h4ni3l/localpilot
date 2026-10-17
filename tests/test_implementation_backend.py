@@ -136,7 +136,7 @@ def test_preflight_loads_model_at_target_context_and_verifies_allocation(
     trims: list[bool] = []
     monkeypatch.setattr(
         "localpilot.implementation_backend._trim_windows_gpu_runner_working_sets",
-        lambda: trims.append(True) or 1,
+        lambda **_kwargs: trims.append(True) or 1,
     )
 
     def ollama_json(path, payload=None, **kwargs):
@@ -184,7 +184,7 @@ def test_preflight_accepts_nestra_as_implementation_model(monkeypatch):
     backend._ollama_json = ollama_json
     monkeypatch.setattr(
         "localpilot.implementation_backend._trim_windows_gpu_runner_working_sets",
-        lambda: 1,
+        lambda **_kwargs: 1,
     )
     result = backend.preflight()
     assert result.healthy is True
@@ -387,6 +387,35 @@ def test_resource_guard_blocks_before_preflight_model_load(tmp_path):
     assert result.status == ImplementationStatus.RESOURCE_PRESSURE and not called
 
 
+def test_direct_evolution_preflight_rechecks_capacity_after_metadata_handoff(tmp_path, monkeypatch):
+    root = _repo(tmp_path)
+    developer = SelfDeveloper(Config(), root)
+    order = []
+
+    class Backend:
+        def preflight(self):
+            pytest.fail("memory guard must reject before any model-loading preflight")
+
+    monkeypatch.setattr(developer, "_claude_code_backend", lambda **_kwargs: Backend())
+    monkeypatch.setattr(developer.governor, "prepare_ollama_handoff", lambda *_args: (
+        order.append("reclaim") or {"attempted": True, "success": False}))
+
+    def reject(*_args):
+        order.append("guard")
+        raise RuntimeError("memory pressure remains")
+
+    monkeypatch.setattr(developer, "_check_resources", reject)
+    with pytest.raises(RuntimeError, match="memory pressure remains"):
+        developer._run_claude_code_implementation(
+            chat=lambda **_kwargs: None, developer_model="gpt-oss:20b",
+            task={"title": "fixture"}, branch="candidate/test", workspace=root,
+            tools=CandidateTools(root), cycle_id=1, research="evidence",
+            grounding_plan={"referenced_paths": ["module.py"]}, grounding_evidence=[],
+            evolution_context="bounded", lessons=[], force=True,
+        )
+    assert order == ["reclaim", "guard"]
+
+
 def test_unavailable_cli_does_not_load_large_model(tmp_path, monkeypatch):
     backend = ClaudeCodeBackend(executable=str(tmp_path / "missing-claude.exe"))
     monkeypatch.setattr(backend, "_ollama_json", lambda *_args, **_kwargs: pytest.fail("must not load model"))
@@ -443,6 +472,8 @@ def test_localpilot_rejection_drives_one_bounded_claude_rework_pass(tmp_path: Pa
 
     backend = RepairingBackend()
     developer = SelfDeveloper(config, root, implementation_backend=backend)
+    monkeypatch.setattr(developer.governor, "prepare_ollama_handoff", lambda *_args: {"attempted": False})
+    monkeypatch.setattr(developer, "_check_resources", lambda *_args, **_kwargs: None)
     responses = iter(
         [
             {"content": json.dumps({"approved": False, "feedback": ["fix regression"], "summary": "reject"})},

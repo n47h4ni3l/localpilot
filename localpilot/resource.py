@@ -57,6 +57,18 @@ class ResourceGovernor:
     def __init__(self, config: ResourceConfig) -> None:
         self.config = config
 
+    def prepare_ollama_handoff(self, base_url: str, model: str) -> dict:
+        """Try one bounded resident-memory reclaim; admission still resamples RAM.
+
+        This never loads or unloads a model. Call only at a serialized handoff,
+        never from an inference polling guard.
+        """
+        if os.name != "nt" or psutil.virtual_memory().percent <= self.config.max_memory_percent_for_background:
+            return {"attempted": False, "success": False, "reason": "no resident-memory reclaim needed"}
+        from localpilot.ollama_memory import reclaim_loaded_gpu_model_host_memory
+
+        return reclaim_loaded_gpu_model_host_memory(base_url, model)
+
     def sample(self, *, interval: float = 0.15) -> ResourceState:
         idle = windows_idle_seconds()
         cpu = psutil.cpu_percent(interval=interval)

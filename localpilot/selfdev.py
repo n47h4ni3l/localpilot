@@ -2096,6 +2096,12 @@ class SelfDeveloper:
             f"Earlier reusable lessons:\n{json.dumps(lessons, ensure_ascii=False)}"
         )
         backend = self._claude_code_backend(force=force, branch=branch)
+        handoff = self.governor.prepare_ollama_handoff(
+            self.config.selfdev.implementation_base_url, self.config.selfdev.implementation_model,
+        )
+        self._check_resources(force, branch)
+        if handoff.get("attempted"):
+            self.audit.write("selfdev_claude_memory_handoff", cycle_id=cycle_id, branch=branch, **handoff)
         preflight = backend.preflight()
         self.audit.write(
             "selfdev_implementation_preflight",

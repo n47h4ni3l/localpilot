@@ -85,7 +85,10 @@ def _storage(root: Path, config: Config) -> Path:
     relative = _relative(str(config.agent.data_dir))
     if any(part.casefold() in {".git", ".claude", ".codex"} for part in Path(relative).parts):
         raise ValueError("Claude Code storage must use the configured application data directory.")
-    path = root / relative / "claude-code"
+    # The owner's configured application-data directory may intentionally be
+    # relocated through a junction. Trust that resolved anchor, never links
+    # inside the tool's own storage beneath it.
+    path = (root / relative).resolve() / "claude-code"
     _no_links(path)
     return path
 
@@ -93,7 +96,7 @@ def _storage(root: Path, config: Config) -> Path:
 @contextmanager
 def claude_code_run_lock(data_dir: str | Path) -> Iterator[None]:
     """Serialize tool jobs with a kernel lock; metadata is evidence, not authority."""
-    directory = Path(data_dir) / "claude-code"
+    directory = Path(data_dir).resolve() / "claude-code"
     _no_links(directory)
     directory.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(directory / "run.lock", os.O_CREAT | os.O_RDWR, 0o600)
@@ -112,7 +115,7 @@ def claude_code_run_lock(data_dir: str | Path) -> Iterator[None]:
             acquired = True
         except OSError:
             raise RuntimeError("Claude Code is already running; wait for the existing tool call.") from None
-        with _claude_code_run_identity(data_dir):
+        with _claude_code_run_identity(directory.parent):
             yield
     finally:
         if acquired:
@@ -132,7 +135,7 @@ def _claude_code_run_identity(data_dir: str | Path) -> Iterator[None]:
     Dead-owner locks are retained as evidence; a live/reused/unknown PID never
     authorizes starting a second job.
     """
-    directory = Path(data_dir) / "claude-code"
+    directory = Path(data_dir).resolve() / "claude-code"
     _no_links(directory)
     directory.mkdir(parents=True, exist_ok=True)
     lock = directory / "active.json"
@@ -331,9 +334,15 @@ class ClaudeCodeTool:
             name != cfg.model.name for name in (cfg.selfdev.implementation_model, cfg.selfdev.developer_model)
         ):
             raise ValueError("Claude Code requires the exact accepted local model for chat, development and implementation; no substitution is allowed.")
-        self._resource_guard()
         storage = _storage(self.root, cfg)
         with claude_code_run_lock(storage.parent):
+            # The completed outer chat may leave GPU-backed host pages resident.
+            # Reclaim only its verified existing runner, then enforce the same
+            # capacity ceiling before snapshotting or loading a coding context.
+            handoff = self.governor.prepare_ollama_handoff(
+                cfg.selfdev.implementation_base_url, cfg.model.name,
+            )
+            self._resource_guard()
             run = storage / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex)
             run.mkdir()
             workspace = run / "workspace"
@@ -386,6 +395,7 @@ class ClaudeCodeTool:
                 "tests_status": "not_run" if not allowed else "unverified",
                 "tests_not_run": bool(result.usage.get("tests_not_run", False)),
                 "transport": result.usage.get("transport", {}),
+                "memory_handoff": handoff,
                 "duration_seconds": round(time.monotonic() - started, 3),
             }
             (run / "receipt.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")

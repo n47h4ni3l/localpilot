@@ -57,6 +57,7 @@ def tool(repo, monkeypatch):
     cfg.systemsense.enabled = False
     result = ClaudeCodeTool(repo, cfg)
     monkeypatch.setattr(result.governor, "sample", lambda **kwargs: ResourceState(0, 5, 30, False, "active", False, True, "active", ""))
+    monkeypatch.setattr(result.governor, "prepare_ollama_handoff", lambda *_args: {"attempted": False, "success": False})
     return result
 
 
@@ -169,6 +170,39 @@ def test_capacity_checked_before_snapshot_and_during_inference(tool, monkeypatch
     assert calls == []
 
 
+def test_handoff_reclaims_before_capacity_check_without_loading_or_weakening_guard(tool, monkeypatch):
+    calls = _backend(monkeypatch, tool)
+    memory = {"percent": 91}
+    observed = []
+
+    def reclaim(base_url, model):
+        observed.append((base_url, model))
+        # Kernel serialization must already be held during reclamation.
+        assert (tool.root / tool.config.agent.data_dir / "claude-code/active.json").exists()
+        memory["percent"] = 50
+        return {"attempted": True, "success": True, "pid": 17}
+
+    monkeypatch.setattr(tool.governor, "prepare_ollama_handoff", reclaim)
+    monkeypatch.setattr(tool.governor, "sample", lambda **kwargs: ResourceState(
+        0, 5, memory["percent"], False, "active", False, memory["percent"] <= 82,
+        "active", "memory pressure" if memory["percent"] > 82 else ""))
+    result = tool.claude_code("Read module.py")
+    assert len(calls) == 1 and observed == [(tool.config.selfdev.implementation_base_url, "nestra:p1.2")]
+    assert result["memory_handoff"]["success"] is True
+    assert tool.config.resource.max_memory_percent_for_background == 82
+
+
+def test_handoff_still_defers_if_reclaim_does_not_restore_capacity(tool, monkeypatch):
+    calls = _backend(monkeypatch, tool)
+    monkeypatch.setattr(tool.governor, "prepare_ollama_handoff", lambda *_args: {
+        "attempted": True, "success": True, "pid": 17})
+    monkeypatch.setattr(tool.governor, "sample", lambda **kwargs: ResourceState(
+        0, 5, 91, False, "pressure", False, False, "active", "memory pressure"))
+    with pytest.raises(RuntimeError, match="deferred"):
+        tool.claude_code("Read module.py")
+    assert calls == []
+
+
 def test_shared_lock_blocks_nested_invocations_and_preserves_receipt(tool, monkeypatch):
     calls = _backend(monkeypatch, tool)
     data = tool.root / tool.config.agent.data_dir
@@ -178,6 +212,52 @@ def test_shared_lock_blocks_nested_invocations_and_preserves_receipt(tool, monke
         assert (data / "claude-code/active.json").exists()
     assert calls == []
     assert not (data / "claude-code/active.json").exists()
+
+
+def _directory_link(target: Path, link: Path) -> None:
+    if os.name == "nt":
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def test_configured_data_junction_is_supported_without_moving_owner_history(tool, tmp_path, monkeypatch):
+    calls = _backend(monkeypatch, tool)
+    actual = tmp_path / "historical-data"
+    actual.mkdir()
+    history = actual / "owner-history.jsonl"
+    history.write_bytes(b'owner history remains here\n')
+    alias = tool.root / "relocated-data"
+    _directory_link(actual, alias)
+    tool.config.agent.data_dir = "relocated-data"
+    result = tool.claude_code("Read module.py")
+    assert Path(result["workspace"]).is_relative_to(actual / "claude-code")
+    assert len(calls) == 1 and history.read_bytes() == b'owner history remains here\n'
+    assert alias.is_dir()
+
+
+def test_junction_and_resolved_data_paths_share_one_kernel_lock(tmp_path):
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    alias = tmp_path / "alias"
+    _directory_link(actual, alias)
+    with claude_code_run_lock(alias):
+        with pytest.raises(RuntimeError, match="already running"):
+            with claude_code_run_lock(actual):
+                pytest.fail("both aliases must refer to the same lock")
+
+
+def test_junction_below_configured_data_anchor_is_still_rejected(tool, tmp_path, monkeypatch):
+    calls = _backend(monkeypatch, tool)
+    data = tool.root / tool.config.agent.data_dir
+    data.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _directory_link(outside, data / "claude-code")
+    with pytest.raises(ValueError, match="link or junction"):
+        tool.claude_code("Read module.py")
+    assert calls == [] and list(outside.iterdir()) == []
 
 
 def test_private_child_home_and_cloud_credentials(tool, tmp_path, monkeypatch):

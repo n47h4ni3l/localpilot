@@ -15,6 +15,8 @@ def _installation(tmp_path, monkeypatch):
     app, runtime, models = (tmp_path / name for name in ("app", "runtime", "models"))
     app.mkdir()
     runtime.mkdir()
+    (runtime / "claude").mkdir()
+    (runtime / "claude" / "claude.exe").write_bytes(b"not executable: private tool fixture")
     manifest = models / "manifests-v2/ollama.com/library/nestra/p1.2"
     manifest.parent.mkdir(parents=True)
     manifest.write_bytes(b'{"fixture":"exact accepted metadata"}')
@@ -40,11 +42,11 @@ def test_fresh_config_is_private_guide_only_and_same_model(tmp_path, monkeypatch
     assert not cfg.selfdev.auto_promote
     assert identity == json.loads((app / ".nestra-runtime.json").read_text())
     assert not list((app / "localpilot-data").iterdir())
-    assert not (runtime / "claude").exists()
-    assert not (tmp_path / "state" / "claude").exists()
+    assert cfg.selfdev.implementation_executable == str(runtime / "claude" / "claude.exe")
+    assert (tmp_path / "state" / "claude").is_dir()
     serialized = tomllib.loads((app / "localpilot.toml").read_text())
     assert serialized["selfdev"]["implementation_backend"] == "local_tools"
-    assert "implementation_executable" not in serialized["selfdev"]
+    assert serialized["selfdev"]["implementation_executable"] == str(runtime / "claude" / "claude.exe")
     assert identity["model_digest"] == hashlib.sha256((models / "manifests-v2/ollama.com/library/nestra/p1.2").read_bytes()).hexdigest()
 
 
@@ -63,6 +65,14 @@ def test_wrong_model_fails_before_creating_config(tmp_path, monkeypatch):
     app, runtime, models = _installation(tmp_path, monkeypatch)
     (models / "manifests-v2/ollama.com/library/nestra/p1.2").write_bytes(b"wrong")
     with pytest.raises(ValueError, match="differs"):
+        configure(app, runtime, models)
+    assert not (app / "localpilot.toml").exists()
+
+
+def test_missing_private_claude_tool_fails_before_creating_config(tmp_path, monkeypatch):
+    app, runtime, models = _installation(tmp_path, monkeypatch)
+    (runtime / "claude" / "claude.exe").unlink()
+    with pytest.raises(ValueError, match="tool executable is missing"):
         configure(app, runtime, models)
     assert not (app / "localpilot.toml").exists()
 

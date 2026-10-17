@@ -56,6 +56,7 @@ from localpilot.selfdev_frontend_validation import (
     _validate_frontend_candidate,
 )
 from localpilot.selfdev_frontend_baseline import TrustedFrontendBaseline, approved_main_revision
+from localpilot.selfdev_claude_tool import candidate_claude_code_tools
 from localpilot.selfdev_response_parsing import (
     ChangePlan,
     PlannedChange,
@@ -2310,7 +2311,9 @@ class SelfDeveloper:
                         "the smallest concrete correction, and rerun static checks. "
                         "Never edit stable, execute candidate code locally, weaken "
                         "safety, bypass the resource governor, promote, or use shell "
-                        "command strings. Reviewer-controlled tests are immutable. "
+                        "command strings. If supplied, claude_code is optional delegation to the same local "
+                        "Nestra model; only that confined tool may run the existing bounded repository tests. "
+                        "Its results remain subject to independent review and CI. Reviewer-controlled tests are immutable. "
                         "Finish with JSON containing only summary and reusable_lesson; "
                         "do not expose hidden reasoning.\n"
                         f"{_ALLOWED_SUFFIXES_NOTE}\n"
@@ -2340,6 +2343,10 @@ class SelfDeveloper:
                     tools.complexity_report,
                     tools.run_candidate_static_checks,
                     tools.show_candidate_diff,
+                    *candidate_claude_code_tools(
+                        self, chat=chat, model=model, tools=tools, task=task,
+                        branch=branch, cycle_id=cycle_id, force=force,
+                    ),
                 ],
                 rounds=rounds,
                 force=force,
@@ -2639,6 +2646,9 @@ class SelfDeveloper:
                             "through the supplied file tools. Implement one focused task, add/update tests, inspect the "
                             "diff, and run static checks. Never edit stable, execute candidate code locally, promote, "
                             "weaken confinement, bypass the resource governor, or use shell command strings. "
+                            "If supplied, claude_code is optional delegation to the same local Nestra model; "
+                            "only that confined tool may run the existing bounded repository tests. Its results "
+                            "remain subject to independent review and CI. "
                             "Implement the evaluation artifact needed to compare the candidate with the stated baseline. "
                             "Do not keep complexity whose benefit cannot be measured. Finish with JSON containing only "
                             "summary, reusable_lesson, and evaluation_evidence with metric, baseline_evidence, "
@@ -2692,6 +2702,11 @@ class SelfDeveloper:
                             tools.complexity_report,
                             tools.run_candidate_static_checks,
                             tools.show_candidate_diff,
+                            *candidate_claude_code_tools(
+                                self, chat=chat, model=developer_model, tools=tools,
+                                task=task, branch=branch, cycle_id=cycle_id,
+                                force=force, grounding_plan=grounding_plan,
+                            ),
                         ],
                         rounds=self.config.selfdev.max_tool_rounds,
                         force=force,
@@ -3623,7 +3638,10 @@ class SelfDeveloper:
                     "candidate files, and repair only the isolated candidate "
                     "using the supplied tools. Do not touch stable, do not "
                     "weaken safety, do not execute candidate code locally, "
-                    "and do not use shell command strings. Reviewer-controlled "
+                    "and do not use shell command strings. "
+                    "claude_code is optional delegation when supplied; only that confined tool may run "
+                    "the existing bounded repository tests, with the same local Nestra model. Its results "
+                    "remain subject to independent review and CI. Reviewer-controlled "
                     "regression tests listed below are immutable contracts: you "
                     "may inspect them, but you must not edit them, weaken their "
                     "assertions, or work around them. Repair the implementation "
@@ -3668,6 +3686,10 @@ class SelfDeveloper:
                     tools.complexity_report,
                     tools.run_candidate_static_checks,
                     tools.show_candidate_diff,
+                    *candidate_claude_code_tools(
+                        self, chat=chat, model=developer_model, tools=tools,
+                        task=task, branch=branch, cycle_id=cycle_id, force=force,
+                    ),
                 ],
                 rounds=self.config.selfdev.max_tool_rounds,
                 force=force,

@@ -37,9 +37,15 @@ function Get-NestraTomlLaunchValue {
     $current = ''; $values = @()
     foreach ($line in ($Text -split '\r?\n')) {
         if ($line -match '^\s*\[([A-Za-z0-9_.]+)\]\s*(?:#.*)?$') { $current = $Matches[1]; continue }
-        if ($current -ceq $Section -and $line -match ('^\s*' + [regex]::Escape($Key) + '\s*=\s*(.*?)\s*(?:#.*)?$')) {
+        if ($current -ceq $Section -and $line -match ('^\s*' + [regex]::Escape($Key) + '\s*=\s*(.*?)\s*$')) {
             $value = $Matches[1].Trim()
-            if ($value -match '^"([^"\\]*)"$' -or $value -match "^'([^']*)'$") { $value = $Matches[1] }
+            if ($value -match '^("(?:[^"\\]|\\.)*")\s*(?:#.*)?$') {
+                # The generated TOML quotes Windows paths with JSON-compatible
+                # escaping. Decode it before checking the private executable.
+                $value = ConvertFrom-Json -InputObject $Matches[1]
+                if ($value -isnot [string]) { throw 'Nestra launch value must be a string.' }
+            } elseif ($value -match "^'([^']*)'\s*(?:#.*)?$") { $value = $Matches[1] }
+            else { $value = ($value -split '#', 2)[0].Trim() }
             $values += $value
         }
     }
@@ -83,6 +89,7 @@ function Get-NestraLaunchConfiguration {
         Git = (Join-Path $runtimeRoot 'git/cmd/git.exe')
         Bash = (Join-Path $runtimeRoot 'git/bin/bash.exe')
         GitHub = (Join-Path $runtimeRoot 'gh/bin/gh.exe')
+        Claude = (Join-Path $runtimeRoot 'claude/claude.exe')
         Launcher = (Join-Path $app 'scripts/launch-nestra.ps1')
         Config = $configPath
     }
@@ -101,6 +108,10 @@ function Get-NestraLaunchConfiguration {
         if ((Get-NestraTomlLaunchValue $text $expected[0] $expected[1]) -cne $expected[2]) {
             throw "Nestra configuration differs from its accepted bundle identity: [$($expected[0])] $($expected[1])"
         }
+    }
+    $configuredClaude = Get-NestraTomlLaunchValue $text 'selfdev' 'implementation_executable'
+    if ((Assert-NestraLaunchPath $configuredClaude) -ine $files.Claude) {
+        throw 'Nestra Claude Code tool must use this installation''s private executable.'
     }
     return [pscustomobject]@{ Root = $rootPath; App = $app; RuntimeRoot = $runtimeRoot; Models = $models;
         Config = $configPath; Runtime = $runtime; Tasks = $tasks; Files = $files;
@@ -148,11 +159,13 @@ function Set-NestraPrivateEnvironment {
     param($Configuration)
     $env:PATH = @((Split-Path -Parent $Configuration.Files.Python), (Split-Path -Parent $Configuration.Files.BasePython),
         (Join-Path $Configuration.RuntimeRoot 'git/cmd'), (Join-Path $Configuration.RuntimeRoot 'git/bin'),
-        (Join-Path $Configuration.RuntimeRoot 'gh/bin'),
+        (Join-Path $Configuration.RuntimeRoot 'gh/bin'), (Join-Path $Configuration.RuntimeRoot 'claude'),
         (Join-Path $Configuration.RuntimeRoot 'ollama'), $env:PATH) -join ';'
     $env:OLLAMA_HOST = [string]$Configuration.Runtime.ollama_host
     $env:OLLAMA_MODELS = $Configuration.Models
     $env:OLLAMA_NO_CLOUD = '1'
+    $env:CLAUDE_CODE_GIT_BASH_PATH = $Configuration.Files.Bash
+    $env:CLAUDE_CONFIG_DIR = Join-Path $Configuration.Root 'state/claude'
     $env:DISABLE_AUTOUPDATER = '1'
     $env:PYTHONNOUSERSITE = '1'
     $env:PYTHONDONTWRITEBYTECODE = '1'

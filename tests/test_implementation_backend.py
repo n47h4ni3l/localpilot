@@ -387,6 +387,13 @@ def test_resource_guard_blocks_before_preflight_model_load(tmp_path):
     assert result.status == ImplementationStatus.RESOURCE_PRESSURE and not called
 
 
+def test_unavailable_cli_does_not_load_large_model(tmp_path, monkeypatch):
+    backend = ClaudeCodeBackend(executable=str(tmp_path / "missing-claude.exe"))
+    monkeypatch.setattr(backend, "_ollama_json", lambda *_args, **_kwargs: pytest.fail("must not load model"))
+    result = backend.preflight()
+    assert not result.healthy and any("executable is unavailable" in item for item in result.messages)
+
+
 def test_resource_stop_after_preflight_is_classified_and_releases_test_load(tmp_path):
     backend = _backend(tmp_path, "success")
     checks, cancelled = [], []

@@ -199,6 +199,18 @@ def test_backend_failure_keeps_exact_status_without_claiming_completion(tool, mo
     assert result["applied_to_production"] is False and result["proposal_path"] == ""
 
 
+def test_partial_proposal_without_test_result_remains_explicitly_unverified(tool, monkeypatch):
+    def edit(request):
+        (request.workspace / "module.py").write_text("VALUE = 2\n")
+        return ("module.py",)
+    _backend(monkeypatch, tool, edit, status=ImplementationStatus.CANDIDATE_TEST_FAILURE)
+    result = tool.claude_code("Propose a change", ["module.py"])
+    assert result["status"] == "candidate_test_failure"
+    assert "test verification is incomplete" in result["summary"]
+    assert result["tests_status"] == "unverified" and result["pending_review"]
+    assert Path(result["proposal_path"]).is_file()
+
+
 def test_registry_exposes_reversible_first_class_tool(tool):
     tools = registry(tool.root, config=tool.config)
     spec = tools["claude_code"]

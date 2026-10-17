@@ -29,10 +29,17 @@ def candidate_claude_code_tools(
         return []
     if grounding_plan is None:
         repair_scope = getattr(developer, "_claude_repair_scope", None)
-        scope = (
-            repair_scope(tools.workspace, tools) if repair_scope is not None
-            else tuple(path.relative_to(tools.workspace).as_posix() for path in tools.files_written)
-        )
+        try:
+            scope = (
+                repair_scope(tools.workspace, tools) if repair_scope is not None
+                else tuple(path.relative_to(tools.workspace).as_posix() for path in tools.files_written)
+            )
+        except (OSError, ValueError, RuntimeError):
+            # Failing to establish an optional delegation scope must neither
+            # grant broader permissions nor disable the existing native tools.
+            developer.audit.write("selfdev_claude_tool_unavailable", branch=branch,
+                                  reason="candidate repair scope could not be verified")
+            return []
     else:
         scope = tuple(
             str(item) for field in ("referenced_paths", "new_runtime_paths")
@@ -40,7 +47,11 @@ def candidate_claude_code_tools(
         )
     grounded: set[str] = set()
     for item in scope:
-        resolved = tools._resolve(str(item))
+        try:
+            resolved = tools._resolve(str(item))
+        except (ValueError, PermissionError):
+            # A grounded read reference can be outside the editable policy.
+            continue
         relative = resolved.relative_to(tools.workspace).as_posix()
         suffix = resolved.suffix.lower() if resolved.name != ".gitignore" else ".gitignore"
         if relative not in tools.protected_paths and suffix in _ALLOWED_SUFFIXES:

@@ -335,9 +335,12 @@ class ClaudeCodeTool:
                 proposal = run / "proposal.diff"
                 proposal.write_bytes(patch)
                 proposal_path, proposal_hash = str(proposal), hashlib.sha256(patch).hexdigest()
+            summary = result.summary
+            if proposal_path and result.status == ImplementationStatus.CANDIDATE_TEST_FAILURE and not result.tests:
+                summary = "Edit proposal saved; test verification is incomplete. " + summary
             payload = {
                 "status": result.status.value, "backend": result.backend, "model": result.model,
-                "summary": sanitize_process_output(result.summary, workspace=workspace)[:2000],
+                "summary": sanitize_process_output(summary, workspace=workspace)[:2000],
                 "source_revision": revision, "snapshot_omitted_files": omitted,
                 "source_basis": "committed_head_snapshot", "working_tree_included": False,
                 "read_only": not allowed, "changed_paths": list(result.changed_paths),
@@ -346,6 +349,7 @@ class ClaudeCodeTool:
                 "review_status": "not_applicable" if not allowed else "pending_review",
                 "pending_review": bool(allowed),
                 "tests": list(result.tests)[:20], "tests_independently_verified": False,
+                "tests_status": "not_run" if not allowed else "unverified",
                 "tests_not_run": bool(result.usage.get("tests_not_run", False)),
                 "transport": result.usage.get("transport", {}),
                 "duration_seconds": round(time.monotonic() - started, 3),

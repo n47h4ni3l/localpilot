@@ -159,6 +159,17 @@ def test_native_model_can_choose_tool_and_continue_own_turn(tmp_path, monkeypatc
     assert tools.workspace / "module.py" in tools.files_written
 
 
+def test_optional_scope_failure_preserves_native_tools_and_protected_references(tmp_path, monkeypatch):
+    developer, _tools, kwargs = _fixture(tmp_path, monkeypatch)
+    kwargs["grounding_plan"]["referenced_paths"].append(".github/workflows/tests.yml")
+    fn, = candidate_claude_code_tools(developer, **kwargs)
+    with pytest.raises(PermissionError):
+        fn("Change workflow", [".github/workflows/tests.yml"])
+    kwargs["grounding_plan"] = None
+    monkeypatch.setattr(developer, "_claude_repair_scope", lambda *_args: (_ for _ in ()).throw(RuntimeError("missing base")))
+    assert candidate_claude_code_tools(developer, **kwargs) == []
+
+
 @pytest.mark.parametrize("status,ok", [("completed", True), ("cli_error", False), ("resource_pressure", False), ("malformed_output", False)])
 def test_claude_tool_failures_are_not_reported_as_successful_ui_steps(status, ok):
     result = {"backend": "claude_code", "status": status, "summary": "evidence"}

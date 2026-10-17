@@ -484,6 +484,15 @@ class ClaudeCodeBackend:
             except (OSError, subprocess.SubprocessError) as exc:
                 messages.append(f"Claude Code preflight failed: {type(exc).__name__}: {_bounded(exc, 500)}")
 
+        if messages:
+            # Do not load a large model for an invocation that cannot start.
+            # Invalid endpoint/context/CLI configuration fails before network I/O.
+            return ImplementationPreflight(
+                False, self.name, self.model,
+                self.executable_argv[0] if self.executable_argv else self.executable,
+                version=version, context_tokens=self.context_tokens, messages=tuple(messages),
+            )
+
         try:
             # Use Ollama's bounded HTTP API rather than the CLI metadata command.
             # The CLI can wedge even while the local server is healthy; /api/show

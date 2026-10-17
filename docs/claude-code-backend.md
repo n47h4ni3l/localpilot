@@ -10,6 +10,8 @@ The model-facing tool is `claude_code(task, allowed_paths=None)`. In chat, an om
 
 The returned status, source revision, changed paths, proposal location/hash, and diff digest describe what actually happened. `pending_review` is a proposal state, not acceptance. Chat reports `applied_to_production: false` and `tests_independently_verified: false`; it does not apply, commit, or push the proposed edits. Read-only assistance does not claim candidate test success.
 
+The explicitly configured application-data directory is resolved once as the storage anchor, including an owner's existing Windows junction. Tool storage beneath that anchor still rejects links and junctions. Chat and Evolution use the same canonical directory for their kernel invocation lock. No historical application data is moved or copied by this resolution.
+
 Native Evolution exposes the same tool after repository grounding, and during bounded repair of static-check or CI failures. Here omitting paths uses the verified implementation or candidate-owned repair scope; an explicit list must be a nonempty subset of that scope. The original experiment contract, resource budget, foreground-preemption, candidate validation, independent review, checkpoint, CI, delivery, and human merge gates still apply. Nestra can continue using its other local tools without invoking Claude Code.
 
 The CLI's tool responses pass through a private loopback gateway before execution. It collects a bounded complete provider response, validates tool identities and argument structure, and serializes valid responses into canonical streaming events for the CLI. One malformed-response retry is allowed per invocation before any part of that rejected response is forwarded. A repeated invalid response becomes an explicit error. The gateway never invents tool names or arguments and never switches models. Retain the actual diagnostics when the CLI or local provider rejects a request; an unfamiliar-model warning alone does not establish that the request failed.
@@ -52,6 +54,8 @@ The checked-in preflight is available for an explicitly authorized live check:
 ```
 
 Preflight performs a real local model load and reads Ollama's live allocation. The wrapper requires at least **65,536 context tokens** for the coding harness. This is separate from the normal chat context and may use more memory; a metadata-only check does not prove that the allocation is viable. Configured or observed context below the requirement fails with an explanation. It does not silently choose a smaller context or another model. Outer memory, time, and foreground guards remain relevant even after preflight succeeds.
+
+On Windows, a completed outer chat can leave the loaded GPU model's host working set resident. Before a serialized coding handoff under memory pressure, the resource governor may make one metadata-only attempt to reclaim the exact runner's host working set. It verifies the configured loopback endpoint, accepted model, GPU allocation and runner identity; ambiguous identity or denied Windows access leaves the normal guard in place. This does not load or unload a model, increase the memory ceiling, release committed memory, or guarantee that pages will stay nonresident. Actual host memory is sampled again before any coding-context load. Post-load and during-inference guards still apply. A successful reclaim is not a successful tool call or Evolution cycle.
 
 ## Permission and verification boundaries
 

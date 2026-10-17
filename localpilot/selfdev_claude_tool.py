@@ -95,12 +95,16 @@ def candidate_claude_code_tools(
             for item in selected for path in [tools._resolve(item)]
         }
         writes_before = tools.write_count
-        developer._check_resources(force, branch)
-        developer.audit.write(
-            "selfdev_claude_tool_invoked", branch=branch, cycle_id=cycle_id,
-            model=model, allowed_paths=sorted(selected), task_chars=len(task),
-        )
         with claude_code_run_lock(developer.data_dir):
+            handoff = developer.governor.prepare_ollama_handoff(
+                cfg.selfdev.implementation_base_url, model,
+            )
+            developer._check_resources(force, branch)
+            developer.audit.write(
+                "selfdev_claude_tool_invoked", branch=branch, cycle_id=cycle_id,
+                model=model, allowed_paths=sorted(selected), task_chars=len(task),
+                memory_handoff=handoff,
+            )
             try:
                 return developer._run_claude_code_implementation(
                     chat=chat, developer_model=model, task=task_contract,

@@ -29,6 +29,7 @@ def _fixture(tmp_path, monkeypatch):
     config.selfdev.implementation_backend = "local_tools"
     developer = SelfDeveloper(config, root)
     monkeypatch.setattr(developer, "_check_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(developer.governor, "prepare_ollama_handoff", lambda *_args: {"attempted": False, "success": False})
     tools = CandidateTools(workspace)
     task = {"id": "tool", "title": "Improve module", "acceptance": ["correctness"],
             "evaluation": {"metric": "tests", "baseline": "old", "measurement_method": "CI"}}
@@ -92,6 +93,28 @@ def test_native_tool_checks_model_and_resources_before_launch(tmp_path, monkeypa
     monkeypatch.setattr(developer, "_check_resources", lambda *_args: (_ for _ in ()).throw(RuntimeError("memory pressure")))
     with pytest.raises(RuntimeError, match="memory pressure"):
         fn("Do work")
+
+
+def test_native_handoff_is_serialized_and_resource_gate_still_precedes_backend(tmp_path, monkeypatch):
+    developer, _tools, kwargs = _fixture(tmp_path, monkeypatch)
+    order = []
+
+    def reclaim(*_args):
+        assert (developer.data_dir / "claude-code/active.json").exists()
+        order.append("reclaim")
+        return {"attempted": True, "success": False, "reason": "access denied"}
+
+    def blocked(*_args):
+        order.append("guard")
+        raise RuntimeError("memory pressure")
+
+    monkeypatch.setattr(developer.governor, "prepare_ollama_handoff", reclaim)
+    monkeypatch.setattr(developer, "_check_resources", blocked)
+    monkeypatch.setattr(developer, "_run_claude_code_implementation", lambda **_kwargs: pytest.fail("must not load model"))
+    fn, = candidate_claude_code_tools(developer, **kwargs)
+    with pytest.raises(RuntimeError, match="memory pressure"):
+        fn("Do work")
+    assert order == ["reclaim", "guard"]
 
 
 def test_valid_partial_repair_is_registered_even_if_cli_stops(tmp_path, monkeypatch):

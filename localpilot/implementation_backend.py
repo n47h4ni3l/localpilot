@@ -9,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import ctypes
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -352,26 +351,12 @@ def _kill_process_tree(process: subprocess.Popen[str]) -> None:
         process.kill()
 
 
-def _trim_windows_gpu_runner_working_sets() -> int:
-    """Drop reclaimable host mappings after Ollama has placed the model in VRAM."""
-    if os.name != "nt":
-        return 0
-    trimmed = 0
-    for process in psutil.process_iter(("name",)):
-        try:
-            if str(process.info.get("name") or "").lower() != "llama-server.exe":
-                continue
-            handle = ctypes.windll.kernel32.OpenProcess(0x0100 | 0x0400, False, process.pid)
-            if not handle:
-                continue
-            try:
-                if ctypes.windll.psapi.EmptyWorkingSet(handle):
-                    trimmed += 1
-            finally:
-                ctypes.windll.kernel32.CloseHandle(handle)
-        except (OSError, psutil.Error):
-            continue
-    return trimmed
+def _trim_windows_gpu_runner_working_sets(*, base_url: str, model: str) -> int:
+    """Reclaim only the runner verified against this endpoint and model."""
+    from localpilot.ollama_memory import reclaim_loaded_gpu_model_host_memory
+
+    evidence = reclaim_loaded_gpu_model_host_memory(base_url, model)
+    return int(bool(evidence.get("success")))
 
 
 class ClaudeCodeBackend:
@@ -523,8 +508,8 @@ class ClaudeCodeBackend:
                     f"Ollama allocated {allocated or 'unknown'} context tokens after loading {self.model}; "
                     f"at least {self.context_tokens} are required"
                 )
-            elif int(active.get("size_vram") or 0) >= int(active.get("size") or 0) * 0.95:
-                _trim_windows_gpu_runner_working_sets()
+            elif int(active.get("size") or 0) > 0 and int(active.get("size_vram") or 0) >= int(active.get("size") or 0) * 0.95:
+                _trim_windows_gpu_runner_working_sets(base_url=self.base_url, model=self.model)
         except (OSError, subprocess.SubprocessError) as exc:
             messages.append(f"Ollama preflight failed: {type(exc).__name__}: {_bounded(exc, 500)}")
         except (ValueError, json.JSONDecodeError) as exc:

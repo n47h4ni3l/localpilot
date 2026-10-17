@@ -92,6 +92,40 @@ def _storage(root: Path, config: Config) -> Path:
 
 @contextmanager
 def claude_code_run_lock(data_dir: str | Path) -> Iterator[None]:
+    """Serialize tool jobs with a kernel lock; metadata is evidence, not authority."""
+    directory = Path(data_dir) / "claude-code"
+    _no_links(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(directory / "run.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    acquired = False
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                if not os.fstat(descriptor).st_size:
+                    os.write(descriptor, b"\0")
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except OSError:
+            raise RuntimeError("Claude Code is already running; wait for the existing tool call.") from None
+        with _claude_code_run_identity(data_dir):
+            yield
+    finally:
+        if acquired:
+            if os.name == "nt":
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+@contextmanager
+def _claude_code_run_identity(data_dir: str | Path) -> Iterator[None]:
     """One CLI job per application store, including other broker/worker processes.
 
     Callers pass the application's data directory, not a candidate directory.

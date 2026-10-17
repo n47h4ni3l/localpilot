@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -190,6 +191,21 @@ def test_private_child_home_and_cloud_credentials(tool, tmp_path, monkeypatch):
     assert Path(env["HOME"]) == tmp_path / "private"
     assert Path(env["CLAUDE_CONFIG_DIR"]).parent == tmp_path / "private"
     assert env["HOME"] == env["USERPROFILE"]
+
+
+def test_kernel_lock_survives_missing_metadata_and_blocks_other_process(tool):
+    data = tool.root / tool.config.agent.data_dir
+    code = (
+        "import sys\nfrom localpilot.tools.claude_code import claude_code_run_lock\n"
+        "try:\n with claude_code_run_lock(sys.argv[1]): pass\n"
+        "except RuntimeError:\n sys.exit(17)\n"
+    )
+    with claude_code_run_lock(data):
+        (data / "claude-code/active.json").unlink()
+        completed = subprocess.run([sys.executable, "-c", code, str(data)], capture_output=True, timeout=20)
+        assert completed.returncode == 17, completed.stderr
+    with claude_code_run_lock(data):
+        assert (data / "claude-code/active.json").exists()
 
 
 def test_backend_failure_keeps_exact_status_without_claiming_completion(tool, monkeypatch):
